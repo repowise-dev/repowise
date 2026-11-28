@@ -82,7 +82,10 @@ def events_command(
     root = target.narrow(ci_notices(fmt), command="events").resolve()
     read = run_async(_read(root, _parse_since(since), kinds, limit))
     if read is None:
-        console.print("No index found. Run `repowise init` first.")
+        if fmt in ("json", "jsonl"):
+            emit_json({"error": "No index found. Run `repowise init` first."})
+        else:
+            console.print("No index found. Run `repowise init` first.")
         raise SystemExit(1)
     events, runs = read
     if fmt == "json":

@@ -56,7 +56,8 @@ the CLI's live path in `cli/commands/dead_code_cmd.py`.
 ## Unreachable files
 
 Candidate: file-node in-degree 0 after entry points, never-flag paths and the
-rescues in `file_reachability.py`. Base confidence comes from git
+rescues in `file_reachability.py`. `co_changes` and `documents` edges do not
+count, so a file only a README links to is still a candidate. Base confidence comes from git
 (`_git_age_confidence`, `_GIT_AGE_RUNGS`):
 
 | Condition | Confidence |
@@ -70,7 +71,13 @@ rescues in `file_reachability.py`. Base confidence comes from git
 | Otherwise | `0.70` |
 
 Caps to `0.40`: a dynamic-import marker in the same directory, any path risk
-factor, a namespace-import language (C#). `unreachable_file` is in
+factor, a namespace-import language (C#). Caps to `0.50`
+(`UNPROVEN_FILE_CONFIDENCE`): a language in `_WEAK_RESOLVER_LANGUAGES` (every
+tag whose `import_support` is not `full`, plus PHP, Ruby and Swift), or a file
+whose stem or public top-level module name another production file of the same
+language family writes (`_production_mentions`: one identifier scan, writers
+judged by `code_origin`;
+type names are left to `clamp_named_types`). `unreachable_file` is in
 `REVIEW_ONLY_KINDS`, so `safe_to_delete` is always false. `lines` is the
 physical line count, or unknown when the source was not read.
 
@@ -104,7 +111,8 @@ decorators and their suffixes (`_FRAMEWORK_DECORATORS`,
 `_DEFAULT_DYNAMIC_PATTERNS` (`*Plugin`, `*Handler`, `*Adapter`, `*Middleware`,
 `*Mixin`, `*Command`, `register_*`, `on_*`, `*_view`, `*_endpoint`,
 `*_route`, `*_callback`, `*_signal`, `*_task`), framework inner classes
-(Python `Meta`), same-file TS/JS type uses, and Python local references.
+(Python `Meta` and `Config`, and Graphene's `Arguments` in a file that imports
+`graphene`), same-file TS/JS type uses, and Python local references.
 
 Base confidence (`_unused_export_confidence`):
 
@@ -146,11 +154,11 @@ only at `>= 0.7` with no risk factor.
 
 `unused_internal`: private symbols with no `calls` edge and no cross-file
 importer, base `0.65`, never deletion-ready. Hidden on default surfaces by
-`finding_registry.py` (measured 0.5% precision, 1,511 findings). A COBOL
-paragraph is judged from the program's source text instead of edges
-(`cobol_paragraphs.py`), at `0.30`.
+`finding_registry.py` (precision on held-out repositories is below the
+publishing bar). A COBOL paragraph is judged from the program's source text
+instead of edges (`cobol_paragraphs.py`), at `0.30`.
 
-`zombie_package`: a top-level directory with no inter-package import edges,
+`zombie_package`: a top-level directory with no inter-package import edges (`documents` edges do not count),
 base `0.50`, never deletion-ready. `_NEVER_PACKAGE_DIRS` skips non-package
 directories (`.github`, `.vscode`, `.devcontainer`, `docs`, `examples`,
 `scripts`, `assets`, `static`, `public`, `tests`, `benches`, `fuzz` and
@@ -164,13 +172,19 @@ points (`__init__.py`, `__main__.py`, `conftest.py`, `manage.py`, `wsgi.py`,
 `asgi.py`, `setup.py`, `main.go`), build files (Gradle, Maven, CMake,
 Makefiles, Meson, Bazel, MSBuild, `build.rs`, bundler configs), shell scripts,
 files a CI workflow, task file, manifest or script names by path, framework
-routes (Next.js, SvelteKit, Nuxt, Remix, Astro, ASP.NET minimal APIs, Blazor and
-Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
+routes with no manifest signal (Remix entry files, ASP.NET minimal APIs,
+Blazor and Razor code-behind), test layouts, generated code (protoc, Qt, Bison/Flex, SWIG,
 Cython, Roslyn `*.g.cs`, Dart `*.g.dart`, `**/generated/**`), reflective
 loading (Alembic and Django migrations, EF configurations, COM class
 factories), vendored trees, build artifacts, and non-code languages from the
 language registry. Read the constants for the exact globs; they change more
 often than this page.
+
+Other JS framework files (Next.js Pages and App Router, Remix routes, SvelteKit, Nuxt,
+Astro, Expo Router, React Email, `vite-plugin-pages`) are not on that list.
+They are anchored to a `framework:` node from the `package.json` that depends
+on the framework (`ingestion/framework_facts/`), so a `page.tsx` or
+`middleware.ts` in a package without Next.js can still be reported.
 
 ## Serving
 
@@ -184,5 +198,7 @@ the file, attention, actions, related-work, graph, chat, export and report
 readers): it applies `cross_repo_cut` to each stored row, then the filters, and
 tiering reads the result. A file another repo's contract link points at gets
 confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
-repo other repos depend on as a package, keep the confidence. Each adds a
+file another repo's package imports reach (`package_link_reaches` in
+`workspace/package_reach.py`, the rule get_risk's `affected_repos` also uses),
+keep the confidence. Each adds a
 `cross_repo_note` and withdraws `safe_to_delete`.

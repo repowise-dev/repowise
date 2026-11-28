@@ -10,10 +10,13 @@ disagree about what resolves.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .jvm_packages import jvm_coordinate_candidates
+from .pypi_imports import pypi_import_names
 from .records import field, package_key
 
 #: Graph nodes standing for a third-party package carry this ``node_id`` prefix.
@@ -38,18 +41,58 @@ class ExternalSystemLink:
         return {"node_id": self.node_id, "ecosystem": self.ecosystem, "name": self.name}
 
 
+#: A Go major-version suffix (``/v2``, ``/v10``): the path under it is a
+#: different module from the path without it. ``v1`` and ``v0`` are ordinary
+#: package names (``k8s.io/api/core/v1``).
+_GO_MAJOR_SUFFIX = re.compile(r"v(?:[2-9]|[1-9]\d+)")
+
+
+def _path_prefixes(external_name: str) -> list[str]:
+    """Every proper ``/`` prefix, longest first, so the longest declared module wins.
+
+    A Go import names a package inside a module (``google.golang.org/protobuf/
+    encoding/protojson`` under ``google.golang.org/protobuf``), and the module
+    can sit any number of segments up. A prefix followed by a major-version
+    segment is skipped: ``github.com/x/y/v2/z`` is never module ``github.com/x/y``.
+    """
+    segments = external_name.split("/")
+    return [
+        "/".join(segments[:end])
+        for end in range(len(segments) - 1, 0, -1)
+        if not _GO_MAJOR_SUFFIX.fullmatch(segments[end])
+    ]
+
+
+def _dotted_prefixes(external_name: str) -> list[str]:
+    """Every proper ``.`` prefix, longest first (``google.protobuf`` before ``google``)."""
+    segments = external_name.split(".")
+    return [".".join(segments[:end]) for end in range(len(segments) - 1, 0, -1)]
+
+
 def declaration_name_candidates(external_name: str) -> tuple[str, ...]:
     """Declaration names to try for one node suffix, most precise first.
 
-    Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
-    Python dotted modules), so the declared package is a prefix of the node
-    rather than the whole of it.
+    Resolver output is ecosystem-shaped (npm subpaths, Go package paths, Rust
+    ``::`` paths, Python dotted modules), so the declared package is a prefix
+    of the node rather than the whole of it. Longer prefixes come first, so
+    the most specific declared name wins.
+
+    JVM imports are the exception: a Java or Kotlin package never equals its
+    Maven ``group:artifact``, so those come from a curated table (see
+    :mod:`.jvm_packages`) and sit ahead of the generic prefixes. A name the
+    table does not know adds nothing, and a candidate only links when a
+    manifest declared it, so non-JVM names are unaffected.
     """
     candidates = [external_name]
     if external_name.startswith("@"):
         parts = external_name.split("/")
         if len(parts) >= 2:
             candidates.append("/".join(parts[:2]))
+    candidates.extend(jvm_coordinate_candidates(external_name))
+    if "/" in external_name:
+        candidates.extend(_path_prefixes(external_name))
+    elif "." in external_name and "::" not in external_name:
+        candidates.extend(_dotted_prefixes(external_name))
     for separator in ("::", ".", "/"):
         if separator in external_name:
             candidates.append(external_name.split(separator, 1)[0])
@@ -73,6 +116,7 @@ def build_declaration_index(
     """
     index: dict[str, tuple[str, str] | None] = {}
     ecosystem_of: dict[str, str] = {}
+    import_names: list[tuple[str, tuple[str, str]]] = []
     for declaration in declarations:
         name = field(declaration, "name", "") or ""
         ecosystem = field(declaration, "ecosystem", "") or ""
@@ -81,12 +125,21 @@ def build_declaration_index(
         identity = (ecosystem, name)
         if ecosystem:
             index.setdefault(package_key(ecosystem, name), identity)
+        if ecosystem == "pypi":
+            import_names.extend((module, identity) for module in pypi_import_names(name))
         previous = ecosystem_of.get(name)
         if previous is None:
             ecosystem_of[name] = ecosystem
             index[name] = identity
         elif previous != ecosystem:
             index[name] = None
+    # A PyPI distribution also answers to the module it is imported under
+    # (``Pillow`` as ``PIL``, ``Django`` as ``django``; see :mod:`.pypi_imports`),
+    # but only where no declaration claims that name itself: an npm ``yaml``
+    # keeps its link when a ``PyYAML`` sits beside it. Only PyPI adds these, so
+    # two of them never come from different ecosystems; the first one wins.
+    for module, identity in import_names:
+        index.setdefault(module, identity)
     return index
 
 

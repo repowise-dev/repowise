@@ -87,7 +87,7 @@ jobs:
   repowise:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
@@ -102,6 +102,8 @@ jobs:
 - Pin a release tag, not `main`; `version:` pins the Repowise release.
 - With a shallow checkout, the action fetches the history and target branch
   that coverage, security, health and risk need; `fetch-depth: 0` skips that.
+- The action's steps run on Node 24, so a self-hosted runner needs version
+  2.327.1 or newer. GitHub-hosted runners already are.
 
 | Input | Default | What it does |
 |-------|---------|--------------|
@@ -145,6 +147,8 @@ Include the template and set variables for the gates you use:
 ```yaml
 include:
   - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
+  # or a committed copy, when GitLab cannot reach GitHub:
+  # - local: ci/repowise.gitlab-ci.yml
 
 variables:
   REPOWISE_COVERAGE_REPORT: coverage/lcov.info
@@ -166,8 +170,11 @@ Each job logs its markdown report and keeps it as an artifact; override
 | `repowise-risk` | merge requests, when `REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set | none |
 | `repowise-impacted-tests` | merge requests, when `REPOWISE_IMPACTED_TESTS: "true"` | none |
 | `repowise-code-quality` | the default branch; never fails the pipeline | `gl-code-quality-doc-drift.json` |
+| `repowise-note` | merge requests, when `REPOWISE_GITLAB_TOKEN` is set; never fails the pipeline | none |
 
 - `REPOWISE_VERSION` pins the release; gate variables are in each gate's table.
+- The jobs install Repowise from PyPI (or your package mirror) and download
+  nothing else.
 - Report lists (`REPOWISE_COVERAGE_REPORT`, `REPOWISE_COVERAGE_BASE_REPORT`)
   are space separated and may hold globs and `path=prefix`; Repowise expands
   the globs, not the shell.
@@ -176,6 +183,29 @@ Each job logs its markdown report and keeps it as an artifact; override
 - `repowise-code-quality` publishes the report the widget compares against, so
   only new issues show as new. It covers doc drift only: security judges only
   what a change adds, and the default branch has no change.
+
+**Merge request note.** Set `REPOWISE_GITLAB_TOKEN` and `repowise-note` posts
+one note on the merge request: a table of every gate that ran and each gate's
+findings. Later pipelines edit that note rather than add another, and count the
+findings a push resolved. The note job runs after the gates, whatever they
+decided, and its own failure never fails the pipeline.
+
+- **Token.** The CI job token cannot write merge-request notes, so create a
+  project access token (Settings > Access tokens) with the `api` scope and the
+  Reporter role; a group access token or a personal access token works too.
+  The note is posted as that token's user, and a pipeline edits only a note
+  its own user posted.
+- **Variable.** Add it under Settings > CI/CD > Variables as
+  `REPOWISE_GITLAB_TOKEN`, masked. Leave it unprotected: merge request
+  pipelines run on unprotected branches, where protected variables are empty.
+  Every job of such a pipeline can read it, including code a merge request
+  adds, so keep the token to one project and the Reporter role.
+- **Self-managed GitLab** works the same way: the job talks to
+  `CI_API_V4_URL`, which GitLab sets to your instance's API.
+- **Outside the template**, run `repowise ci-summary DIR --gate NAME=CODE ...
+  --gitlab-note` after gates that ran with `REPOWISE_GATE_SUMMARY_DIR=DIR`
+  and `--format markdown`; outside a merge request pipeline it posts nothing
+  and says so.
 
 <details><summary>Line coverage in the merge request diff</summary>
 
@@ -304,17 +334,17 @@ jobs:
       matrix: {shard: [1, 2, 3]}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: pytest tests/shard${{ matrix.shard }} --cov=src --cov-report=lcov:coverage/lcov.info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: "coverage-${{ matrix.shard }}", path: coverage/lcov.info}
   coverage:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: {pattern: "coverage-*", path: artifacts}
       - uses: repowise-dev/repowise@main
         with:
@@ -457,14 +487,14 @@ GitHub Actions, one job on default-branch pushes and pull requests,
 - if: github.event_name == 'push'
   run: mkdir -p base-coverage && cp coverage/lcov.info base-coverage/
 - if: github.event_name == 'push'
-  uses: actions/cache/save@v4
+  uses: actions/cache/save@v6
   with: {path: base-coverage, key: "coverage-${{ github.sha }}"}
 - if: github.event_name == 'pull_request'
   id: merge-base
   run: echo "sha=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" >> "$GITHUB_OUTPUT"
 - if: github.event_name == 'pull_request'
   id: base
-  uses: actions/cache/restore@v4
+  uses: actions/cache/restore@v6
   with: {path: base-coverage, key: "coverage-${{ steps.merge-base.outputs.sha }}"}
 - if: github.event_name == 'pull_request'
   uses: repowise-dev/repowise@main
@@ -633,29 +663,55 @@ everything with the reason, and the step still passes.
 
 GitHub Actions. With `checks: ""` the action runs no gate.
 
+The index is saved twice per default-branch commit: `repowise-<sha>-early`
+right after it builds, then `repowise-<sha>-full` once the per-test map is
+added. A pull request opened while the tests still run gets its base's graph
+from the early entry instead of an older commit's index. The restore keys
+prefer full, then early, then the newest older index. Without the per-test
+map steps, the early entry is the only one and the restore keys still find it.
+GitHub evicts entries unused for 7 days or past the repository's 10 GB
+cache limit; a large index can be pruned sooner with `gh cache delete`.
+
 ```yaml
 # .github/workflows/repowise-index.yml
 on: {push: {branches: [main]}}
 jobs:
   index:
     runs-on: ubuntu-latest
+    # No background writer left in .repowise while the cache saves it.
+    env: {REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/cache/restore@v4
-        with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
+      - uses: actions/cache/restore@v6
+        with:
+          path: .repowise
+          key: repowise-${{ github.sha }}-full
+          restore-keys: |
+            repowise-${{ github.sha }}-
+            repowise-
       - run: pip install repowise
       - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
-      - uses: actions/cache/save@v4
-        with: {path: .repowise, key: "repowise-${{ github.sha }}"}
+      - uses: actions/cache/save@v6
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-early"}
+      # The per-test map: your test command with per-test contexts (pytest-cov).
+      - run: pytest --cov --cov-context=test
+      - run: repowise coverage add .coverage
+      - uses: actions/cache/save@v6
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-full"}
 ```
 
 ```yaml
 # in the pull request workflow
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with: {fetch-depth: 0}
-- uses: actions/cache/restore@v4
-  with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
+- uses: actions/cache/restore@v6
+  with:
+    path: .repowise
+    key: repowise-${{ github.event.pull_request.base.sha }}-full
+    restore-keys: |
+      repowise-${{ github.event.pull_request.base.sha }}-
+      repowise-
 - id: select
   uses: repowise-dev/repowise@main
   with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
@@ -672,7 +728,17 @@ everything.
 GitLab: `repowise-impacted-tests` writes the arguments to
 `impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report.
 
+GitLab keeps one cache entry under a fixed key, so the two saves are two
+jobs: `repowise-index` saves the index as soon as it builds, and
+`repowise-per-test-map` adds the map after the tests and saves it again. The
+map job takes the index from the index job's artifact, so the map lands on
+the same commit's index. The last job to save wins, so a slow pipeline can
+briefly leave an older commit's index in the cache until the next push.
+
 ```yaml
+variables:
+  REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"  # no background writer in .repowise while the cache saves
+
 repowise-index:
   image: python:3.12
   variables: {GIT_DEPTH: "0"}
@@ -680,6 +746,20 @@ repowise-index:
     - pip install repowise
     - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
+  artifacts: {paths: [.repowise/], expire_in: 1 day}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# After a default-branch test job that runs `pytest --cov --cov-context=test`
+# and keeps `.coverage` as an artifact.
+repowise-per-test-map:
+  image: python:3.12
+  stage: .post
+  needs: [repowise-index, test]
+  script:
+    - pip install repowise
+    - repowise coverage add .coverage
+  cache: {key: repowise-index, paths: [.repowise/], policy: push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -719,11 +799,15 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
   `*.yaml`, `*.json`, shell scripts.
 - `.repowise/config.yaml`, or a path `tests.full_run_on` matches.
 - A non-code file in a test tree.
-- A file with no known test, or only a filename guess.
+- A file with no known test, or only a filename guess (a file new in the
+  change selects its own scope, below).
+- A file new in the change that no changed file names and no existing code
+  sits beside.
 - A route through a test helper no test imports, unless every known test is
   selected anyway (the reasons say so).
-- Any Python test helper while a conftest or pytest config loads plugins by
-  name.
+- Any Python test helper while a conftest or pytest config loads by name a
+  plugin that may be a module of the repository (`pytest_plugins`, `-p name`).
+  An installed plugin or a pytest builtin (`pytester`) does not count.
 - A missing or unreadable index, or a per-test map at its row cap.
 - A deleted file no known test used.
 - A query or data file no code names.
@@ -737,6 +821,7 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
 | nested `package.json`, lockfile or `go.mod` | tests under its directory and those reaching code there |
 | root lockfile, manifest or runner config; Python, Ruby, PHP, Gradle or Maven dependency files (pip requirements included); `tsconfig`; jest or vitest config | its whole ecosystem |
 | production package `__init__.py` | tests reaching any module under it |
+| code file new in the change | tests reaching the changed files naming it in their added lines and the existing code in its directory (migrations, plugins and routes load by directory) |
 | doc, template, query, stylesheet, image or nested data file | tests reaching code that names it (outside comments and docstrings) |
 | doc, template, stylesheet or image no code names | its package's tests; Markdown, reST or AsciiDoc in no package and a top-level directory without code needs none |
 | `conftest.py`, test package `__init__.py`, imported test helper | tests under or importing it |
@@ -815,8 +900,8 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
   a variable, a request name in a string, `exec`/`eval`/`compile`, config
-  `usefixtures`), the conftest loads plugins or is
-  unreadable, or the index predates this; the reasons name the cause.
+  `usefixtures`), the conftest loads a plugin that may be a repository module
+  or is unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
 
@@ -845,10 +930,18 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
 
 It is used as is. Files changed in between whose imports or module-name
 strings moved (outside Python and JavaScript/TypeScript, any non-whitespace
-change) add the tests reaching them; CI config and test data do not, since
-neither is imported. Everything runs when that commit is not in the clone,
-over 1,000 files changed in between, or one is a lockfile, manifest, build or
-test config, or `.repowise/config.yaml`.
+change) are re-read. A Python or JavaScript/TypeScript file adds the tests
+reaching it only when it may now lead to the change: the imports it gained,
+resolved the way the indexer resolves them, or a file its gained strings
+name, reach a changed file in the index (through other such files too), or
+it reached one before. The walk stops at test files, as selection does. Any
+other language, a file that no longer parses, one that gained a dynamic-load
+marker or a package-listing loop, one whose imports or strings (gained or
+not) name a file added since, a test file or helper, and a production
+`__init__.py` always add the tests reaching them. CI config and test data add
+none, since neither is imported. Everything runs when that commit is not in the clone, over 1,000 files
+changed in between, or one is a lockfile, manifest, build or test config, or
+`.repowise/config.yaml`.
 
 ### Ceilings and expectations
 
@@ -860,7 +953,12 @@ test config, or `.repowise/config.yaml`.
 - The subset is only as small as the code is loosely coupled: on this
   repository the graph alone picks over 80% of test files, since most tests
   import something importing the change. Real savings need a per-test map
-  measured at the change's base; `selected.basis` shows what drove each pick.
+  measured at the change's base or head. With one, a measured test answers for
+  a changed Python file: a change inside function bodies runs the tests covering
+  those functions, and a module-level change the tests that ran code reading a
+  name it binds or import one
+  ([details](../architecture/test-intelligence.md#module-level-changes)). Tests the map never ran
+  keep the graph's answer; `selected.basis` shows what drove each pick.
 
 ## When a gate exits 2
 

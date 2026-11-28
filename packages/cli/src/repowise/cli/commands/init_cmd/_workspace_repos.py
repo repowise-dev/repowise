@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
@@ -47,9 +49,9 @@ def select_workspace_repos(
     """The repos to index and the primary; None when none were selected.
 
     ``--repos`` wins over everything and never prompts. Otherwise ``--yes``,
-    ``--all`` or a non-terminal stdin take every detected repo (the first is
-    primary): asking a pipe would end the run with an EOFError before anything
-    was done.
+    ``--all`` or a non-terminal stdin take every detected repo, with
+    :func:`default_primary` as primary: asking a pipe would end the run with an
+    EOFError before anything was done.
     """
     root = scan.root
     if repo_names:
@@ -71,12 +73,30 @@ def select_workspace_repos(
         console.print(f"[{WARN}]No repositories selected. Aborting.[/]")
         return None
     primary_alias = (
-        selected[0].alias if select_all else interactive_primary_select(console, selected)
+        default_primary(selected) if select_all else interactive_primary_select(console, selected)
     )
     primary_repo = next((r for r in selected if r.alias == primary_alias), selected[0])
     # interactive_primary_select asks only when there is more than one to choose from.
     primary_picked = not select_all and len(selected) > 1
     return WorkspacePick(selected, root, primary_alias, primary_repo, primary_picked)
+
+
+def default_primary(repos: list[Any], cwd: Path | None = None) -> str:
+    """The alias a new workspace makes primary: the repo the user ran from, else the largest.
+
+    Tools called without ``repo=`` answer about the primary, so the alphabetical
+    first (often a small helper repo) is the wrong default. Size is the count of
+    files git tracks; a tie keeps the earlier repo.
+    """
+    from repowise.core.analysis.decisions.source_files import tracked_files
+
+    here = Path(cwd or os.getcwd()).resolve()
+    holding = [r for r in repos if here.is_relative_to(Path(r.path).resolve())]
+    if holding:
+        # Nested repos: the innermost one holds the cwd.
+        return max(holding, key=lambda r: len(Path(r.path).resolve().parts)).alias
+    sizes = [len(tracked_files(Path(repo.path)) or ()) for repo in repos]
+    return repos[sizes.index(max(sizes))].alias
 
 
 def repos_primary_line(default_repo: str | None, pick: WorkspacePick) -> str:

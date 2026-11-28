@@ -51,6 +51,8 @@ from .objectivec import SPEC as _OBJECTIVEC
 from .ocaml import SPEC as _OCAML
 from .openapi import SPEC as _OPENAPI
 from .pascal import SPEC as _PASCAL
+from .pascal_form import SPEC as _PASCAL_FORM
+from .perl import SPEC as _PERL
 from .php import SPEC as _PHP
 from .proto import SPEC as _PROTO
 from .python import SPEC as _PYTHON
@@ -116,10 +118,14 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _SCALA,
     _DART,
     _PASCAL,
+    # Delphi / FireMonkey / Lazarus forms: no grammar, read by the
+    # ``pascal_forms`` framework handler, which links each to its unit.
+    _PASCAL_FORM,
     _COBOL,
     _GDSCRIPT,
     _VBNET,
     _APEX,
+    _PERL,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------

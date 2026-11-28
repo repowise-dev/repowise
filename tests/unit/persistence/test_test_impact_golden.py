@@ -85,7 +85,8 @@ async def test_a_failed_per_file_coverage_read_degrades_coverage_only(
     async def _boom(*args, **kwargs):
         raise RuntimeError("coverage read failed")
 
-    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering", _boom)
+    # Coverage is read for every changed file in one batched call.
+    monkeypatch.setattr("repowise.core.persistence.crud.tests_covering_files", _boom)
     impact = await analyze_test_impact(async_session, repo.id, fixture["changed_files"])
 
     assert impact["coverage"]["status"] == "degraded"

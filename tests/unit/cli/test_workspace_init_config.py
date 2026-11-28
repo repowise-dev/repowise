@@ -17,6 +17,7 @@ from repowise.cli.commands.init_cmd import _workspace_repos
 from repowise.cli.commands.init_cmd._workspace_config import (
     WorkspacePick,
     build_workspace_config,
+    kept_primary,
 )
 from repowise.cli.commands.init_cmd._workspace_repos import select_workspace_repos
 from repowise.cli.ui.brand import THEME
@@ -180,3 +181,39 @@ def test_a_malformed_config_is_replaced_with_a_note(tmp_path: Path) -> None:
     cfg = _build(tmp_path, ["a"], "a")
     assert [e.alias for e in cfg.repos] == ["a"]
     assert "Could not read the existing workspace config" in cfg._console_text
+
+
+def _pick(root: Path, picked: list[str], primary: str, primary_picked: bool = False):
+    repos = [_repo(root, n) for n in picked]
+    first = next(r for r in repos if r.alias == primary)
+    return WorkspacePick(repos, root.resolve(), primary, first, primary_picked)
+
+
+def test_kept_primary_is_the_repo_provider_and_editor_setup_read(tmp_path: Path) -> None:
+    _write(tmp_path, ["a", "b"], "a")
+    pick = kept_primary(_pick(tmp_path, ["a", "b"], "b"), ask=False)
+    assert pick.primary_alias == "a"
+    assert pick.primary_repo.path == (tmp_path / "a").resolve()
+    # The config build ends on the same primary.
+    assert build_workspace_config(pick, console=Console(), ask=False).default_repo == "a"
+
+
+def test_a_primary_picked_in_the_prompt_is_not_replaced(tmp_path: Path) -> None:
+    _write(tmp_path, ["a", "b"], "a")
+    pick = kept_primary(_pick(tmp_path, ["a", "b"], "b", primary_picked=True), ask=False)
+    assert pick.primary_alias == "b"
+
+
+def test_a_kept_primary_left_out_of_the_pick_still_leads(tmp_path: Path) -> None:
+    _write(tmp_path, ["a", "b"], "a")
+    pick = kept_primary(_pick(tmp_path, ["b"], "b"), ask=False)
+    assert pick.primary_alias == "a"
+    assert pick.primary_repo.path == (tmp_path / "a").resolve()
+    assert build_workspace_config(pick, console=Console(), ask=False).default_repo == "a"
+    # An interactive run may drop the left-out repo, so the pick stands.
+    assert kept_primary(_pick(tmp_path, ["b"], "b"), ask=True).primary_alias == "b"
+
+
+def test_no_config_leaves_the_pick_alone(tmp_path: Path) -> None:
+    pick = _pick(tmp_path, ["a", "b"], "b")
+    assert kept_primary(pick, ask=False) is pick

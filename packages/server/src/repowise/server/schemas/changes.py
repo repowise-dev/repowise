@@ -50,7 +50,16 @@ class ChangeForgeMetadata(BaseModel):
     reviewers: list[str] | None = None
     approvals: int | None = None
     labels: list[str] | None = None
+    #: A bare key, or `key (type, status): title` when a tracker link is stored.
     linked_issues: list[str] | None = None
+
+
+class ChangeCategoryBasis(BaseModel):
+    """What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``."""
+
+    signal: str
+    #: The fragment path or label; null for the title.
+    value: str | None = None
 
 
 class ChangeSummary(BaseModel):
@@ -125,6 +134,7 @@ class ChangeHealthResponse(HealthRollupResponse):
 
 class ChangeRecord(ChangeSummary):
     health: ChangeHealthResponse | None = None
+    category_basis: ChangeCategoryBasis | None = None
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata

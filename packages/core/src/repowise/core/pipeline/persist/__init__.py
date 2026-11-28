@@ -17,6 +17,7 @@ from typing import Any
 
 import structlog
 
+from ..index_persistence import IndexWrite, apply_index_persistence
 from .analysis import (
     persist_analysis,
 )
@@ -42,17 +43,20 @@ from .graph import (
     _community_meta,
     _derive_entry_point_scores,
     _edge_row,
-    _edges_predate_cohesion,
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,
+    apply_stored_complexity,
     has_graph_edges,
     persist_graph_nodes,
     persist_incremental_edges,
     persist_incremental_symbols,
     persist_symbol_analysis,
     prune_absent_graph_rows,
+    prune_absent_synthetic_nodes,
+    restore_stored_complexity,
     stamp_edges_parser_fingerprint,
+    stored_symbol_complexity,
 )
 from .health import (
     _analyzed_commit,
@@ -62,6 +66,8 @@ from .health import (
     snapshot_health_from_store,
 )
 from .ingestion import (
+    persist_build_units,
+    persist_external_call_sites,
     persist_ingestion,
 )
 from .prune import (
@@ -79,25 +85,33 @@ from .security import (
     _replace_security_findings,
     persist_incremental_security_findings,
     persist_security_findings,
+    rescan_repo_security,
 )
 from .sweeps import (
     _SWEPT_GENERATED_PAGE_TYPES,
     _sweep_stale_generated_pages,
     _symbol_names_by_file,
+    clear_template_model_names,
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
+    sweep_deselected_file_keyed_pages,
+    sweep_deselected_flow_pages,
     sweep_deselected_pages,
     sweep_retired_pages,
+    sweep_store_hygiene,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,
     _STALE_ID_CHUNK,
+    TOMBSTONE_RETENTION,
     _log,
     mark_page_ids_stale,
     mark_stale_pages,
     mark_tombstone_pages,
     reconcile_full_index_scope,
+    sweep_expired_tombstones,
     tombstone_absent_file_pages,
     tombstone_candidates,
     tombstone_file_pages_outside_scope,
@@ -123,12 +137,50 @@ async def _refresh_commit_health(result: Any, session: Any, repo_id: str) -> Non
     )
 
 
+async def persist_routes(result: Any, session: Any, repo_id: str) -> None:
+    """Store the repo's HTTP routes (``http_routes``) from its working tree.
+
+    After symbols and analysis: handlers bind to the stored symbols, and the
+    ``code_origin`` rule reads the stored origins. A result with no
+    ``repo_path`` has no tree to read and keeps the stored rows. Best-effort:
+    the write is a savepoint, so a failure leaves the rest of the index whole.
+    """
+    repo_path = getattr(result, "repo_path", "")
+    if not repo_path:
+        return
+    from repowise.core.workspace.repo_routes import refresh_route_table
+
+    try:
+        await refresh_route_table(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("route_table_not_written", error=repr(exc))
+
+
+async def persist_statement_sites(result: Any, session: Any, repo_id: str) -> None:
+    """Store the repo's statement sites (``statement_sites``) from its working tree.
+
+    After symbols and analysis, like :func:`persist_routes`: each site binds
+    to the stored function holding it, and the ``code_origin`` rule reads the
+    stored origins. Best-effort: the write is a savepoint.
+    """
+    repo_path = getattr(result, "repo_path", "")
+    if not repo_path:
+        return
+    from repowise.core.workspace.statement_sites import refresh_statement_sites
+
+    try:
+        await refresh_statement_sites(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("statement_sites_not_written", error=repr(exc))
+
+
 async def persist_pipeline_result(
     result: Any,
     session: Any,
     repo_id: str,
     *,
     replace_full_git_history: bool = False,
+    scan_commit_health: bool = True,
 ) -> list[str]:
     """Persist all outputs from a :class:`PipelineResult` into the database.
 
@@ -146,6 +198,11 @@ async def persist_pipeline_result(
         An active SQLAlchemy ``AsyncSession`` (caller manages commit/rollback).
     repo_id:
         The repository ID to associate all records with.
+    scan_commit_health:
+        Scan recent commits' health at the full budget inside this transaction.
+        A caller whose store outlives the run passes ``False`` and calls
+        ``commit_health.refresh_commit_health_after_update(..., background=True)``
+        after commit, so the scan neither holds the write lock nor the caller.
 
     Returns
     -------
@@ -196,12 +253,15 @@ async def persist_pipeline_result(
     else:
         await persist_git(result, session, repo_id)
     await persist_analysis(result, session, repo_id)
+    await persist_routes(result, session, repo_id)
+    await persist_statement_sites(result, session, repo_id)
     await persist_generation(result, session, repo_id)
 
     # What each recent commit did to health. Needs the working tree, so it
     # runs here rather than on the read path, and it is bounded: older commits
     # keep no row until a later update reaches them.
-    await _refresh_commit_health(result, session, repo_id)
+    if scan_commit_health:
+        await _refresh_commit_health(result, session, repo_id)
 
     # Sweep structurally-keyed generated pages (module/layer/scc) that this
     # run did not reproduce — their ids drift between runs, so without the
@@ -214,9 +274,11 @@ async def persist_pipeline_result(
         getattr(result, "authoritative_page_types", None),
         getattr(result, "preserved_page_ids", None),
     )
-    # Rows of a page type that no longer exists at all. Independent of what
-    # this run produced, so it runs on every path rather than only here.
-    swept_page_ids += await sweep_retired_pages(session, repo_id)
+    # Retired types, deselected file-keyed pages, expired tombstones. Independent
+    # of what this run produced, so they run on every path rather than only here.
+    swept_page_ids += await sweep_store_hygiene(
+        session, repo_id, getattr(result, "parsed_files", None)
+    )
 
     # Placement depends on the whole page set, so it is computed here rather
     # than during generation, after the sweep has retired anything stale.
@@ -231,5 +293,12 @@ async def persist_pipeline_result(
         graph_nodes=result.graph_builder.graph().number_of_nodes(),
         symbols=symbol_count,
         git_files=len(result.git_metadata_list),
+    )
+    await apply_index_persistence(
+        session,
+        repo_id,
+        IndexWrite(
+            "full", result.parsed_files, traversed_paths=frozenset(current_graph_file_paths)
+        ),
     )
     return swept_page_ids

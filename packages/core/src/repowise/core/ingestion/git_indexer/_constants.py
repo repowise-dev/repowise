@@ -53,6 +53,31 @@ _MIN_MESSAGE_LEN = 12
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
 
+
+def parse_commit_limit(raw: object) -> int:
+    """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
+
+    No upper bound: a window deeper than the history reads the whole history.
+    Anything but a positive whole number is not a limit.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("must be a whole number")
+    if raw < 1:
+        raise ValueError("must be at least 1")
+    return raw
+
+
+def clamp_commit_limit(raw: object) -> int:
+    """:func:`parse_commit_limit`, with the default for unset or unusable values.
+
+    Every reader of ``commit_limit`` goes through this, so ``update`` walks the
+    same window ``init`` did for the same config.
+    """
+    try:
+        return parse_commit_limit(raw)
+    except ValueError:
+        return _DEFAULT_COMMIT_LIMIT
+
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
 # deeper than _DEFAULT_COMMIT_LIMIT, most tracked files miss the window
@@ -328,12 +353,24 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: than the change-entropy sweep cap.
 #: v3: commits carry their category, and changes are rebuilt from history; the
 #: default history window grew from 500 to 5,000 commits.
-GIT_HISTORY_VERSION: int = 3
+#: v4: a per-file walk widens a file's names only through its own renames, not
+#: those of other files in the same commit. A shallow clone's cut commit
+#: credits no author and counts as neither churn nor a file's origin.
+#: v5: one person counts once across names and emails (mailmap applied) in a
+#: file's owners, top authors, bus factor and blame owners (#6045), and bot
+#: accounts count toward neither ownership nor the contributor count (#6051).
+#: v6: a commit a coding agent authored counts, in a file's owners, top
+#: authors, bus factor and blame owners, for the human its ``Co-authored-by``
+#: trailer or its committer names; with neither it stays the agent's.
+GIT_HISTORY_VERSION: int = 6
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
 #: commits, and can say so instead of reporting a rules change.
 GIT_HISTORY_BACKFILL_REWALK = "attribution-backfill"
+#: Stored the same way when a stored bug or incident issue link came or went on
+#: a commit the index already holds, so its fix counts are read again.
+GIT_HISTORY_ISSUE_LINKS_REWALK = "issue-links"
 
 
 def git_history_stale(state: dict[str, Any]) -> bool:
@@ -345,6 +382,32 @@ def git_history_stale(state: dict[str, Any]) -> bool:
     do not change.
     """
     return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
+
+def request_history_rewalk(repo_path: Any, marker: str) -> bool:
+    """Make the next ``repowise update`` re-read git history once; False when there is no index.
+
+    Replaces a current stamp in ``.repowise/state.json`` with *marker*, which
+    the update reads as stale and names as the reason. A stamp already stale
+    is left alone: that walk reads everything again too.
+    """
+    import json
+    from pathlib import Path
+
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    if state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION:
+        return True
+    state[GIT_HISTORY_VERSION_KEY] = marker
+    atomic_write_text(state_path, json.dumps(state, indent=2))
+    return True
 
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"
@@ -376,10 +439,31 @@ HOTSPOT_HIGH_COMMITS_90D: int = 8
 # Derived from the centralised LanguageRegistry — all code language extensions.
 _CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
 
+# Pack memory each git process the indexer runs may map. Git maps pack files
+# in windows and, with its 64-bit defaults, never unmaps one: on a 15 GiB pack a
+# history walk or the commit-graph write touched every window and showed ~15 GiB
+# resident, and eight blame workers each held their own windows. Those pages are
+# file-backed (the machine's free memory barely moves) but they count toward a
+# process's resident size and a container's limit. These bounds keep a blame or
+# history walk well under 1 GiB; eight blames at once ran 2% slower with them.
+_PACK_WINDOW_OPTIONS: tuple[str, ...] = ("core.packedGitLimit=1g", "core.packedGitWindowSize=128m")
+# The commit-graph write reads every tree in the pack once, so remapping costs
+# it more: 17% at these bounds (1 GiB resident instead of 17), 28% at the ones above.
+_GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
+    "core.packedGitLimit=2g",
+    "core.packedGitWindowSize=256m",
+)
+
 # Files larger than this skip git blame.  blame is O(lines) and blocks the
 # executor thread — for large files the commit-based ownership estimate is
 # used as a fallback instead.
 _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
+
+# A production file up to this size is still blamed, for its functions' owner
+# and last change only (``git_function_blame.history_only``): the file owner
+# and the health biomarkers keep the cap above. Without it a function in a
+# large module has no owner at all.
+_MAX_FUNCTION_BLAME_SIZE_BYTES: int = 512 * 1024  # 512 KB
 
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the

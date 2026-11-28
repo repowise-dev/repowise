@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
 
+from .call_inheritance import _EXTERNAL_PREFIX
 from .call_receiver_typing import (
     _BODY_TYPE_CACHE_ENTRIES,
     _FUNCTION_KINDS,
@@ -19,6 +20,7 @@ from .call_receiver_typing import (
 )
 from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.csharp_same_namespace import _BCL_COMMON_TYPES, _USING_ALIAS_RE, _USING_NS_RE
+from .languages.perl_packages import PerlImport, PerlPackageIndex
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
@@ -29,6 +31,8 @@ from .resolvers.jvm_gradle import (
     declaration_rank,
     source_set_dir,
 )
+from .resolvers.perl import is_perl_pragma
+from .source_text import source_bytes
 from .symbol_identity import outer_scope
 from .type_names import bare_type_name, dotted_type_segments
 
@@ -53,7 +57,10 @@ class _LanguageCallStrategies:
     its inner call's return type or not at all. ``inherited_typed_receiver`` lets a typed
     receiver whose type lacks the method answer with the one ancestor that
     declares it; ``inherited_fields`` lets a receiver be typed from a field an
-    ancestor declares.
+    ancestor declares. ``member_exclusive`` makes ``member`` the only answer to
+    a receiver call, and ``free_exclusive`` makes ``free`` the only answer to a
+    bare one: a decline is a refusal, never left to the class- and file-keyed
+    tiers, for a language whose scoping those tiers cannot model.
     """
 
     free: tuple[str, ...] = ()
@@ -65,6 +72,8 @@ class _LanguageCallStrategies:
     chain_bare_fallback: bool = True
     inherited_typed_receiver: bool = False
     inherited_fields: bool = False
+    member_exclusive: bool = False
+    free_exclusive: bool = False
 
 
 _NO_LANGUAGE_STRATEGIES = _LanguageCallStrategies()
@@ -79,6 +88,63 @@ _EXPECT = "expect"
 
 
 _FRIEND = re.compile(r"\bfriend\b")
+
+_PERL_PACKAGE = re.compile(r"^[A-Za-z_]\w*(?:::\w+)*$")
+
+# Receivers that are the invocant of the sub they appear in, by convention.
+_PERL_INVOCANTS = frozenset({"$self", "$class", "$this", "$proto", "shift", "$_[0]", "__PACKAGE__"})
+
+# ``$self->SUPER::m()`` arrives with this receiver (parser/calls.py).
+_PERL_SUPER = "SUPER"
+
+# ``ref($self)->m()``: the invocant's class, which dispatches as ``$self`` does.
+_PERL_REF = re.compile(r"^ref\s*\(?\s*(\$\w+)\s*\)?$")
+
+
+@dataclass(frozen=True, slots=True)
+class _PerlDispatch:
+    package: str
+    origin: str
+    confidence: float
+    inherited_origin: str
+    inherited_confidence: float
+    is_super: bool = False
+
+
+def _perl_names_explicitly(imp: PerlImport, name: str) -> bool:
+    """Whether *imp* is a ``use`` whose import list names *name*."""
+    return not imp.is_require and imp.names is not None and name in imp.names
+
+
+def _perl_may_export(imp: PerlImport, target: str) -> bool:
+    """Whether *imp* is a default ``use`` of a module outside the repo (``use Carp;``).
+
+    Its export list is unknown, so it may bind any name. Pragmas export nothing.
+    """
+    return (
+        not imp.is_require
+        and imp.names is None
+        and target.startswith(_EXTERNAL_PREFIX)
+        and not is_perl_pragma(imp.module)
+    )
+
+
+def _perl_receiver(receiver: str) -> str:
+    referenced = _PERL_REF.match(receiver)
+    if referenced and referenced.group(1) in _PERL_INVOCANTS:
+        return referenced.group(1)
+    return receiver
+
+
+def member_head_flags(lines: list[str], symbol: Symbol) -> tuple[bool, bool]:
+    """How a C++ member function's first line reads: ``(outside its class, qualified)``.
+
+    Outside its class: a ``friend``, or a ``#define`` written in a class body.
+    Qualified: the line writes ``Owner::name``.
+    """
+    head = lines[symbol.start_line - 1] if 0 < symbol.start_line <= len(lines) else ""
+    outside = bool(_FRIEND.search(head)) or head.lstrip().startswith("#")
+    return outside, f"::{symbol.name}" in head
 
 
 def _is_member_function(symbol: Symbol | None) -> bool:
@@ -117,10 +183,12 @@ _JVM_STRATEGIES = _LanguageCallStrategies(
 # `obj->m()` is looked for in the caller's own file, in what it includes, and
 # then in the global pair index. `c` shares this object and is excluded a layer
 # up instead: it is absent from `_LANGUAGE_PATTERNS`, and a struct declares no
-# method for the pair index to hold.
+# method for the pair index to hold. A field a base class declares types a
+# receiver as an own one does (``lexer_.ReadToken()`` in a derived parser).
 _CPP_STRATEGIES = _LanguageCallStrategies(
     free=("_resolve_cpp_scoped_call", "_resolve_cpp_same_target"),
     member_fallback=_TYPED_RECEIVER,
+    inherited_fields=True,
 )
 
 # Rust's crate-root strategy is deliberately absent: it runs for every language
@@ -130,7 +198,7 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # package qualifier never reaches the typed fallback.
     "go": _LanguageCallStrategies(
         free=("_resolve_go_same_package",),
-        member=("_resolve_go_package_call",),
+        member=("_resolve_go_package_call", "_resolve_go_package_var_call"),
         member_fallback=_TYPED_RECEIVER,
     ),
     # Kotlin shares the JVM tiers and the typed-receiver fallback. Java takes
@@ -151,7 +219,11 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
     # A chained call keeps no bare-name fallback: ``.send()`` on a result the
     # return type does not type is not the repo's ``send``.
     "kotlin": replace(
-        _JVM_STRATEGIES, member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+        _JVM_STRATEGIES,
+        member=("_resolve_kotlin_labelled_this", *_JVM_STRATEGIES.member),
+        member_fallback=_TYPED_RECEIVER,
+        chain_bare_fallback=False,
+        inherited_typed_receiver=True,
     ),
     "csharp": _LanguageCallStrategies(
         free_fallback=("_resolve_csharp_constructed_type",),
@@ -171,13 +243,39 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         member_fallback=_TYPED_RECEIVER,
         member_bare_fallback=False,
     ),
-    # TypeScript's typed fallback also walks a dotted receiver's fields.
-    "typescript": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
-    # Rust types a local or parameter only; a `self.field` receiver is not
-    # walked, since Rust has no `_CHAIN_SELF` row.
-    "rust": _LanguageCallStrategies(member_fallback=_TYPED_RECEIVER),
+    # TypeScript's typed fallback also walks a dotted receiver's fields. A chained
+    # call is typed by its inner call's return type or not at all:
+    # ``db.selectFrom(t).execute()`` on a library builder is not the repo's ``execute``.
+    "typescript": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER, chain_bare_fallback=False
+    ),
+    # JavaScript has no return types to type the inner call with, so a chain binds nothing.
+    "javascript": _LanguageCallStrategies(chain_bare_fallback=False),
+    # Rust walks a module-path receiver (`crate::a::f()`, `super::f()`) down
+    # the module tree, types a local or parameter, and walks a `self.field`
+    # receiver through the struct's field declarations.
+    "rust": _LanguageCallStrategies(
+        member=("_resolve_rust_module_path",), member_fallback=_TYPED_RECEIVER
+    ),
     "cpp": _CPP_STRATEGIES,
     "c": _CPP_STRATEGIES,
+    # Pascal types a field, parameter or local (``FToast: TToast``); a typed
+    # receiver whose class lacks the method answers with the ancestor that
+    # declares it, and a field may be declared by an ancestor too.
+    "pascal": _LanguageCallStrategies(
+        member_fallback=_TYPED_RECEIVER,
+        inherited_typed_receiver=True,
+        inherited_fields=True,
+    ),
+    # A Perl package is a file region, not a class: a bare name means the
+    # caller's package or what a ``use`` in it imported, and dispatch walks
+    # ``@ISA`` in its own order. The Perl strategies alone answer both.
+    "perl": _LanguageCallStrategies(
+        free=("_resolve_perl_bare_call",),
+        member=("_resolve_perl_method_call",),
+        member_exclusive=True,
+        free_exclusive=True,
+    ),
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
     "apex": _LanguageCallStrategies(
         free=("_resolve_apex_namespace_type",),
@@ -187,7 +285,30 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         inherited_typed_receiver=True,
         inherited_fields=True,
     ),
+    # A Ruby constant resolves through the Zeitwerk index, as an import would:
+    # ``Foo.new`` runs ``Foo#initialize`` and ``FooJob.perform_later`` runs
+    # ``FooJob#perform``. A receiver named after a model (``@conversation``)
+    # is typed by that Rails convention, after every other tier declined.
+    "ruby": _LanguageCallStrategies(
+        constructor=("_resolve_ruby_constant_call",),
+        member_fallback=("_resolve_ruby_conventional_receiver",),
+    ),
 }
+
+# Class-level calls that run an instance method of the receiver class.
+# ActiveJob (``perform_later``/``perform_now``) and Sidekiq (``perform_async``,
+# ``perform_in``, ``perform_at``) enqueue or run ``perform``.
+_RUBY_CLASS_CALL_TARGETS: dict[str, str] = {
+    "new": "initialize",
+    "perform_later": "perform",
+    "perform_now": "perform",
+    "perform_async": "perform",
+    "perform_in": "perform",
+    "perform_at": "perform",
+}
+
+# ``conversation`` / ``@conversation`` / ``@@conversation``: a snake_case name.
+_RUBY_CONVENTIONAL_RECEIVER = re.compile(r"^@{0,2}([a-z][a-z0-9]*(?:_[a-z0-9]+)*)$")
 
 
 def _csharp_lookup_levels(
@@ -259,6 +380,13 @@ class LanguageStrategiesMixin:
         self._apex_namespaces: Any = None
         self._apex_retyping = False
 
+        # Perl packages and their parents (lazy PerlPackageIndex)
+        self._perl_index: PerlPackageIndex | None = None
+
+        # Rails / Zeitwerk autoload index (lazy RailsIndex; None outside Rails)
+        self._rails_index: Any = None
+        self._rails_index_built = False
+
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
         self._cpp_index_built = False
@@ -293,8 +421,9 @@ class LanguageStrategiesMixin:
         ws = get_or_build_cargo_workspace_index(ctx)
         if ws:
             for crate in ws.crates:
-                normalized = crate.name.replace("-", "_")
-                self._rust_crate_src[normalized] = crate.src_dir
+                for import_name in crate.import_names:
+                    # First crate wins, as CargoWorkspaceIndex.lookup does.
+                    self._rust_crate_src.setdefault(import_name, crate.src_dir)
         return self._rust_crate_src
 
     def _get_go_index(self) -> Any:
@@ -331,6 +460,225 @@ class LanguageStrategiesMixin:
         parsed = self._parsed_files.get(file_path)
         language = parsed.file_info.language if parsed else ""
         return _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
+
+    def _get_perl_index(self) -> PerlPackageIndex:
+        """Lazily read every Perl file's packages and parents, as the analysed revision has them."""
+        if self._perl_index is None:
+            self._perl_index = PerlPackageIndex.build(
+                (path, source_bytes(path, parsed.file_info.abs_path, self._source_map))
+                for path, parsed in self._parsed_files.items()
+                if parsed.file_info.language == "perl"
+            )
+        return self._perl_index
+
+    def _perl_sub_in(self, package: str, name: str, caller_file: str) -> tuple[str | None, bool]:
+        """The sub *name* in *package*, as ``(symbol id, ambiguous)``.
+
+        Two files declaring the package (a copied module) bind nothing, unless
+        the caller is in one of them: the code running is the copy it is in.
+        That is settled before the sub is looked for, so a sub only one copy
+        defines does not pick that copy. A package no file declares binds
+        nothing: a package-less ``Foo.pm`` defines its subs in ``main``. A file
+        adding subs by ``sub Pkg::f`` is searched too, without counting as a copy.
+        """
+        if package == "main":
+            return self._perl_main_sub(name, caller_file), False
+        index = self._get_perl_index()
+        files = index.files.get(package, ())
+        added = index.sub_files.get(package, ())
+        if not files and not added:
+            return None, False
+        if caller_file in files:
+            files = (caller_file,)
+        elif len(files) > 1:
+            return None, True
+        files = (*files, *added)
+        found = {
+            sym_id for path, sym_id in self._global_methods.get((package, name), ()) if path in files
+        }
+        if len(found) > 1:
+            return None, True
+        return next(iter(found), None), False
+
+    def _perl_main_sub(self, name: str, caller_file: str) -> str | None:
+        """``main::name``: the caller's file's package-less sub, else one a ``require`` there loads.
+
+        ``main`` is each script's own: an unrelated script's sub is never in it.
+        """
+        own = self._file_top_level.get(caller_file, {}).get(name)
+        if own is not None:
+            return own
+        parsed = self._parsed_files.get(caller_file)
+        resolved = {imp.module_path: imp.resolved_file for imp in parsed.imports} if parsed else {}
+        found = set()
+        for imp in self._get_perl_index().imports.get(caller_file, ()):
+            target = resolved.get(imp.module) or ""
+            if imp.is_require and target and not target.startswith(_EXTERNAL_PREFIX):
+                sym_id = self._perl_required_sub(imp, target, name)
+                if sym_id is not None:
+                    found.add(sym_id)
+        return next(iter(found)) if len(found) == 1 else None
+
+    def _resolve_perl_bare_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A bare ``foo()``: the caller's own package's sub, else one a ``use`` there imported.
+
+        In ``main`` (no package) the caller's file's package-less subs answer
+        first, then those of package-less files it ``require``s, which Perl
+        compiles into ``main``. A package never falls back to ``main``.
+        Ceiling: ``AUTOLOAD`` and subs installed through the symbol table
+        (``*foo = sub {..}``) are not seen.
+        """
+        package = self._get_perl_index().package_at(file_path, call.start_byte)
+        if package is None:
+            own = self._file_top_level.get(file_path, {}).get(call.target_name)
+        else:
+            own = self._perl_sub_in(package, call.target_name, file_path)[0]
+        if own is not None:
+            # The caller's package owns the name, so no import can: a call to
+            # the caller itself is recursion, or nothing.
+            if self._refuses_recursion(own, caller_id, call):
+                return None
+            origin = "enclosing_class" if package else "same_file"
+            return ResolvedCall(caller_id, own, 0.95, call.line, origin)
+        return self._perl_imported_call(file_path, package, call, caller_id)
+
+    def _perl_imported_call(
+        self, file_path: str, package: str | None, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The sub a ``use`` (or, in ``main``, a ``require``) in *package* brought in.
+
+        The last import that binds the name wins, as Exporter overwrites it:
+        one that lists the name settles it, even from a module outside the repo,
+        and a default ``use`` of an outside module may have exported it, so it
+        leaves the call unresolved.
+        """
+        parsed = self._parsed_files.get(file_path)
+        resolved = {imp.module_path: imp.resolved_file for imp in parsed.imports} if parsed else {}
+        for imp in reversed(self._get_perl_index().imports.get(file_path, ())):
+            if imp.package != package:
+                continue
+            target = resolved.get(imp.module) or ""
+            hit = None
+            if target and not target.startswith(_EXTERNAL_PREFIX):
+                hit = self._perl_import_hit(imp, target, file_path, call.target_name)
+            if hit is not None:
+                sym_id, confidence, origin = hit
+                if sym_id == caller_id:
+                    return None
+                return ResolvedCall(caller_id, sym_id, confidence, call.line, origin)
+            if _perl_names_explicitly(imp, call.target_name) or _perl_may_export(imp, target):
+                return None
+        return None
+
+    def _perl_import_hit(
+        self, imp: PerlImport, target: str, importer: str, name: str
+    ) -> tuple[str, float, str] | None:
+        """``(sub id, confidence, origin)`` that *imp* binds *name* to in *target*, if any.
+
+        *target* must declare the imported package; the duplicate-package guard
+        is judged from *importer*, the file making the call.
+        """
+        if imp.is_require:
+            sym_id = self._perl_required_sub(imp, target, name)
+            return (sym_id, 0.90, "import_scoped") if sym_id else None
+        if imp.names is not None and name not in imp.names:
+            return None
+        if target not in self._get_perl_index().files.get(imp.module, ()):
+            return None
+        sym_id = self._perl_sub_in(imp.module, name, importer)[0]
+        if sym_id is None:
+            return None
+        if imp.names is None:
+            return sym_id, 0.85, "import_merged"
+        return sym_id, 0.90, "import_scoped"
+
+    def _perl_required_sub(self, imp: PerlImport, target: str, name: str) -> str | None:
+        """*name* in a package-less library ``main`` requires: Perl compiles its subs into main."""
+        if imp.package is not None or self._get_perl_index().by_file.get(target):
+            return None
+        return self._file_top_level.get(target, {}).get(name)
+
+    def _resolve_perl_method_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A Perl method call, dispatched through ``@ISA`` as Perl does.
+
+        ``$self->m()`` (or ``$class``, ``shift``, ``__PACKAGE__``) starts at the
+        package around the call, ``$self->SUPER::m()`` at its parents, and
+        ``Pkg->m()`` at ``Pkg``. ``Pkg::m()`` names one sub and is never
+        dispatched. ``$obj->m()`` starts at ``Pkg`` when the caller last assigned
+        ``$obj`` from ``Pkg->new(..)`` or ``new Pkg(..)``. The first package in the
+        depth-first order that defines the sub answers; two files defining it
+        there bind nothing.
+        Ceiling: any other receiver is untyped and left alone, a later
+        non-constructor reassignment of ``$obj`` is not seen, and ``use mro 'c3'``
+        is read as the default depth-first order.
+        """
+        receiver = _perl_receiver(call.receiver_name or "")
+        dispatch = self._perl_dispatch(file_path, call, caller_id, receiver)
+        if dispatch is None:
+            return None
+        index = self._get_perl_index()
+        order = (
+            index.mro(dispatch.package, file_path)
+            if call.scope_name is None
+            else (dispatch.package,)
+        )
+        if dispatch.is_super:
+            order = order[1:]
+        return self._resolve_perl_order(order, dispatch, file_path, call, caller_id)
+
+    def _perl_dispatch(
+        self, file_path: str, call: CallSite, caller_id: str, receiver: str
+    ) -> _PerlDispatch | None:
+        index = self._get_perl_index()
+        if receiver in _PERL_INVOCANTS or receiver == _PERL_SUPER:
+            start = index.package_at(file_path, call.start_byte) or "main"
+            return _PerlDispatch(start, "self_scope", 0.95, "self_inherited", 0.90,
+                                 receiver == _PERL_SUPER)
+        elif receiver.startswith("$"):
+            caller = self._symbols_by_id.get(caller_id)
+            first = caller.start_line if caller is not None else 1
+            start = index.constructed_type(file_path, receiver, first, call.line)
+            if start is None:
+                return None
+            return _PerlDispatch(
+                start, "receiver_typed_global", 0.75, "receiver_typed_global", 0.75
+            )
+        elif _PERL_PACKAGE.match(receiver):
+            return _PerlDispatch(receiver, "scoped_name", 0.93, "self_inherited", 0.90)
+        else:
+            return None
+
+    def _resolve_perl_order(
+        self,
+        order: tuple[str, ...],
+        dispatch: _PerlDispatch,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        for depth, package in enumerate(order):
+            sym_id, ambiguous = self._perl_sub_in(package, call.target_name, file_path)
+            if ambiguous:
+                return None
+            if sym_id is None:
+                continue
+            if self._refuses_recursion(sym_id, caller_id, call):
+                return None
+            own = depth == 0 and not dispatch.is_super
+            origin = dispatch.origin if own else dispatch.inherited_origin
+            confidence = dispatch.confidence if own else dispatch.inherited_confidence
+            return ResolvedCall(caller_id, sym_id, confidence, call.line, origin)
+        return None
 
     def _get_cpp_index(self) -> Any:
         """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""
@@ -403,10 +751,11 @@ class LanguageStrategiesMixin:
         shares the name. A bare ``count(..)`` in a function outside every class
         cannot reach a member function either: with no ``this`` and no
         qualifier, only a free function or a ``using namespace`` import answers.
-        A constructor is still reached (``Slice(s)``). A caller named in
-        capitals is a macro body (``TEST_F``), which may sit inside a class,
-        and a caller that is not a function may be a class whose member bodies
-        the parse folded in, so both are left alone.
+        Nor can one in a member function of a class that neither is, derives
+        from nor nests in the callee's class. A constructor is still reached
+        (``Slice(s)``). A caller named in capitals is a macro body (``TEST_F``),
+        which may sit inside a class, and a caller that is not a function may
+        be a class whose member bodies the parse folded in, so both are left alone.
         """
         if self._language_of(file_path) not in ("c", "cpp"):
             return False
@@ -417,7 +766,70 @@ class LanguageStrategiesMixin:
             return False
         callee = self._symbols_by_id.get(callee_id)
         caller = self._symbols_by_id.get(call.caller_symbol_id or "")
-        return _is_free_function(caller) and self._is_cpp_member_function(callee)
+        if not self._is_cpp_member_function(callee):
+            return False
+        assert callee is not None
+        if _is_free_function(caller):
+            return True
+        # C has no member functions: a C "member" caller is a macro the parse misread.
+        if self._language_of(file_path) != "cpp" or not _is_member_function(caller):
+            return False
+        return not self._cpp_class_reaches(
+            file_path, caller, bare_type_name(callee.parent_name or "")
+        )
+
+    def _cpp_class_reaches(self, file_path: str, caller: Symbol | None, owner: str) -> bool:
+        """May a bare call in member *caller* name a member of class *owner*?
+
+        Yes when the caller's class is *owner*, derives from it or nests in it,
+        and whenever that class or a base on its way up is unsettled.
+        """
+        assert caller is not None
+        _, class_id = self._field_owner(file_path, caller.id, "cpp")
+        if getattr(self._symbols_by_id.get(class_id), "kind", None) not in _TYPE_KINDS:
+            return True
+        ancestors = self._ancestors_of(class_id)
+        names = set(self._cpp_scope_names(class_id))
+        names.update(self._symbols_by_id[a].name for a in ancestors)
+        for type_id in (class_id, *ancestors):
+            bases = self._declared_bases(type_id)
+            if bases is None:
+                return True
+            names.update(bare_type_name(base.removeprefix(_EXTERNAL_PREFIX)) for base in bases)
+        return owner in names
+
+    def _cpp_scope_names(self, class_id: str) -> Iterator[str]:
+        """The bare names of *class_id* and every class it nests in."""
+        scope = class_id
+        while "::" in scope:
+            yield bare_type_name(scope)
+            scope = outer_scope(scope)
+
+    def _cpp_free_rival(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """The one free function of the call's name the caller's file or its includes declare.
+
+        Asked when the flat tiers answered an unqualified call with a member it
+        cannot reach, since that member may have hidden a free one there.
+        Ceiling: namespaces are recorded on no symbol, so a free function in a
+        namespace the caller never opens still answers, as in the flat tiers.
+        """
+        if call.scope_name:
+            return None
+        found = [
+            sym_id
+            for path in self._cpp_include_closure(file_path)
+            if (sym_id := self._file_top_level.get(path, {}).get(call.target_name))
+            and getattr(self._symbols_by_id.get(sym_id), "kind", None) == "function"
+        ]
+        settled = self._collapse_declarations(found)
+        if len(settled) != 1 or caller_id in settled:
+            return None
+        sym_id = settled.pop()
+        if self._symbol_paths_by_id.get(sym_id) == file_path:
+            return ResolvedCall(caller_id, sym_id, 0.95, call.line, "same_file")
+        return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
 
     def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
         """Is *symbol* a member function a bare call from outside its class cannot reach?
@@ -428,22 +840,23 @@ class LanguageStrategiesMixin:
         only a body inside its class, or one whose own line writes
         ``Parent::name``: a macro before a C return type
         (``INLINE rtree_t\\nrtree_read(..)``) can parse as a member of that type.
+        Nor a ``#define`` written inside a class body, which has no scope.
         """
         if not _is_member_function(symbol):
             return False
         assert symbol is not None
         parent = bare_type_name(symbol.parent_name or "")
-        if not self._declared_types_named(parent):
+        declared = self._declared_types_named(parent)
+        if not declared:
             return False
         path = self._symbol_paths_by_id.get(symbol.id, "")
-        lines = self._text_of(path).splitlines()
-        head = lines[symbol.start_line - 1] if 0 < symbol.start_line <= len(lines) else ""
-        if _FRIEND.search(head):
+        outside_class, qualified = member_head_flags(self._text_of(path).splitlines(), symbol)
+        if outside_class:
             return False
-        span = self._spans_for(path).get(self._only_type_in(path, parent) or "")
-        return f"::{symbol.name}" in head or (
-            span is not None and span[0] <= symbol.start_line <= span[1]
-        )
+        # A class template is two symbols under one id: its template head and the class.
+        owners = {identity[0] for owner_path, identity, _ in declared if owner_path == path}
+        span = self._spans_for(path).get(owners.pop()) if len(owners) == 1 else None
+        return qualified or (span is not None and span[0] <= symbol.start_line <= span[1])
 
     def _resolve_cpp_same_target(
         self,
@@ -672,6 +1085,54 @@ class LanguageStrategiesMixin:
             sym_id = self._file_top_level.get(sibling, {}).get(name)
         return None if sym_id == caller_id else sym_id
 
+    def _resolve_kotlin_labelled_this(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``this@X.m()``: ``X`` labels the enclosing class or extension function whose ``this`` is meant.
+
+        The innermost enclosing symbol named ``X`` answers. A class's own
+        member wins, else the one its ancestors declare; an extension
+        function's ``this`` is its receiver type. A lambda label names no
+        symbol, so its call is left unresolved.
+        """
+        receiver = call.receiver_name or ""
+        if not receiver.startswith("this@"):
+            return None
+        label = receiver[len("this@") :]
+        scope = caller_id
+        while "::" in scope:
+            symbol = self._symbols_by_id.get(scope)
+            if symbol is not None and symbol.name == label:
+                return self._labelled_this_call(file_path, call, caller_id, symbol)
+            scope = outer_scope(scope)
+        return None
+
+    def _labelled_this_call(
+        self, file_path: str, call: CallSite, caller_id: str, labelled: Symbol
+    ) -> ResolvedCall | None:
+        """The member *call* names on the ``this`` of *labelled*, a class or an extension."""
+        if labelled.kind in _TYPE_KINDS:
+            sym_id = self._declares(labelled.id, call.target_name)
+            origin = "self_scope"
+            if sym_id is None:
+                sym_id = self._ancestor_method(
+                    labelled.id, call.target_name, caller_id, class_chain_first=True
+                )
+                origin = "self_inherited"
+            if sym_id is None or self._refuses_recursion(sym_id, caller_id, call):
+                return None
+            return ResolvedCall(caller_id, sym_id, 0.93, call.line, origin)
+        if labelled.kind in _FUNCTION_KINDS and labelled.extension_receiver:
+            found = self._typed_receiver_target(
+                file_path, call, caller_id, labelled.extension_receiver
+            )
+            if found is not None:
+                return self._body_typed_call(caller_id, found[0], found[1], call.line)
+        return None
+
     def _resolve_jvm_receiver_same_package(
         self,
         file_path: str,
@@ -848,6 +1309,108 @@ class LanguageStrategiesMixin:
             return ResolvedCall(caller_id, target, 0.93, line, "receiver_same_file")
         return ResolvedCall(caller_id, target, 0.90, line, origin)
 
+    def _get_rails_index(self) -> Any:
+        """The repository's Zeitwerk index; None outside a Rails app.
+
+        The graph build hands in the one its type-reference pass already built
+        (see ``CallResolver``); a resolver built standalone makes its own.
+        """
+        if not self._rails_index_built:
+            self._rails_index_built = True
+            if self._repo_path:
+                from pathlib import Path
+
+                from .resolvers.ruby_rails import build_rails_index
+
+                self._rails_index = build_rails_index(Path(self._repo_path))
+        return self._rails_index
+
+    def _ruby_method_in(self, path: str, owner: str, method: str) -> str | None:
+        """The method *method* that class *owner* declares in the file at *path*.
+
+        *owner* is the constant's last segment, and a declaring class keyed
+        ``Api::V1::Foo`` (compact) or ``Foo`` both match ``Foo``; another class
+        in the same file never does.
+        """
+        found = {
+            sym_id
+            for (cls, name), sym_id in self._file_methods.get(path, {}).items()
+            if name == method and (cls == owner or cls.endswith(f"::{owner}"))
+        }
+        return next(iter(found)) if len(found) == 1 else None
+
+    def _resolve_ruby_constant_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Foo.new`` → ``Foo#initialize``; ``FooJob.perform_later`` → ``FooJob#perform``.
+
+        ``new`` and the job enqueuers are no symbol of the repository, so no
+        other tier can bind them. The receiver constant is resolved through
+        the Zeitwerk index from the caller's file, which is as good as an
+        import. A namespaced receiver arrives as its last segment (see
+        ``ruby.scm``), so ``A::Foo.new`` is looked up as ``Foo``.
+        """
+        method = _RUBY_CLASS_CALL_TARGETS.get(call.target_name)
+        receiver = call.receiver_name or ""
+        if method is None or not receiver[:1].isupper():
+            return None
+        index = self._get_rails_index()
+        if index is None:
+            return None
+        written = self._ruby_written_receiver(file_path, call)
+        target = index.resolve(written, file_path)
+        owner = bare_type_name(written)
+        callee = self._ruby_method_in(target, owner, method) if target else None
+        if callee is None or callee == caller_id:
+            return None
+        return ResolvedCall(caller_id, callee, 0.88, call.line, "receiver_import")
+
+    def _ruby_written_receiver(self, file_path: str, call: CallSite) -> str:
+        """The receiver as written at the call: ``Billing::Invoice`` where the site holds ``Invoice``.
+
+        ``ruby.scm`` captures only a namespaced receiver's last segment, which
+        the class index keys on; the Zeitwerk lookup needs the whole path, or
+        ``Billing::Invoice.new`` binds to a top-level ``Invoice``. Read back
+        off the call's line; a line that does not show the call as expected
+        leaves the captured name.
+        """
+        lines = self._lines_of(file_path)
+        text = lines[call.line - 1] if 0 < call.line <= len(lines) else ""
+        receiver = re.escape(call.receiver_name or "")
+        pattern = rf"((?:::)?(?:[A-Z]\w*::)*{receiver})\s*\.\s*{re.escape(call.target_name)}\b"
+        m = re.search(pattern, text)
+        return m.group(1) if m else (call.receiver_name or "")
+
+    def _resolve_ruby_conventional_receiver(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``@conversation.toggle_status`` → ``Conversation#toggle_status``.
+
+        Rails names a variable after the model it holds. The receiver is
+        camelized, resolved through the Zeitwerk index, and bound only when
+        that class's file declares the method. Ceiling: a variable named after
+        a model but holding something else binds wrongly when the model also
+        declares the method, so the edge carries the global tier's confidence.
+        """
+        m = _RUBY_CONVENTIONAL_RECEIVER.match(call.receiver_name or "")
+        index = self._get_rails_index() if m is not None else None
+        if index is None:
+            return None
+        constant = "".join(part.capitalize() for part in m.group(1).split("_"))
+        target = index.resolve(constant, file_path)
+        if target is None or target == file_path:
+            return None
+        callee = self._ruby_method_in(target, constant, call.target_name)
+        if callee is None:
+            return None
+        return ResolvedCall(caller_id, callee, 0.75, call.line, "receiver_typed_global")
+
     def _resolve_apex_namespace_type(
         self,
         file_path: str,
@@ -973,6 +1536,28 @@ class LanguageStrategiesMixin:
             return None
         type_id, origin, confidence = found
         return self._csharp_type_call(type_id, caller_id, call, origin, confidence)
+
+    def _csharp_constructed_type_is_ambiguous(self, file_path: str, call: CallSite) -> bool:
+        """Whether ``new Name<T>(..)`` sees multiple types at its first lookup level."""
+        name = call.target_name
+        if call.receiver_name or name not in self._csharp_type_names:
+            return False
+        arity = self._constructed_arity(file_path, call)
+        if arity is None:
+            return False
+        aliases, levels = self._csharp_lookup(file_path)
+        if name in aliases:
+            return False
+        types = [
+            (namespace, type_id)
+            for namespace, type_id, type_arity in self._csharp_constructible_types(name)
+            if type_arity == arity
+        ]
+        for level, _origin, _confidence in levels:
+            visible = [type_id for namespace, type_id in types if namespace in level]
+            if visible:
+                return len(visible) > 1
+        return False
 
     def _constructed_arity(self, file_path: str, call: CallSite) -> int | None:
         """How many type arguments *call*'s line writes after ``new Name``, None for no ``new``.
@@ -1138,6 +1723,48 @@ class LanguageStrategiesMixin:
             found = dart_named_constructors(body, self._symbols_by_id[class_id].name)
             _store_capped(self._dart_constructors, class_id, found, _BODY_TYPE_CACHE_ENTRIES)
         return found
+
+    def _extension_receiver_member_call(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        """A bare call in a Kotlin extension, read as ``this.name(..)`` on the extended type.
+
+        Inside ``fun A.run() = go()`` the implicit ``this`` is an ``A``, and a
+        member of ``A`` (or of one of its ancestors) beats any top-level name an
+        import brings in. Only a repo class the name resolves to uniquely is
+        asked, and only outside a lambda, whose receiver a text scan cannot
+        type. A receiver with no such member answers nothing, so the later
+        tiers run as before.
+        """
+        if call.receiver_name or call.receiver_call is not None or call.scope_name:
+            return None
+        caller = self._symbols_by_id.get(caller_id)
+        if caller is None or caller.language != "kotlin" or caller.kind not in _FUNCTION_KINDS:
+            return None
+        receiver = self._kotlin_receiver(caller)
+        if receiver is None or self._call_in_lambda(file_path, call, caller):
+            return None
+        class_ids = {
+            sym_id
+            for sym_id in self._global_symbols.get(receiver, ())
+            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+            and symbol.kind in _TYPE_KINDS
+        }
+        if len(class_ids) != 1:
+            return None
+        class_id = next(iter(class_ids))
+        own = self._declares(class_id, call.target_name)
+        if self._is_member(own, caller_id):
+            return ResolvedCall(caller_id, own, 0.95, call.line, "enclosing_class")
+        inherited = self._ancestor_method(class_id, call.target_name, caller_id)
+        if self._is_member(inherited, caller_id):
+            return ResolvedCall(caller_id, inherited, 0.90, call.line, "enclosing_inherited")
+        return None
+
+    def _is_member(self, sym_id: str | None, caller_id: str) -> bool:
+        """Is *sym_id* a real member, not the caller or an extension of the type?"""
+        symbol = self._symbols_by_id.get(sym_id or "")
+        return symbol is not None and sym_id != caller_id and not symbol.extension_receiver
 
     def _lacks_extension_receiver(self, file_path: str, call: CallSite, callee_id: str) -> bool:
         """Is *callee_id* a Kotlin extension this bare call has no receiver for?

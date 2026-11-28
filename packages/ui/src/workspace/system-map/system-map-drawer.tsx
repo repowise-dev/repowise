@@ -64,6 +64,7 @@ import { RouteRow } from "./system-map-route-row";
 import { routeKey } from "./routes-between";
 import type { RepoHealth, SystemMapSelection } from "./types";
 import { useEdgeRoutes, type EdgeRoutes } from "./use-routes-between";
+import { formatNumber } from "../../lib/format";
 
 /** Contracts listed in the drawer before it hands off to the Contracts page. */
 export const DRAWER_CONTRACT_ROWS = 8;
@@ -391,7 +392,7 @@ function NodeBody({
         </p>
         <p className="text-[15px] leading-relaxed text-[var(--color-text-primary)] [text-wrap:pretty]">
           {node.name} provides {plural(node.provider_count, "contract", "contracts")} and consumes{" "}
-          {node.consumer_count.toLocaleString()}
+          {formatNumber(node.consumer_count)}
           {node.contract_types.length > 0 ? ` (${node.contract_types.join(", ")})` : ""}.
           {out.length + incoming.length === 0 && " It has no relationships with other services."}
         </p>
@@ -535,9 +536,9 @@ function NodeBody({
               ))}
             </ul>
             <p className="text-xs text-[var(--color-text-tertiary)]">
-              {`Showing ${Math.min(summary.rows.length, DRAWER_CONTRACT_ROWS)} of ${summary.rows.length.toLocaleString()}, most linked first.`}
+              {`Showing ${Math.min(summary.rows.length, DRAWER_CONTRACT_ROWS)} of ${formatNumber(summary.rows.length)}, most linked first.`}
               {capped &&
-                ` Counted from the first ${repoContracts!.contracts.length.toLocaleString()} of ${repoContracts!.total.toLocaleString()} contracts in ${node.repo}.`}
+                ` Counted from the first ${formatNumber(repoContracts!.contracts.length)} of ${formatNumber(repoContracts!.total)} contracts in ${node.repo}.`}
             </p>
           </>
         )}
@@ -561,8 +562,8 @@ function TypeTable({ provides, consumes }: { provides: Record<string, number>; c
         {types.map((t) => (
           <tr key={t} className="border-t border-[var(--color-border-default)]">
             <td className="py-1 font-mono text-[var(--color-text-secondary)]">{t}</td>
-            <td className="py-1 text-right text-[var(--color-text-primary)]">{(provides[t] ?? 0).toLocaleString()}</td>
-            <td className="py-1 text-right text-[var(--color-text-primary)]">{(consumes[t] ?? 0).toLocaleString()}</td>
+            <td className="py-1 text-right text-[var(--color-text-primary)]">{formatNumber(provides[t] ?? 0)}</td>
+            <td className="py-1 text-right text-[var(--color-text-primary)]">{formatNumber(consumes[t] ?? 0)}</td>
           </tr>
         ))}
       </tbody>
@@ -866,7 +867,7 @@ function EdgeRouteRows({
         ))}
       </ul>
       <p className="text-xs text-[var(--color-text-tertiary)]">
-        {`Showing ${routes.rows.length.toLocaleString()} of ${plural(Math.max(routes.total, routes.rows.length), "route", "routes")}.`}
+        {`Showing ${formatNumber(routes.rows.length)} of ${plural(Math.max(routes.total, routes.rows.length), "route", "routes")}.`}
         {routes.stale && " The map and the contracts were read at different commits, so some may be missing."}
       </p>
     </>

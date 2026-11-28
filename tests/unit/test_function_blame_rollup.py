@@ -135,3 +135,15 @@ def test_commit_spans_drop_stale_rows() -> None:
     functions = [_Fn("foo", 5, 9)]
     entries = [("foo", 1, 3, ["a"]), ("gone", 20, 30, ["b"])]
     assert commit_spans(functions, entries) == []
+
+
+def test_a_file_blamed_for_history_only_gets_marked_rows() -> None:
+    walked, meta = _walked_and_meta()
+    scored = build_function_blame_rows(walked, meta, now_ts=_NOW)
+    assert scored and not any(r["history_only"] for r in scored)
+    # Under the commit floor or over the size cap: same rows, marked, so the
+    # health readers can leave them out.
+    history = {"a.py": {"history_blame_index": meta["a.py"]["blame_index"]}}
+    rows = build_function_blame_rows(walked, history, now_ts=_NOW)
+    assert [r["function_name"] for r in rows] == [r["function_name"] for r in scored]
+    assert all(r["history_only"] for r in rows)

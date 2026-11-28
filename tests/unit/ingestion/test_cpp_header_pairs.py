@@ -44,9 +44,38 @@ class TestCppHeaderSourcePairing:
         (tmp_path / "include" / "util.h").write_text("int helper(void);\n")
         (tmp_path / "src" / "util.c").write_text("int helper(void) { return 1; }\n")
         graph = _build(tmp_path)
-        # Conservative: same-dir only (recorded cut — include/ vs src/
-        # layouts pair through the target fan-out instead).
+        # No build target says the two belong together.
         assert not graph.has_edge("include/util.h", "src/util.c")
+
+    def test_different_dirs_pair_inside_one_target(self, tmp_path: Path) -> None:
+        (tmp_path / "CMakeLists.txt").write_text(
+            "add_library(util STATIC src/util.c src/other.c)\n"
+            "target_sources(util PUBLIC include/lib/util.h)\n"
+            "target_include_directories(util PUBLIC include)\n"
+        )
+        (tmp_path / "include" / "lib").mkdir(parents=True)
+        (tmp_path / "src").mkdir()
+        (tmp_path / "include" / "lib" / "util.h").write_text("int helper(void);\n")
+        (tmp_path / "src" / "util.c").write_text(
+            '#include "lib/util.h"\nint helper(void) { return 1; }\n'
+        )
+        (tmp_path / "src" / "other.c").write_text("int other(void) { return 2; }\n")
+        graph = _build(tmp_path)
+        pair = graph.get_edge_data("include/lib/util.h", "src/util.c")
+        assert pair is not None and pair.get("hint_source") == "header_source_pair"
+        assert not graph.has_edge("include/lib/util.h", "src/other.c")
+
+    def test_target_with_two_same_stem_sources_does_not_pair(self, tmp_path: Path) -> None:
+        (tmp_path / "CMakeLists.txt").write_text(
+            "add_library(util STATIC src/posix/util.c src/win/util.c)\n"
+            "target_sources(util PUBLIC include/util.h)\n"
+        )
+        for rel in ("include/util.h", "src/posix/util.c", "src/win/util.c"):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("int helper(void);\n")
+        graph = _build(tmp_path)
+        assert not graph.has_edge("include/util.h", "src/posix/util.c")
+        assert not graph.has_edge("include/util.h", "src/win/util.c")
 
 
 class TestObjectiveCHeaderSourcePairing:

@@ -529,7 +529,7 @@ def test_crossfn_finding_scores_performance_not_defect():
     assert len(perf) == 1 and perf[0].details["cross_function"] is True
     scores, deductions = score_file(results)
     assert scores["defect"] == 10.0
-    assert scores["performance"] < 10.0
+    assert scores["performance"] == 10.0  # io_in_loop is listed, never scored
     assert all(d == 0.0 for d in deductions)
 
 

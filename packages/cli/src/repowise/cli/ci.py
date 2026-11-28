@@ -17,6 +17,8 @@ from typing import Any, NoReturn
 
 import click
 
+from repowise.core.ci.github import append_step_summary as append_step_summary
+
 #: The gate ran and the change failed it.
 EXIT_GATE_FAILED = 1
 #: The gate could not run: no report, unknown revision, bad config, ...
@@ -89,9 +91,19 @@ def ci_revspec(root: str, revspec: str | None) -> str:
     from repowise.core.ci.base import BaseNotFoundError, default_revspec
 
     try:
-        return revspec or default_revspec(root)
+        return named_revspec(root, revspec) if revspec else default_revspec(root)
     except BaseNotFoundError as exc:
         raise CannotEvaluateError("base_not_found", str(exc)) from exc
+
+
+def named_revspec(root: str, revspec: str) -> str:
+    """*revspec* with a Perforce changelist read as its commit (``changelist.resolve_revspec``)."""
+    from repowise.core.changelist import RevisionError, resolve_revspec
+
+    try:
+        return resolve_revspec(root, revspec)
+    except RevisionError as exc:
+        raise CannotEvaluateError("change_unreadable", str(exc)) from exc
 
 
 def change_lines(
@@ -111,6 +123,9 @@ def change_lines(
 def change_set(root: str, revspec: str | None, *, staged: bool = False) -> Any:
     """Every path *revspec* touches, else the staged changes (a ``ChangeSet``)."""
     from repowise.core.analysis.changed_lines import change_set as read_change_set
+
+    if revspec and not staged:
+        revspec = named_revspec(root, revspec)
 
     with _reading_change(revspec or "the staged changes", shallow_hint=not staged):
         return read_change_set(root, revspec, staged=staged)
@@ -206,21 +221,9 @@ def _reading_change(what: str, *, shallow_hint: bool = True) -> Iterator[None]:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
-def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:
-    """Add *markdown* to the GitHub Actions job summary; ``False`` when not in Actions."""
-    target = (os.environ if env is None else env).get("GITHUB_STEP_SUMMARY")
-    if not target:
-        return False
-    try:
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(markdown.rstrip("\n") + "\n")
-    except OSError:
-        return False
-    return True
-
-
-#: Set by the GitHub Action: a directory where each gate run in ``github``
-#: format leaves its row of the combined summary (``repowise ci-summary``).
+#: Set by the GitHub Action and the GitLab template: a directory where each gate
+#: run in ``github`` or ``markdown`` format leaves its row of the combined
+#: summary (``repowise ci-summary``).
 GATE_SUMMARY_DIR_ENV = "REPOWISE_GATE_SUMMARY_DIR"
 
 

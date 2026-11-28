@@ -2,10 +2,16 @@
 
 A revspec names commits, so the score, the delta and every block are fixed
 once the revisions, the request's filters, the index and the few live inputs
-the blocks read (riskignore, repo config, coverage ingests, branch tips) are.
-A repeat call or a ``finding_id`` drill-down is then served from here instead
-of rerunning the comparison. Uncommitted work is never cached: its revspec is
-``None`` and its content moves without any of those changing.
+the blocks read (riskignore, repo config, coverage ingests, the checkout's
+dirty state) are. A repeat call or a ``finding_id`` drill-down is then served
+from here instead of rerunning the comparison. Uncommitted work is never
+cached: its revspec is ``None`` and its content moves without any of those
+changing.
+
+Branch tips are kept out of the key: only the branch-overlap block reads them,
+so a stored payload carries the tips it saw and the scan's answer. When the
+tips move the scan runs again, and the payload is served only when the answer
+is unchanged.
 """
 
 from __future__ import annotations
@@ -25,6 +31,20 @@ _TRANSIENT = frozenset({"unavailable", "timeout"})
 
 
 @dataclass
+class Stored:
+    """One served payload, its changed files, and the branch inputs it was built on.
+
+    ``overlap`` is the branch scan's whole answer before capping, ``None`` when
+    there was no scan or it failed.
+    """
+
+    payload: dict
+    targets: list[str] | None
+    branches: str | None
+    overlap: dict | None
+
+
+@dataclass
 class Scored:
     """One scored range: its ref and delta, and each payload served for it.
 
@@ -33,7 +53,7 @@ class Scored:
 
     ref: str
     delta: Any
-    payloads: dict[str, tuple[dict, list[str] | None]] = field(default_factory=dict)
+    payloads: dict[str, Stored] = field(default_factory=dict)
 
 
 _SCORED: OrderedDict[str, Scored] = OrderedDict()
@@ -95,8 +115,21 @@ async def cache_key(
         repr(include_paths),
         str(baseline),
         await _index_inputs(ctx),
+        # The in-repo contract block reads this store; a rewrite is a new answer.
+        _contracts_stamp(root),
     )
     return hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()
+
+
+def _contracts_stamp(root: str) -> str:
+    """``.repowise/contracts.json``'s mtime and size, or ``-`` without one."""
+    from repowise.core.workspace.repo_contracts import repo_contracts_path
+
+    try:
+        stat = repo_contracts_path(Path(root)).stat()
+    except OSError:
+        return "-"
+    return f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
 def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
@@ -105,6 +138,7 @@ def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
     from repowise.core.analysis.change_risk.service import riskignore_patterns
     from repowise.core.analysis.git_cli import split_revspec
     from repowise.core.repo_config import health_rules_fingerprint
+    from repowise.server.mcp_server._test_selection import _tree_stamp
 
     parts = split_revspec(revspec)
     sides = (parts[0], parts[2]) if parts else (revspec, f"{revspec}^1")
@@ -113,28 +147,53 @@ def _live_inputs(root: str, revspec: str) -> tuple[str, ...] | None:
     # A root commit has no parent; any other unresolvable side is git's error to report.
     if not shas[0] or (parts and not shas[1]):
         return None
-    try:
-        tips = subprocess.run(
-            ["git", "for-each-ref", "--format=%(objectname) %(refname)"],
-            cwd=root,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=10,
-            check=True,
-        ).stdout
-    except (OSError, subprocess.SubprocessError):
+    # The tests and fix blocks read tracked paths and conftests from the checkout.
+    tree = _tree_stamp(root)
+    if tree is None:
         return None
     return (
         *shas,
         head,
-        hashlib.sha256(tips).hexdigest(),
+        tree,
         repr(riskignore_patterns(root)),
         health_rules_fingerprint(root),
     )
 
 
+def branch_inputs(root: str) -> str | None:
+    """A digest of what the branch-overlap scan reads, or ``None`` when git fails.
+
+    The scan lists local and remote branches, picks its base from
+    ``origin/HEAD`` or a trunk among them, and names the checked-out branch.
+    """
+    tips = _git_out(
+        root,
+        [
+            "for-each-ref",
+            "--format=%(objectname) %(refname) %(symref)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )
+    # Exit 1 is a detached HEAD, which is an answer, not a failure.
+    branch = _git_out(root, ["symbolic-ref", "-q", "HEAD"], ok=(0, 1))
+    if tips is None or branch is None:
+        return None
+    return hashlib.sha256(tips + b"\n" + branch).hexdigest()
+
+
+def _git_out(root: str, args: list[str], ok: tuple[int, ...] = (0,)) -> bytes | None:
+    try:
+        done = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, stdin=subprocess.DEVNULL, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode in ok else None
+
+
 async def _index_inputs(ctx: Any) -> str:
-    """The index state and the newest coverage ingest; ``""`` without an index."""
+    """The index state and the newest coverage and evidence ingests; ``""`` without an index."""
     from sqlalchemy import func, select
     from sqlalchemy.exc import SQLAlchemyError
 
@@ -159,4 +218,30 @@ async def _index_inputs(ctx: Any) -> str:
             ).one()
     except (LookupError, SQLAlchemyError):
         return ""
-    return f"{index_state_key(repository)}|{newest or ''}|{count}"
+    return f"{index_state_key(repository)}|{newest or ''}|{count}|{await _evidence_inputs(ctx)}"
+
+
+async def _evidence_inputs(ctx: Any) -> str:
+    """The newest evidence ingest and the run count, which the measured block
+    reads and an ingest writes without an index stamp; ``""`` when unreadable
+    (an index older than the evidence tables), which keeps the rest of the key."""
+    from sqlalchemy import func, select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import EvidenceRun
+    from repowise.server.mcp_server import tool_change_risk as _pkg
+
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repository = await _pkg._get_repo(session)
+            newest, count = (
+                await session.execute(
+                    select(func.max(EvidenceRun.ingested_at), func.count()).where(
+                        EvidenceRun.repository_id == repository.id
+                    )
+                )
+            ).one()
+    except (LookupError, SQLAlchemyError):
+        return ""
+    return f"{newest or ''}|{count}"

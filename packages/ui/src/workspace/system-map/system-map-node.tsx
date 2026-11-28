@@ -3,7 +3,7 @@
 /**
  * A service on the Live System Map: a surface-plane object with a hairline
  * border, named in full, with where it lives, its repository's health mark in
- * the canonical three bands, and how many contracts it provides and consumes.
+ * the canonical five bands, and how many contracts it provides and consumes.
  *
  * The architecture role is a word, not a colour: the health mark already owns
  * green, amber and red on this object, and a second mark in the same
@@ -17,6 +17,7 @@ import { healthMark } from "../../health/tokens";
 import { SYSTEM_MAP_NODE_SIZE } from "./layout-scopes";
 import { SystemMapLensBadge } from "./system-map-lens-badge";
 import type { SystemMapNodeData } from "./types";
+import { formatNumber } from "../../lib/format";
 
 function SystemMapNodeInner({ data, selected }: NodeProps) {
   const { node, health, overlay, role, horizontal, focusLinks, endpoint } = data as unknown as SystemMapNodeData;
@@ -133,7 +134,7 @@ function SystemMapNodeInner({ data, selected }: NodeProps) {
         {focusLinks ??
           (node.is_isolated
             ? "no cross-service edges"
-            : `${node.provider_count.toLocaleString()} provided · ${node.consumer_count.toLocaleString()} consumed`)}
+            : `${formatNumber(node.provider_count)} provided · ${formatNumber(node.consumer_count)} consumed`)}
       </span>
 
       <Handle type="source" position={horizontal ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: "none" }} />

@@ -28,9 +28,11 @@ from repowise.core.changes.collect import (
 from repowise.core.changes.evidence import ChangeEvidence, item_line
 from repowise.core.changes.record import change_record
 from repowise.core.persistence import crud
+from repowise.core.persistence.crud.issue_links import record_linked_issues
 from repowise.core.persistence.database import get_session
 from repowise.core.suspects import Symptom
 from repowise.core.suspects.index import find_suspects
+from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
 from repowise.server.routers._history_filters import HistoryParams, history_params
 from repowise.server.schemas.changes import (
@@ -193,6 +195,7 @@ async def get_change(
     if row is None:
         raise HTTPException(status_code=404, detail="Change not found")
     record = change_record(row, attribution=attribution)
+    record["metadata"]["linked_issues"] = await record_linked_issues(session, repo_id, record)
     record["health"], record["touches_hotspot"] = await change_detail_health(
         session, repo_id, _inputs(row), await current_stamp(session, repo_id)
     )
@@ -287,6 +290,7 @@ def _when(value: str | None, field: str) -> datetime | None:
 
 
 @router.post("/{repo_id}/suspects", response_model=SuspectsResponse)
+@read_route
 async def rank_suspects(
     repo_id: str,
     body: SuspectsRequest,

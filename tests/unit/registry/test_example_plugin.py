@@ -76,3 +76,11 @@ def test_example_report_section_collects_a_valid_check(hello, tmp_path):
 def test_example_plugin_lists_its_command_and_tool(hello):
     assert "cli-command:hello" in hello.seams
     assert "mcp-tool:hello_greet" in hello.seams
+
+
+def test_example_plugin_meets_every_seam_contract(hello):
+    from repowise.core.plugin_testing import check_record
+
+    checks = check_record(hello)
+    assert {(c.kind, c.status) for c in checks} >= {("event-sink", "pass"), ("report-section", "pass")}
+    assert not [f for c in checks for f in c.failures]

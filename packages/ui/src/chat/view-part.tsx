@@ -32,6 +32,7 @@ import {
   YAxis,
   type SymbolType,
 } from "recharts";
+import { bandForScore } from "@repowise-dev/types/health";
 import type { CardRef } from "@repowise-dev/types/cards";
 import {
   VIEW_TOOLS,
@@ -88,15 +89,8 @@ const BAND_FILLS: Record<string, string> = {
   good: "var(--color-node-good)",
   excellent: "var(--color-node-excellent)",
 };
-/** The health engine's band floors (grading.py): a 0 to 10 score to its band. */
-const BAND_FLOORS: Array<[number, string]> = [
-  [8.5, "excellent"],
-  [7, "good"],
-  [5.5, "fair"],
-  [4, "needs work"],
-  [-Infinity, "at risk"],
-];
-const bandOf = (score: number): string => BAND_FLOORS.find(([floor]) => score >= floor)![1];
+/** A 0 to 10 score to its band, keyed the way BAND_FILLS reads a cell's band word. */
+const bandOf = (score: number): string => bandForScore(score).replace(/_/g, " ");
 
 const COVERAGE_LABEL: Record<string, string> = {
   attribution: "Attribution coverage",

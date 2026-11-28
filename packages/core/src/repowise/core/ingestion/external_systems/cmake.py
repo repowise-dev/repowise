@@ -138,20 +138,29 @@ def _split_args(args_text: str) -> list[str]:
     return out
 
 
-def _expand_vars(token: str, variables: dict[str, str]) -> str:
-    """Expand ``${VAR}`` references in *token* using *variables*."""
-    def repl(m: re.Match[str]) -> str:
-        name = m.group(1)
-        return variables.get(name, m.group(0))
+_OPAQUE_REF = "\x00{"
 
-    # Up to 3 expansion passes for nested refs
+
+def _expand_vars(token: str, variables: dict[str, str]) -> str:
+    """Expand ``${VAR}`` references in *token* using *variables*.
+
+    A substituted value is never scanned again, as in CMake. A value can hold
+    a reference that was undefined when it was set, often to itself
+    (``set(FLAGS "${FLAGS} -x")``); rescanning it doubled the value on every
+    pass and every later ``set``, which took gigabytes on large repos.
+    """
+    def repl(m: re.Match[str]) -> str:
+        value = variables.get(m.group(1))
+        return m.group(0) if value is None else value.replace("${", _OPAQUE_REF)
+
+    # Up to 3 passes, for names built from other refs (``${FOO_${BAR}}``).
     prev = token
     for _ in range(3):
         nxt = _VAR_REF_RE.sub(repl, prev)
         if nxt == prev:
             break
         prev = nxt
-    return prev
+    return prev.replace(_OPAQUE_REF, "${")
 
 
 @dataclass
@@ -346,13 +355,11 @@ def parse_cmake_lists(
                 cm.subdirectories.append(rel)
 
         elif name == "add_executable" and cmd.args:
-            target = _parse_add_target(
+            _parse_add_target(
                 cmd, kind="executable", cmakelists=rel_self,
                 cmakelists_dir=cmakelists_dir, cm=cm,
                 repo_root_posix=repo_root_posix,
             )
-            if target:
-                cm.targets.append(target)
 
         elif name == "add_library" and cmd.args:
             # add_library(name [STATIC|SHARED|MODULE|OBJECT|INTERFACE] ...)
@@ -364,12 +371,11 @@ def parse_cmake_lists(
             ):
                 kind = _classify_target_kind(cmd.args[1])
                 sources_start = 2
-            t = CMakeTarget(name=target_name, kind=kind, cmakelists=rel_self)
+            t = _declare_target(cm, target_name, kind=kind, cmakelists=rel_self)
             _ingest_sources(
                 t, cmd.args[sources_start:], cmakelists_dir, cm,
                 conditional=cmd.in_conditional, repo_root_posix=repo_root_posix,
             )
-            cm.targets.append(t)
 
         elif name == "target_sources" and cmd.args:
             _apply_target_sources(
@@ -415,16 +421,33 @@ def _parse_add_target(
     cmakelists_dir: str,
     cm: CMakeFile,
     repo_root_posix: str | None,
-) -> CMakeTarget | None:
+) -> CMakeTarget:
     name = cmd.args[0]
     # ``add_executable(name)`` with no sources is valid — sources arrive via
     # ``target_sources(...)``. Build the target with whatever inline sources
     # there are; ``_apply_target_sources`` fills in the rest.
-    t = CMakeTarget(name=name, kind=kind, cmakelists=cmakelists)
+    t = _declare_target(cm, name, kind=kind, cmakelists=cmakelists)
     _ingest_sources(
         t, cmd.args[1:], cmakelists_dir, cm,
         conditional=cmd.in_conditional, repo_root_posix=repo_root_posix,
     )
+    return t
+
+
+def _declare_target(cm: CMakeFile, name: str, *, kind: str, cmakelists: str) -> CMakeTarget:
+    """The target *name* already declared in *cm*, else a new one appended to it.
+
+    One file declaring a name twice does so in exclusive ``if()`` / ``else()``
+    arms, since CMake rejects a duplicate it configures. Reading every arm, the
+    second declaration adds its sources to the first instead of replacing it.
+    """
+    for t in cm.targets:
+        if t.name == name:
+            if t.kind == "unknown":  # a stub an earlier ``target_*`` call made
+                t.kind = kind
+            return t
+    t = CMakeTarget(name=name, kind=kind, cmakelists=cmakelists)
+    cm.targets.append(t)
     return t
 
 
@@ -637,8 +660,8 @@ def discover_cmake_reactor(
 
     # Catch any orphan CMakeLists not referenced via add_subdirectory.
     # Cap the rglob to a reasonable depth to avoid pathological monorepos.
-    skip_dirs = {".git", "build", "_build", "out", "_deps", "cmake-build-debug",
-                 "cmake-build-release", "node_modules", ".venv", "venv"}
+    # CMake build trees on top of the never-source set the walk prunes.
+    skip_dirs = {"build", "_build", "out", "_deps", "cmake-build-debug", "cmake-build-release"}
     if len(out) < max_files:
         from repowise.core.fs_walk import glob_via
 

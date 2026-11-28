@@ -72,6 +72,7 @@ _STRATEGY_SUMMARY: dict[str, str] = {
     "buffer_string_accumulation": "Join the string once instead of growing it in a loop",
     "shrink_lock_scope": "Move the I/O out of the locked section",
     "push_reduction_into_query": "Let the query do the reduction",
+    "reduce_measured_self_time": "Cut the work a measured run spends in this function",
 }
 
 Step = dict[str, Any]
@@ -174,7 +175,7 @@ _RENAME_EACH = RENAME_NOTE.replace("The helper's name", "Each stage's helper nam
     "rename it", "rename each one"
 )
 #: The placeholder ``helper_naming.placeholder_names`` writes, in any casing.
-_PLACEHOLDER = re.compile(r"_?extracted_?[hH]elper_?\d*")
+_PLACEHOLDER = re.compile(r"_?[eE]xtracted_?[hH]elper_?\d*")
 
 
 def _rename_note(plan: Mapping[str, Any], helpers: int) -> str | None:
@@ -549,8 +550,13 @@ def _preconditions(d: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def verify_check(validation: Any) -> dict[str, Any]:
-    """The ``verify`` postcondition for a plan's (or a shared profile's) validation."""
+    """The ``verify`` postcondition for a plan's (or a shared profile's) validation.
+
+    A performance plan whose unit has a workload to time also carries
+    ``measure`` (``perf_measure.verify_measure``); every other check has none.
+    """
     validation = _dict(validation)
+    measure = _dict(validation.get("measure"))
     if not validation:
         text = "The tests that exercise the change pass; add one if none does."
         return {"kind": "verify", "text": text}
@@ -570,6 +576,7 @@ def verify_check(validation: Any) -> dict[str, Any]:
         "commands": _strs(validation.get("commands")),
         "basis": validation.get("basis"),
         **({"reasons": validation["reasons"]} if _dict(validation.get("reasons")) else {}),
+        **({"measure": measure} if measure else {}),
     }
 
 

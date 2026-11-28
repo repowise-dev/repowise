@@ -20,11 +20,18 @@ import math
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from ...changelist import without_changelist_number
 from ...ingestion.git_indexer.fix_rule import is_typed_fix_commit
 from ..changed_lines import untracked_diffs
 
 # All but path_filter are re-exported: callers across the package import them from here.
-from ..git_cli import GIT_TIMEOUT_SECONDS, _git, path_filter, split_revspec  # noqa: F401
+from ..git_cli import (  # noqa: F401
+    GIT_TIMEOUT_SECONDS,
+    _git,
+    generated_worktree_paths,
+    path_filter,
+    split_revspec,
+)
 
 #: ``ChangeFeatures.ref`` for a score of the uncommitted change. Not a revspec —
 #: it names the unit scored, in the same slot a sha or ``base..head`` occupies.
@@ -218,7 +225,9 @@ def working_tree_is_dirty(repo_path: str) -> bool:
     """Whether the checkout holds staged, unstaged or untracked changes.
 
     The repo's own ``.repowise/`` does not count: it is repowise's state, never
-    a change to the code, and a fresh ``init`` leaves it untracked.
+    a change to the code, and a fresh ``init`` leaves it untracked. Nor does a
+    managed file (CLAUDE.md, ``.vscode/mcp.json``) whose change is only
+    repowise's block or entry: ``init`` writes those too.
     """
     # check=False so a non-repo path answers "not dirty" rather than raising:
     # the caller falls back to scoring a committed ref, which then reports the
@@ -226,6 +235,14 @@ def working_tree_is_dirty(repo_path: str) -> bool:
     # The exclude pathspec is relative to repo_path, so a package's .repowise/
     # inside a larger git repo is the one left out.
     status = _git(["status", "--porcelain", "--", ":(exclude).repowise"], repo_path, check=False)
+    if not status.strip():
+        return False
+    ours = [f":(top,exclude,literal){p.lstrip('/')}" for p in generated_worktree_paths(repo_path)]
+    if not ours:
+        return True
+    status = _git(
+        ["status", "--porcelain", "--", ":(exclude).repowise", *ours], repo_path, check=False
+    )
     return bool(status.strip())
 
 
@@ -290,6 +307,7 @@ def extract_commit_features(
     """
     meta = _git(["show", "-s", "--format=%an%x00%s", sha], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
+    subject = without_changelist_number(subject)
     # -m --first-parent: on a merge, score the diff the merge brought onto the
     # first parent — the PR's content. Without it the answer depends on git's
     # combined-diff defaults, which can drop every file that matches a parent.
@@ -339,6 +357,7 @@ def extract_range_features(
     )
     meta = _git(["show", "-s", "--format=%an%x00%s", head], repo_path).strip("\n")
     author, _, subject = meta.partition("\x00")
+    subject = without_changelist_number(subject)
     # Any fix commit in the range marks the change as a fix (informational).
     range_subjects = _git(["log", "--format=%s", f"{base}..{head}"], repo_path)
     is_fix = any(is_typed_fix_commit(s) for s in range_subjects.split("\n") if s)

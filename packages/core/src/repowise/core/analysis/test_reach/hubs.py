@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 
-from repowise.core.analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.stats import percentile
 
 # A hub is a module most of the code imports: fan-in above the absolute bar, or
 # in the top 1% of the repository's files and at least the floor. Far stricter
@@ -21,14 +22,17 @@ def hub_files(in_degree: Mapping[str, float], test_files: Collection[str]) -> fr
     """The repository's own non-test files that are hubs by stored fan-in."""
     # Imported here: the health package imports this one, so a module-level
     # import would be a cycle.
-    from repowise.core.analysis.health.perf.ranking import _percentile_threshold
+    from repowise.core.analysis.health.perf.ranking import UNREACHABLE_BAR
 
     own = {
         path: int(fan_in or 0)
         for path, fan_in in in_degree.items()
         if not path.startswith("external:") and path not in test_files
     }
-    bar = max(HUB_FAN_IN_FLOOR, _percentile_threshold(list(own.values()), HUB_TOP_PERCENTILE))
+    bar = max(
+        HUB_FAN_IN_FLOOR,
+        percentile(list(own.values()), HUB_TOP_PERCENTILE, default=UNREACHABLE_BAR),
+    )
     return frozenset(
         path for path, fan_in in own.items() if fan_in > HUB_MIN_FAN_IN or fan_in >= bar
     )

@@ -1,8 +1,9 @@
 """A switch / match / when opens one nesting level; its case arms open none.
 
 ``if { switch { case: if {} } }`` is three levels deep and costs 6 cognitive
-(if +1, switch +2, inner if +3), in every language that has case arms. Arms
-still count toward CCN.
+(if +1, switch +2, inner if +3), in every language that has case arms. An
+arm with control flow counts toward CCN; the ``default`` / ``_`` / ``else`` arm
+does not, so every language scores 4, as Ruby and PHP always did.
 """
 
 from __future__ import annotations
@@ -25,12 +26,12 @@ _C_LIKE_SWITCH = b"""%s f(%s) {
 
 # language -> (file name, source, expected ccn)
 _SOURCES = {
-    "c": ("a.c", _C_LIKE_SWITCH % (b"int", b"int x, int y"), 5),
-    "cpp": ("a.cpp", _C_LIKE_SWITCH % (b"int", b"int x, int y"), 5),
-    "javascript": ("a.js", _C_LIKE_SWITCH % (b"function", b"x, y"), 5),
-    "typescript": ("a.ts", _C_LIKE_SWITCH % (b"function", b"x: number, y: number"), 5),
-    "java": ("A.java", b"class A { " + _C_LIKE_SWITCH % (b"int", b"int x, int y") + b" }", 5),
-    "csharp": ("A.cs", b"class A { " + _C_LIKE_SWITCH % (b"int", b"int x, int y") + b" }", 5),
+    "c": ("a.c", _C_LIKE_SWITCH % (b"int", b"int x, int y"), 4),
+    "cpp": ("a.cpp", _C_LIKE_SWITCH % (b"int", b"int x, int y"), 4),
+    "javascript": ("a.js", _C_LIKE_SWITCH % (b"function", b"x, y"), 4),
+    "typescript": ("a.ts", _C_LIKE_SWITCH % (b"function", b"x: number, y: number"), 4),
+    "java": ("A.java", b"class A { " + _C_LIKE_SWITCH % (b"int", b"int x, int y") + b" }", 4),
+    "csharp": ("A.cs", b"class A { " + _C_LIKE_SWITCH % (b"int", b"int x, int y") + b" }", 4),
     "php": (
         "a.php",
         b"<?php function f($x, $y) { if ($y > 0) { switch ($x) {"
@@ -41,25 +42,25 @@ _SOURCES = {
         "a.go",
         b"package a\nfunc f(x int, y int) int {\n if y > 0 {\n  switch x {\n  case 1:\n"
         b"   if y > 2 { return 1 }\n   return 3\n  default:\n   return 0\n  }\n }\n return 0\n}\n",
-        5,
+        4,
     ),
     "swift": (
         "a.swift",
         b"func f(x: Int, y: Int) -> Int {\n if y > 0 {\n  switch x {\n  case 1:\n"
         b"   if y > 2 { return 1 }\n   return 3\n  default:\n   return 0\n  }\n }\n return 0\n}\n",
-        5,
+        4,
     ),
     "rust": (
         "a.rs",
         b"fn f(x: i32, y: i32) -> i32 {\n if y > 0 {\n  match x {\n"
         b"   1 => { if y > 2 { return 1; } 3 }\n   _ => 0,\n  }\n } else { 0 }\n}\n",
-        5,
+        4,
     ),
     "kotlin": (
         "a.kt",
         b"fun f(x: Int, y: Int): Int {\n if (y > 0) {\n  when (x) {\n"
         b"   1 -> { if (y > 2) { return 1 }; return 3 }\n   else -> return 0\n  }\n }\n return 0\n}\n",
-        5,
+        4,
     ),
     "ruby": (
         "a.rb",
@@ -72,7 +73,7 @@ _SOURCES = {
         b"def f(x, y):\n    if y > 0:\n        match x:\n            case 1:\n"
         b"                if y > 2:\n                    return 1\n                return 3\n"
         b"            case _:\n                return 0\n    return 0\n",
-        5,
+        4,
     ),
 }
 

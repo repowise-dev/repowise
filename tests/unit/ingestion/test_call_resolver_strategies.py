@@ -611,6 +611,60 @@ class TestFieldTypedReceiver:
         for callee in ("app/Api.kt::Api::fetch", "app/Api.kt::Dao::read"):
             assert ("app/Repo.kt::Repo::load", callee, 0.90, "receiver_field_same_package") in edges
 
+    @staticmethod
+    def _kotlin_destructuring_edges(
+        tmp_path: Path, body: str, shapes: str = "data class Reading(val n: Norm, val x: Int)\n"
+    ) -> list[tuple[str, str, float, str]]:
+        parsed = _parse_all(
+            tmp_path,
+            {"k.kt": ("kotlin", f"{shapes}class Norm {{ fun size() = 1 }}\n{body}")},
+        )
+        return _edges(parsed, tmp_path)
+
+    def test_a_kotlin_destructured_local_takes_its_component_type(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path, "fun f(p: Reading) {\n    val (n, x) = p\n    n.size()\n}\n"
+        )
+        assert [e for e in edges if e[:2] == ("k.kt::f", "k.kt::Norm::size")]
+        assert all(e[3].startswith("receiver_typed") for e in edges if e[1] == "k.kt::Norm::size")
+
+    def test_a_kotlin_destructured_local_is_read_by_position(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path,
+            "fun f(p: Reading) {\n    val (_, m) = p\n    m.size()\n}\n",
+            "data class Reading(val n: Int, val x: Norm)\n",
+        )
+        assert ("k.kt::f", "k.kt::Norm::size") in {e[:2] for e in edges}
+
+    def test_a_kotlin_destructured_local_of_a_local_source(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path, "fun f() {\n    val p: Reading = load()\n    val (n, x) = p\n    n.size()\n}\n"
+        )
+        assert ("k.kt::f", "k.kt::Norm::size") in {e[:2] for e in edges}
+
+    def test_a_kotlin_destructuring_types_nothing_it_cannot_read(self, tmp_path: Path) -> None:
+        for body in (
+            # a component past the class's own, an unknown type, an untyped source
+            "fun f(p: Reading) {\n    val (a, b, c) = p\n    c.size()\n}\n",
+            "fun f(p: Reading) {\n    val (a, b) = p\n    b.size()\n}\n",
+            "fun f() {\n    val (n, x) = make()\n    n.size()\n}\n",
+            "fun f(p: Reading) {\n    val (_, x) = p\n    n.size()\n}\n",
+            # a lambda parameter of the same name hides the component
+            "fun f(p: Reading) {\n    val (n, x) = p\n    run { n -> n.size() }\n}\n",
+        ):
+            edges = self._kotlin_destructuring_edges(tmp_path, body)
+            assert "k.kt::Norm::size" not in {e[1] for e in edges}, body
+
+    def test_a_kotlin_destructuring_component_of_an_unknown_type_is_untyped(
+        self, tmp_path: Path
+    ) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path,
+            "fun f(p: Reading) {\n    val (n, x) = p\n    n.size()\n}\n",
+            "data class Reading(val n: Missing, val x: Int)\n",
+        )
+        assert "k.kt::Norm::size" not in {e[1] for e in edges}
+
     def test_a_swift_stored_property_types_its_receiver(self, tmp_path: Path) -> None:
         """An init-assigned `let`, read bare and through `self`."""
         parsed = _parse_all(
@@ -1648,9 +1702,26 @@ class TestJavaUnnamedObjectCall:
     ) -> None:
         assert self._targets(tmp_path, f"{receiver}.m(1);") == []
 
-    def test_a_non_path_receiver_keeps_the_repo_wide_unique_fallback(self, tmp_path: Path) -> None:
-        other = "package p;\npublic class Other {\n    public void only() {}\n}\n"
-        assert self._targets(tmp_path, "arr[0].only();", other) == ["p/Other.java::Other::only"]
+    @pytest.mark.parametrize("name", ["only", "get", "isBlank"])
+    def test_a_non_path_receiver_keeps_the_repo_wide_unique_fallback(
+        self, tmp_path: Path, name: str
+    ) -> None:
+        other = f"package p;\npublic class Other {{\n    public void {name}() {{}}\n}}\n"
+        assert self._targets(tmp_path, f"arr[0].{name}();", other) == [
+            f"p/Other.java::Other::{name}"
+        ]
+
+    @pytest.mark.parametrize("body", ["arr[0].contains(x);", "Map.class.isAssignableFrom(x);"])
+    def test_a_unique_repo_method_named_like_a_jdk_one_does_not_bind(
+        self, tmp_path: Path, body: str
+    ) -> None:
+        """``arr[0].contains(x)`` is a collection's ``contains`` far more often than the repo's one."""
+        name = body.split(".")[-1].split("(")[0]
+        other = (
+            f"package p;\npublic class Other {{\n"
+            f"    public boolean {name}(Object o) {{ return true; }}\n}}\n"
+        )
+        assert self._targets(tmp_path, body, other) == []
 
     @pytest.mark.parametrize("body", ["m(1); a.b.m(2);", "a.b.m(2); m(1);"], ids=["bare-first", "bare-last"])
     def test_a_bare_call_beside_it_keeps_every_tier(self, tmp_path: Path, body: str) -> None:
@@ -2257,6 +2328,28 @@ class TestModuleAliasReachesTopLevelOnly:
         }
         assert callees == {f"{module}::{'Build' if lang == 'go' else 'build'}"}
 
+    def test_an_astro_frontmatter_alias_reaches_the_top_level_function(
+        self, tmp_path: Path
+    ) -> None:
+        """Astro frontmatter is TypeScript, so its namespace import names a module."""
+        module, module_src, _, _ = _MODULE_ONLY_ALIAS_CASES["typescript"]
+        caller = "Page.astro"
+        caller_src = (
+            "---\nimport * as util from './util';\n\n"
+            "function run(): number {\n  return util.build();\n}\n---\n<p>hi</p>\n"
+        )
+        parsed = _parse_all(
+            tmp_path, {module: ("typescript", module_src), caller: ("astro", caller_src)}
+        )
+        _link_imports(parsed, {caller: {"./util": module}})
+        import_targets = {caller: {module}, module: set()}
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, import_targets)
+            if src == f"{caller}::run"
+        }
+        assert callees == {f"{module}::build"}
+
     def test_a_csharp_type_alias_still_reaches_the_type_s_members(
         self, tmp_path: Path
     ) -> None:
@@ -2282,7 +2375,7 @@ class TestModuleAliasReachesTopLevelOnly:
                 ),
             },
         )
-        _link_imports(parsed, {"Caller.cs": {"S": "Shapes.cs"}})
+        _link_imports(parsed, {"Caller.cs": {"N.Shape": "Shapes.cs"}})
         import_targets = {"Caller.cs": {"Shapes.cs"}, "Shapes.cs": set()}
         assert (
             "Caller.cs::Caller::Run",
@@ -2996,3 +3089,473 @@ class TestJsBareCallSkipsClassMembers:
             0.95,
             "self_scope",
         ) in _edges(parsed, tmp_path)
+
+
+class TestKotlinExtensionReceiverMember:
+    """A bare call in ``fun A.run()`` is ``this.go()`` on ``A``, ahead of any import."""
+
+    _A = "class A {\n    fun go() = 1\n}\n"
+    _B = "class B {\n    fun go() = 2\n}\n"
+    _U = "import B\n\nfun A.run() = go()\n"
+
+    def _targets(
+        self,
+        tmp_path: Path,
+        files: dict[str, str],
+        parents: dict[str, set[str]] | None = None,
+    ) -> list[str]:
+        parsed = _parse_all(tmp_path, {k: ("kotlin", v) for k, v in files.items()})
+        graph = {k: set() for k in parsed} | {"U.kt": {"B.kt"}}
+        resolver = CallResolver(
+            parsed, graph, repo_path=str(tmp_path), heritage_parents=parents or {}
+        )
+        return [
+            rc.callee_id for rc in resolver.resolve_file("U.kt", parsed["U.kt"].calls)
+            if rc.caller_id == "U.kt::run"
+        ]
+
+    def test_the_extended_types_member_beats_an_imported_one(self, tmp_path: Path) -> None:
+        files = {"A.kt": self._A, "B.kt": self._B, "U.kt": self._U}
+        assert self._targets(tmp_path, files) == ["A.kt::A::go"]
+
+    def test_a_receiver_without_the_member_keeps_the_import_edge(self, tmp_path: Path) -> None:
+        files = {"A.kt": "class A\n", "B.kt": self._B, "U.kt": self._U}
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_an_ancestor_of_the_receiver_answers(self, tmp_path: Path) -> None:
+        files = {
+            "A.kt": "open class A {\n    fun go() = 1\n}\n",
+            "C.kt": "class C : A()\n",
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun C.run() = go()\n",
+        }
+        parents = {"C.kt::C": {"A.kt::A"}}
+        assert self._targets(tmp_path, files, parents) == ["A.kt::A::go"]
+
+    def test_a_plain_function_still_binds_to_the_import(self, tmp_path: Path) -> None:
+        files = {
+            "A.kt": self._A,
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun run() = go()\n",
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_a_call_inside_a_lambda_keeps_the_import_edge(self, tmp_path: Path) -> None:
+        # A lambda may rebind ``this``, which a text scan cannot type, so the
+        # receiver's member is not preferred there.
+        files = {
+            "A.kt": self._A,
+            "B.kt": self._B,
+            "U.kt": "import B\n\nfun A.run() = listOf(1).map { go() }\n",
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_two_classes_sharing_the_receivers_name_give_no_edge(self, tmp_path: Path) -> None:
+        # ``A`` names two repo classes, so neither is known to be the receiver.
+        files = {
+            "one/A.kt": self._A,
+            "two/A.kt": self._A,
+            "U.kt": "fun A.run() = go()\n",
+        }
+        assert self._targets(tmp_path, files) == []
+
+    def test_a_top_level_extension_of_the_receiver_is_not_its_member(
+        self, tmp_path: Path
+    ) -> None:
+        # ``fun A.go()`` is not a member of ``A``; the call keeps the import edge.
+        files = {
+            "A.kt": "class A\n",
+            "E.kt": "fun A.go() = 3\n",
+            "B.kt": self._B,
+            "U.kt": self._U,
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+    def test_a_member_extension_inside_the_receiver_is_not_its_member(
+        self, tmp_path: Path
+    ) -> None:
+        # ``class A { fun B.go() }`` is indexed under ``A`` but needs a ``B`` as
+        # ``this``, which ``fun A.run()`` does not have: the import edge stays.
+        files = {
+            "A.kt": "class A {\n    fun B.go() = 3\n}\n",
+            "B.kt": self._B,
+            "U.kt": self._U,
+        }
+        assert self._targets(tmp_path, files) == ["B.kt::B::go"]
+
+
+class TestJavaStaticImport:
+    def test_a_static_import_binds_the_member_of_the_named_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.afterCommit`` means ``Ex.afterCommit``, not a nested type's one."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static void afterCommit(Runnable r) { r.run(); }\n"
+                    "  private static class Sync {\n"
+                    "    private void afterCommit(Runnable r) { }\n  }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.afterCommit;\npublic class User {\n"
+                    "  void go(Runnable r) { afterCommit(r); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.afterCommit": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Ex::afterCommit"}
+
+    def test_a_static_import_of_a_nested_type_member_binds_that_type(self, tmp_path: Path) -> None:
+        """``import static a.Ex.Sync.flush`` names the nested type's member, not the outer one's."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Sync {\n"
+                    "    public static void flush() { }\n  }\n"
+                    "  public static void flush() { }\n}\n",
+                ),
+                "b/User.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.Sync.flush;\npublic class User {\n"
+                    "  void go() { flush(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/User.java": {"a.Ex.Sync.flush": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/User.java": {"a/Ex.java"}})
+            if src == "b/User.java::User::go"
+        }
+        assert callees == {"a/Ex.java::Sync::flush"}
+
+    def test_a_static_import_binds_a_method_the_named_type_inherits(self, tmp_path: Path) -> None:
+        """``import static a.Ex.m`` binds ``Base.m`` when ``Ex`` inherits it, not a nested ``m``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Base {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Ex.java::Ex": {"a/Base.java::Base"}},
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_never_binds_a_nested_types_member_the_type_lacks(
+        self, tmp_path: Path
+    ) -> None:
+        """``Ex`` neither declares nor inherits ``m``, so ``Ex.Inner.m`` is not what it names."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        callees = {
+            callee
+            for src, callee, _, _ in _edges(parsed, tmp_path, {"b/Use.java": {"a/Ex.java"}})
+            if src == "b/Use.java::Use::run"
+        }
+        assert callees == set()
+
+    def test_a_static_import_binds_the_nearest_superclass_declaration(self, tmp_path: Path) -> None:
+        """``Mid`` overrides ``Base.m``, so ``import static a.Ex.m`` is ``Mid.m``, not ambiguous."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Mid.java": (
+                    "java",
+                    "package a;\npublic class Mid extends Base {\n"
+                    "  public static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Mid.java::Mid::m"}
+
+    def test_a_static_import_binds_a_method_a_grandparent_declares(self, tmp_path: Path) -> None:
+        """``Ex`` extends ``Mid`` extends ``Base``; only ``Base`` declares ``m``."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Base.java": (
+                    "java",
+                    "package a;\npublic class Base {\n  public static void m() { }\n}\n",
+                ),
+                "a/Mid.java": ("java", "package a;\npublic class Mid extends Base { }\n"),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex extends Mid {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={
+                "a/Ex.java::Ex": {"a/Mid.java::Mid"},
+                "a/Mid.java::Mid": {"a/Base.java::Base"},
+            },
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == {"a/Base.java::Base::m"}
+
+    def test_a_static_import_the_type_inherits_from_two_branches_binds_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Two unrelated ancestors declare ``m``: neither is the target, and ``Inner.m`` is not."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "a/Left.java": (
+                    "java",
+                    "package a;\npublic interface Left {\n  static void m() { }\n}\n",
+                ),
+                "a/Right.java": (
+                    "java",
+                    "package a;\npublic interface Right {\n  static void m() { }\n}\n",
+                ),
+                "a/Ex.java": (
+                    "java",
+                    "package a;\npublic class Ex implements Left, Right {\n"
+                    "  public static class Inner {\n"
+                    "    public static void m() { }\n  }\n}\n",
+                ),
+                "b/Use.java": (
+                    "java",
+                    "package b;\nimport static a.Ex.m;\npublic class Use {\n"
+                    "  public void run() { m(); }\n}\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"b/Use.java": {"a.Ex.m": "a/Ex.java"}})
+        resolver = CallResolver(
+            parsed,
+            {"b/Use.java": {"a/Ex.java"}},
+            repo_path=str(tmp_path),
+            heritage_parents={"a/Ex.java::Ex": {"a/Left.java::Left", "a/Right.java::Right"}},
+        )
+        callees = {
+            rc.callee_id for rc in resolver.resolve_file("b/Use.java", parsed["b/Use.java"].calls)
+        }
+        assert callees == set()
+
+
+class TestPythonLocalShadowsModuleClass:
+    """A Python local of a module-level class's name hides that class.
+
+    Regression test for #4843: the binding scan only recorded lowercase
+    names, so `C = make()` inside a function never shadowed `class C`.
+    """
+
+    _EDGE = ("m.py::f", "m.py::C", 0.95, "same_file")
+
+    def _edges_for(self, tmp_path: Path, body: str) -> list[tuple[str, str, float, str]]:
+        parsed = _parse_all(
+            tmp_path,
+            {"m.py": ("python", "class C:\n    pass\n\n" + body)},
+        )
+        return _edges(parsed, tmp_path)
+
+    def test_plain_assignment_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    C = make()\n    C()\n"
+        )
+
+    def test_for_target_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    for C in xs:\n        C()\n"
+        )
+
+    def test_with_as_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(
+            tmp_path, "def f():\n    with open('x') as C:\n        C()\n"
+        )
+
+    def test_parameter_shadows_the_class(self, tmp_path: Path) -> None:
+        assert self._EDGE not in self._edges_for(tmp_path, "def f(C):\n    C()\n")
+
+    def test_binding_in_another_function_does_not_shadow(
+        self, tmp_path: Path
+    ) -> None:
+        assert self._EDGE in self._edges_for(
+            tmp_path, "def g():\n    C = make()\n\ndef f():\n    C()\n"
+        )
+
+    def test_no_local_binding_keeps_the_edge(self, tmp_path: Path) -> None:
+        assert self._EDGE in self._edges_for(tmp_path, "def f():\n    C()\n")
+
+
+_PY_GO_RS = [
+    (
+        "python",
+        "py",
+        "def walk(n):\n    return 0\n\n\nclass C:\n    def walk(self, n):\n        return walk(n)\n",
+        "C::walk",
+        "walk",
+    ),
+    (
+        "go",
+        "go",
+        "package m\n\nfunc walk(n int) int { return 0 }\n\ntype S struct{}\n\n"
+        "func (s *S) walk(n int) int { return walk(n) }\n",
+        "S::walk",
+        "walk",
+    ),
+    (
+        "rust",
+        "rs",
+        "fn walk(n: i32) -> i32 { 0 }\n\nstruct T;\n\n"
+        "impl T {\n    fn walk(&self, n: i32) -> i32 { walk(n) }\n}\n",
+        "T::walk",
+        "walk",
+    ),
+]
+
+
+class TestBareCallSkipsMembersPyGoRs:
+    """A Python/Go/Rust bare ``foo()`` never names a class method either.
+
+    Python needs ``self.``, Go needs a receiver, Rust needs ``Self::`` or
+    ``self.``, so like JS/TS these languages consult the top-level table in
+    Tier 1 instead of the flat last-wins table, where a same-named method
+    declared after the top-level function would shadow it (or, as here,
+    swallow the call into the caller itself).
+    """
+
+    @pytest.mark.parametrize(("lang", "ext", "content", "caller", "callee"), _PY_GO_RS)
+    def test_a_bare_call_in_a_method_reaches_the_top_level_function(
+        self, tmp_path: Path, lang: str, ext: str, content: str, caller: str, callee: str
+    ) -> None:
+        file = f"m.{ext}"
+        parsed = _parse_all(tmp_path, {file: (lang, content)})
+        assert (f"{file}::{caller}", f"{file}::{callee}", 0.95, "same_file") in _edges(
+            parsed, tmp_path
+        )
+
+    def test_a_self_call_still_reaches_the_method(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "m.py": (
+                    "python",
+                    "class C:\n"
+                    "    def walk(self, n):\n"
+                    "        return 1\n"
+                    "    def run(self, n):\n"
+                    "        return self.walk(n)\n",
+                ),
+            },
+        )
+        assert ("m.py::C::run", "m.py::C::walk", 0.95, "self_scope") in _edges(
+            parsed, tmp_path
+        )
+
+    @pytest.mark.parametrize(("lang", "ext"), [("python", "py"), ("go", "go"), ("rust", "rs")])
+    def test_a_method_calling_a_different_name_is_unchanged(
+        self, tmp_path: Path, lang: str, ext: str
+    ) -> None:
+        bodies = {
+            "python": (
+                "def other(n):\n    return 0\n\n\nclass C:\n"
+                "    def walk(self, n):\n        return other(n)\n",
+                "m.py::C::walk",
+                "m.py::other",
+            ),
+            "go": (
+                "package m\n\nfunc other(n int) int { return 0 }\n\ntype S struct{}\n\n"
+                "func (s *S) walk(n int) int { return other(n) }\n",
+                "m.go::S::walk",
+                "m.go::other",
+            ),
+            "rust": (
+                "fn other(n: i32) -> i32 { 0 }\n\nstruct T;\n\n"
+                "impl T {\n    fn walk(&self, n: i32) -> i32 { other(n) }\n}\n",
+                "m.rs::T::walk",
+                "m.rs::other",
+            ),
+        }
+        content, caller, callee = bodies[lang]
+        parsed = _parse_all(tmp_path, {f"m.{ext}": (lang, content)})
+        assert (caller, callee, 0.95, "same_file") in _edges(parsed, tmp_path)

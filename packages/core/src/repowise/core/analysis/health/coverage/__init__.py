@@ -18,8 +18,10 @@ from .decay import (
     decay_since,
     measurement_ref,
 )
+from .delphi import parse_delphi_codecoverage
 from .detector import PARSERS, detect_format, is_test_file, parse
 from .discovery import (
+    EMPTY_COVERAGE_REPORT_NOTE,
     CoverageConfig,
     CoverageProvenance,
     CoverageScope,
@@ -39,7 +41,12 @@ from .discovery import (
     resolve_test_reports,
     suggest_prefixes,
 )
-from .freshness import FreshnessStatus, coverage_freshness, measurement_commit
+from .freshness import (
+    FreshnessStatus,
+    coverage_freshness,
+    live_head_commit,
+    measurement_commit,
+)
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -55,6 +62,7 @@ from .repowise_json import parse_repowise_json
 __all__ = [
     "DRIFT_MIN_MEASURED",
     "DRIFT_PCT",
+    "EMPTY_COVERAGE_REPORT_NOTE",
     "PARSERS",
     "ContextCoverageReport",
     "CoverageConfig",
@@ -79,6 +87,7 @@ __all__ = [
     "expand_report_patterns",
     "file_coverage",
     "is_test_file",
+    "live_head_commit",
     "measurement_commit",
     "measurement_ref",
     "normalize_report_path",
@@ -90,6 +99,7 @@ __all__ = [
     "parse_cobertura",
     "parse_contexts_file",
     "parse_coverage_sqlite",
+    "parse_delphi_codecoverage",
     "parse_go_coverprofile",
     "parse_jacoco",
     "parse_lcov",

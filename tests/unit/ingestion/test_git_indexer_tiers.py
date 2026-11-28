@@ -188,6 +188,9 @@ class _FakeJobStore:
         self.states.append((job_id, state.value))
         return None
 
+    async def find_resumable(self, *, repository_id=None):
+        return []
+
 
 async def test_backfill_runs_full_and_records_job(tmp_path) -> None:
     import git as gitpython

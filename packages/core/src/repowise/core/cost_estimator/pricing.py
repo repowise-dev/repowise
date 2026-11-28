@@ -152,7 +152,7 @@ _EMBED_DEFAULT_MODEL: dict[str, str] = {
     "edenai": "amazon.titan-embed-text-v2:0",
 }
 # Local or test vectors: free whatever the model.
-_FREE_EMBEDDERS = frozenset({"mock", "ollama"})
+_FREE_EMBEDDERS = frozenset({"mock", "ollama", "fastembed"})
 
 
 def lookup_embedding_cost(embedder: str, model: str | None = None) -> float | None:

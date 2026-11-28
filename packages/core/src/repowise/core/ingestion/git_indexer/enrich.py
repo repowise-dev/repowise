@@ -216,7 +216,14 @@ def _rank_within_eligible(
     eligible = [i for i, m in enumerate(metadata_list) if (m.get(source_key) or 0.0) > 0.0]
     if not eligible:
         return
-    eligible.sort(key=lambda i: metadata_list[i].get(source_key) or 0.0)
+    # Path breaks ties, as in recompute_git_percentiles: input order would make
+    # two files with the same value trade ranks between an index and an update.
+    eligible.sort(
+        key=lambda i: (
+            metadata_list[i].get(source_key) or 0.0,
+            metadata_list[i].get("file_path", ""),
+        )
+    )
     n = len(eligible)
     for rank, idx in enumerate(eligible):
         metadata_list[idx][target_key] = rank / n

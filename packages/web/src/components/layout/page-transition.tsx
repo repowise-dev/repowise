@@ -12,7 +12,8 @@ interface PageTransitionProps {
 
 export function PageTransition({ children }: PageTransitionProps) {
   const pathname = usePathname();
-  const isInternallyScrolledWorkspace = /\/repos\/[^/]+\/(?:chat|docs)\/?$/.test(pathname);
+  const isInternallyScrolledWorkspace =
+    /\/repos\/[^/]+\/(?:chat|docs|knowledge-graph)\/?$/.test(pathname);
 
   return (
     <AnimatePresence mode="wait" initial={false}>
@@ -26,8 +27,9 @@ export function PageTransition({ children }: PageTransitionProps) {
         // space left over after the route layout's banners instead of 100% of
         // `main` regardless of them. Most pages deliberately keep the default
         // `min-height: auto`, which lets a page taller than the viewport
-        // grow and scroll `main`. Chat and the Docs reader are bounded
-        // workspaces with their own scroll regions, so they opt out.
+        // grow and scroll `main`. Chat, the Docs reader and the Knowledge
+        // Graph canvas are bounded workspaces sized to the viewport, so they
+        // opt out.
         className={cn("flex-1", isInternallyScrolledWorkspace && "min-h-0 overflow-hidden")}
       >
         {children}

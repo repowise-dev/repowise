@@ -21,6 +21,7 @@ from repowise.core.providers.llm.template import TEMPLATE_PROVIDER_NAME
 
 from ..agent_digest import rejoin_questions
 from ..models import compute_source_hash
+from ..nav_titles import NAV_TITLE_KEY
 from .prompts import SYSTEM_PROMPTS
 
 if TYPE_CHECKING:
@@ -45,16 +46,25 @@ def files_digest(paths: Iterable[str], source_map: Mapping[str, bytes]) -> str:
 
 
 def group_material(
-    structural_key: str, members: Iterable[str] | None, source_map: Mapping[str, bytes] | None
+    structural_key: str,
+    members: Iterable[str] | None,
+    source_map: Mapping[str, bytes] | None,
+    parts: Iterable[Mapping[str, Any]] = (),
 ) -> str:
     """A module page's subject: its membership key plus its members' bytes.
 
-    Empty without a ``structural_key``, which keeps the page on the
-    prompt-hash gate.
+    A map page is also written from how its parts' pages open, so those
+    openings are part of its subject: a rewritten part regenerates the map
+    instead of leaving it describing the old part. Empty without a
+    ``structural_key``, which keeps the page on the prompt-hash gate.
     """
     if not structural_key:
         return ""
-    return f"{structural_key}|{files_digest(members or (), source_map or {})}"
+    material = f"{structural_key}|{files_digest(members or (), source_map or {})}"
+    openings = "\x00".join(f"{p.get('path', '')}\x01{p.get('summary', '')}" for p in parts)
+    if openings:
+        material += "|parts:" + hashlib.sha256(openings.encode("utf-8")).hexdigest()
+    return material
 
 
 def model_reuse_key(generator: Any, material: str, page_type: str, template: str) -> str:
@@ -122,10 +132,12 @@ def reuse_prior_response(
         matched = prior.source_hash == compute_source_hash(prompt)
     if not matched:
         return None
+    # The stored body lost its questions to the digest and its ``Nav:`` line
+    # to the page's metadata; the response it was split from carried both.
+    content = rejoin_questions(prior.content, prior.digest)
+    nav = prior.metadata.get(NAV_TITLE_KEY) if prior.metadata else None
     return GeneratedResponse(
-        # The stored body lost its questions to the digest; the response it
-        # was split from carried them.
-        content=rejoin_questions(prior.content, prior.digest),
+        content=f"Nav: {nav}\n\n{content}" if isinstance(nav, str) and nav else content,
         input_tokens=0,
         output_tokens=0,
         cached_tokens=0,

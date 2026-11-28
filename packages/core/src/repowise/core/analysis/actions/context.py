@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from repowise.core.stats import percentile
+
 from .facts import RepoFacts
 
 WEEK = timedelta(days=7)
@@ -72,18 +74,13 @@ def _naive(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(tzinfo=None) if value.tzinfo else value
 
 
-def _percentile(values: list[int], q: float) -> int:
-    if not values:
-        return 0
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, int(len(ordered) * q))]
-
-
 def build_context(facts: RepoFacts) -> RepoContext:
     production = [f for f in facts.files.values() if not f.is_test]
-    busy = _percentile([f.commits_90d for f in production if f.commits_90d > 0], BUSY_PERCENTILE)
-    fixes = _percentile(
-        [f.fix_commits_90d for f in production if f.fix_commits_90d > 0], FIX_PERCENTILE
+    busy = percentile(
+        [f.commits_90d for f in production if f.commits_90d > 0], BUSY_PERCENTILE, default=0
+    )
+    fixes = percentile(
+        [f.fix_commits_90d for f in production if f.fix_commits_90d > 0], FIX_PERCENTILE, default=0
     )
     anchor = facts.anchor
     return RepoContext(

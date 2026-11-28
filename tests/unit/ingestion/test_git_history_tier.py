@@ -172,6 +172,24 @@ def test_a_source_package_named_like_an_output_dir_keeps_its_history(tmp_path) -
     assert kept == {"pkg/coverage/README.md"}
 
 
+def test_history_tier_drops_engine_assets_without_opening_them(tmp_path, monkeypatch) -> None:
+    from repowise.core.ingestion import traverser
+    from repowise.core.ingestion.git_indexer.records import _history_tier_files
+
+    paths = ["Content/Hero.uasset", "Content/Hero.uexp", "Audio/Init.bnk", "docs/notes.md"]
+    for rel in paths:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n", encoding="utf-8")
+    sniffed: list[str] = []
+    real_is_binary = traverser._is_binary
+    monkeypatch.setattr(
+        traverser, "_is_binary", lambda p: sniffed.append(p.name) or real_is_binary(p)
+    )
+
+    assert _history_tier_files(tmp_path, paths) == {"docs/notes.md"}
+    assert sniffed == ["notes.md"]
+
+
 def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
     from repowise.core.ingestion.git_indexer.records import _history_tier_files
 

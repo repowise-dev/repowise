@@ -165,7 +165,16 @@
 ; Imports (using directives)
 ; ---------------------------------------------------------------------------
 
+; The alias of ``using R = X.Y;`` is the ``name:`` field, not an imported
+; module, so a bare identifier only counts when it is not that field.
 (using_directive
+  !name
+  (identifier) @import.module
+) @import.statement
+
+(using_directive
+  name: (identifier)
+  .
   (identifier) @import.module
 ) @import.statement
 
@@ -190,13 +199,13 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Member call: obj.Method(args) — and self-dispatch: this.Method(args).
+; Member call: obj.Method(args), this.Method(args), or a plain member path.
 ; ``this`` is an ANONYMOUS node in tree-sitter-c-sharp, so it is matched as the
 ; literal token "this"; `(this)` does not compile. See typescript.scm for why
 ; this is an alternation rather than a second pattern.
 (invocation_expression
   function: (member_access_expression
-    expression: [(identifier) "this"] @call.receiver
+    expression: [(identifier) "this" (member_access_expression)] @call.receiver
     name: [
       (identifier) @call.target
       (generic_name (identifier) @call.target)

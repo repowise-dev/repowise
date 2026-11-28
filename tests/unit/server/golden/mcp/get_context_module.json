@@ -18,15 +18,11 @@
           }
         ]
       },
-      "hotspot_files": 1,
-      "freshness": {
-        "confidence_score": 0.95,
-        "freshness_status": "fresh",
-        "is_stale": false
-      }
+      "hotspot_files": 1
     }
   },
   "_meta": {
-    "index_age_days": 7
+    "index_age_days": 7,
+    "replaced_tokens": 1200
   }
 }

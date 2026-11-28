@@ -1,4 +1,4 @@
-"""Read-only stdlib-``sqlite3`` twins of the three hot hook index lookups.
+"""Read-only stdlib-``sqlite3`` twins of the hot hook index lookups.
 
 Why this exists rather than the ORM the rest of the codebase uses: in a fresh
 hook process, ``import repowise.core.persistence`` costs ~958ms on this
@@ -8,10 +8,10 @@ triage's symbol + PageRank pair, the widened rescue's exact-name lookup) are
 plain SELECTs over two tables. They never used the MCP retrieval stack and
 already hand-write their own selects, so paying that import buys them nothing.
 
-The zero-result rescue deliberately does **not** use this module: 45% of its
-queries fall through to ``FullTextSearch``, which is genuinely shared code
-doing real work. No FTS5 is hand-rolled here and no part of the retrieval
-stack is replaced.
+The zero-result rescue uses this module for its symbol query only. When that
+finds nothing, 45% of rescues, it falls through to ``FullTextSearch``, which
+is genuinely shared code doing real work and stays on the ORM. No FTS5 is
+hand-rolled here and no part of the retrieval stack is replaced.
 
 Everything here is read-only and fails soft. :func:`connect` returns ``None``
 whenever the fast path is not provably safe, and every caller falls back to
@@ -24,6 +24,8 @@ from __future__ import annotations
 import os
 import sqlite3
 from pathlib import Path
+
+from ._shared import sqlite_wait_s
 
 #: The env vars ``resolve_db_url`` honours, copied from
 #: ``repowise.core.persistence.database.DB_ENV_VARS`` rather than imported:
@@ -66,10 +68,39 @@ def connect(repo_path: Path) -> sqlite3.Connection | None:
         return None
     try:
         return sqlite3.connect(
-            f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=1
+            f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=sqlite_wait_s(1)
         )
     except sqlite3.Error:
         return None
+
+
+def index_locked(repo_path: Path) -> bool:
+    """True when another process holds ``wiki.db`` locked against readers.
+
+    For callers whose own queries would each wait out a busy timeout: one
+    probe inside the process's wait budget instead of one wait per
+    statement. Any other outcome is False, so the caller's own error
+    handling runs exactly as before.
+    """
+    db_path = repo_path / ".repowise" / "wiki.db"
+    if not db_path.exists():
+        return False
+    try:
+        conn = sqlite3.connect(
+            f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=sqlite_wait_s(1)
+        )
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1").fetchone()
+    except sqlite3.OperationalError as exc:
+        code = (getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF
+        return code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+    return False
 
 
 def repo_id(conn: sqlite3.Connection, repo_path: Path) -> str | None:
@@ -162,6 +193,26 @@ def symbols_matching(
         f"WHERE repository_id = ? AND file_path IN ({placeholders}) "
         f"AND lower(name) LIKE lower(?) ESCAPE '{_LIKE_ESCAPE}'",
         (repository_id, *paths, f"%{escape_like(needle)}%"),
+    ).fetchall()
+
+
+def symbols_like(
+    conn: sqlite3.Connection, repository_id: str, needles: list[str], limit: int
+) -> list[tuple[str, str, str, int]]:
+    """``(name, kind, file_path, start_line)`` for symbols whose name contains
+    any of *needles*, ignoring case.
+
+    The zero-result rescue's symbol query: an ``ilike`` per needle, OR-ed,
+    with the same ``(file_path, name)`` order under the ``LIMIT``.
+    """
+    if not needles:
+        return []
+    like = f"lower(name) LIKE lower(?) ESCAPE '{_LIKE_ESCAPE}'"
+    return conn.execute(
+        "SELECT name, kind, file_path, start_line FROM wiki_symbols "
+        f"WHERE repository_id = ? AND ({' OR '.join([like] * len(needles))}) "
+        "ORDER BY file_path, name LIMIT ?",
+        (repository_id, *(f"%{escape_like(n)}%" for n in needles), limit),
     ).fetchall()
 
 

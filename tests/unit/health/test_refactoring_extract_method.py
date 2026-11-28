@@ -503,6 +503,38 @@ def _process_sources() -> dict[str, tuple[str, str]]:
         }
         """
     )
+    csharp = textwrap.dedent(
+        """
+        class Demo {
+            int Process(int[] records, int threshold) {
+                int errors = 0;
+                var results = new List<int>();
+                foreach (int r in records) {
+                    if (r < 0) {
+                        errors++;
+                        continue;
+                    }
+                    results.Add(r);
+                }
+                int total = 0;
+                int count = 0;
+                foreach (int v in results) {
+                    if (v > threshold) {
+                        total += v;
+                        count++;
+                    } else {
+                        total -= v;
+                    }
+                }
+                int average = 0;
+                if (count > 0) {
+                    average = total / count;
+                }
+                return average + errors;
+            }
+        }
+        """
+    )
     ts = textwrap.dedent(
         """
         function process(records: number[], threshold: number): number {
@@ -628,6 +660,7 @@ def _process_sources() -> dict[str, tuple[str, str]]:
     return {
         "python": ("py", py),
         "java": ("java", java),
+        "csharp": ("cs", csharp),
         "typescript": ("ts", ts),
         "go": ("go", go),
         "rust": ("rs", rust),
@@ -816,6 +849,7 @@ def test_plan_names_the_helper_with_a_placeholder():
         ("rust", "extracted_helper"),
         ("cpp", "extracted_helper"),
         ("java", "extractedHelper"),
+        ("csharp", "ExtractedHelper"),
         ("typescript", "extractedHelper"),
         ("go", "extractedHelper"),
     ],
@@ -916,6 +950,26 @@ def test_a_helper_inheriting_the_finding_undiminished_is_not_worth_it():
     assert not _worth_extracting(_Shape(13, 36), _Span(12, 30), {"complex_method"})
     # CCN 25 (critical) -> helper CCN 9 (medium): a real partial step.
     assert _worth_extracting(_Shape(25, 117), _Span(8, 40), {"complex_method"})
+
+
+def test_dispatch_heavy_function_judged_severity_refuses_helper_of_same_severity():
+    from repowise.core.analysis.health.models import Severity
+
+    # Repro for #4148:
+    # Function with raw CCN 30, but judged severity is MEDIUM due to dispatch.
+    # A span removing 12 points yields helper CCN 13 (which rule grades as MEDIUM).
+    # Since helper (MEDIUM) is not better than the finding's judged severity (MEDIUM),
+    # the extraction must be refused.
+    fn = _Shape(30, 80)
+    span = _Span(12, 30)
+
+    # When judged severity is MEDIUM (as in dispatch-heavy function):
+    assert not _worth_extracting(fn, span, {"complex_method": Severity.MEDIUM})
+
+    # On a plain function where raw CCN 30 yields CRITICAL severity:
+    # A helper of MEDIUM is an improvement over CRITICAL, so it is offered.
+    assert _worth_extracting(fn, span, {"complex_method": Severity.CRITICAL})
+    assert _worth_extracting(fn, span, {"complex_method"})
 
 
 def test_detector_offers_the_next_best_span_when_the_best_misses_the_floor():

@@ -28,6 +28,7 @@ from ..extractors.visibility import (
     refine_ts_visibility,
 )
 from ..language_configs import LanguageConfig
+from ..models import TS_JS_LANGUAGES as _TS_JS_LANGUAGES
 from ..models import Symbol
 from ..parser_helpers import (
     _elixir_is_template_definition,
@@ -40,11 +41,6 @@ from ..parser_helpers import (
 from ..python_overload import is_python_overload as _is_python_overload
 
 _node_text = node_text
-
-# Languages whose source reaches the parser as TypeScript/JavaScript. The
-# SFC tags are here because ``sfc_source`` projects their <script> blocks into
-# a TS buffer at identical offsets, so every TS/JS code path applies verbatim.
-_TS_JS_LANGUAGES = ("typescript", "javascript", "svelte", "vue", "astro")
 
 
 _TS_OVERLOAD_SIGNATURES = frozenset({"function_signature", "method_signature"})

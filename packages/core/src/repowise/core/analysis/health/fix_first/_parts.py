@@ -11,6 +11,7 @@ from typing import Any
 from repowise.core.analysis.health.refactoring.recipe import _strs
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.worth import WORTH_MAGNITUDE
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from . import text
 from .model import FixItem, FixRisk, FixTest, FixVerify
@@ -55,6 +56,9 @@ class _Unit:
     #: False for a performance cause whose marker has not cleared the bar for
     #: leading (``opportunity_rank.may_lead``): listed, never first.
     may_lead: bool = True
+    #: A measured hotspot: its self share of the leading run that measured it.
+    #: The highest that may lead leads the queue (``build.measured_lead``).
+    measured_share: float | None = None
 
 
 def _tail(symbol: str | None) -> str | None:
@@ -78,7 +82,7 @@ def _about(function: str | None, symbol: str | None) -> bool:
 def symbol_key(path: str, symbol: str | None) -> str | None:
     """A function's ``git_function_blame`` key, ``path::name``; ``None`` for no symbol."""
     name = text.short_symbol(symbol)
-    return f"{path}::{name}" if name else None
+    return make_symbol_id(path, name) if name else None
 
 
 def _open(row: Any) -> bool:
@@ -145,6 +149,7 @@ def _verify(profile: Mapping[str, Any] | None) -> FixVerify:
         commands[0] if commands else None,
         basis if basis in ("measured", "inferred") else "unknown",
         None if tests else profile.get("prerequisite"),
+        profile.get("measure") or None,
     )
 
 

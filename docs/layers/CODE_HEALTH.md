@@ -7,8 +7,6 @@ seconds for 3,000 files. It finds code shapes and change patterns that go with b
 code and hard-to-change code; it does not run your code or prove a bug exists, so a low
 score means "look here first", not "this is broken".
 
-How it works: [architecture/code-health.md](../architecture/code-health.md).
-
 ## Quick start
 
 ```bash
@@ -39,7 +37,9 @@ Code health: 7.42/10 [Good] · Production code: 6.93/10 [Fair] · Hotspot: 6.10/
 Every headline score carries its band, and Production code leaves test files out. A
 coverage figure measured at an earlier commit than the index says so on its row.
 
-## The three signals
+## Reading the results
+
+### The three signals
 
 Three signals come from one stream of findings, each with its own weights and caps, and
 are never blended into one number.
@@ -53,10 +53,10 @@ are never blended into one number.
 Smells that fire often but predict bugs weakly (low cohesion, duplicated code, broad
 error handling) are down-weighted in code health and counted in full in maintainability.
 
-## Reading the score
+### Reading the score
 
 Each file starts at 10; every finding deducts its severity times its marker weight, and
-the result is clamped to 1-10. Deductions are bounded per category; code categories bend toward their bound rather than
+the result is clamped to 1-10. Deductions are bounded per category; code categories bend toward their bound instead of
 stopping at it, so shrinking a critical function raises the score while it stays
 critical, and several findings on one function count mostly once
 ([scoring](../architecture/code-health.md#6-scoring-scoringpy)).
@@ -77,13 +77,13 @@ not analysed, never scored as a 10.
 
 | Control | Values | Effect |
 |---|---|---|
-| `scope` | `all` (default), `production` | `production` drops test, tooling, vendored and generated files, which lowers the headline because tests usually score higher |
+| `scope` | `all` (default), `production` | `production` drops test, tooling, build, vendored, generated and docs example files, which lowers the headline because tests usually score higher |
 | `counts` | `everything` (default), `code_shape` | `code_shape` removes the git-history half of each deduction, to see whether code improved after a refactor raised churn |
 
 Every response echoes both. `everything` is the calibrated number every accuracy claim
 refers to, and the badge always reports it.
 
-## Fix first
+### Fix first
 
 Fix first is one ranked list of what to fix: `repowise health` prints the top 3,
 `get_health()` and the dashboard Map tab show more. Each item is one unit of work (a
@@ -104,7 +104,7 @@ gain, the effort and the tests to run.
 | Verify | When no test reaches the code, add a characterization test first |
 | Counts | Counted the same everywhere (open, in scope, eligible, due, shown, each exclusion by reason), so the dashboard, `get_health` and `repowise health --format json` (`queue_counts`) agree |
 
-### Do next
+#### Do next
 
 `repowise next` prints the cross-layer list the dashboard calls Do next and
 `get_overview` returns as `next_actions`, from stored actions, so it is instant.
@@ -127,11 +127,13 @@ repowise next --json                   # the whole stored view
   row to plan.
 - A fragile file asks for tests when no coverage or test reaches it, else to simplify its
   lead function if Fix first would break it up, else to review why fixes keep landing.
+  Its fix count covers 90 days and counts the bug-fix commits that changed the file's code,
+  so it can differ from `get_risk`'s 6-month `fix_count`.
   A folder where fixes concentrate names its most fixed file's first step, or is left
   out. A coverage report 14 days older than the latest commit gets a refresh row. Under
   five commits, history-ranked rows are left out.
 
-## Findings
+### Findings
 
 Findings are the observations behind the score: the dashboard Findings tab lists them by
 dimension and severity, and `get_health(targets=[...])` per file. Each has a stable id
@@ -142,15 +144,16 @@ survives re-indexing, and a re-detected `resolved` finding reopens.
 ### Detector families
 
 The 59 detectors fall into families whose caps keep any one from dominating a file.
-Every id with its threshold and weight:
+Which of them move which score is in [What moves the score](#what-moves-the-score);
+every id with its threshold and weight is in
 [the full roster](../architecture/code-health.md#the-full-roster).
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, god classes, low cohesion, complex conditions; brain methods and repeated nesting are listed, not scored |
+| Structural complexity | 6 | 2.5 | Deep nesting, god classes, complex conditions; brain methods, repeated nesting and low cohesion are listed, not scored |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
-| Duplication | 1 | 1.0 | Cloned blocks |
-| Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
+| Duplication | 1 | 1.0 | Cloned blocks; scored in TypeScript, listed elsewhere |
+| Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors; scored in Python, listed elsewhere |
 | Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
 | Test coverage | 4 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a report), untested complex functions (advisory) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
@@ -161,11 +164,9 @@ Every id with its threshold and weight:
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance
   findings, cartesian joins included, only in performance risk (2.0).
-- Twenty-four detectors move code health. Nine are advisory: listed with zero impact,
-  out of impact-ranked lists unless you ask for the advisory dimension. Three governance
-  findings from the [decisions layer](DECISIONS.md) never deduct.
+- Three governance findings from the [decisions layer](DECISIONS.md) never deduct.
 - `dry_violation` and `duplicated_assertion_block` stay off every default surface (overview, priorities, MCP, REST lists) until
-  a re-measurement clears their precision; they are still scored. Assertion-block
+  a re-measurement clears their precision; `duplicated_assertion_block` still scores, `dry_violation` in TypeScript. Assertion-block
   markers fire only in test files; house assertion helpers go in the
   [`assertions:` block](../reference/CONFIG.md#the-assertions-block).
 - History amplifies code risk: alone it costs a file at most 1.0 point, so a simple file
@@ -174,7 +175,25 @@ Every id with its threshold and weight:
   and the `small-team` profile lowers them further.
 - Per-language coverage: [LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#code-health-coverage).
 
-## Trends, coverage and badges
+### What moves the score
+
+Repowise registers 59 detectors. The health score is the defect score, and the 59 split
+into four groups by what they score:
+
+| Group | Detectors | What they score |
+|---|---:|---|
+| Defect | 22 | Deduct from the health score. Eight of them (complex, large and nested methods, complex conditionals, god classes, primitive obsession, duplication, error handling) also score maintainability |
+| Performance | 22 | The separate performance pillar only, cartesian SQL joins included ([PERFORMANCE.md](PERFORMANCE.md)) |
+| SQL | 3 | Maintainability only: complex SQL, `SELECT *`, `UPDATE`/`DELETE` with no `WHERE` |
+| Advisory | 12 | Nothing: listed with a severity and a reason, out of impact-ranked lists unless you ask for the advisory dimension. Brain methods, repeated nesting, low cohesion, hidden coupling, untested complex functions, assertion-free and mock-saturated tests, the four Apex markers and the COBOL marker |
+
+Some defect detectors are advisory in specific languages, where their measured precision
+falls short: complex conditionals, god classes and primitive obsession are listed but not
+scored in the languages named in the roster, duplication scores only in TypeScript and
+error handling only in Python. Every id with its group:
+[the full roster](../architecture/code-health.md#the-full-roster).
+
+### Trends, coverage and badges
 
 - Every `init`, `update` and `health --recompute` stores a snapshot (the last 50 per
   repository); `repowise health --trend` prints the last 10 with declining, predicted
@@ -189,27 +208,6 @@ Every id with its threshold and weight:
 - After adding a report, `repowise health --recompute` analyzes the working tree instead
   of the stored analysis and, on a whole-repo table run, writes the result to the index.
 - `repowise health --badge` prints README badge Markdown.
-
-## In CI: `repowise health check`
-
-`repowise health check` analyses the changed files at the base and the head, with no
-index, and fails only on a code-shape finding the change wrote.
-
-```bash
-repowise health check origin/main...HEAD
-```
-
-- It exits `1` only on a new code-shape finding at high severity or above (`--fail-at`
-  moves the floor). A lower one warns, as does a worsened one (`--fail-on worsened`
-  fails on it); a moved or renamed one never fails.
-- History markers, coverage and file scores never decide it, so a squash merge cannot
-  change the verdict; `.repowise/health-rules.json` is read from the base, so a change
-  cannot loosen its own gate.
-- It warns when the change adds a suppression comment, skips or removes tests, loosens a
-  coverage threshold, or adds a test-environment branch to production code;
-  `--diff-risk error` makes those fail.
-
-Exit codes, formats and setup: [Repowise in CI](../start/CI.md).
 
 ## Configuration
 
@@ -232,6 +230,27 @@ entry wins over it. Only severity labels are tunable: weights and caps are the
 calibrated constants the published accuracy rests on. Full schema:
 [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 
+## In CI: `repowise health check`
+
+`repowise health check` analyses the changed files at the base and the head, with no
+index, and fails only on a code-shape finding the change wrote.
+
+```bash
+repowise health check origin/main...HEAD
+```
+
+- It exits `1` only on a new code-shape finding at high severity or above (`--fail-at`
+  moves the floor). A lower one warns, as does a worsened one (`--fail-on worsened`
+  fails on it); a moved or renamed one never fails.
+- History markers, coverage and file scores never decide it, so a squash merge cannot
+  change the verdict; `.repowise/health-rules.json` is read from the base, so a change
+  cannot loosen its own gate.
+- It warns when the change adds a suppression comment, skips or removes tests, loosens a
+  coverage threshold, or adds a test-environment branch to production code;
+  `--diff-risk error` makes those fail.
+
+Exit codes, formats and setup: [Repowise in CI](../start/CI.md).
+
 ## Accuracy and limits
 
 Measured without leakage: files scored before the bug window, checked against the next
@@ -249,14 +268,23 @@ six months of bug fixes ([method](../architecture/code-health.md#62-validation-a
   a bug fix in the last 180 days against the base rate: an association, not a forward
   test, silent below 25 scored files or 5 fixed ones.
 
-Every test: [BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects).
+Every test: [BENCHMARKS.md](../BENCHMARKS.md#code-health-that-predicts-bugs).
 
-## More
+## Where it shows up
 
 | Where | What |
 |---|---|
 | CLI | `repowise health`, `repowise next`, `repowise status`; flags in [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-health-path) |
 | MCP | [`get_health`](../agent/MCP_TOOLS.md#get_health); health fields on `get_risk`, `get_context` and `get_overview` |
+| Dashboard | The Code Health page per repository: Fix first on the Map tab, the Findings tab, Do next |
 | Editor | Per-file findings in the [VS Code extension](../agent/VSCODE.md) |
 | Refactoring | Plans per file from `repowise health --refactoring-targets` ([REFACTORING.md](REFACTORING.md)). Break Cycle is advisory: beside a file's steps, never one, never in Fix first; a Split File or Extract Class plan with an unnamed group is held the same way (`needs_design`) |
-| Layers | [PERFORMANCE.md](PERFORMANCE.md), [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md), [BUG_HISTORY.md](BUG_HISTORY.md), [DOC_DRIFT.md](DOC_DRIFT.md) |
+
+## See also
+
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
+- [architecture/code-health.md](../architecture/code-health.md): the pipeline, the full
+  roster, scoring and validation.
+- [PERFORMANCE.md](PERFORMANCE.md), [TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md),
+  [BUG_HISTORY.md](BUG_HISTORY.md), [DOC_DRIFT.md](DOC_DRIFT.md),
+  [REFACTORING.md](REFACTORING.md): the layers that feed and read the score.

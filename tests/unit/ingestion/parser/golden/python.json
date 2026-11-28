@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -158,6 +160,7 @@
       "test_split_runs",
       "do_work"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -167,6 +170,7 @@
         "line": 26,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 460,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -174,7 +178,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEqual",
@@ -183,6 +188,7 @@
         "line": 27,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 491,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -190,7 +196,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertTrue",
@@ -199,6 +206,7 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 522,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -206,7 +214,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "do_work",
@@ -215,6 +224,7 @@
         "line": 39,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 695,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -222,7 +232,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -249,7 +260,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -534,6 +547,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -543,6 +557,7 @@
         "line": 23,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 519,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -550,7 +565,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -575,7 +591,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -606,6 +624,7 @@
     "exports": [
       "many_branches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -630,7 +649,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -709,6 +730,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -733,7 +755,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -788,6 +812,7 @@
       "python_match",
       "python_if_elif"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -812,7 +837,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -867,6 +894,7 @@
       "deeply_nested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -891,7 +919,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1211,6 +1241,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1218,7 +1249,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": true,
+        "scopes": null
       },
       {
         "raw_statement": "import subprocess",
@@ -1236,6 +1270,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1243,7 +1278,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": true,
+        "scopes": null
       },
       {
         "raw_statement": "import time",
@@ -1261,6 +1299,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1268,7 +1307,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": true,
+        "scopes": null
       },
       {
         "raw_statement": "import httpx",
@@ -1286,6 +1328,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1293,7 +1336,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": true,
+        "scopes": null
       },
       {
         "raw_statement": "import requests",
@@ -1311,6 +1357,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1318,7 +1365,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": true,
+        "scopes": null
       },
       {
         "raw_statement": "from sqlalchemy import select",
@@ -1336,6 +1386,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1343,7 +1394,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -1361,6 +1415,7 @@
       "sink_outside_loop",
       "open_in_loop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1370,6 +1425,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 595,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1377,7 +1433,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "select",
@@ -1386,6 +1443,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 603,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1393,7 +1451,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "run",
@@ -1402,6 +1461,7 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 724,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1409,7 +1469,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1418,6 +1479,7 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 840,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1425,7 +1487,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1434,6 +1497,7 @@
         "line": 35,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 954,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1441,7 +1505,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "sleep",
@@ -1450,6 +1515,7 @@
         "line": 46,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1193,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1457,7 +1523,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1466,6 +1533,7 @@
         "line": 47,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1252,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1473,7 +1541,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "execute",
@@ -1482,6 +1551,7 @@
         "line": 52,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1446,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1489,7 +1559,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "scalars",
@@ -1502,6 +1573,7 @@
           "receiver_name": "session",
           "argument_count": 1
         },
+        "start_byte": 1457,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1509,7 +1581,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "process",
@@ -1518,6 +1591,7 @@
         "line": 53,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1512,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1525,7 +1599,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "run",
@@ -1534,6 +1609,7 @@
         "line": 58,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1631,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1541,7 +1617,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1550,6 +1627,7 @@
         "line": 63,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1749,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1557,7 +1635,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "select",
@@ -1566,6 +1645,7 @@
         "line": 68,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1825,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1573,7 +1653,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "where",
@@ -1586,6 +1667,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 1838,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1593,7 +1675,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "compute",
@@ -1602,6 +1685,7 @@
         "line": 74,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1976,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1609,7 +1693,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "execute",
@@ -1618,6 +1703,7 @@
         "line": 79,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2098,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1625,7 +1711,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1638,6 +1725,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 2228,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1645,7 +1733,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -1670,7 +1759,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1908,6 +1999,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1915,7 +2007,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "from typing import overload",
@@ -1933,6 +2028,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1940,7 +2036,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "import typing_extensions",
@@ -1958,6 +2057,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1965,7 +2065,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -1974,6 +2077,7 @@
       "parse",
       "parse"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1983,6 +2087,7 @@
         "line": 17,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 378,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1990,7 +2095,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Client",
@@ -1999,6 +2105,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 490,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2006,7 +2113,8 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],

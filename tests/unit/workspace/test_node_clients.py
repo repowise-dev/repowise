@@ -103,6 +103,25 @@ class TestInstances:
         repo = _write(tmp_path, {"src/client/index.ts": index, "src/pages/p.ts": caller})
         assert _calls(repo) == {("ky", "GET", "/api/things", "")}
 
+    def test_a_base_built_from_scheme_and_host_placeholders(self, tmp_path: Path) -> None:
+        http = (
+            "import axios from 'axios';\n"
+            "export const api = axios.create({\n"
+            "  baseURL: `${window.location.protocol}//"
+            "${import.meta.env.VITE_BACKEND_HOST || window?.location.host}`,\n"
+            "});\n"
+        )
+        caller = (
+            "import { api } from './http';\n"
+            'export const a = () => api.get<unknown>("/api/keys");\n'
+            "export const b = () => api.post<R>(`/api/conversations/${id}/start`, {});\n"
+        )
+        repo = _write(tmp_path, {"src/api/http.ts": http, "src/api/keys.ts": caller})
+        assert _calls(repo) == {
+            ("axios", "GET", "/api/keys", "VITE_BACKEND_HOST"),
+            ("axios", "POST", "/api/conversations/{param}/start", "VITE_BACKEND_HOST"),
+        }
+
     def test_got_extend_ofetch_create_and_class_fields(self, tmp_path: Path) -> None:
         text = (
             "import got from 'got';\nimport { ofetch } from 'ofetch';\n"
@@ -363,3 +382,39 @@ def test_a_node_request_call_links_to_the_service_it_names(tmp_path: Path) -> No
     contracts = HttpExtractor().extract(catalogue, "catalogue") + HttpExtractor().extract(cart, "cart")
     links = {(link.provider_repo, link.consumer_repo, link.contract_id) for link in match_contracts(contracts)}
     assert links == {("catalogue", "cart", "http::GET::/product/{param}")}
+
+
+def test_only_a_placeholder_host_after_a_scheme_placeholder_is_stripped() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_leading_base_expr
+
+    assert strip_leading_base_expr("${a}//literal.host/x") == ("//literal.host/x", "a")
+    assert strip_leading_base_expr("${a}//${b}:${PORT}/x") == ("/x", "b")
+    assert strip_leading_base_expr("${a}//${env.HOST ?? location.host}/x") == ("/x", "env.HOST")
+    assert strip_leading_base_expr("${API}/users/${id}") == ("/users/${id}", "API")
+    # A placeholder that is only part of the host is not a whole base.
+    path, _ = strip_leading_base_expr("${s}//${tenant}.example.com/api/users")
+    assert path.startswith("//${tenant}")
+    assert strip_leading_base_expr("${a}//${b}") == ("/", "b")
+
+
+def test_a_trailing_hole_after_a_path_parameter_is_stripped() -> None:
+    from repowise.core.workspace.extractors.http.paths import strip_trailing_query_expr
+
+    assert strip_trailing_query_expr("${a}${b}") == "${a}"
+    path = "/api/repos/${id}/files/${encoded}"
+    assert strip_trailing_query_expr(path + "${qs}") == path
+    assert strip_trailing_query_expr("/x${path}") == "/x"
+    # A lone parameter segment, and one that is part of a composed value, stay.
+    assert strip_trailing_query_expr("/users/${id}") == "/users/${id}"
+    assert strip_trailing_query_expr("/users/user-${id}") == "/users/user-${id}"
+
+
+def test_a_hole_after_a_path_parameter_is_a_glued_name() -> None:
+    from repowise.core.workspace.extractors.http.paths import trailing_glued_name
+
+    assert trailing_glued_name("/api/v1${endpoint}") == "endpoint"
+    assert trailing_glued_name("/repos/${id}${endpoint}") == "endpoint"
+    assert trailing_glued_name("${a}${b}") == "b"
+    # A parameter segment, and two holes glued onto a literal segment, give None.
+    assert trailing_glued_name("/users/${id}") is None
+    assert trailing_glued_name("/a${x}${y}") is None

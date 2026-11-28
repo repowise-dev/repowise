@@ -89,6 +89,9 @@ class PeriodHealthSummaryResponse(BaseModel):
     findings_introduced: int
     findings_worsened: int
     net_findings: int
+    #: Commits per work category (feature, fix, refactor...) under the same
+    #: filters. Only on ``/commits/health-summary``.
+    categories: dict[str, int] | None = None
 
 
 class WinsResolvingCommit(BaseModel):

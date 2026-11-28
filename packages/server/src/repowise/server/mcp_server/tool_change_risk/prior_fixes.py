@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import Any
 
 import structlog
@@ -37,6 +38,8 @@ log = structlog.get_logger("repowise.server.mcp_server.tool_change_risk")
 #: Cap on the per-file prior-fix list, matching ``_IMPACTED_TESTS_LIMIT`` so both
 #: per-file blocks in this response stay the same size.
 _PRIOR_FIXES_LIMIT = 10
+#: At most three linked issues are quoted per file row.
+_LINKED_ISSUES_LIMIT = 3
 
 
 async def _prior_fixes_block(
@@ -109,6 +112,8 @@ def _prior_fix_row(entry: PriorFixFile) -> dict[str, Any]:
     # Absent rather than null when no event carried a date, as before.
     if entry.last_fix_days_ago is not None:
         row["last_fix_days_ago"] = entry.last_fix_days_ago
+    if entry.linked_issues:
+        row["linked_issues"] = list(entry.linked_issues)
     return row
 
 
@@ -164,7 +169,7 @@ async def _read_prior_fixes(
         except FixHistoryUnavailableError as exc:
             return unavailable_prior_fixes(f"could not place fixes in history: {exc}")
 
-    return summarize_prior_fixes(
+    impact = summarize_prior_fixes(
         (
             FixRecord(
                 fix_sha=event.fix_sha,
@@ -176,6 +181,53 @@ async def _read_prior_fixes(
         ),
         changed,
     )
+    return await _with_linked_issues(ctx, impact, events)
+
+
+async def _with_linked_issues(
+    ctx: Any, impact: PriorFixImpact, events: list[Any]
+) -> PriorFixImpact:
+    """*impact* with each file's linked bug and incident issues, newest fix first.
+
+    Read over the fixes the summary counted, so an issue never names a fix the
+    count left out. A store without links, or one that cannot be read, leaves
+    *impact* as it was.
+    """
+    from repowise.core.persistence.crud.issue_links import linked_defect_issues
+    from repowise.core.persistence.database import get_session
+
+    if impact.status != "available" or not impact.files:
+        return impact
+    try:
+        async with get_session(ctx.session_factory) as session:
+            repo_id = (await _pkg._get_repo(session)).id
+            linked = await linked_defect_issues(session, repo_id, {e.fix_sha for e in events})
+    except (LookupError, SQLAlchemyError):
+        return impact
+    if not linked:
+        return impact
+    quotes = _quotes_by_file(events, linked)
+    files = tuple(
+        replace(f, linked_issues=tuple(quotes[f.file_path].values()))
+        if quotes.get(f.file_path)
+        else f
+        for f in impact.files
+    )
+    return replace(impact, files=files)
+
+
+def _quotes_by_file(events: list[Any], linked: dict[str, list[Any]]) -> dict[str, dict[str, str]]:
+    """``path -> {key: quote}``, newest fix first, at most three issues per file."""
+    quotes: dict[str, dict[str, str]] = {}
+    newest_first = sorted(
+        events, key=lambda e: e.committed_at.timestamp() if e.committed_at else 0.0, reverse=True
+    )
+    for event in newest_first:
+        per_file = quotes.setdefault(event.file_path, {})
+        for issue in linked.get(event.fix_sha, ()):
+            if len(per_file) < _LINKED_ISSUES_LIMIT:
+                per_file.setdefault(issue.key, issue.quote())
+    return quotes
 
 
 async def _events_before(ctx: Any, events: list[Any], history_ref: str) -> list[Any]:

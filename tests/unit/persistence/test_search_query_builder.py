@@ -88,9 +88,13 @@ class TestFrequencyCeiling:
         built = _build_fts5_query(
             "walker file checkouts nested descending", _df(counts, total=1000)
         )
-        assert "walker" in built
-        assert "checkouts" in built
-        assert "file" not in built
+        terms = built.split(" OR ")
+        assert '"walker"*' in terms
+        assert '"checkouts"*' in terms
+        assert '"file"*' not in terms
+        # A dropped word survives only as a phrase with a selective neighbour.
+        assert '"walker file"*' in terms
+        assert '"file checkouts"*' in terms
 
     def test_the_floor_outranks_the_ceiling_on_a_short_question(self):
         """A question with too few selective terms keeps its rarest few even when

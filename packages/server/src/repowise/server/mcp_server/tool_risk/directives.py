@@ -32,10 +32,13 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
+    of_the_change,
+    share_run_all_reason,
     split_apart,
 )
 from repowise.server.mcp_server.tool_risk.directives_pr import (
     _WORKSPACE_FAMILIES,  # noqa: F401  re-exported
+    ALWAYS_RUN_FIELD,
     APART_FIELDS,
     _as_path,
     _drop_family,
@@ -409,7 +412,11 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
     """Governing decisions over *changed_files* that are stale, superseded, or
     contradicted. Bounded to 5 entries. Never raises (returns what it has).
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     governance_risk: list[dict[str, Any]] = []
+    if layer_mode(getattr(ctx, "path", None)) == "off":
+        return governance_risk
     try:
         async with get_session(ctx.session_factory) as _gr_session:
             _gr_repo = await _get_repo(_gr_session)
@@ -576,10 +583,20 @@ def _tests_to_run(
     # In run order (``test_ranking``); the tests counted apart still run.
     population, *apart = split_apart(selection)
     counts = dict(zip(APART_FIELDS, apart, strict=True))
+    # A test that runs with every subset is not a test of these files: it runs,
+    # counted in ``tests_always_run_total``, but never takes a listed slot.
+    counts[ALWAYS_RUN_FIELD] = [t for t in population if not of_the_change(selection, t)]
+    population = [t for t in population if of_the_change(selection, t)]
     for key, tests in counts.items():
         if tests:
             collector.add(f"directive.{key.removesuffix('_total')} ({len(tests)})", tests)
     reasons = list(selection.reasons)
+    # A subset holding most of the suite saves little; the ranked head still leads.
+    # Its notes were never on the wire for a subset, so only this reason is.
+    share = share_run_all_reason(selection)
+    run_all = selection.run_all or share is not None
+    if share:
+        reasons = [share]
     if len(reasons) > _RUN_ALL_REASONS_LIMIT:
         collector.add(
             f"directive.tests_run_all_reasons beyond cap={_RUN_ALL_REASONS_LIMIT} "
@@ -587,9 +604,9 @@ def _tests_to_run(
             reasons[_RUN_ALL_REASONS_LIMIT:],
         )
     shown = dict.fromkeys(t.split("::", 1)[0] for t in population[:_TESTS_TO_RUN_LIMIT])
-    extra: dict[str, Any] = {"tests_run_all": selection.run_all}
+    extra: dict[str, Any] = {"tests_run_all": run_all}
     extra.update((key, len(tests)) for key, tests in counts.items() if tests)
-    if selection.run_all:
+    if run_all:
         extra["tests_run_all_reasons"] = reasons[:_RUN_ALL_REASONS_LIMIT]
     extra["tests_to_run_why"] = {p: selection.why[p] for p in shown if p in selection.why}
     return population, basis_of(selection), extra

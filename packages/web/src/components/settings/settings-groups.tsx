@@ -14,6 +14,8 @@ export const SETTINGS_GROUPS = [
   "models",
   "sync",
   "coverage",
+  "plugins",
+  "all",
   "server",
   "display",
   "privacy",
@@ -21,7 +23,7 @@ export const SETTINGS_GROUPS = [
 
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number];
 
-/** General and Coverage are per repository, so global settings has neither. */
+/** General, Coverage, Plugins and All settings are per repository, so global settings has none of them. */
 export const GLOBAL_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
   "setup",
   "agents",
@@ -40,6 +42,8 @@ export const REPO_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
   "models",
   "sync",
   "coverage",
+  "plugins",
+  "all",
 ];
 
 export const GLOBAL_SETTINGS_BASE = "/settings";
@@ -56,6 +60,12 @@ export function settingsHref(group: SettingsGroupId): string {
 /** One repository's settings sub-page. */
 export function repoSettingsHref(repoId: string, group: SettingsGroupId): string {
   return `${repoSettingsBase(repoId)}/${group}`;
+}
+
+/** A repo's Setup page. Here rather than beside the Setup entry so a server
+ *  module can build the link without importing a client component's file. */
+export function setupHref(repoId: string): string {
+  return repoSettingsHref(repoId, "setup");
 }
 
 /** Anchors from when settings was one long page, and where each lives now. */

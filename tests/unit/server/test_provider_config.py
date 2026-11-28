@@ -241,6 +241,45 @@ def test_global_selection_used_when_repo_has_no_config(clean_env, tmp_path):
     assert (provider, model) == ("anthropic", "claude-sonnet-4-6")
 
 
+def test_a_default_an_earlier_index_copied_down_is_released(clean_env, tmp_path):
+    """#5709: such a repo follows the next change to the Settings default."""
+    import json
+
+    from repowise.core.repo_config import load_repo_config
+
+    repo = _make_repo(tmp_path / "repo", config="provider: anthropic\nmodel: claude-sonnet-4-6\n")
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"provider": "anthropic", "model": "claude-sonnet-4-6"}), encoding="utf-8"
+    )
+    pc.set_active_provider("anthropic", "claude-sonnet-4-6")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo))[0] == "anthropic"
+    assert "provider" not in load_repo_config(repo)
+
+    pc.set_active_provider("ollama", "qwen")
+
+    selection = pc.resolve_for_repo("r1", str(repo))
+    assert (selection.provider, selection.model) == ("ollama", "qwen")
+    assert selection.provider_source == "global"
+
+
+def test_a_provider_that_is_not_the_default_survives_a_default_change(clean_env, tmp_path):
+    import json
+
+    repo = _make_repo(tmp_path / "repo", config="provider: gemini\nmodel: g-1\n")
+    (repo / ".repowise" / "state.json").write_text(
+        json.dumps({"provider": "gemini", "model": "g-1"}), encoding="utf-8"
+    )
+    pc.set_active_provider("anthropic", "claude-sonnet-4-6")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo)) == ("gemini", "g-1")
+
+    pc.set_active_provider("gemini", "g-1")
+    pc.set_active_provider("ollama", "qwen")
+
+    assert pc.get_active_provider(repo_id="r1", repo_path=str(repo)) == ("gemini", "g-1")
+
+
 # ---------------------------------------------------------------------------
 # D6: set_api_key mirrors into the repo's .repowise/.env so the CLI sees it.
 # ---------------------------------------------------------------------------
@@ -294,6 +333,25 @@ def test_set_api_key_rejects_newline_in_value(clean_env, tmp_path):
     repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
     with pytest.raises(ValueError, match="newline"):
         pc.set_api_key("anthropic", "sk-ant\nEVIL=1", repo_path=str(repo))
+
+
+def test_set_api_key_rejects_a_trailing_newline_rather_than_stripping_it(clean_env, tmp_path):
+    # The newline check runs before the strip, so this is still refused.
+    with pytest.raises(ValueError, match="newline"):
+        pc.set_api_key("anthropic", "sk-ant-xyz\n")
+
+
+def test_set_api_key_rejects_blank_value_before_writing(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    pc.set_api_key("anthropic", "sk-ant-xyz", repo_path=str(repo))
+
+    with pytest.raises(ValueError, match="empty"):
+        pc.set_api_key("anthropic", "   ", repo_path=str(repo))
+
+    from repowise.core.repo_config import load_repo_env
+
+    assert pc._get_key_for_provider("anthropic") == "sk-ant-xyz"
+    assert load_repo_env(repo)["ANTHROPIC_API_KEY"] == "sk-ant-xyz"
 
 
 def test_config_path_defaults_to_home(monkeypatch, tmp_path):
@@ -530,6 +588,26 @@ def test_legacy_json_selection_moves_into_an_empty_config_yaml(clean_env, tmp_pa
     cfg = load_repo_config(repo)
     assert (cfg["provider"], cfg["model"], cfg["embedder"]) == ("openai", "gpt-5.4", "mock")
     assert "repos" not in pc._load_config()
+
+
+async def test_preflight_probe_sees_a_legacy_only_selection(clean_env, tmp_path):
+    """The preflight resolves with the repo id, as the index job does, so a
+    choice left only in the legacy per-repo store is probed, not skipped."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+
+    from repowise.server.routers._repo_pricing import probe_provider
+
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    _write_store(tmp_path, {"repos": {"r1": {"provider": "openai", "model": "gpt-5.4"}}})
+    built = SimpleNamespace(
+        provider_name="openai", model_name="gpt-5.4", generate=AsyncMock(return_value="OK")
+    )
+    with patch("repowise.core.providers.llm.registry.get_provider", return_value=built):
+        result = await probe_provider(str(repo), "r1")
+
+    assert result["configured"] is True
+    assert (result["ok"], result["name"], result["model"]) == (True, "openai", "gpt-5.4")
 
 
 def test_legacy_json_selection_is_dropped_when_yaml_has_a_provider(clean_env, tmp_path):

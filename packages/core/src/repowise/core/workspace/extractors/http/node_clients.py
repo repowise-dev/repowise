@@ -45,9 +45,10 @@ from ..strings import (
     select_argument,
 )
 from .angular import ANGULAR_HTTP, http_client_receivers, imported_environment
-from .client_calls import VERBS, is_rooted_url, method_from_argument
+from .client_calls import VERBS, is_rooted_url, join_base, method_from_argument, method_from_options
 from .commonjs import imported_exports
 from .dialect import build_consumer_contract
+from .url_builders import settle_url_builders
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -116,7 +117,6 @@ _GLOBALS = tuple((g, lib) for lib in _LIBRARY_LIST for g in lib.globals)
 # Qualifiers a client is called through: its own class, the browser global, Vue.
 _QUALIFIER_RE = re.compile(r"(?:this|window|Vue)\s*\.\s*$")
 
-_METHOD_KEY = Arg(keys=("method",))
 # A local a call's URL or options may be held in; a dotted name is a member, not a local.
 _LOCAL_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
@@ -134,9 +134,10 @@ class _Client:
     direct: bool = False  # the library itself, not an instance of it
 
 
-# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`.
+# `import x from 'm'`, `import x, { a, b as c } from 'm'`, `import { a } from 'm'`, `import * as x from 'm'`.
 _IMPORT_RE = re.compile(
     r"""import(?<![\w$]import)\s+(?:type\s+)?(?:(?P<default>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
+    r"""(?:\*\s+as\s+(?P<star>[A-Za-z_$][\w$]*)\s*,?\s*)?"""
     r"""(?:\{(?P<named>[^{}]*)\}\s*)?from\s*['"](?P<spec>[^'"]+)['"]"""
 )
 # `const x = require('m')`, the binding read back from the `require`.
@@ -178,6 +179,8 @@ def _imports(content: str) -> list[tuple[str, str, str]]:
         for m in _IMPORT_RE.finditer(content):
             if m.group("default"):
                 out.append((m.group("default"), "default", m.group("spec")))
+            if m.group("star"):
+                out.append((m.group("star"), "*", m.group("spec")))
             out.extend((alias, name, m.group("spec")) for name, alias in _named(m.group("named") or ""))
     if "require" in content:
         for m in _REQUIRE_RE.finditer(content):
@@ -372,52 +375,78 @@ def _request(
             return None  # `request` takes a config object
         url_raws = select_argument(args[:1], Arg(keys=library.url_keys)) if config else args[:1]
         options = args[:1] if config else args[1:2]
-        methods = select_argument(options, _METHOD_KEY)
-        method = (method_from_argument(methods[0]) if methods else None) or "GET"
+        method = method_from_options(options) or "GET"
     url = strings.text(local(url_raws[0])) if url_raws else None
     if url is None:
         return None
     base = _base(options, library, strings)
-    return method, _join(client.base if base is None else base, url)
+    return method, join_base(client.base if base is None else base, url)
 
 
-class _Fields:
+class FieldScope:
     """The class fields in scope at a call, settled into the file's strings.
 
     Only the innermost class holding the call is in scope, so a field of one
-    class never folds into another's URL. Holes are allowed, and a field built
-    on another (``users = `${this.base}/users```) resolves on the second
-    round, once the first has settled ``this.base``.
+    class never folds into another's URL, and inside a static member only the
+    class's static fields are. Holes are allowed, and a field built on
+    another (``users = `${this.base}/users```) resolves on the second round,
+    once the first has settled ``this.base``.
     """
 
     def __init__(self, strings: FileStrings) -> None:
         self._strings = strings
         self._classes: list[ClassFields] | None = None
-        self._current: ClassFields | None = None
+        self._cache: dict[tuple[int, bool], dict[str, str]] = {}
+        self._current: dict[str, str] | None = None
+
+    def raw(self, name: str) -> str | None:
+        """The source text the class entered last sets field *name* (``this.x``) to."""
+        return self._current.get(name) if self._current else None
+
+    def _resolve_fields(self, found: ClassFields, is_static: bool) -> dict[str, str]:
+        chain = [found]
+        seen = {found.name}
+        current = found
+        while current.base_name:
+            if current.base_name in seen:
+                break
+            seen.add(current.base_name)
+            base = next((c for c in self._classes or () if c.name == current.base_name), None)
+            if base is None:
+                break
+            chain.append(base)
+            current = base
+        merged: dict[str, str] = {}
+        for cls in reversed(chain):
+            merged.update(cls.static_fields if is_static else cls.fields)
+        return merged
 
     def enter(self, pos: int) -> None:
         if self._classes is None:
             self._classes = js_class_fields(self._strings.content)
+            self._cache = {}
         found = next((c for c in self._classes if c.start <= pos < c.end), None)
-        if found is self._current:
+        if found is None:
+            fields = None
+        else:
+            is_static = any(a <= pos < b for a, b in found.static_spans)
+            key = (found.start, is_static)
+            if key not in self._cache:
+                self._cache[key] = self._resolve_fields(found, is_static)
+            fields = self._cache[key]
+        if fields == self._current:
             return
         settled = self._strings.settled
-        for name in self._current.fields if self._current else ():
+        for name in self._current or ():
             settled.pop(name, None)
-        self._current = found
-        if found is None:
+        self._current = fields
+        if not fields:
             return
         for _ in range(2):
-            for name, rhs in found.fields.items():
+            for name, rhs in fields.items():
                 text = self._strings.text(rhs)
                 if text is not None:
                     settled[name] = text
-
-
-def _join(base: str, url: str) -> str:
-    if not base or url.startswith(("http://", "https://", "//")):
-        return url
-    return base.rstrip("/") + "/" + url.lstrip("/") if url else base
 
 
 def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
@@ -435,12 +464,13 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
     imports = _imports(content)
     strings.settled.update(imported_environment(ctx, imports))
     strings.settled.update(imported_exports(ctx, imports))
+    settle_url_builders(ctx, imports, strings)
     clients = _file_clients(ctx, imports, strings).callable
     # `ofetch(url)` is a fetch call the fetch reader already reads.
     names = tuple(n for n, c in clients.items() if not (c.direct and not c.library.verbs))
     if not names:
         return [], frozenset()
-    fields = _Fields(strings)
+    fields = FieldScope(strings)
     out: list[Contract] = []
     for _call, args, m, _strings in call_sites(ctx, _calls_for(names), strings):
         if any("this." in a for a in args[:3]):
@@ -467,10 +497,11 @@ def client_calls(ctx: ScanContext) -> tuple[list[Contract], frozenset[str]]:
             client=client.library.name,
             line=line_at(content, m.start()),
             origin=ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.CLIENT_CALL,
+            offset=m.start(),
         )
         if c is not None:
             out.append(c)
     return out, frozenset(names)
 
 
-__all__ = ["client_calls", "client_mounts"]
+__all__ = ["FieldScope", "client_calls", "client_mounts"]

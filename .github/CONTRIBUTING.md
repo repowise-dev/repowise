@@ -229,7 +229,6 @@ repowise/
     ui/          # Shared React UI components
     web/         # Next.js frontend
     vscode/      # VS Code extension (has its own CI job)
-    claude-mod/  # Repowise Lens, the Claude Code mod
   plugins/       # Agent plugins (Claude Code and others)
   tests/         # providers/, unit/ and integration/
   docs/          # Documentation
@@ -244,6 +243,9 @@ repowise/
   install can pick up a newer ruff whose formatter rewrites hundreds of files. That diff
   buries the change you actually made.
 - **TypeScript**: Linted with ESLint (`npm run lint`) and type-checked (`npm run type-check`)
+- Before writing a helper, check [single-sources.md](../docs/architecture/single-sources.md):
+  if a module already owns the concept (file origin, test paths, manifest names, build
+  units, skip directories, commit ids, symbol ids), call or extend it instead of copying it
 - Keep functions small and focused
 - Write docstrings for public APIs
 
@@ -269,6 +271,9 @@ its own package: call `register_provider(name, factory)` from a plugin's
 
 Adding a new language has a dedicated recipe, see
 [docs/architecture/language-support.md](../docs/architecture/language-support.md).
+Joining a language's profile frames to functions, or giving its test runner test
+timings in `evidence setup`, has its own, see
+[docs/architecture/runtime-evidence-languages.md](../docs/architecture/runtime-evidence-languages.md).
 Adding an agent integration or an agent CLI indexing backend has its own recipe, see
 [docs/architecture/agent-platform.md](../docs/architecture/agent-platform.md).
 
@@ -291,6 +296,16 @@ runs and what a failure does. Start from the
 - A test asserting on a `caplog` record sets the level on the module's own logger:
   `caplog.set_level(logging.INFO, logger="<full logger name>")`. Setting the root
   level is not enough, because ancestors such as `repowise.core` set their own.
+
+### How CI runs
+
+[docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
+it checks, when it runs and the command that reproduces it locally. A pull
+request runs the Python 3.12 tests in three shards, plus only the suites its
+changed paths need; `Python tests` is the one Python check that must pass.
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/3`. The
+"Test selection compared" job summary shows which tests `repowise impacted-tests`
+would have picked for your change; it is recorded only and never blocks.
 
 ### Retrieval guard
 
@@ -326,12 +341,26 @@ the two dumps (do not commit them). Always report coverage
 with precision beside it: serving more files raises coverage for free, so a
 coverage gain that costs precision is a trade-off to justify, not a win.
 
+### MCP response gate
+
+`tests/integration/mcp/test_response_gate.py` runs on pull requests that touch the
+MCP tools or retrieval. It checks each default tool's response size against
+`tests/fixtures/mcp/response_budgets.json`. If a size change is intended, re-bless
+with `REPOWISE_REWRITE_GOLDEN=1 uv run pytest tests/integration/mcp/test_response_gate.py`
+and commit the budget diff.
+
 ## Pull Request Guidelines
 
 - Keep PRs focused on a single change
 - Write a clear description of what and why
 - Reference any related issues
 - Ensure CI passes before requesting review
+- The [Repowise bot](https://repowise.dev/bot) reviews every PR; its verdict is the `Repowise review` check. If
+  one of its inline points is fixed or wrong, reply in that thread (for example
+  "Fixed in <sha>") and it rechecks and resolves it. A 👍 or 👎 on a point tells it
+  whether the point was useful.
+- Once you have a merged PR here, comment `/rerun` on any open PR to re-run its
+  failed checks, for example a flaky test.
 - All PRs require at least one code owner approval
 - Commits do not list a coding agent as author or co-author (for example a
   `Co-authored-by: Copilot` or `Co-Authored-By: Claude` trailer); maintainers ask

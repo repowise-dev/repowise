@@ -18,6 +18,12 @@ import type {
   TestsReachingFile,
 } from "@repowise-dev/types/health";
 import type { Paginated } from "@repowise-dev/types";
+import type {
+  EvidenceRunsResponse,
+  MeasuredFunctionsResponse,
+  MeasuredResponse,
+  SuiteCostResponse,
+} from "@repowise-dev/types/runtime-evidence";
 import type { AreaDetail, AreaTree } from "@repowise-dev/types/areas";
 import type { AreaLinks } from "./area-rail/area-card";
 import type { AiPromptFlavor } from "./ai-prompts/shared";
@@ -86,6 +92,16 @@ export interface CodeHealthAdapter {
     opportunityId: string,
     opts?: { limit?: number; offset?: number },
   ): Promise<Paginated<HealthFinding>>;
+  /**
+   * Runtime evidence: each workload's newest run with its ranked functions,
+   * every stored run, and what the runs measured on one function. Optional:
+   * a host without them shows no measured view, never an empty one.
+   */
+  getMeasured?(opts?: { runId?: string; limit?: number }): Promise<MeasuredResponse>;
+  listEvidenceRuns?(): Promise<EvidenceRunsResponse>;
+  getMeasuredFunctions?(target: { symbolId: string }): Promise<MeasuredFunctionsResponse>;
+  /** The slowest timed tests, from stored test timings. */
+  getEvidenceTests?(opts?: { limit?: number }): Promise<SuiteCostResponse>;
   /** Fetch one exact canonical plan for the performance drawer. */
   getRefactoringPlan?(planId: string): Promise<RefactoringPlan>;
   /** One plan's agent prompt as core renders it (`/refactoring/{id}/prompt`). */

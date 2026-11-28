@@ -1,14 +1,15 @@
-"""Checks 1-4b: git, ``.repowise/``, hooks, database, state.json, store format."""
+"""Checks 1-4b: git, ``.repowise/``, hooks, settings, database, state.json, freshness, store format."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path as _DoctorPath
 
-from repowise.cli.helpers import db_configured, load_state, run_async
+from repowise.cli.helpers import db_configured, read_state, run_async
 
 from .._types import DoctorCheck, _check
-from .context import CheckContext, open_store
+from .context import CheckContext, open_store, sqlite_page_counts
+from .settings import settings_rows
 
 
 async def _page_count(session: object, repo_id: str) -> int:
@@ -125,23 +126,6 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
     return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}", check_id=check_id)
 
 
-def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
-    """The ``events:`` block, when it has values that fell back to defaults."""
-    try:
-        from repowise.core.events.store import load_event_settings
-
-        errors = load_event_settings(repo_path).errors
-    except Exception as exc:
-        return _check(
-            "Events config", True, f"could not read it ({exc})", check_id="events-config", warn=True
-        )
-    if not errors:
-        return None
-    return _check(
-        "Events config", False, "; ".join(errors) + " (defaults used)", check_id="events-config"
-    )
-
-
 def _env_repo_covers(repo_path: _DoctorPath) -> bool:
     """Whether the repo ``GIT_DIR`` / ``GIT_WORK_TREE`` name holds ``repo_path`` (#1931).
 
@@ -183,9 +167,9 @@ def _hook_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # The post-commit hook is installed by init by default; not having it is a
     # choice (--no-hook), so its absence is informational, not a fail.
     rows = [_autosync_hook_check(repo_path)]
-    for optional in (_attribution_notes_check(repo_path), _events_config_check(repo_path)):
-        if optional is not None:
-            rows.append(optional)
+    notes = _attribution_notes_check(repo_path)
+    if notes is not None:
+        rows.append(notes)
     return rows
 
 
@@ -217,17 +201,123 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
     return [_check("Database", True, f"{ctx.page_count} pages", check_id="database")]
 
 
+#: Share of wiki.db's pages that may sit free before doctor suggests a VACUUM.
+WIKI_DB_FREE_SHARE = 0.25
+
+
+def _wiki_db_free_row(ctx: CheckContext) -> DoctorCheck | None:
+    """A VACUUM suggestion when over a quarter of wiki.db is free pages.
+
+    Deletes (pruned page versions, a re-index) leave pages SQLite reuses before
+    it grows the file, so the file never shrinks by itself. Doctor never runs
+    the VACUUM: it rewrites the whole file, needs that much free disk again,
+    and blocks every other writer, open MCP sessions included, until it ends.
+    ``None`` below the threshold, or when the index lives in another database.
+    """
+    db_path = ctx.repowise_dir / "wiki.db"
+    if db_configured() or not db_path.is_file():
+        return None
+    import sqlite3
+
+    try:
+        page_size, pages, free = sqlite_page_counts(db_path)
+    except (sqlite3.Error, OSError):
+        return None
+    if not pages or free / pages <= WIKI_DB_FREE_SHARE:
+        return None
+    # A percent-encoded URI carries any path through both shells' quoting
+    # (no quote or ``$`` survives encoding); ``mode=rw`` never creates a file.
+    uri = f"{db_path.resolve().as_uri()}?mode=rw"
+    fix = f"python -c \"import sqlite3; sqlite3.connect('{uri}', uri=True).execute('VACUUM')\""
+    mb = 1024 * 1024
+    # The table prints only the detail, so the command is in it as well.
+    detail = (
+        f"{free * page_size / mb:.0f} MB of {pages * page_size / mb:.0f} MB is free space "
+        f"({free / pages:.0%}). To give it back, close every repowise process (MCP "
+        "sessions, serve, an update), have free disk the size of the file, and run: "
+        f"{fix}"
+    )
+    return _check(
+        "wiki.db free space",
+        True,
+        detail,
+        check_id="wiki-db-free-space",
+        warn=True,
+        fix=fix,
+        data={"free_bytes": free * page_size, "file_bytes": pages * page_size},
+    )
+
+
 def _state_row(ctx: CheckContext) -> DoctorCheck:
-    ctx.state = load_state(ctx.repo_path)
-    ctx.state_ok = bool(ctx.state)
+    result = read_state(ctx.repo_path)
+    ctx.state = result.state
+    ctx.state_ok = result.status == "ok"
+    if result.status == "ok":
+        detail = f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
+    elif result.status == "missing":
+        detail = "missing"
+    elif result.status == "empty":
+        detail = "Not found or empty"
+    else:
+        state_path = ctx.repowise_dir / "state.json"
+        detail = f"unreadable: {state_path}: {result.error}"
     return _check(
         "state.json",
         ctx.state_ok,
-        f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
-        if ctx.state_ok
-        else "Not found or empty",
+        detail,
         check_id="state-json",
+        fix=None if ctx.state_ok else "repowise init",
     )
+
+
+def _index_freshness_row(repo_path: _DoctorPath, state: dict) -> DoctorCheck | None:
+    """Whether the index still describes HEAD, as the web Setup page judges it.
+
+    HEAD is read from the ref files, so a quick run spawns nothing while the
+    two agree; git is asked only once they differ, to tell a commit HEAD moved
+    past from one this history no longer has (a rebase, a reset, another
+    clone's state.json). ``None`` without both commits: the git and state.json
+    rows already cover those.
+    """
+    from repowise.core.git_head import read_head_commit
+    from repowise.core.index_freshness import commit_state, indexed_commit_missing
+
+    name, check_id = "Index freshness", "index-freshness"
+    indexed = state.get("last_sync_commit")
+    live = read_head_commit(repo_path)
+    if not indexed or not live:
+        return None
+    if commit_state(indexed, live) == "up_to_date":
+        return _check(name, True, f"indexed at HEAD ({live[:8]})", check_id=check_id)
+    if indexed_commit_missing(repo_path, indexed, live):
+        return _check(
+            name,
+            True,
+            f"last_sync_commit {indexed[:8]} is not in this repository's history, so "
+            "'repowise update' has no base to diff from; pass a commit the index "
+            "covers with --since",
+            check_id=check_id,
+            warn=True,
+            fix="repowise update --since <ref>",
+        )
+    return _check(
+        name,
+        True,
+        f"indexed at {indexed[:8]}; HEAD has moved on to {live[:8]}",
+        check_id=check_id,
+        warn=True,
+        fix="repowise update",
+    )
+
+
+def _update_lock_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A live update holding the lock past the suspect age, worded as ``update`` words it."""
+    from repowise.core.update_lock import stuck_update_line
+
+    detail = stuck_update_line(repo_path)
+    if detail is None:
+        return None
+    return _check("Update lock", True, detail, check_id="update-lock", warn=True)
 
 
 def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
@@ -254,9 +344,74 @@ def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
                 warn=True,
                 fix=verdict.reindex_command,
             )
+        if verdict.rebuilds_wiki:
+            # Owed until an update rebuilds the wiki; a model wiki waits on the cost question.
+            return _check(
+                name,
+                True,
+                "The wiki is due a one-time rebuild for this release. Run: repowise update --yes",
+                check_id=check_id,
+                warn=True,
+                fix="repowise update --yes",
+            )
         return _check(name, True, "Current", check_id=check_id)
     except Exception as e:
         return _check(name, True, f"Could not check: {e}", check_id=check_id, warn=True)
+
+
+def _oversize_source_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """One row naming the source files ingestion drops on size (#5415).
+
+    A file excluded at ingestion leaves no index row, so no other check here can
+    see it: the repo reported healthy while its largest classes were absent from
+    every search and every answer. The verdict comes from ``size_verdict``, the
+    same rule that dropped them, so this row cannot drift from the exclusion.
+
+    A warning rather than a failure: dropping a 12 MB generated file is correct,
+    and the point is that the user is told which files it happened to.
+    """
+    import subprocess
+
+    from repowise.core.ingestion.traverser import size_verdict
+
+    try:
+        listed = subprocess.run(
+            # Untracked, unignored files too: ingestion walks them as well.
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    skipped: list[tuple[str, int]] = []
+    for rel in filter(None, listed.split("\0")):
+        abs_path = repo_path / rel
+        try:
+            size = abs_path.stat().st_size
+        except OSError:
+            continue
+        verdict = size_verdict(abs_path, size)
+        if verdict is not None and verdict.is_source:
+            skipped.append((rel, size))
+
+    if not skipped:
+        return []
+    skipped.sort(key=lambda item: -item[1])
+    shown = ", ".join(f"{rel} ({size // 1024:,} KB)" for rel, size in skipped[:5])
+    more = "" if len(skipped) <= 5 else f", and {len(skipped) - 5} more"
+    return [
+        _check(
+            "Oversize sources",
+            True,
+            f"{len(skipped)} source file(s) exceed the ingestion size ceiling, so "
+            f"they have no symbols and no pages: {shown}{more}. Split them or raise "
+            "the ceiling.",
+            check_id="oversize-sources",
+            warn=True,
+        )
+    ]
 
 
 def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
@@ -325,9 +480,21 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # existence-only row would say OK for the one state that fails every call.
     checks.append(_repowise_dir_check(ctx.repowise_dir))
     checks.extend(_hook_rows(ctx.repo_path))
+    checks.extend(settings_rows(ctx))
     checks.extend(_database_rows(ctx))
+    if ctx.db_ok:
+        free_space = _wiki_db_free_row(ctx)
+        if free_space is not None:
+            checks.append(free_space)
     checks.append(_state_row(ctx))
     if ctx.state_ok:
+        freshness = _index_freshness_row(ctx.repo_path, ctx.state)
+        if freshness is not None:
+            checks.append(freshness)
         checks.append(_store_format_row(ctx.repo_path))
+    stuck = _update_lock_row(ctx.repo_path)
+    if stuck is not None:
+        checks.append(stuck)
     checks.extend(_runtime_grammar_rows(ctx.repo_path))
+    checks.extend(_oversize_source_rows(ctx.repo_path))
     return checks

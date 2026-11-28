@@ -12,9 +12,10 @@ and PR merges made on the other side. Those come out as their own changes, and
 the merge keeps only the commits nothing else claims; a merge left with none
 is bookkeeping and is dropped.
 
-Identity, first that applies: the PR or MR number the message names
-(:func:`~repowise.core.forges.changes.change_number`), a Gerrit ``Change-Id``
-trailer, the merge commit, the commit.
+Identity, first that applies: the Perforce changelist a git-p4 or p4-fusion
+mirror wrote into the message (:mod:`repowise.core.changelist`), the PR or MR
+number the message names (:func:`~repowise.core.forges.changes.change_number`),
+a Gerrit ``Change-Id`` trailer, the merge commit, the commit.
 
 Git calls per run: the first-parent walk with ``--numstat``; when it met a
 merge, one metadata walk over the commits merges brought in; and when a merge
@@ -29,8 +30,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from repowise.core.changelist import (
+    changelist_number,
+    split_changelist,
+    without_changelist_number,
+)
 from repowise.core.forges import ForgeKind, change_number, get_forge
-from repowise.core.ingestion.git_indexer._constants import classify_commit_category
+
+from .category import classify_change
 
 SHAPE_MERGE = "merge"
 SHAPE_SQUASH = "squash"
@@ -38,11 +45,18 @@ SHAPE_COMMIT = "commit"
 
 KIND_PR = "pr"
 KIND_CHANGE_ID = "change_id"
+KIND_CHANGELIST = "changelist"
 KIND_MERGE = "merge"
 KIND_COMMIT = "commit"
 
-_ID_PREFIX = {KIND_PR: "pr", KIND_CHANGE_ID: "change", KIND_MERGE: "merge", KIND_COMMIT: "commit"}
-_NAMED = (KIND_PR, KIND_CHANGE_ID)
+_ID_PREFIX = {
+    KIND_PR: "pr",
+    KIND_CHANGE_ID: "change",
+    KIND_CHANGELIST: "cl",
+    KIND_MERGE: "merge",
+    KIND_COMMIT: "commit",
+}
+_NAMED = (KIND_PR, KIND_CHANGE_ID, KIND_CHANGELIST)
 
 _CHANGE_ID_RE = re.compile(r"^Change-Id:\s*(I[0-9a-f]{40})\s*$", re.MULTILINE)
 #: Merge subjects that are boilerplate; the change's title is the body's first line.
@@ -101,6 +115,8 @@ class _Commit:
     ts: int
     subject: str
     body: str
+    # Read before the mirror trailer was cut from subject and body.
+    changelist: str | None = None
 
     @property
     def is_merge(self) -> bool:
@@ -155,10 +171,31 @@ def without_own_ref(title: str, number: str) -> str:
     return title
 
 
+def _shown_title(head: _Commit, kind: str, value: str) -> str:
+    """The change's title less the ref a surface prints beside it."""
+    title = change_title(head.subject, head.body, head.is_merge)
+    if kind == KIND_PR:
+        return without_own_ref(title, value)
+    if kind == KIND_CHANGELIST:
+        return without_changelist_number(title, value) or title
+    return title
+
+
 def change_identity(
-    subject: str, body: str, sha: str, is_merge: bool, forge: ForgeKind | str
+    subject: str,
+    body: str,
+    sha: str,
+    is_merge: bool,
+    forge: ForgeKind | str,
+    changelist: str | None = None,
 ) -> tuple[str, str, str | None]:
-    """``(kind, value, forge_ref)`` in the order PR number, Change-Id, merge, commit."""
+    """``(kind, value, forge_ref)`` in the order changelist, PR number, Change-Id, merge, commit.
+
+    *changelist* is the number a parser read before cutting the mirror trailer
+    from *subject* and *body*.
+    """
+    if changelist := changelist or changelist_number(f"{subject}\n{body}"):
+        return KIND_CHANGELIST, changelist, f"CL {changelist}"
     number = change_number(subject, body, forge)
     if number is not None:
         return KIND_PR, str(number), get_forge(forge).format_change_ref(number)
@@ -221,8 +258,9 @@ def _graph(repo: Any, head: str, exclude: list[str]) -> dict[str, _Commit]:
         except ValueError:
             stamp = 0
         sha = sha.strip()
+        subject, body, changelist = split_changelist(subject, "\x1f".join(parts[6:]))
         graph[sha] = _Commit(
-            sha, tuple(parents.split()), name, email, stamp, subject, "\x1f".join(parts[6:]).strip()
+            sha, tuple(parents.split()), name, email, stamp, subject, body, changelist
         )
     return graph
 
@@ -346,10 +384,9 @@ class _Builder:
             header["ts"],
             header["subject"],
             header["body"],
+            header.get("changelist"),
         )
-        kind, value, ref = change_identity(
-            commit.subject, commit.body, commit.sha, commit.is_merge, self.forge
-        )
+        kind, value, ref = self._identity(commit)
         if not commit.is_merge:
             self._emit(commit, kind, value, ref, [commit.sha], files)
             return
@@ -398,7 +435,9 @@ class _Builder:
             self._emit(merge, kind, value, ref, rest, _merged_files(*(stats.get(s, []) for s in rest)))
 
     def _identity(self, commit: _Commit) -> tuple[str, str, str | None]:
-        return change_identity(commit.subject, commit.body, commit.sha, commit.is_merge, self.forge)
+        return change_identity(
+            commit.subject, commit.body, commit.sha, commit.is_merge, self.forge, commit.changelist
+        )
 
     def _emit(
         self,
@@ -425,9 +464,7 @@ class _Builder:
             shape = SHAPE_SQUASH
         else:
             shape = SHAPE_COMMIT
-        title = change_title(head.subject, head.body, head.is_merge)
-        if kind == KIND_PR:
-            title = without_own_ref(title, value)
+        title = _shown_title(head, kind, value)
         self.out.append(
             ReconstructedChange(
                 change_id=change_id,
@@ -443,13 +480,14 @@ class _Builder:
                 author_email=author_email,
                 commit_shas=commits,
                 files=files,
-                category=classify_commit_category(title),
+                category=classify_change(title, files).category,
                 body=head.body,
             )
         )
 
 
 __all__ = [
+    "KIND_CHANGELIST",
     "KIND_CHANGE_ID",
     "KIND_COMMIT",
     "KIND_MERGE",

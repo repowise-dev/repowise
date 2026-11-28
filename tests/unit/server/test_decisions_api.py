@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -386,3 +387,67 @@ def test_stored_decision_text_is_not_missing() -> None:
     resp = DecisionRecordResponse.from_orm(_orm_row("Keep sessions in Redis."))
     assert resp.decision == "Keep sessions in Redis."
     assert resp.decision_text_missing is False
+
+
+async def test_list_and_detail_carry_how_often_agents_were_shown_it(
+    client: AsyncClient, app, tmp_path
+) -> None:
+    from repowise.core.sessions.deliveries import record_why_deliveries
+
+    repo = await create_test_repo(client, tmp_path)
+    shown_id = await _seed_decision(app.state.session_factory, repo["id"])
+    quiet_id = await _seed_decision(app.state.session_factory, repo["id"], title="Never shown")
+
+    # No ledger yet: unknown, never 0.
+    rows = {d["id"]: d for d in (await client.get(f"/api/repos/{repo['id']}/decisions")).json()}
+    assert rows[shown_id]["delivered_count"] is None
+
+    record_why_deliveries(Path(repo["local_path"]), "mcp:c1", [shown_id], now=1_762_200_000.0)
+    record_why_deliveries(Path(repo["local_path"]), "mcp:c2", [shown_id], now=1_762_300_000.0)
+
+    rows = {d["id"]: d for d in (await client.get(f"/api/repos/{repo['id']}/decisions")).json()}
+    assert rows[shown_id]["delivered_count"] == 2
+    assert rows[shown_id]["last_delivered_at"].startswith("2025-11-04T23:46:40")
+    assert (rows[quiet_id]["delivered_count"], rows[quiet_id]["last_delivered_at"]) == (0, None)
+
+    detail = (await client.get(f"/api/repos/{repo['id']}/decisions/{shown_id}")).json()
+    assert detail["delivered_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# linked_issues on the detail endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_detail_lists_linked_issues_only_when_stored(
+    client: AsyncClient, app
+) -> None:
+    from repowise.core.persistence.models import IssueLink
+
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+    sha = "ab" * 20
+    async with get_session(app.state.session_factory) as session:
+        rec = await crud.get_decision(session, decision_id)
+        rec.evidence_commits_json = f'["{sha[:10]}"]'
+    url = f"/api/repos/{repo['id']}/decisions/{decision_id}"
+
+    plain = (await client.get(url)).content
+    assert b"linked_issues" not in plain
+
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            IssueLink(
+                repository_id=repo["id"],
+                commit_sha=sha,
+                issue_key="ENG-9",
+                source="t",
+                issue_type="incident",
+                title="Outage",
+            )
+        )
+    body = (await client.get(url)).json()
+    assert body["linked_issues"] == [
+        {"key": "ENG-9", "type": "incident", "status": "", "title": "Outage", "url": ""}
+    ]

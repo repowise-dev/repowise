@@ -8,9 +8,16 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.author_identity import TRAILER_PERSON_RE, accountable_human
+from repowise.core.changelist import split_changelist
 
 from ._constants import _CODE_EXTENSIONS
+
+if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
 
 __all__ = [
     "_FIELD_SEP",
@@ -89,6 +96,22 @@ class _CommitRec:
     # The commit only moved this file (a rename row with 0/0 lines). It counts
     # as one of the file's commits but credits nobody with ownership.
     pure_move: bool = False
+    # The person ownership credits when a coding agent authored the commit
+    # (``author_identity.accountable_human``); None keeps the author.
+    credit: tuple[str, str] | None = None
+    # The Perforce changelist a depot mirror's trailer named, cut from the text.
+    changelist: str | None = None
+
+
+def commit_credit(header: dict) -> tuple[str, str] | None:
+    """:attr:`_CommitRec.credit` for one parsed commit header."""
+    return accountable_human(
+        header["author_name"],
+        header["author_email"],
+        header.get("committer_name"),
+        header.get("committer_email"),
+        header.get("body"),
+    )
 
 
 def _tz_offset_minutes(iso: str) -> int | None:
@@ -133,7 +156,9 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
     body. Returns ``(header, numstat_lines)`` or ``None`` if the record is
     malformed (too few fields). ``header`` keys mirror :class:`_CommitRec`
     fields except ``added``/``deleted`` (the caller attributes churn), plus
-    ``parents`` (the commit's parent shas).
+    ``parents`` (the commit's parent shas) and ``changelist`` (the Perforce
+    changelist a depot mirror's trailer names, or ``None``). The trailer is cut
+    from ``subject`` and ``body``, so no stored or prompted text carries it.
     """
     parts = record.split(_FIELD_SEP)
     if len(parts) < 10:
@@ -160,6 +185,7 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         ts = 0
 
     parent_shas = tuple(p for p in parents.split() if p)
+    subject, body, changelist = split_changelist(subject, "\n".join(body_lines))
     header = {
         "sha": sha,
         "author_name": an or "unknown",
@@ -174,7 +200,8 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         # contains the traced change).
         "parents": parent_shas,
         "subject": subject,
-        "body": "\n".join(body_lines).strip(),
+        "body": body,
+        "changelist": changelist,
     }
     return header, numstat_lines
 
@@ -242,15 +269,17 @@ class GitIndexSummary:
     # (issue #730). None when git is unavailable or the repo has no commits.
     repo_totals: RepoTotals | None = None
     history_coverage: GitHistoryCoverage | None = None
+    # The window the commit walk used, so the change records read the same one.
+    commit_limit: int | None = None
 
 
 _RENAME_RE = re.compile(r"\{(.*?) => (.*?)\}")
 
 
 def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | None, str | None]:
-    """Extract old/new paths from a git numstat rename line and add to *known_paths*.
+    """Extract old/new paths from a git numstat rename line, extending *known_paths*.
 
-    Git ``--numstat`` with ``--follow`` emits rename lines like::
+    Git ``--numstat`` emits rename lines like::
 
         10\t5\t{old => new}/shared_suffix
         10\t5\told_dir/{old_name => new_name}.py
@@ -260,25 +289,31 @@ def _extract_rename_paths(stat_path: str, known_paths: set[str]) -> tuple[str | 
     The third form has an EMPTY side: a directory inserted into (or removed
     from) the middle of a path. Expanding the empty side leaves a doubled
     slash at the splice point, which is collapsed so the result matches the
-    tracked path. This helper parses all forms, adds both expanded paths to
-    *known_paths*, and returns ``(old_path, new_path)`` so the caller can
-    attribute churn to the correct file. Returns ``(None, None)`` if the
-    pattern is not found.
+    tracked path. Returns ``(old_path, new_path)``, or ``(None, None)`` if the
+    row is not a rename.
+
+    Both names join *known_paths* only when one of them is already there: a
+    ``--full-diff`` log lists every file in the commit, and another file's
+    rename must not hand that file's churn to the one being walked.
     """
+    old_path, new_path = _rename_sides(stat_path)
+    if old_path and new_path and (old_path in known_paths or new_path in known_paths):
+        known_paths.add(old_path)
+        known_paths.add(new_path)
+    return old_path, new_path
+
+
+def _rename_sides(stat_path: str) -> tuple[str | None, str | None]:
     m = _RENAME_RE.search(stat_path)
     if m:
         prefix = stat_path[: m.start()]
         suffix = stat_path[m.end() :]
         old_path = (prefix + m.group(1) + suffix).replace("//", "/")
         new_path = (prefix + m.group(2) + suffix).replace("//", "/")
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     # Paths sharing no leading or trailing component get no braces: ``a.py => src/b.py``.
     old_path, sep, new_path = stat_path.partition(" => ")
     if sep and old_path and new_path:
-        known_paths.add(old_path)
-        known_paths.add(new_path)
         return old_path, new_path
     return None, None
 
@@ -511,39 +546,52 @@ def _lifetime_churn(
     return _walk_churn(repo, rev)
 
 
-# ``Name <email>`` inside a ``Co-authored-by`` trailer value.
-_TRAILER_PERSON_RE = re.compile(r"^\s*(?P<name>[^<]*?)\s*<(?P<email>[^>]*)>\s*$")
-
-
-def count_people(repo: Any, rev: str) -> int:
-    """Humans who authored a non-merge commit reachable from *rev*.
+def repo_people(repo: Any, rev: str = "HEAD") -> IdentityResolver:
+    """The shared people resolver over every non-merge author reachable from *rev*.
 
     One ``git log --no-merges`` pass reads each commit's mailmap-applied author
-    and its ``Co-authored-by`` trailers, and the shared people resolver folds
-    one person's several names and emails into one (trailers are evidence
-    only). Automation is not counted.
+    and its ``Co-authored-by`` trailers (evidence only, see
+    :func:`~repowise.core.analysis.owners.people_resolver`). The indexer keys
+    every per-file author figure on it, so one person who commits under two
+    names or a real and a noreply email is one author on every file.
     """
     from repowise.core.analysis.owners import people_resolver
 
     out = repo.git.log(
         "--no-merges",
-        "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
+        "--format=%aN%x00%aE%x00%cN%x00%cE%x00"
+        "%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
         rev,
     )
     rows = []
     for line in out.splitlines():
-        name, _, rest = line.partition("\0")
-        email, _, trailers = rest.partition("\0")
-        co_authors = [
-            (m["name"], m["email"])
-            for value in trailers.split("\x1f")
-            if (m := _TRAILER_PERSON_RE.match(value))
-        ]
+        name, email, c_name, c_email, trailers = (line.split("\0") + [""] * 5)[:5]
+        values = [v for v in trailers.split("\x1f") if v]
+        co_authors = [(m["name"], m["email"]) for v in values if (m := TRAILER_PERSON_RE.match(v))]
         rows.append({"author_name": name, "author_email": email, "co_authors": co_authors})
-    return len(people_resolver(commit_rows=rows).people())
+        # The person a coding agent's commit is credited to (see
+        # :attr:`_CommitRec.credit`) is one of the repo's people, so their
+        # names and emails fold like any author's.
+        body = "\n".join(f"Co-authored-by: {v}" for v in values)
+        credit = accountable_human(name, email, c_name, c_email, body)
+        if credit:
+            rows.append({"author_name": credit[0], "author_email": credit[1]})
+    return people_resolver(commit_rows=rows)
 
 
-def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotals:
+def count_people(repo: Any, rev: str) -> int:
+    """Humans who authored a non-merge commit reachable from *rev*, or are
+    credited with one a coding agent authored (:func:`repo_people`).
+
+    The shared people resolver folds one person's several names and emails
+    into one. Automation is not counted.
+    """
+    return len(repo_people(repo, rev).people())
+
+
+def capture_repo_totals(
+    repo: Any, prior: RepoTotals | None = None, people: IdentityResolver | None = None
+) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
     *prior* is the last capture's own return value, read back from storage. It
@@ -569,6 +617,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
     - one ``git log --no-merges`` over author names and emails — the
       all-time count of people (see :func:`count_people`).
 
+    *people* is a :func:`repo_people` resolver the caller already built over
+    the same history; passing it skips the author walk.
+
     Lifetime churn is the one exception: it walks the history, so it is capped
     (see :func:`_lifetime_churn`).
 
@@ -590,8 +641,10 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         totals.total_merge_commit_count = int(repo.git.rev_list("--count", "--merges", rev).strip())
 
     try:
+        # A shallow clone lists its cut commits as roots; they found nothing.
+        cut = shallow_roots(str(repo.working_dir))
         roots = repo.git.rev_list("--max-parents=0", rev).split()
-        root_commits = [repo.commit(sha) for sha in roots if sha]
+        root_commits = [repo.commit(sha) for sha in roots if sha and sha not in cut]
         if root_commits:
             oldest = min(root_commits, key=lambda c: c.committed_datetime)
             # Normalise to UTC before storing. GitPython hands back the author's
@@ -609,7 +662,9 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         pass
 
     with contextlib.suppress(Exception):
-        totals.total_contributor_count = count_people(repo, rev)
+        totals.total_contributor_count = (
+            len(people.people()) if people is not None else count_people(repo, rev)
+        )
 
     totals.total_lines_added, totals.total_lines_deleted = _lifetime_churn(
         repo, totals.total_commit_count, rev, head_sha, prior

@@ -7,17 +7,35 @@
 
 import type { HostedIdentity } from "@/lib/api/platform";
 
-const HOSTED_URL = "https://repowise.dev/hosted";
+const SITE_URL = "https://repowise.dev";
+const HOSTED_URL = `${SITE_URL}/hosted`;
 
-/** `https://repowise.dev/hosted?src=local_web_<surface>#<moment>`. Only
- *  `src`: a link someone opens never carries an install id. */
-export function hostedLink(surface: string, moment: string): string {
-  const params = new URLSearchParams({ src: `local_web_${surface}` });
-  return `${HOSTED_URL}?${params.toString()}#${moment}`;
+/** Only `src`: a link someone opens never carries an install id. */
+function srcQuery(surface: string): string {
+  return new URLSearchParams({ src: `local_web_${surface}` }).toString();
+}
+
+/** `https://repowise.dev/hosted?src=local_web_<surface>`, plus `#<moment>`
+ *  when given to open one section of the hosted page. */
+export function hostedLink(surface: string, moment?: string): string {
+  const url = `${HOSTED_URL}?${srcQuery(surface)}`;
+  return moment ? `${url}#${moment}` : url;
+}
+
+/** `https://repowise.dev/?src=local_web_<surface>`, the homepage. */
+export function homeLink(surface: string): string {
+  return `${SITE_URL}/?${srcQuery(surface)}`;
+}
+
+/** `https://repowise.dev/integrations?src=local_web_<surface>`: every hosted integration and its plan. */
+export function integrationsLink(surface: string): string {
+  return `${SITE_URL}/integrations?${srcQuery(surface)}`;
 }
 
 export interface Nudge {
   text: string;
+  /** Where "See how" goes, when not the hosted page. */
+  href?: string;
   /** Becomes `src=local_web_<surface>`. */
   surface: string;
   /** The section of the hosted page the link opens. */
@@ -41,6 +59,12 @@ export const NUDGES = {
     text: "Want AI-written docs without an API key? repowise.dev includes the model.",
     surface: "docs",
     moment: "keys",
+  },
+  plugins: {
+    text: "Hosted repowise.dev has ready-made integrations.",
+    surface: "plugins",
+    moment: "integrations",
+    href: integrationsLink("plugins"),
   },
 } satisfies Record<string, Nudge>;
 

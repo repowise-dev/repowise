@@ -190,6 +190,7 @@ def _save_added_repo_config(repo_path: Path, ctx: Any, primary_cfg: dict) -> Non
     if ctx.provider is None:
         return
     from repowise.cli.helpers import save_config
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
     commit_limit = primary_cfg.get("commit_limit")
     save_config(
@@ -198,7 +199,8 @@ def _save_added_repo_config(repo_path: Path, ctx: Any, primary_cfg: dict) -> Non
         ctx.provider.model_name,
         primary_cfg.get("embedder", "mock"),
         exclude_patterns=ctx.exclude_patterns or None,
-        commit_limit=int(commit_limit) if commit_limit else None,
+        # Copied as update will read it: held to the range, never a crash.
+        commit_limit=clamp_commit_limit(commit_limit) if commit_limit is not None else None,
         reasoning=ctx.resolved_reasoning,
         save_key=ctx.save_key,
     )
@@ -305,9 +307,9 @@ def _added_repo_ctx(
     """
     from repowise.cli.commands.init_cmd.workspace import _WorkspaceCtx
     from repowise.core.generation.styles import DEFAULT_STYLE
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
+    from repowise.core.settings.model import flag
 
-    commit_limit = primary_cfg.get("commit_limit")
     return _WorkspaceCtx(
         provider=provider,
         ws_config=ws_config,
@@ -315,7 +317,7 @@ def _added_repo_ctx(
         index_only=provider is None,
         dry_run=False,
         force=False,
-        follow_renames=False,
+        follow_renames=flag(primary_cfg.get("follow_renames"), False),
         include_submodules=False,
         exclude_patterns=list(primary_cfg.get("exclude_patterns") or []),
         skip_tests=False,
@@ -331,7 +333,7 @@ def _added_repo_ctx(
         # Pages go to full-text search only; none are embedded.
         embedder_name_resolved=None,  # type: ignore[arg-type]
         embedder_was_requested=False,
-        resolved_commit_limit=int(commit_limit) if commit_limit else _DEFAULT_COMMIT_LIMIT,
+        resolved_commit_limit=clamp_commit_limit(primary_cfg.get("commit_limit")),
         save_key=save_key,
     )
 

@@ -76,7 +76,7 @@ Extension/filename -> LanguageTag  (via LanguageRegistry)
           TS/JS:  relative paths, tsconfig aliases, workspace exports,
                   `export ... from` re-export barrels, node_modules,
                   package.json "imports" (`#alias/*`) subpath imports
-          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> src/lib
+          Svelte: the TS/JS resolver plus SvelteKit's `$lib` -> kit.files.lib (src/lib)
           Go:     go.mod module path stripping
           Rust:   crate::/self::/super::, mod.rs probing
           C/C++:  compile_commands.json include directories
@@ -249,18 +249,31 @@ give a monorepo in your language proper per-package health; there is no second
 list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
 truth, and both consumers read it.
 
+The registry is the only place that knows manifest names. Every other reader
+asks it by role: `is_package_manifest(path)` (C4 containers, branch overlap),
+`manifest_filenames()` for package manifests plus build config (the tour, the
+update path's config check, the tech stack memo), or `is_manifest(path)` for
+the same question asked of one path. A reader that needs extra non-manifest
+names (a `Dockerfile`, a test runner config) adds them to these sets instead of
+restating the manifests.
+
 `build_config_manifests` defaults to empty, which is nearly always right. Add to
 it only when a name in `manifest_files` configures a build rather than declaring
 a distributable unit, because such files appear in directories that are not
 packages and each one becomes a false root that fragments the rollup. The shipped
 cases are the .NET `Directory.Build.props` / `global.json` family (measured in
 135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
-`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+`svelte.config.js`, Cabal's `Setup.hs`, `lean-toolchain`, and the CMake and
+Bazel files C and C++ declare (`CMakeLists.txt`, `BUILD`, `BUILD.bazel`,
+`MODULE.bazel`, `WORKSPACE`, `WORKSPACE.bazel`): every CMake subdirectory and
+Bazel package carries one, so their presence says nothing about where a unit
+starts.
 
-`manifest_files` holds exact filenames only, so a language whose package file is
-a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the real
-package declaration, everything C# declares is build configuration, and a .NET
-monorepo therefore still falls back to the top-level directory.
+`manifest_files` holds exact filenames only. A package file whose name varies
+per package goes in `manifest_globs`, matched case-insensitively by the
+package-root scan and by `is_package_manifest`; exact-name readers of
+`manifest_files` never see it. .NET is the live example: `*.csproj` is the real
+package declaration, and everything else C# declares is build configuration.
 
 One caveat worth knowing: package roots are read from a **directory scan**, not
 from the indexed file list, because the traverser only emits files whose language
@@ -351,6 +364,20 @@ silence, never to a wrong answer.
 | 7 | `extractors/heritage/mylang.py` | `HERITAGE_EXTRACTORS` | Inheritance chains never appear in the graph |
 | 8 | `resolvers/mylang.py` | `_RESOLVERS` in `resolvers/__init__.py` | Imports fall back to the generic stem-map (filename matching) |
 
+### Manifests and build units
+
+If the language has a package or build file, two more steps make monorepos in
+it first-class:
+
+| Step | What | Where | Without it |
+|---|---|---|---|
+| 8a | Declare manifests by role on the spec: package manifests in `manifest_files` (or `manifest_globs` for a pattern like `*.csproj`), files that only configure a build in `build_config_manifests`, lockfiles in `lock_files` | `languages/specs/mylang.py` | No package roots, so no per-package health, monorepo bucketing or build units for the language |
+| 8b | A build-unit adapter, when the ecosystem declares dependencies between in-repo packages (path dependencies, workspace members, project references) | `core/build_units/adapters/<ecosystem>.py`, registered in `_ADAPTERS` in `core/build_units/collect.py` | Each package root still becomes a `manifest:` unit with correct file ownership, but no dependency edges between units |
+
+The adapter recipe is in [build-units.md](build-units.md#adding-an-adapter).
+The registry is the only place that knows manifest names; see
+[single-sources.md](single-sources.md) for the other shared owners.
+
 ### Opting into call resolution
 
 These three seams postdate the original recipe and are where a language goes from
@@ -399,11 +426,21 @@ Steps 1–5 give you the symbols, imports and calls your query captures. They do
   node map. See [the three registries](#the-three-code-health-dialect-registries).
 - **Receiver typing.** Steps 9–11 above, and each is gated on measurement.
 - **Framework edges.** One module per framework under `framework_edges/`.
+- **Runtime evidence.** Profile frames join to functions only for languages
+  the frame resolver has a join for, and test timings need the stack to name a
+  JUnit report. See
+  [runtime-evidence-languages.md](runtime-evidence-languages.md).
 - **Class-level metrics, if the language does not nest method bodies in the
-  type.** Go's external receivers and Object Pascal's split
-  declaration/implementation sections both fail this, and both are deliberately
-  left unmapped rather than emitting a `ClassComplexity` with
-  `method_count == 0`.
+  type.** Go's external receivers fail this and are deliberately left
+  unmapped rather than emitting a `ClassComplexity` with `method_count == 0`.
+  C++ and Object Pascal pair out-of-line methods with their class by the
+  qualified name (`TFoo.Bar`, case-insensitively for Pascal); a Pascal forward
+  declaration (`TFoo = class;`) holds no members and a method whose class is in
+  another unit gets no class of its own.
+  Pascal names match in any case, a property is an alias for the field or
+  method its `read` / `write` clauses name (never state of its own), and a
+  constructor, destructor or `override` declared in the class is a contract
+  method that does not count as a responsibility.
 - **Dataflow, if the grammar does not label control-flow fields.** The CFG
   builder resolves bodies and branches through *field names* (`body`,
   `consequence`, `alternative`) and *node types* (`break_kinds`,
@@ -439,13 +476,16 @@ A language absent from the dict runs only the shared tiers. The seam exists so a
 language-specific tier can claim a call *before* a weaker shared one gets it.
 Go's package tier is the load-bearing example: `pkg.Func()` is claimed outright
 by `_resolve_go_package_call`, so a package qualifier never reaches the typed
-fallback and cannot be mistaken for a variable.
+fallback and cannot be mistaken for a variable. `_resolve_go_package_var_call`
+follows it for a receiver that is a package variable or a chain through one
+(`router.RouterGroupApp.System.InitBaseRouter()`), typed hop by hop by
+`languages/go_selector_types.py`.
 
 Registered today:
 
 | Language | `free` | `member` | `member_fallback` |
 |---|---|---|---|
-| Go | same-package | package call | typed receiver |
+| Go | same-package | package call, package variable | typed receiver |
 | Java / Kotlin | JVM same-package | JVM receiver same-package | typed receiver |
 | C# / Python / Swift | — | — | typed receiver |
 | C / C++ | same build target | — | — |
@@ -473,7 +513,7 @@ The tiers, highest evidence first:
 | 0.88 | `package_alias`, `module_alias`, `crate_root`, `receiver_import`, `receiver_typed_import`, `receiver_field_import`, `receiver_framework_import`, `receiver_extension_import`, `receiver_chain_import`, `return_type_import` | The receiver, chained field, returned type, or target resolved through an imported file or scoped alias |
 | 0.85 | `import_merged`, `same_target` | In *some* imported file, or some sibling translation unit; which one is unattributed |
 | 0.75 | `receiver_global`, `receiver_typed_global`, `receiver_field_global`, `receiver_framework_global`, `receiver_extension_global`, `return_type_global` | The `(class, method)` pair exists somewhere in the repo |
-| 0.50 | `global_unique` | The name is unique repo-wide. **A guess** |
+| 0.50 | `global_unique`, `import_elsewhere` | The name is unique repo-wide, or (Python) imported only inside another function of the file. **A guess** |
 
 The typed variants come in three parallel families of four, one per *scope*,
 because they are three different scans over three different scopes:
@@ -497,8 +537,9 @@ the same four scopes as an explicit receiver.
 
 The per-language declaration patterns live in
 `ingestion/languages/receiver_types.py` as `_LANGUAGE_PATTERNS`, keyed by tag.
-They are **regexes over comment-stripped source**, not an AST walk. That is a deliberate
-shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
+They are **regexes over comment-stripped source** (for Java, comment-, string- and
+char-literal-stripped: the text of a string declares nothing), not an AST walk. That is a
+deliberate shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
 does not get typed; the upgrade path is an AST-backed local-scope table, which
 was not built because the pattern families cover the idiomatic shapes and the
 measured miss rate did not justify the cost.
@@ -507,7 +548,7 @@ Pattern families today:
 
 | Family | Languages | Shapes |
 |---|---|---|
-| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name`, `var name = new Type()` |
+| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name` (Java also `Type NAME`, a constant), `var name = new Type()` |
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
@@ -567,10 +608,14 @@ remove. The distinctions that matter most when consuming the graph:
 | `type_use` | File → file, from a constructor / method / delegate / record parameter type reference | An import. Weighted lower, and its provenance is surfaced separately |
 | `reads` | A data reference, file → file (C# member access) | Anything symbol-level. Its former symbol → symbol producer now emits `framework_binds` |
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
+| `documents` | Markdown document → a file it links to (`hint_source="doc_link"`, 1.0) or names in backticks (`doc_path`, 0.8), resolved by doc drift's `extract()`/`resolve()` | A dependency or a use. It is in none of the sets below |
 
 Three derived sets are what consumers should read rather than re-deriving their
 own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
-`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
+`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`). For deny-lists,
+`NON_CODE_EDGE_TYPES` is `TEMPORAL_EDGE_TYPES` (`co_changes`) plus
+`DOCUMENTATION_EDGE_TYPES` (`documents`), and `NON_DEPENDENCY_EDGE_TYPES` adds
+containment to it.
 
 ### Flow termination
 
@@ -639,8 +684,8 @@ same clean projection the ingestion parser does.
 ### The locator registry
 
 Only step 1 differs per language, so it lives behind `_LOCATORS`, a dict of
-`Locator(grammar_module, visit, component_name)` for a grammar-backed markup
-language, or `Locator(byte_scan, component_name)` when no grammar exists and
+`Locator(grammar_module, visit)` for a grammar-backed markup
+language, or `Locator(byte_scan)` when no grammar exists and
 the regions are found by walking the bytes. The blanking, fencing, caching
 and offset invariants are shared; adding a markup language means adding a
 `Locator`, not a second copy of the walker.
@@ -650,8 +695,8 @@ and offset invariants are shared; adding a markup language means adding a
 | Grammar | `tree-sitter-svelte` | `tree-sitter-html` | none; byte scan, projected to C# | none; byte scan, projected to TS |
 | Expression nodes | `svelte_raw_text` under `expression` / `if_start` / `key_start` / `html_tag` | `attribute_value` inside `quoted_attribute_value`; `{{ … }}` scanned inside `text` | brace-matched `@code { }`, `@functions { }`, `@{ }` interiors | the `---` frontmatter and every JS `<script>` body (plain, `is:inline`, `type="module"`, `define:vars`); markup `{expr}` is blanked |
 | Fence bytes | the surrounding `{` `}` | the surrounding `"` or `'` | the surrounding `{` `}` | the `>` of each `<script>` opening tag |
-| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | markup `{expr}` |
-| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->` or a `<script>` |
+| Skipped binding forms | `{#each}`, `{#await}` heads | `v-for`, `v-slot` / `#default` | `@using`, `@inject`, `@bind`, `@on*`, `@model`, inline `@expr` | none; markup `{expr}` is plain JS, just not projected |
+| Non-component tags | the `svelte:*` namespace | `<KeepAlive>`, `<Transition>`, `<RouterView>`, … in either spelling | lowercase elements; anything inside `@* *@` or `<!-- -->` | lowercase elements, `<Fragment>`; anything inside `<!-- -->`, a `<script>`, or a string or comment of a markup `{expr}` |
 
 There is no `tree-sitter-vue` on PyPI. The HTML grammar parses a Vue SFC cleanly
 anyway, because `<template>`, `<script>` and `<style>` are ordinary elements to
@@ -674,6 +719,51 @@ into TypeScript: the leading `---` frontmatter and every JS `<script>` body keep
 their bytes, a `<script>` whose `type` is data (`application/ld+json`) or that
 sits in an HTML comment is blanked, and PascalCase tags mint component call edges.
 Frontmatter imports are ordinary ESM, so an Astro file does carry import edges.
+
+Inside a markup `{expr}` the scan skips JS strings and comments, so
+`{"<style>"}` or `{ /* <script src="./a.ts"> */ }` hides nothing after it and
+reads no import. A `<script>` in the expression still opens a script
+(`{cond && <script>…</script>}`), and any other element opened there holds
+markup again until its end tag (`{ok && <p>Don't</p>}`). An `is:raw` body is
+text, where a lone `{` is legal, so it is skipped to its end tag like a
+`<style>` body. The ceiling: a regex literal or a `${…}` inside a template string is not read as JS,
+and an element left open in an expression (`<br>`) holds markup until its `}`.
+A TS generic (`Array<Foo>`) or `a<b` also reads as a tag, so `{i<n && <Card />}`
+loses its `Card`.
+
+Markup `<script src>` and `<link href>` (any `rel`) are imports too. The
+projection blanks them, so the same scan reads each `src` / `href` value as it
+passes the opening tag; a `{url}` value is an expression and reads as nothing.
+The parser passes the values through `ref_imports` in
+`lightweight_imports/html.py`, the one filter plain HTML uses, which drops
+`https://`, `//cdn` and templated values. A ref the frontmatter also imports
+stays: the graph merges the two edges, and the page's runtime load wins over a
+type-only or lazy import. Astro bundles a `<script>` whose only attribute is `src`
+as `import "<src>"`, so its value is kept as written, like a frontmatter
+import. A tsconfig alias (`@/scripts/menu.ts`) resolves, and a bare value can
+name a package. Any other markup value (a `<link href>`, a `<script>` with
+`is:inline`, `type` or another attribute) is a URL relative to the page, never
+a package name: a bare `favicon.ico` becomes `./favicon.ico`. If no file sits
+beside the page under that name, the `./` value is retried as `/`-rooted, so a
+layout's `href="favicon.ico"` finds `public/favicon.ico`. That is where the
+browser fetches it from a layout or a top-level page; for a page in a subfolder
+it can bind a `public/` file the browser would not fetch. A `/`-rooted value
+(an `is:inline` script, an icon) is served from `public/`, so
+`ingestion/resolvers/astro.py` looks for it under the nearest `public/` above
+the page when no Astro manifest is known. With a manifest, lookup is rooted
+at its configured public directory. Vite resolves and serves any
+`/src/...` value (an import, a `<script src>`, a `<link href>`) from the project
+root, so the configured source-directory prefix is tried from the app root,
+or from ancestor directories when no Astro manifest is known. Vite also probes extensions (`/src/lib/format` → `format.ts`), but this
+lookup does not. A `/`-rooted tsconfig `paths` alias (`/@/*`) is tried last,
+as in a `.ts` file. A URL takes it too, so a catch-all `*` alias can bind a
+missed URL into `src/`. A miss is no node at all. Astro's `base` prefix is not read. Custom
+`publicDir` and `srcDir` are read from literal values in Astro config files.
+Computed directory values are not evaluated.
+Anything else takes the TS/JS resolver, whose `./site.css` → `site.ts` fallback
+is the known ceiling for a relative `href`. Its extension guessing is another:
+`<link rel="prefetch" href="docs">` in `src/pages/index.astro` binds
+`src/pages/docs.astro`, which is navigation, not a dependency.
 
 **Plain HTML deliberately has no locator.** It reuses the same grammar but not
 the projection, and the distinction is the point: a projection exists to turn a
@@ -711,7 +801,7 @@ dependency surface their syntax supports.
 | Tier | Language | Extensions | Import resolution |
 |------|----------|-----------|-------------------|
 | Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig and Vite `resolve.alias` path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
 | Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
 | Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
@@ -726,15 +816,16 @@ dependency surface their syntax supports.
 | Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
 | Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
-| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references, `include` / `require` with an unparenthesized literal path |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
-| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses via unit-name to file-stem match; project files as entry points |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points. Form files (`.dfm` `.fmx` `.lfm`) link to the unit sharing their stem and bind the event handlers they name |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
 | Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
 | Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
+| Good | **Perl** | `.pl` `.pm` `.t`, perl shebang | `use` / `require` through `@INC`-style whole-segment path suffix; pragmas dropped; `Pkg->m()` and `$self->m()` dispatched through `@ISA` (`use parent`, `use base`, `@ISA`) |
 
 ---
 
@@ -1080,7 +1171,14 @@ credential's own endpoint is not read.
   `v-for="x in xs"` are not resolved, and the unused-export pass is off for
   both, since props are set by the parent as markup attributes.
 - **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
-  vs `implements` split follows the `I`-prefix naming convention.
+  vs `implements` split is positional: the first parent in `class(...)` is the
+  base class, the rest are interfaces. A form file (`.dfm`, `.fmx`, `.lfm`) is
+  matched to the unit with the same stem in the same directory, and binds only
+  the handlers its own unit's form class declares: a form inheriting from a
+  form in another unit leaves the inherited handlers unbound, and a binary
+  form (`TPF0`) is skipped. A build that picks units outside the project files
+  (a script passing `-U`) is seen only as a same-named variant no project
+  claims. tree-sitter-pascal has no rule for non-ASCII identifiers.
 - **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
   without column handling.
 - **Razor has no import edges**, because every directive is blanked by the
@@ -1095,6 +1193,13 @@ credential's own endpoint is not read.
   objects with no metadata file in the repository get no edge.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
   (`x shouldBe y`) is not counted as an assertion.
+- **Elixir has no framework edges.** Module references come from `alias`,
+  `import`, `require` and `use` only, so Phoenix routes, endpoint `plug`s,
+  supervisor children, Oban workers, mix tasks and bare module values reach
+  nothing.
+- **PHP computed includes make no edge.** `require_once(...)`, `__DIR__ .`,
+  `"$dir/x.php"` and `$GLOBALS[...] .` paths are not resolved; only an
+  unparenthesized literal path is.
 
 ---
 
@@ -1277,7 +1382,7 @@ workspace/extractors/
   grpc/              #   proto.py + languages.py (one table of stub shapes)
   calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
   topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
-                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+                     #   bullmq.py temporal.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
   socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
 workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
@@ -1312,14 +1417,18 @@ mislead the masker.
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
-| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Dapr `PublishEventAsync` (C#), Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, Dapr `[Topic]` and `Subscription` manifests, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub and streams (JS/TS, Python, PHP, Go, Java, C#), BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Dapr `PublishEventAsync` (C#), Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, Dapr `[Topic]` and `Subscription` manifests, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 | **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |
 | **Topic (JMS)** | Spring `JmsTemplate` / `JmsMessagingTemplate` sends with a destination argument | `@JmsListener(destination)`, template `receive` / `receiveAndConvert`, listener containers' `setDestinationName` |
+| **Topic (Dapr)** | `PublishEventAsync` (C#), `publishEvent` on a declared `DaprClient` (Java), `pubsub.publish` on a declared `DaprClient` (JS/TS), `publish_event(...)` with the topic as `topic_name=` or the second positional argument, in a file importing a `dapr.*` module or `flask_dapr` (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, ...)` (Go) | `[Topic]` (C#), `@Topic` (Java), `pubsub.subscribe` on a declared `DaprServer` (JS/TS), `@app.subscribe(...)` with the topic as `topic=` or the second positional argument, in a file importing a `dapr.*` module or `flask_dapr` (Python), `<alias>.Subscription{PubsubName: ..., Topic: ...}` literals (each element of a `[]<alias>.Subscription` slice too), in a file importing `service/common` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with, `Subscription` manifests |
 
 RabbitMQ topics are also read from Go (streadway/amqp, amqp091-go), including
 a queue named through its declaration's result (`q.Name`).
+
+Which brokers can link to each other is in
+[Topics and queues](../reference/WORKSPACE_CONTRACTS.md#topics-and-queues).
 
 See [docs/scale/WORKSPACES.md](../scale/WORKSPACES.md) for the user-facing
 workspace guide, and [workspace.md](workspace.md) for the layer's pipeline,

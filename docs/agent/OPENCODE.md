@@ -96,7 +96,7 @@ as `$0.00` because billing is handled by OpenCode's own subscription/auth.
 
 ### Default model
 
-`opencode/default` uses OpenCode's configured default model — no
+`opencode/default` uses OpenCode's configured default model; no
 `--model` flag is passed. To use a specific model:
 
 ```bash
@@ -126,13 +126,14 @@ handles reasoning internally through its own model/agent configuration.
 The provider enforces several safety measures:
 
 - Uses `asyncio.create_subprocess_exec` (no shell), so every argument
-  is passed as a distinct list element — shell injection is impossible.
+  is passed as a distinct list element, so shell injection is impossible.
 - Model names are validated against a safe character set
   (`[a-zA-Z0-9][a-zA-Z0-9._/\-]*`), rejecting shell metacharacters
   before anything reaches the subprocess.
 - All paths are resolved with `Path.resolve()` before the repo is used as
   the subprocess working directory.
-- Subprocess execution is serialized via `asyncio.Semaphore(1)`.
+- At most 4 `opencode run` subprocesses run at once by default; set
+  `REPOWISE_OPENCODE_CONCURRENCY` to change the limit (minimum 1).
 - A 600-second hard timeout with process kill prevents runaway calls.
 
 ## Comparison with Codex CLI

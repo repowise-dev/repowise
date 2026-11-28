@@ -20,6 +20,10 @@ ask this package and never match hosts themselves. The user-facing summary is
 | `github.py`, `gitlab.py`, `azure.py`, `bitbucket.py` | One forge each: host claims, path parsing, URL builders, `CiSystem`, merge forms, identity rules |
 | `generic.py` | The fallback: parses any `host/path`, builds no URLs, reads GitHub-style messages |
 
+Calls to a forge's API stay out of the parsers. `gitlab_api.py` posts CI
+notes, and `core/issues/forge/`, outside this package, reads GitHub and GitLab
+issues for the built-in `forge` issue source from the `RemoteRef` parsed here.
+
 Users: the webhook lookup (`server/routers/webhooks.py`), `git_refs.remote_name`,
 the overview remote and repository responses (`strip_credentials`),
 `core/ci/base.py` (`CI_ENV_VARS`, `default_revspec`), the git indexer

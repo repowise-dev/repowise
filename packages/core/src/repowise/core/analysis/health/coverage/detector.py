@@ -17,6 +17,8 @@ Sniffing rules (cheap, deterministic), after stripping a UTF-8 BOM:
 - Clover XML has a ``<coverage`` root with a ``<project>`` child.
 - Cobertura XML has a ``<coverage`` root and a ``<packages>`` child (or
   is referenced by the ``coverage`` DTD).
+- DelphiCodeCoverage XML has a ``<report>`` root whose ``<stats>`` names
+  ``<srclines``.
 - Go cover profiles start with ``mode:`` on the first non-blank line.
 - JaCoCo XML declares the ``-//JACOCO//DTD`` doctype or has a ``<report``
   root (and no ``<coverage`` element).
@@ -39,6 +41,7 @@ from ....test_paths import is_test_related_path
 from .apex import parse_apex
 from .clover import parse_clover
 from .cobertura import parse_cobertura
+from .delphi import parse_delphi_codecoverage
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -75,6 +78,7 @@ PARSERS: dict[str, Callable[[str], CoverageReport]] = {
     "go-coverprofile": parse_go_coverprofile,
     "jacoco": parse_jacoco,
     "apex": parse_apex,
+    "delphi-codecoverage": parse_delphi_codecoverage,
 }
 
 #: Accepted spellings that are not canonical format names.
@@ -129,6 +133,12 @@ def _is_jacoco_doctype(sample: str) -> bool:
     return sample.startswith("<") and "-//JACOCO//DTD" in sample
 
 
+def _is_delphi_codecoverage(sample: str) -> bool:
+    # ``<report>`` with a ``<stats>`` block counting ``<srclines``; it also names
+    # ``<packages`` and ``<coverage``, so it must precede the Cobertura sniffer.
+    return sample.startswith("<") and "<report" in sample and "<srclines" in sample
+
+
 def _is_clover(sample: str) -> bool:
     return sample.startswith("<") and "<coverage" in sample and "<project" in sample
 
@@ -152,6 +162,7 @@ _SNIFFERS: tuple[tuple[str, Callable[[str], bool]], ...] = (
     ("lcov", _is_lcov),
     ("go-coverprofile", _is_go_coverprofile),
     ("jacoco", _is_jacoco_doctype),
+    ("delphi-codecoverage", _is_delphi_codecoverage),
     ("clover", _is_clover),
     ("cobertura", _is_cobertura),
     ("jacoco", _is_jacoco_report),

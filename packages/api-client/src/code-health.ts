@@ -135,6 +135,7 @@ export async function getPerformanceOpportunities(
       confidence: opts.confidence,
       actionability: opts.actionability,
       proof: opts.proof,
+      static_cost: opts.static_cost,
       role: opts.role,
       queue: opts.queue || undefined,
       area: opts.area,

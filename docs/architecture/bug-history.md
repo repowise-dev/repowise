@@ -10,7 +10,11 @@ User-facing behaviour is in [docs/layers/BUG_HISTORY.md](../layers/BUG_HISTORY.m
    `core/ingestion/git_indexer/_constants.py` applies the keyword include and
    exclude rules. The same rule feeds the health `prior_defect` marker and
    change-risk `fix_history`, so every fix count in the product counts the same
-   commits.
+   commits. The indexed walk (`prior_defects.py`) also takes the commits a
+   stored `bug` or `incident` issue link names (`issue_links`, written by an
+   `issue-source`), additive to the rule; the git-only `change_risk/fix_history.py`
+   record does not read links. When a link on an indexed commit comes or goes,
+   the next update re-walks history once (`GIT_HISTORY_ISSUE_LINKS_REWALK`).
 2. **Shape classification.** `classify_fix_shape` in
    `git_indexer/fix_shape.py` reads the candidate's `-U0` diff and assigns one
    of `SHAPE_KINDS` (`code_fix`, `test_only`, `doc_only`, `config_other`,
@@ -129,9 +133,7 @@ passed); every class used scored at least 95%, and django's `Fixes #N` class
 Symptom: the closed issue's text as filed; candidates: the 14 days before it;
 index facts from a monthly snapshot before the issue. Trailers that name people
 (`Signed-off-by`, `Co-authored-by`, `Reviewed-By`, any trailer with an email)
-are excluded from the text index; the figures below are from the rerun with
-them excluded, on the same items and snapshots (before: node MRR 0.354, pooled
-MRR 0.450, interval +0.256 to +0.535; every hit@5 unchanged).
+are excluded from the text index; the figures below are with them excluded.
 
 | Arm (hit@5 / MRR) | django (18) | node (25) | pooled (43) |
 |---|---|---|---|
@@ -141,8 +143,8 @@ MRR 0.450, interval +0.256 to +0.535; every hit@5 unchanged).
 
 The lift over shared files is +0.395 hit@5 (95% bootstrap interval +0.233 to
 +0.558). Two limits come with it: most regressions surface later than 14 days
-(window misses: django 91%, node 62%), and those issues are outside the scored
-set. Text match carries most of the ranking; dropping recency scored higher on
+(window misses: django 182 of 200 issues, node 40 of 65), and those issues are
+outside the scored set: the 43 scored are 16% of 265. Text match carries most of the ranking; dropping recency scored higher on
 these repos, but the test repos were scored once and a change to the fusion
 needs a new held-out set.
 

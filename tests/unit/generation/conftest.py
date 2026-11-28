@@ -164,8 +164,10 @@ def graph_metrics(sample_graph: nx.DiGraph, sample_parsed_file: ParsedFile) -> d
     """PageRank, betweenness centrality, and community for sample_graph nodes."""
     import networkx as nx
 
+    from repowise.core.ingestion.graph._pagerank import pagerank as _pagerank
+
     g = sample_graph
-    pagerank = nx.pagerank(g)
+    pagerank = _pagerank(g)
     betweenness = nx.betweenness_centrality(g)
     # Simple community: all in community 0
     community = {node: 0 for node in g.nodes()}

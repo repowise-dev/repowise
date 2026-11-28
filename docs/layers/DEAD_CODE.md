@@ -31,7 +31,9 @@ Cleanup-candidate lines: 14 · findings by confidence: high 2, medium 1
 From an agent, `get_dead_code()` or `get_dead_code(tier="high", safe_only=True)`.
 In the dashboard, open the **Dead code** view of a repository.
 
-## What it finds
+## Reading the results
+
+### What it finds
 
 | Kind | Meaning | Shown by default |
 |------|---------|------------------|
@@ -43,9 +45,7 @@ In the dashboard, open the **Dead code** view of a repository.
 Methods, fields, properties and enum members are never reported as unused
 exports: they are reached through their container. `unused_internal` is
 withheld from the dashboard and default MCP responses because its precision is
-very low ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
-
-## Reading the results
+below the publishing bar ([Accuracy and limits](#accuracy-and-limits)); ask for it with `--include-internals` or `include_internals=True`.
 
 ### Confidence
 
@@ -69,6 +69,13 @@ an unused export's name written somewhere else in the repository, or a name that
 appears in a file Repowise could not index. Each cap adds a line to the
 finding's evidence saying why.
 
+Git age never lifts an unreachable file above `0.50` when its missing importer
+says little: production code of the same language writes the file's stem or
+module name (a test or a doc naming it does not count), or its language resolves some references to
+no file. That second case is every language without full import support plus
+PHP, Ruby and Swift; the list is in
+[LANGUAGE_SUPPORT.md](LANGUAGE_SUPPORT.md#known-gaps).
+
 ### Tiers
 
 | Tier | Confidence | Meaning |
@@ -85,20 +92,41 @@ unless you ask for it.
 
 ### `safe_to_delete`
 
-A finding is deletion-ready (the CLI's "Ready?" column) only when its
-confidence is `0.7` or higher and its path carries no runtime-load risk factor
-(config, environment, bootstrap, database, script or served-asset paths).
-Unreachable files, zombie packages and unused internals are never marked
-deletion-ready, whatever their confidence. In practice `safe_to_delete` means
-"an unused export with strong evidence".
+A finding is deletion-ready (the CLI's "Ready?" column) only when no blocker
+below applies. Each blocker that fires adds an evidence line naming it, and
+none changes confidence or tier. In practice `safe_to_delete` means "an unused
+export with strong evidence".
+
+- **Kind:** unreachable files, zombie packages and unused internals, whatever
+  their confidence.
+- **Confidence** below `0.7`.
+- **Runtime-load path:** config, environment, bootstrap, database, script,
+  served-asset or Salesforce Aura bundle paths.
+- **Docs or example code:** a docs build can include a file by path or line
+  range.
+- **Export only:** the symbol's own file uses it, so only the `export` is
+  unneeded.
+- **Loaded by a JS framework's convention:** the file sits where a framework
+  its `package.json` depends on loads files from (React Email `emails/`,
+  Next.js `pages/`, App Router `page`, `layout`, `route` and metadata files,
+  `middleware`, `proxy` and `instrumentation`, Remix `app/routes/`, Nuxt pages, layouts, plugins,
+  middleware, `server/`, `@nuxtjs/i18n` locale files (its `langDir`) and
+  auto-imported `components/`, `composables/` and `utils/` under its `srcDir`,
+  SvelteKit hooks and routes where its `kit.files` puts them,
+  Astro `src/pages/`, Expo Router `app/`, `vite-plugin-pages` and
+  `unplugin-vue-router` `src/pages/`).
+- **Weak resolution for the language in this repository:** the language is
+  unknown to the graph, its import support is not full, none of its call edges
+  has a recorded resolution, or more than half of them are name matches.
 
 ### Exempt by construction
 
 Some files and symbols are never reported, because static reachability is the
 wrong tool for them. This covers entry points and programs (`__main__.py`,
 `main.go`, files with a shebang), build and CI files and anything they name by
-path, test files, generated code, vendored trees, framework routes such as
-Next.js `page.tsx`, and symbols registered by a framework decorator or
+path, test files, generated code, vendored trees, files a JS framework declared in
+a `package.json` loads from where they sit (the paths above, apart from Nuxt's auto-imported
+directories), and symbols registered by a framework decorator or
 annotation (pytest fixtures, Flask and FastAPI routes, Celery tasks, Spring
 stereotypes, and similar). Names that follow dynamic-dispatch conventions
 (`*Handler`, `*Plugin`, `register_*`, `on_*` and others) are treated as used.
@@ -110,6 +138,83 @@ An empty report means no finding cleared the confidence floor, not that the
 repository has no dead code. The CLI prints how many findings were hidden below
 the floor. An index whose dead-code pass failed also reads as empty; pass
 `--min-confidence 0.0` to compute live.
+
+### False positives and dynamic code
+
+When a file contains a runtime loader, Repowise assumes its neighbours in the
+same directory may be reached through it and caps their confidence at `0.40`.
+Markers are recognised in Python, JavaScript and TypeScript, Java, Kotlin,
+Ruby, PHP, Go, Swift, Scala, Rust, C# and C/C++. Examples: `importlib.import_module`,
+dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(`,
+`const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
+`Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
+found by the language extractors count the same way.
+
+Two JavaScript and TypeScript loaders are read as imports instead. A Vite
+`import.meta.glob(...)` call gets an import edge to every indexed file its
+patterns match: relative patterns, `**` patterns, patterns rooted at an alias
+the repository's imports already use (tsconfig `paths`, Nuxt `~/`, SvelteKit
+`$lib`), and `!` patterns that remove files. Its `import:` option names the one
+export used. `new URL('./x', import.meta.url)` gets an edge to the file beside
+the caller.
+
+The cases where a finding is most likely wrong:
+
+- **Reflection and string-keyed dispatch** that matches no marker, naming
+  convention or framework hint: a class named in a YAML file, a handler looked
+  up in a registry dict.
+- **Entry points the graph did not recognise**, such as a serverless handler or
+  a binary target with an unusual layout. A whole directory lighting up is
+  usually this.
+- **Barrel re-exports.** Barrel files are exempt as unreachable files, but a
+  symbol re-exported through one for external callers can surface as an
+  unused export.
+- **Published libraries.** Code consumed outside the repository has no
+  importer inside it. A public symbol of a library the build declares as
+  published is held at `0.30`, below the default floor, with an evidence line
+  naming the package. Published means: a packed .NET project or one with a
+  `PublicAPI.Shipped.txt`; a Go module whose root package is importable or
+  that builds no program (not its `main` or `internal/` packages); a Rust crate
+  with a library target and no `publish = false`; a Maven or Gradle module
+  that deploys (not a war, Spring Boot or `application` module); a
+  `pyproject.toml` with a `[project]` name and a `[build-system]` (not its
+  `_private` modules); a `package.json` that is not `private` and names an
+  entry. Apps in any of these ecosystems keep their findings.
+- **Test-only usage counts as usage.** A symbol only its tests import is not
+  reported. There is no "used only in tests" classification.
+
+The evidence list on each finding says which signals applied. Read it before
+deleting anything.
+
+### Workspaces
+
+In a workspace, a file dead inside its own repo may be the surface another repo
+depends on. The CLI, the dashboard and `get_dead_code` check each finding
+against the cross-repo data before the confidence floor and the tiers:
+
+- If another repo's contract link (an HTTP route, a generated client) points
+  at the file, confidence is cut to 30% of its value and the `cross_repo_note`
+  names the consumer.
+- Otherwise, if the file changes together with files in other repos (git
+  co-change), or the finding is an unused export and another repo's package
+  imports reach its file, the finding keeps its confidence and gains a note.
+  A package import reaches the module or subpath it names and the files that
+  module's re-exports forward the imported names to. An export no import
+  reaches keeps its safety: the dependent cannot import it by package name.
+  Where the workspace has no recorded reach (an overlay from before it was
+  recorded, or an import it could not place), every file inside the package
+  directory counts. These links say a consumer may exist, not that one does.
+
+A finding with a note is never safe to delete, and a lowered one sits in the
+tier its new confidence names, so one cut below `0.4` is hidden by the default
+floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
+workspace repo and tags each finding with its alias. The CLI analyzes one repo
+per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
+the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
+`get_overview`), related work, the code graph, the chat dataset, `repowise export
+--full` and the assessment report read the same cut. Fix first and plan annotations
+are built per repo before the workspace pass, so they read stored values. See
+[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
 
 ## Tuning and suppressing
 
@@ -137,69 +242,12 @@ the floor. An index whose dead-code pass failed also reads as empty; pass
 
 There is no allowlist file for dead-code findings; use the dashboard status.
 
-## False positives and dynamic code
-
-When a file contains a runtime loader, Repowise assumes its neighbours in the
-same directory may be reached through it and caps their confidence at `0.40`.
-Markers are recognised in Python, JavaScript and TypeScript, Java, Kotlin,
-Ruby, PHP, Go, Swift, Scala, Rust, C# and C/C++. Examples: `importlib.import_module`,
-dynamic `import(` and `require.context(`, `Class.forName(`, `ServiceLoader.load(`,
-`const_get(`, `plugin.Open(` and `//go:embed`, `NSClassFromString(`,
-`Activator.CreateInstance(`, and `dlopen(` / `LoadLibrary(` in C. Dynamic edges
-found by the language extractors count the same way.
-
-The cases where a finding is most likely wrong:
-
-- **Reflection and string-keyed dispatch** that matches no marker, naming
-  convention or framework hint: a class named in a YAML file, a handler looked
-  up in a registry dict.
-- **Entry points the graph did not recognise**, such as a serverless handler or
-  a binary target with an unusual layout. A whole directory lighting up is
-  usually this.
-- **Barrel re-exports.** Barrel files are exempt as unreachable files, but a
-  symbol re-exported through one for external callers can surface as an
-  unused export.
-- **Published libraries.** Code consumed outside the repository has no
-  importer inside it. Packaged .NET projects are detected and held at `0.30`;
-  other ecosystems are not.
-- **Test-only usage counts as usage.** A symbol only its tests import is not
-  reported. There is no "used only in tests" classification.
-
-The evidence list on each finding says which signals applied. Read it before
-deleting anything.
-
-## Workspaces
-
-In a workspace, a file dead inside its own repo may be the surface another repo
-depends on. The CLI, the dashboard and `get_dead_code` check each finding
-against the cross-repo data before the confidence floor and the tiers:
-
-- If another repo's contract link (an HTTP route, a generated client) points
-  at the file, confidence is cut to 30% of its value and the `cross_repo_note`
-  names the consumer.
-- Otherwise, if the file changes together with files in other repos (git
-  co-change), or the finding is an unused export and another repo depends on
-  this one as a package, the finding keeps its confidence and gains a note.
-  The note names a package dependent only when its link covers the file's
-  package (or records no manifest). These links say a consumer may exist, not
-  that one does.
-
-A finding with a note is never safe to delete, and a lowered one sits in the
-tier its new confidence names, so one cut below `0.4` is hidden by the default
-floor. The dashboard adds the note to the finding's evidence. `repo="all"` merges every
-workspace repo and tags each finding with its alias. The CLI analyzes one repo
-per run (the primary repo unless `--repo <alias>`), and `--no-workspace` skips
-the cut. The file page, Overview's attention list, Do next (web, `repowise next`,
-`get_overview`), related work, the code graph, the chat dataset, `repowise export
---full` and the assessment report read the same cut. Fix first and plan annotations
-are built per repo before the workspace pass, so they read stored values. See
-[WORKSPACES.md](../scale/WORKSPACES.md) for how cross-repo data is built.
-
 ## Accuracy and limits
 
-- `unused_internal` precision is under 1% on 1,511 hand-labelled findings from
-  one TypeScript/Python monorepo, so it is withheld by default. Private symbols
-  used within their own file are often invisible to the graph.
+- `unused_internal` is withheld by default: its precision on held-out
+  repositories is below the publishing bar. Some uses of a private symbol
+  inside its own file (object shorthand, `typeof`, reads of a module-level
+  constant) still leave no edge in the graph.
 - Precision on whole unreachable files is well below the deletion-ready bar
   (build scripts, manifests and runtime loaders read files by path), so they
   are never marked `safe_to_delete`.
@@ -250,6 +298,7 @@ MCP parameters and response shape: [`get_dead_code` in MCP_TOOLS.md](../agent/MC
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
 - [architecture/dead-code.md](../architecture/dead-code.md): exemption lists,
   risk tokens, per-language rescues and confidence scoring internals.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the health layer, built on the same graph

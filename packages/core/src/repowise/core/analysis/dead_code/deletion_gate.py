@@ -40,6 +40,7 @@ class FindingView:
     file_path: str
     confidence: float
     export_only: bool = False
+    runs_at_load: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class GateFacts:
     file_languages: Mapping[str, str] | None = None
     #: ``{language: why its resolution is weak in this repo}``.
     weak_languages: Mapping[str, str] = field(default_factory=dict)
+    #: ``{file path: why a framework may load it by convention}``.
+    convention_loaded: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_graph(
@@ -65,10 +68,19 @@ class GateFacts:
             path: (graph.nodes[path].get("language") or "") if graph.has_node(path) else ""
             for path in paths
         }
+        # Deferred: the ingestion package imports analysis modules at load time.
+        from ...ingestion.framework_facts import convention_load_reasons
+
+        repo_files = {n for n, d in graph.nodes(data=True) if d.get("node_type") == "file"}
         return cls(
             repo_root=repo_root,
             file_languages=file_languages,
             weak_languages=weak_resolution_languages(graph, set(file_languages.values())),
+            convention_loaded=(
+                convention_load_reasons(repo_root, file_languages, repo_files)
+                if repo_root is not None
+                else {}
+            ),
         )
 
 
@@ -78,7 +90,7 @@ Blocker = Callable[[FindingView, GateFacts], str | None]
 def _base_reason(view: FindingView, _facts: GateFacts) -> str | None:
     """The ladder's own bar: kind, confidence and runtime-load path risk."""
     if view.kind in REVIEW_ONLY_KINDS:
-        return f"A whole file ({view.kind}) is a review candidate, never deletion-ready"
+        return f"A {view.kind} finding is a review candidate, never deletion-ready"
     if view.confidence < SAFE_CONFIDENCE_THRESHOLD:
         return (
             f"Confidence {view.confidence:.2f} is below the deletion-ready bar "
@@ -111,6 +123,15 @@ def _export_only_reason(view: FindingView, _facts: GateFacts) -> str | None:
     return "Only the export is unused: remove the export, not the symbol"
 
 
+def _load_time_reason(view: FindingView, _facts: GateFacts) -> str | None:
+    if not view.runs_at_load:
+        return None
+    return (
+        "Its declaration calls something when the module loads (a registration, "
+        "a side effect), so deleting it is not proven safe"
+    )
+
+
 def _weak_language_reason(view: FindingView, facts: GateFacts) -> str | None:
     if facts.file_languages is None:
         return None
@@ -122,11 +143,24 @@ def _weak_language_reason(view: FindingView, facts: GateFacts) -> str | None:
     return facts.weak_languages.get(language)
 
 
+#: The kinds that claim a file or a public name is unused. A private symbol's
+#: use is decided inside its file, whatever loads the file.
+_CONVENTION_KINDS = frozenset({"unreachable_file", "unused_export"})
+
+
+def _convention_load_reason(view: FindingView, facts: GateFacts) -> str | None:
+    if view.kind not in _CONVENTION_KINDS:
+        return None
+    return facts.convention_loaded.get(view.file_path)
+
+
 #: Every reason a finding is never deletion-ready, in evidence order.
 _BLOCKERS: tuple[Blocker, ...] = (
     _base_reason,
     _docs_example_reason,
     _export_only_reason,
+    _load_time_reason,
+    _convention_load_reason,
     _weak_language_reason,
 )
 
@@ -222,6 +256,7 @@ def _view_of(finding: Any) -> FindingView:
         file_path=finding.file_path,
         confidence=finding.confidence,
         export_only=finding.export_only,
+        runs_at_load=finding.runs_at_load,
     )
 
 

@@ -94,6 +94,49 @@ class TestSnippetAround:
         assert snippet_around(content, "the").startswith("## Overview")
 
 
+class TestSnippetWordEdges:
+    """A window does not open or close in the middle of a word (#5047)."""
+
+    _PROSE = (
+        "Cobra builds commands as a tree, and every subcommand registers itself "
+        "on its parent before the root command executes. "
+    ) * 8
+
+    @staticmethod
+    def _assert_whole_words(content: str, window: str) -> None:
+        start = content.index(window)
+        end = start + len(window)
+        assert start == 0 or content[start - 1].isspace(), window[:20]
+        assert end == len(content) or content[end].isspace(), window[-20:]
+
+    @pytest.mark.parametrize("query", ["subcommand registers", "executes", "parent tree"])
+    def test_prose_window_edges_land_on_whitespace(self, query):
+        window = snippet_around(self._PROSE, query)
+
+        self._assert_whole_words(self._PROSE, window)
+        assert len(window) <= 200
+
+    def test_the_matched_term_stays_in_the_window(self):
+        content = self._PROSE + _MATCH + self._PROSE
+
+        window = snippet_around(content, "nested checkout")
+
+        assert "nested" in window
+        self._assert_whole_words(content, window)
+
+    def test_the_opener_fallback_ends_on_a_word(self):
+        window = snippet_around(self._PROSE, "xylophone")
+
+        assert window.startswith("Cobra builds")
+        self._assert_whole_words(self._PROSE, window)
+
+    def test_a_single_long_token_still_returns_text(self):
+        content = "a" * 1000
+
+        assert snippet_around(content, "aaaa") == "a" * 200
+        assert snippet_around(content, "xylophone") == "a" * 200
+
+
 class TestStripLeadingHeadings:
     """A served snippet drops the heading that repeats its row's path."""
 

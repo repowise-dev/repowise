@@ -45,6 +45,7 @@ from repowise.core.distill.engine import HOST_OUTPUT_CAP_CHARS
 from repowise.core.distill.markers import ParsedMarker, parse_markers
 from repowise.core.distill.store import OmissionStore, omission_sources
 from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
+from repowise.core.savings.formulas import CODEX_OUTPUT_CAP_TOKENS, TRANSCRIPT_ESTIMATOR
 from repowise.core.sessions import (
     INTENT_TOOL_CALLS,
     Event,
@@ -63,7 +64,7 @@ __all__ = ["ESTIMATOR", "SYNC_BUDGET_S", "TranscriptSyncResult", "sync_transcrip
 #: ``chars_per_token_floor_v1``, so a report can always separate the two --
 #: which matters because only two of the six agents keep transcripts, and a
 #: backfilled window's per-agent split is therefore skewed by method.
-ESTIMATOR = "transcript_marker_v1"
+ESTIMATOR = TRANSCRIPT_ESTIMATOR
 
 #: Seconds of transcript reading per run, split across harnesses. Stopping
 #: between files is safe: cursors are per file and saved after the loop, so
@@ -74,34 +75,6 @@ SYNC_BUDGET_S = 20.0
 #: The host truncation the live path applies, in tokens. ``estimate_tokens``
 #: is ``len // 4``, so capping characters and capping tokens agree exactly.
 HOST_OUTPUT_CAP_TOKENS = HOST_OUTPUT_CAP_CHARS // 4
-
-#: The largest shell result Codex was observed to actually deliver, across
-#: 95,814 of them in this repository. A host cannot have truncated below what
-#: it demonstrably handed the model, so this is a *measured* lower bound on
-#: Codex's cap rather than an estimate of one.
-#:
-#: Two observations sit behind this number and they disagree, so both are
-#: recorded:
-#:
-#: - Most large Codex results stop at a plateau: above 5,000 characters the
-#:   commonest lengths are 24,133 (164 texts) and a tight cluster at
-#:   40,100-40,104, over 200 texts within four characters of one another.
-#:   That is a cap with a variable-length truncation notice after it. Claude
-#:   Code's plateau is the same shape and sharper -- 24 texts at exactly
-#:   30,000, nothing above it.
-#: - But Codex does not always stop there. Results run to 159,585, 434,762,
-#:   1,510,994 and 2,552,250 characters, none of them truncated.
-#:
-#: So the plateau is a cap Codex applies *sometimes*, and picking it would
-#: undercount every result that escaped it. Set at the maximum instead, on
-#: the standing preference that a figure this ledger reports should err high
-#: rather than low. That is a real trade and not a free one: the five largest
-#: events become 29% of the recorded total, each crediting a single command
-#: with more tokens than a model's context can hold. The plateau figure
-#: (40,000 characters) is the conservative alternative and costs about 4x.
-#:
-#: Claude Code needs no equivalent choice -- its plateau *is* its maximum.
-_CODEX_OUTPUT_CAP_CHARS = 2_552_250
 
 #: Per-harness output cap, in tokens. ``estimate_tokens`` is ``len // 4``, so
 #: capping characters and capping tokens agree exactly.
@@ -115,10 +88,11 @@ _CODEX_OUTPUT_CAP_CHARS = 2_552_250
 #: An unlisted harness gets ``None``, meaning no cap: a cap is a claim that a
 #: host truncated, and asserting one we never observed is precisely how this
 #: happened. ``_accounting`` never clips below what was actually delivered,
-#: so the invariant holds whatever this table says.
+#: so the invariant holds whatever this table says. Codex's entry is its
+#: measured plateau (``formulas.CODEX_OUTPUT_CAP_CHARS``).
 _HARNESS_OUTPUT_CAP_TOKENS: dict[str, int | None] = {
     "claude_code": HOST_OUTPUT_CAP_TOKENS,
-    "codex": _CODEX_OUTPUT_CAP_CHARS // 4,
+    "codex": CODEX_OUTPUT_CAP_TOKENS,
 }
 
 #: Cursors for this surface alone. Sharing the decision miner's would starve
@@ -443,8 +417,8 @@ def _accounting(candidate: _Candidate) -> tuple[int, int]:
 
     Whose truncation matters, and it used to be nobody's in particular:
     Claude Code's 30,000-character cap was charged to every source, Codex
-    included, and Codex does not truncate. See
-    ``_HARNESS_OUTPUT_CAP_TOKENS`` for the measurement.
+    included, and Codex truncates at a higher plateau. See
+    ``formulas.CODEX_OUTPUT_CAP_CHARS`` for the measurement.
 
     The cap never clips below ``delivered``. A host cannot have truncated
     below what it demonstrably handed the model, so this is not a fudge but

@@ -376,6 +376,19 @@ def test_build_commit_file_rows_folds_a_repeated_path():
     assert len(rows) == 1
 
 
+def test_build_commit_file_rows_skips_paths_the_index_never_reads():
+    """An asset import can touch thousands of binaries; only readable paths get rows."""
+    assets = [(f"Content/Props/SM_Rock_{i:05d}.uasset", 0, 0) for i in range(10_000)]
+    changes = [*assets, ("Source/Game/Rock.cpp", 12, 3), ("Plugins/Fmod/Master.BANK", 0, 0)]
+
+    commits = [{"sha": "a" * 40, "changes": changes}]
+    rows = build_commit_file_rows(commits)
+
+    assert [r["file_path"] for r in rows] == ["Source/Game/Rock.cpp"]
+    # The commit row still describes the whole commit.
+    assert build_commit_rows(commits)[0]["files_changed"] == len(changes)
+
+
 def test_build_commit_file_rows_skips_records_without_a_sha():
     rows = build_commit_file_rows([{"changes": [("x.py", 1, 1)]}, {"sha": "", "changes": []}])
 

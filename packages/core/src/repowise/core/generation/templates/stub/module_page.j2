@@ -16,7 +16,7 @@
 {% endif %}
 
 {% if ctx.is_rollup and ctx.child_pages %}
-## Parts of this subsystem
+## Parts
 {% for cp in ctx.child_pages %}
 - **{{ cp.title }}** — `{{ cp.path }}`
 {% endfor %}
@@ -25,7 +25,7 @@
 ## Overview
 
 {% set _role = [] -%}
-{%- if ctx.entry_points %}{% set _ = _role.append("hosts " ~ ctx.entry_points | length ~ " entry point" ~ ("s" if ctx.entry_points | length != 1 else "") ~ " into this subsystem") %}{% endif -%}
+{%- if ctx.entry_points %}{% set _ = _role.append("hosts " ~ ctx.entry_points | length ~ " entry point" ~ ("s" if ctx.entry_points | length != 1 else "")) %}{% endif -%}
 {%- if ctx.pagerank_mean is defined and ctx.pagerank_mean >= 0.005 %}{% set _ = _role.append("sits centrally in the import graph (mean PageRank " ~ "%.4f"|format(ctx.pagerank_mean) ~ ")") %}{% endif -%}
 {%- if ctx.dependents %}{% set _ = _role.append("is imported by " ~ ctx.dependents | length ~ " other module" ~ ("s" if ctx.dependents | length != 1 else "")) %}{% endif -%}
 {%- if ctx.dependencies %}{% set _ = _role.append("draws on " ~ ctx.dependencies | length ~ " internal module" ~ ("s" if ctx.dependencies | length != 1 else "")) %}{% endif -%}

@@ -327,21 +327,46 @@ def _create_name(stmt: Any, exp: Any) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def walk_sql_file(file_info: Any, source: bytes) -> FileComplexity:
-    """Health-walk one ``.sql`` file. Any failure degrades to the empty
-    ``FileComplexity`` the tree-sitter walker returns for unmapped languages -
-    no signal, never a crash."""
-    text = source.decode("utf-8", errors="replace")
-    file_nloc = _count_file_nloc(source)
+def configured_sql_dialect(file_info: Any) -> str | None:
+    """The repository's configured ``sql_dialect`` for a ``.sql`` *file_info*, if any.
+
+    Read by the caller rather than the walk: it shapes the walk without being
+    in the file's bytes, so the walk cache keys on it.
+    """
+    if file_info.language != "sql":
+        return None
     try:
         from repowise.core.ingestion.special_handlers import _sql_dialect_for
 
-        dialect = _sql_dialect_for(file_info)
+        return _sql_dialect_for(file_info)
     except Exception:
-        dialect = None
+        return None
+
+
+# Origins whose SQL is not schema anyone here maintains or runs on real data.
+# A test query exercises the database (a cross join or a whole-table DELETE is
+# often what the test is for), and generated or vendored SQL is not edited
+# here, so the statement smells would only be noise. Their parse is also most
+# of the walk's cost on a repo with thousands of test queries. Tooling keeps
+# them: migrations define the views and run the DML that touches real rows.
+_NO_STATEMENT_SMELL_ORIGINS = frozenset({"test", "generated", "vendored"})
+
+
+def walks_statements(origin: str) -> bool:
+    """Whether a ``.sql`` file of *origin* (``code_origin``) gets the statement smells."""
+    return origin not in _NO_STATEMENT_SMELL_ORIGINS
+
+
+def walk_sql_file(source: bytes, dialect: str | None, *, statements: bool = True) -> FileComplexity:
+    """Health-walk one ``.sql`` file. Any failure degrades to the empty
+    ``FileComplexity`` the tree-sitter walker returns for unmapped languages -
+    no signal, never a crash. *statements* False skips the statement smells
+    (see :func:`walks_statements`); routine complexity is always counted."""
+    text = source.decode("utf-8", errors="replace")
+    file_nloc = _count_file_nloc(source)
     try:
         functions, routine_hits = _walk_routines(text)
-        smell_hits = _statement_smells(text, dialect)
+        smell_hits = _statement_smells(text, dialect) if statements else []
     except Exception:
         return FileComplexity(functions=[], classes=[], file_nloc=file_nloc)
     return FileComplexity(

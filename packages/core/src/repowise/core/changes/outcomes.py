@@ -39,6 +39,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
+from repowise.core.changelist import without_changelist_number
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
 from repowise.core.registry.plugins import SeamRegistry
 
 #: The window :func:`file_fix_rate` counts in, unless ``changes.outcome_fix_days`` says.
@@ -56,8 +58,9 @@ _SHARED_NUMBERING = frozenset({"github", "generic"})
 _FIELD = "\x1f"
 _RECORD = "\x1e"
 
-# ``#N``, GitLab's ``!N``, or a sha of 7 to 40 hex digits.
-_REF = r"(#\d{1,9}|!\d{1,9}|\b[0-9a-f]{7,40}\b)"
+# ``#N``, GitLab's ``!N``, or a sha. The rules match case-insensitively for
+# their words, so an uppercase sha matches too and is lowercased when read.
+_REF = rf"(#\d{{1,9}}|!\d{{1,9}}|\b{SHA_PREFIX_PATTERN}\b)"
 # Words may wrap onto the next line, never across a blank one: a phrase that
 # ends one paragraph says nothing about the reference opening the next.
 _S = r"(?:[ \t]+|[ \t]*\n[ \t]*)"
@@ -65,7 +68,7 @@ _NOUN = rf"(?:(?:commit|change|pr|pull request|merge request|mr){_S})?"
 _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # The kernel convention: ``Fixes: <sha> ("subject")`` names the commit that
     # introduced the bug.
-    ("fixes_trailer", re.compile(r"^Fixes:[ \t]+([0-9a-f]{7,40})\b", re.I | re.M)),
+    ("fixes_trailer", re.compile(rf"^Fixes:[ \t]+({SHA_PREFIX_PATTERN})\b", re.I | re.M)),
     (
         "regression",
         re.compile(
@@ -238,7 +241,7 @@ def _revert_index(
             )
             for line in raw.splitlines():
                 sha, _, subject = line.partition(_FIELD)
-                subjects[sha.strip()] = subject
+                subjects[sha.strip()] = without_changelist_number(subject)
         return by_target, frozenset(reverted_at_head(links)), subjects
 
     return _once(("revert", repo_path, head, forge), build)

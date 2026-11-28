@@ -14,22 +14,27 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import structlog
 
+from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.forges import detect_forge
+from repowise.core.procutils import available_memory_bytes as _available_memory_bytes
+from repowise.core.settings.model import flag
 
 from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    _DEFAULT_COMMIT_LIMIT,
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
+    _PACK_WINDOW_OPTIONS,
+    clamp_commit_limit,
 )
 from ._full_index import (
     CommitSample,
@@ -45,11 +50,20 @@ from ._incremental import (
     idle_refresh_paths,
     prior_defect_stage,
 )
+from .blame_graph import BlameGraph
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
-from .file_history import DECAY_REFRESH_KEYS, _window_anchor, index_file
+from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
+from .fix_shape_cache import FixShapeCache
+from .fix_walk_cache import FixWalkCache
 from .function_blame import build_blame_index
-from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
+from .prior_defects import (
+    FixWalk,
+    PriorDefects,
+    collect_fix_commits,
+    compute_prior_defects,
+    window_commits,
+)
 from .records import (
     GitIndexSummary,
     RepoTotals,
@@ -58,8 +72,14 @@ from .records import (
     _should_skip_index,
     _tz_offset_minutes,
     capture_repo_totals,
+    repo_people,
 )
 from .tiers import GitIndexTier
+
+if TYPE_CHECKING:
+    from concurrent.futures import Future
+
+    from repowise.core.author_identity import IdentityResolver
 
 # Silence GitPython's _CatFileContentStream.__del__ ValueError spam.
 # When git cat-file streams are GC'd after the subprocess pipe is closed,
@@ -97,39 +117,6 @@ _GIT_WORKER_MEMORY_BYTES = 384 * 1024 * 1024
 _GIT_MEMORY_RESERVE_BYTES = 512 * 1024 * 1024
 
 
-def _available_memory_bytes() -> int | None:
-    """Best-effort available physical memory without an optional dependency."""
-    if os.name == "nt":
-        try:
-            import ctypes
-
-            class _MemoryStatus(ctypes.Structure):
-                _fields_ = [
-                    ("length", ctypes.c_ulong),
-                    ("memory_load", ctypes.c_ulong),
-                    ("total_physical", ctypes.c_ulonglong),
-                    ("available_physical", ctypes.c_ulonglong),
-                    ("total_page_file", ctypes.c_ulonglong),
-                    ("available_page_file", ctypes.c_ulonglong),
-                    ("total_virtual", ctypes.c_ulonglong),
-                    ("available_virtual", ctypes.c_ulonglong),
-                    ("available_extended_virtual", ctypes.c_ulonglong),
-                ]
-
-            status = _MemoryStatus()
-            status.length = ctypes.sizeof(status)
-            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-                return int(status.available_physical)
-        except (AttributeError, OSError, TypeError, ValueError):
-            return None
-    try:
-        pages = os.sysconf("SC_AVPHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return int(pages) * int(page_size)
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-
 def git_worker_count(
     pending: int,
     *,
@@ -145,9 +132,7 @@ def git_worker_count(
     affinity_count = getattr(os, "process_cpu_count", None)
     cpus = cpu_count or (affinity_count() if affinity_count else None) or os.cpu_count() or 1
     available = (
-        available_memory_bytes
-        if available_memory_bytes is not None
-        else _available_memory_bytes()
+        available_memory_bytes if available_memory_bytes is not None else _available_memory_bytes()
     )
     memory_workers = _MAX_GIT_WORKERS
     if available is not None:
@@ -180,6 +165,9 @@ class _FilePassInputs:
     provenance_classifier: Any
     note_agents: dict[str, Any]
     trace_index: Any
+    shallow_roots: frozenset[str] = frozenset()
+    # The repo's people resolver; every per-file author figure keys on it.
+    resolve: IdentityResolver | None = None
 
 
 @dataclass
@@ -203,6 +191,8 @@ class _IndexSetup:
     fallback_files: set[str] = field(default_factory=set)
     fallback_note_agents: dict[str, Any] = field(default_factory=dict)
     as_of_ts: Any = None
+    blame_graph: BlameGraph = field(default_factory=BlameGraph)
+    people: IdentityResolver | None = None
 
 
 class _ChangedScope(NamedTuple):
@@ -215,6 +205,16 @@ class _ChangedScope(NamedTuple):
     co_change_files: set[str] | None
 
 
+def _repo_people_or_none(repo: Any) -> IdentityResolver | None:
+    """The repo's people resolver, or ``None`` when the author walk fails: each
+    file then merges its own authors (see ``index_file``)."""
+    try:
+        return repo_people(repo)
+    except Exception as exc:
+        logger.debug("repo_people_failed", error=str(exc))
+        return None
+
+
 def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
     """Keep the rows of a per-file pass; log each exception it returned."""
     rows: list[dict] = []
@@ -224,6 +224,39 @@ def _successful_rows(raw: list[Any], failure_message: str) -> list[dict]:
         else:
             rows.append(r)
     return rows
+
+
+@contextlib.contextmanager
+def _step(progress: Any | None, phase: str) -> Iterator[Callable[[int, int | None], None]]:
+    """Show *phase* as a progress row while the block runs.
+
+    Yields ``on_count(done, total)``: the first call starts the row with that
+    total (``None``: no count), later calls advance it to *done*. Without a
+    *progress* nothing shows.
+    """
+    done = 0
+    started = False
+
+    def on_count(count: int, total: int | None) -> None:
+        nonlocal done, started
+        if progress is None:
+            return
+        # A display error must never cost the history walk.
+        with contextlib.suppress(Exception):
+            if not started:
+                progress.on_phase_start(phase, total)
+                started = True
+            for _ in range(count - done):
+                progress.on_item_done(phase)
+        done = max(done, count)
+
+    try:
+        yield on_count
+    finally:
+        finish = getattr(progress, "on_phase_done", None) if started else None
+        if callable(finish):
+            with contextlib.suppress(Exception):
+                finish(phase)
 
 
 class GitIndexer:
@@ -251,10 +284,14 @@ class GitIndexer:
         record_episodes: bool = False,
         max_workers: int | None = None,
         read_only: bool = False,
+        tracker_fixes: frozenset[str] = frozenset(),
     ) -> None:
         self.repo_path = Path(repo_path)
-        self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
-        self.follow_renames = follow_renames
+        # Normalised here, the one place every caller's config value meets
+        # git: a quoted "false" or a limit above the maximum reads the same on
+        # update as it did at init.
+        self.commit_limit = clamp_commit_limit(commit_limit)
+        self.follow_renames = flag(follow_renames, False)
         self.tier = tier
         # Off by default, and a constructor parameter rather than a call site.
         # `health` and `dead-code` build an indexer of their own to read
@@ -266,6 +303,10 @@ class GitIndexer:
         # never rewrites it.
         self.read_only = read_only
         self.max_workers = max_workers
+        # Commits a stored bug or incident issue names (``issue_links``): the
+        # fix walk counts them as fixes. Read from the index by the caller,
+        # never fetched here.
+        self.tracker_fixes = frozenset(tracker_fixes)
         # Read once: which forge's merge messages name a commit's PR or MR.
         self.forge = detect_forge(self.repo_path)
 
@@ -284,6 +325,7 @@ class GitIndexer:
         on_co_change_done: Callable[[], None] | None = None,
         on_warning: Callable[[str], None] | None = None,
         timings: Any | None = None,
+        progress: Any | None = None,
     ) -> tuple[GitIndexSummary, list[dict]]:
         """Full index of all tracked files. Returns summary + list of metadata
         dicts ready for bulk upsert.
@@ -304,6 +346,11 @@ class GitIndexer:
         ``timings`` is the run's phase table; each step below records a
         ``git.*`` row, since the stage overlaps ingestion and its tail is
         otherwise invisible.
+
+        ``progress`` (a ``ProgressCallback``) shows the steps before the
+        per-file pass, which take minutes on a long history: ``git.history``
+        counts commits read, ``git.blame_index`` runs while the blame graph is
+        written.
         """
         from repowise.core.pipeline.phase_timing import timed
 
@@ -313,7 +360,7 @@ class GitIndexer:
         # ``git ls-files``, the repo-wide commit walk, trace and note loads).
         # Run it in a worker thread so it cannot stall the ingestion stage
         # that shares this event loop via ``asyncio.gather``.
-        setup = await asyncio.to_thread(self._prepare_full_index, on_warning, timings)
+        setup = await asyncio.to_thread(self._prepare_full_index, on_warning, timings, progress)
 
         if setup.outcome == "no_repo":
             return GitIndexSummary(0, 0, 0, 0.0), []
@@ -346,7 +393,7 @@ class GitIndexer:
         loop = asyncio.get_event_loop()
 
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
-        get_thread_repo, close_thread_repos = self._thread_repo_pool()
+        get_thread_repo, close_thread_repos = self._thread_repo_pool(setup.blame_graph.env)
         inputs = _FilePassInputs(
             commit_index=commit_index,
             fallback_files=fallback_files,
@@ -356,6 +403,8 @@ class GitIndexer:
             provenance_classifier=prov_clf,
             note_agents=fallback_note_agents,
             trace_index=trace_index,
+            shallow_roots=shallow_roots(str(self.repo_path)),
+            resolve=setup.people,
         )
 
         async def _co_change_task() -> CoChangeWalk:
@@ -403,7 +452,9 @@ class GitIndexer:
             metadata_list, walk, (fix_walk, prior_defects, repo_totals) = await asyncio.gather(
                 _file_pass(),
                 _co_change_task(),
-                asyncio.to_thread(self._repo_wide_passes, set(indexable_files), as_of_ts, timings),
+                asyncio.to_thread(
+                    self._repo_wide_passes, set(indexable_files), as_of_ts, timings, setup.people
+                ),
             )
         finally:
             # Abandon timed-out threads immediately instead of letting
@@ -411,6 +462,7 @@ class GitIndexer:
             with timed(timings, "git.release"):
                 executor.shutdown(wait=False, cancel_futures=True)
                 close_thread_repos()
+                setup.blame_graph.close()
 
         results = _successful_rows(metadata_list, "Failed to index file")
 
@@ -448,6 +500,7 @@ class GitIndexer:
             history_coverage=history_coverage(
                 indexable_files, code_results, sample, self.commit_limit, workers
             ),
+            commit_limit=self.commit_limit,
         )
         repo.close()
 
@@ -466,6 +519,7 @@ class GitIndexer:
         self,
         on_warning: Callable[[str], None] | None,
         timings: Any | None,
+        progress: Any | None = None,
     ) -> _IndexSetup:
         """Blocking setup for :meth:`index_repo`, meant for a worker thread.
 
@@ -486,6 +540,9 @@ class GitIndexer:
         if not tracked_files:
             return _IndexSetup(outcome="no_tracked")
 
+        # Started first: the per-file pass waits for it, it reads only the
+        # object store, and on a long history it is the slowest step here.
+        graph_job = self._start_blame_graph(repo, timings, progress)
         # Two tiers. Code files get the full per-file pass (blame, churn
         # signals, the per-file fallback walk). Every other tracked file that
         # is not vendored, a lockfile or binary gets its history tier (counts,
@@ -501,7 +558,14 @@ class GitIndexer:
         # and the line-share merge, so they load even when no walk runs.
         trace_index = self._load_trace_index(repo)
         sample = self._full_commit_index(
-            repo, indexable_files, history_files, commit_sink, prov_clf, trace_index, timings
+            repo,
+            indexable_files,
+            history_files,
+            commit_sink,
+            prov_clf,
+            trace_index,
+            timings,
+            progress,
         )
         commit_index, fallback_files = sample.commits, sample.fallback_files
 
@@ -516,6 +580,7 @@ class GitIndexer:
             fallback_note_agents = load_git_ai_note_agents(repo, None)
 
         as_of_ts = self._resolve_as_of_ts(repo)
+        people = _repo_people_or_none(repo)
         return _IndexSetup(
             outcome="ready",
             repo=repo,
@@ -530,7 +595,33 @@ class GitIndexer:
             fallback_files=fallback_files,
             fallback_note_agents=fallback_note_agents,
             as_of_ts=as_of_ts,
+            people=people,
+            blame_graph=graph_job.result() if graph_job else BlameGraph(),
         )
+
+    def _start_blame_graph(
+        self, repo: Any, timings: Any | None, progress: Any | None = None
+    ) -> Future[BlameGraph] | None:
+        """Write the per-file pass's :class:`BlameGraph` on a thread, when that pass blames."""
+        if not self.tier.includes_blame:
+            return None
+        target = BlameGraph.target(repo)
+        if target is None:
+            return None
+        from concurrent.futures import ThreadPoolExecutor
+
+        from repowise.core.pipeline.phase_timing import timed
+
+        def _write() -> BlameGraph:
+            with timed(timings, "git.blame_graph"), _step(progress, "git.blame_index") as on_count:
+                on_count(0, None)
+                return BlameGraph.write(*target)
+
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="git-graph")
+        try:
+            return pool.submit(_write)
+        finally:
+            pool.shutdown(wait=False)
 
     def _full_commit_index(
         self,
@@ -541,6 +632,7 @@ class GitIndexer:
         prov_clf: Any,
         trace_index: Any,
         timings: Any,
+        progress: Any | None = None,
     ) -> CommitSample:
         """One repo-wide ``git log`` that every per-file worker reads its commits from.
 
@@ -553,7 +645,7 @@ class GitIndexer:
 
         from ..git_commit_index import load_sampled_commit_index
 
-        with timed(timings, "git.commit_index"):
+        with timed(timings, "git.commit_index"), _step(progress, "git.history") as on_commits:
             sample = load_sampled_commit_index(
                 repo,
                 self.commit_limit,
@@ -567,6 +659,7 @@ class GitIndexer:
                 trace_index=trace_index,
                 cache_dir=self._window_cache_dir(),
                 cache_writable=not self.read_only,
+                on_commits=on_commits,
             )
         return CommitSample(
             sample.commits,
@@ -576,6 +669,15 @@ class GitIndexer:
             sample.global_commits,
             sample.deep_commits,
             sample.history_complete_through_depth,
+        )
+
+    def _fix_walk_cache(self, repo: Any) -> FixWalkCache | None:
+        """The fix walk's record cache in the index directory, when there is one."""
+        return FixWalkCache.load(
+            self._window_cache_dir(),
+            repo,
+            writable=not self.read_only,
+            tracker_fixes=self.tracker_fixes,
         )
 
     def _window_cache_dir(self) -> Path | None:
@@ -610,11 +712,11 @@ class GitIndexer:
         ``index_file``'s empty defaults overwrite the init-computed partners
         on every update, blanking exactly the files that change most.
 
-        ``co_change_sink``, when provided, receives the FULL per-file partner
-        map that walk produces (every tracked file, not just the changed
-        ones). The update path uses it to rebuild the graph's ``co_changes``
-        edges for the whole repo so the update-built graph converges with the
-        init-built one.
+        ``co_change_sink``, when provided, receives the walk's partner lists
+        for every code file, not just the changed ones (history-tier files get
+        none, as in a full index). The update path uses it to rebuild the
+        graph's ``co_changes`` edges for the whole repo so the update-built
+        graph converges with the init-built one.
 
         ``idle_decay_sink``, when provided (with ``all_files`` and a co-change
         tier), receives a decay-only partial metadata row for every *idle*
@@ -646,8 +748,9 @@ class GitIndexer:
         history_files, history_changed = scope.history_files, scope.history_changed
 
         refresh_idle = self._wants_idle_refresh(idle_decay_sink, all_files)
+        # A changed file the walk leaves out would index with no commits.
         target_files = (
-            set(all_files) | history_files
+            set(all_files) | set(changed_file_paths) | history_files
             if refresh_idle
             else set(changed_file_paths) | history_changed
         )
@@ -669,6 +772,7 @@ class GitIndexer:
         history_changed -= fallback_files
         fallback_note_agents = fallback_note_agents_for(repo, fallback_files, changed_file_paths)
         as_of_ts = self._resolve_as_of_ts(repo)
+        people = _repo_people_or_none(repo)
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-idx")
         get_thread_repo, close_thread_repos = self._thread_repo_pool()
         executor_closed = False
@@ -699,6 +803,8 @@ class GitIndexer:
             provenance_classifier=prov_clf,
             note_agents=fallback_note_agents,
             trace_index=trace_index,
+            shallow_roots=shallow_roots(str(self.repo_path)),
+            resolve=people,
         )
         try:
             with timed(timings, "rebuild.git.changed_files"):
@@ -729,7 +835,15 @@ class GitIndexer:
         # The code signals below (prior defects, co-change) skip history-tier rows.
         code_results = [m for m in results if m["file_path"] not in history_changed]
 
-        sp = SignalPass(repo=repo, as_of_ts=as_of_ts, timings=timings, abort=_abort)
+        sp = SignalPass(
+            repo=repo,
+            as_of_ts=as_of_ts,
+            timings=timings,
+            abort=_abort,
+            cache_dir=self._window_cache_dir(),
+            cache_writable=not self.read_only,
+            tracker_fixes=self.tracker_fixes,
+        )
         # Idle files are counted too, so one whose only fix aged out drops to 0.
         prior_defects = prior_defect_stage(
             sp,
@@ -751,6 +865,7 @@ class GitIndexer:
                     prov_clf,
                     prior_defects,
                     history_files,
+                    people,
                 ),
             )
 
@@ -822,6 +937,8 @@ class GitIndexer:
         file. Non-code files get the history tier the full index gives them,
         drawn from the same tracked-file set (the parsed files miss .rst,
         LICENSE and the like), and the co-change walk reads that set too.
+        Code files come from that set as well: the caller's parsed files leave
+        out tracked code a full index covers (``fixtures/`` dirs, size limits).
         """
         # Callers hand over paths relative to the indexed directory; git and the
         # rows this indexer writes are keyed relative to the repository root.
@@ -839,8 +956,8 @@ class GitIndexer:
         history_changed = history_files.intersection(changed_file_paths)
         changed = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
         co_change_files = set(tier_paths) if tier_paths else None
-        if all_files:
-            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
+        if tier_paths:
+            all_files = {fp for fp in tier_paths if not _should_skip_index(fp)}
         return _ChangedScope(changed, all_files, history_files, history_changed, co_change_files)
 
     def _index_one_file(
@@ -875,6 +992,8 @@ class GitIndexer:
                 note_agents=inputs.note_agents,
                 trace_index=inputs.trace_index,
                 history_only=file_path in inputs.history_only,
+                shallow_roots=inputs.shallow_roots,
+                resolve=inputs.resolve,
             )
         except Exception:
             return {"file_path": file_path}
@@ -937,10 +1056,11 @@ class GitIndexer:
         walk: CoChangeWalk,
         prior_defects: PriorDefects,
         history_files: set[str],
+        people: IdentityResolver | None = None,
     ) -> dict[str, dict]:
         """Decay-only partial rows for *idle_paths* (see ``index_changed_files``).
 
-        Runs off the event loop. For each idle file, ``index_file`` recomputes
+        Runs off the event loop. For each idle file, ``decay_meta`` recomputes
         the window/decay churn fields from its precomputed commits (blame off →
         no git subprocess, no file stat), then the repo-wide co-change / entropy
         / prior-defect signals are overlaid. Only :data:`DECAY_REFRESH_KEYS` are
@@ -951,26 +1071,29 @@ class GitIndexer:
         ``history_only``, and carries no code signal.
         """
         out: dict[str, dict] = {}
+        cut = shallow_roots(str(self.repo_path))
         for fp in idle_paths:
-            meta = index_file(
-                repo,
-                fp,
-                repo_path=self.repo_path,
-                forge=self.forge,
-                commit_limit=self.commit_limit,
-                follow_renames=self.follow_renames,
-                include_blame=False,
-                precomputed_commits=commit_index.get(fp),
-                as_of_ts=as_of_ts,
-                provenance_classifier=prov_clf,
-                history_only=fp in history_files,
-            )
             if fp in history_files:
                 # The history tier comes only from this shared walk, so this is
                 # the full row a fresh index writes. Persisted whole, it also
                 # backfills stores indexed before non-code files had rows.
-                out[fp] = meta
+                out[fp] = index_file(
+                    repo,
+                    fp,
+                    repo_path=self.repo_path,
+                    forge=self.forge,
+                    commit_limit=self.commit_limit,
+                    follow_renames=self.follow_renames,
+                    include_blame=False,
+                    precomputed_commits=commit_index.get(fp),
+                    as_of_ts=as_of_ts,
+                    provenance_classifier=prov_clf,
+                    history_only=True,
+                    shallow_roots=cut,
+                    resolve=people,
+                )
                 continue
+            meta = decay_meta(fp, commit_index.get(fp, []), as_of_ts, cut)
             meta["change_entropy"] = walk.entropy.get(fp, 0.0)
             meta["co_change_partners_json"] = json.dumps(walk.partners.get(fp, []))
             meta["co_change_partner_count"] = walk.partner_count.get(fp, 0)
@@ -981,12 +1104,18 @@ class GitIndexer:
         return out
 
     def capture_new_commit_rows(
-        self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
+        self,
+        *,
+        since_ts: int | None = None,
+        file_rows_sink: list[dict] | None = None,
+        known_shas: set[str] | None = None,
     ) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
 
         *file_rows_sink*, when given, is extended with the matching
         ``git_commit_files`` rows from the same walk.
+        When *known_shas* is supplied, commits sharing *since_ts* whose shas
+        are not in *known_shas* are retained (#6150).
 
         The incremental counterpart to the ``commit_sink`` capture on
         ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
@@ -1016,6 +1145,7 @@ class GitIndexer:
                 set(),
                 commit_sink=sink,
                 since_ts=since_ts,
+                known_shas=known_shas,
                 provenance_classifier=self._provenance_classifier(),
             )
             rows = build_commit_rows(sink)
@@ -1133,6 +1263,8 @@ class GitIndexer:
                 tracked,
                 as_of_ts=self._resolve_as_of_ts(repo),
                 skip_shas=known_shas,
+                walk_cache=self._fix_walk_cache(repo),
+                tracker_fixes=self.tracker_fixes,
             )
             rows, ok = self._build_fix_events(walk)
             self._record_git_episodes(walk)
@@ -1148,7 +1280,11 @@ class GitIndexer:
                 repo.close()
 
     def _repo_wide_passes(
-        self, indexable_files: set[str], as_of_ts: float | None, timings: Any | None
+        self,
+        indexable_files: set[str],
+        as_of_ts: float | None,
+        timings: Any | None,
+        people: IdentityResolver | None = None,
     ) -> tuple[FixWalk, PriorDefects, RepoTotals]:
         """The fix-commit walk, its prior-defect counts, and whole-history totals.
 
@@ -1169,14 +1305,27 @@ class GitIndexer:
         try:
             with timed(timings, "git.fix_walk"):
                 try:
-                    fix_walk = collect_fix_commits(repo, indexable_files, as_of_ts=as_of_ts)
+                    # Opens every fix diff (fix events need them) and seeds the
+                    # caches an update reads, so its walk reads only new commits.
+                    shape_cache = FixShapeCache.load(self._window_cache_dir())
+                    shape_cache.shapes = {}
+                    fix_walk = collect_fix_commits(
+                        repo,
+                        indexable_files,
+                        as_of_ts=as_of_ts,
+                        shape_cache=shape_cache,
+                        walk_cache=self._fix_walk_cache(repo),
+                        tracker_fixes=self.tracker_fixes,
+                    )
+                    if not self.read_only:
+                        shape_cache.save()
                     prior_defects = compute_prior_defects(
                         repo, indexable_files, as_of_ts=as_of_ts, walk=fix_walk
                     )
                 except Exception as exc:
                     logger.debug("prior_defect_pass_failed", error=str(exc))
             with timed(timings, "git.repo_totals"):
-                totals = capture_repo_totals(repo)
+                totals = capture_repo_totals(repo, people=people)
         finally:
             repo.close()
         return fix_walk, prior_defects, totals
@@ -1290,6 +1439,33 @@ class GitIndexer:
         except Exception:
             return None
 
+    def window_anchor(self) -> datetime:
+        """The 'now' this repo's history windows are measured from, for readers
+        outside an index run: :meth:`_resolve_as_of_ts`, else wall-clock time."""
+        repo = self._get_repo()
+        if repo is None:
+            return _window_anchor(None)
+        try:
+            return _window_anchor(self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
+    def fix_window_commits(self) -> list[tuple[str, str, str]]:
+        """``(sha, subject, body)`` of every commit the fix walk reads.
+
+        What an ``issue-source`` is asked about, so a stored link always lands
+        on a commit the defect window holds. Empty when git is unreadable.
+        """
+        repo = self._get_repo()
+        if repo is None:
+            return []
+        try:
+            return window_commits(repo, as_of_ts=self._resolve_as_of_ts(repo))
+        finally:
+            with contextlib.suppress(Exception):
+                repo.close()
+
     def blame_indexes(self, file_paths: Sequence[str]) -> dict[str, Any]:
         """Per-line ``BlameIndex`` for *file_paths*, anchored as an index run
         anchors it. For a re-score that must recover what only an index built;
@@ -1312,8 +1488,13 @@ class GitIndexer:
             with contextlib.suppress(Exception):
                 repo.close()
 
-    def _thread_repo_pool(self) -> tuple[Callable[[], Any], Callable[[], None]]:
+    def _thread_repo_pool(
+        self, git_env: dict[str, str] | None = None
+    ) -> tuple[Callable[[], Any], Callable[[], None]]:
         """Return ``(get_thread_repo, close_all)`` for per-thread Repo reuse.
+
+        *git_env* is set on every git call each repo makes (a
+        :class:`BlameGraph`'s object directory).
 
         gitpython ``Repo`` handles can't be shared across threads on Windows,
         but constructing one per *file* costs ~40 ms each. This pool hands
@@ -1334,6 +1515,9 @@ class GitIndexer:
                 from repowise.core.git_repo import Repo
 
                 repo = Repo(self.repo_path, search_parent_directories=True)
+                repo.git.set_persistent_git_options(c=list(_PACK_WINDOW_OPTIONS))
+                if git_env:
+                    repo.git.update_environment(**git_env)
                 tls.repo = repo
                 with lock:
                     created.append(repo)
@@ -1351,7 +1535,9 @@ class GitIndexer:
         try:
             from repowise.core.git_repo import Repo
 
-            return Repo(self.repo_path, search_parent_directories=True)
+            repo = Repo(self.repo_path, search_parent_directories=True)
+            repo.git.set_persistent_git_options(c=list(_PACK_WINDOW_OPTIONS))
+            return repo
         except Exception as exc:
             logger.warning(
                 "Git unavailable or not a repository",

@@ -22,7 +22,8 @@ MANIFEST_BASENAME = "decisions.yaml"
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
-    "health": frozenset({"assertions", "coverage", "refactoring"}),
+    # ``health`` holds switches for parts of the health pass (duplication).
+    "health": frozenset({"assertions", "coverage", "health", "refactoring"}),
     "generation": frozenset(
         {
             "provider",
@@ -37,12 +38,35 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "folder_coverage",
             "generation_context",
             "enable_onboarding",
+            "context_window",
         }
     ),
     # Agent-surface preferences. init records `hooks` and `editor_files` after
     # it fingerprints the config, so leaving them in "other" turned the first
-    # update after every init into a full rebuild.
-    "state_only": frozenset({"distill", "editor_files", "events", "hooks", "mcp"}),
+    # update after every init into a full rebuild. `managed_checkout` says how
+    # the server keeps the checkout current, not what the index holds.
+    "state_only": frozenset(
+        {
+            # Opt-in contract extraction keeps its own stamp in contracts.json;
+            # wiki.db does not depend on it.
+            "contracts",
+            "distill",
+            "editor_files",
+            "editor_setup",
+            "events",
+            # Caps read by `evidence add`; the index does not depend on them.
+            "evidence",
+            "hooks",
+            "managed_checkout",
+            "mcp",
+            # Read by a process when it starts (the MCP cache warmup).
+            "performance",
+            # Plugin settings, read by a plugin's source when it syncs.
+            "plugins",
+            # Version history kept per page: trims old rows, never changes a page.
+            "wiki",
+        }
+    ),
 }
 
 
@@ -81,7 +105,10 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
     if not config_path.exists():
         return {}
 
-    text = config_path.read_text(encoding="utf-8")
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
     try:
         import yaml  # type: ignore[import-untyped]
 
@@ -220,6 +247,22 @@ def save_file_settings(
     return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
 
 
+def write_file_setting(repo_path: Path | str, key: str, value: Any) -> None:
+    """Write one :data:`FILE_SETTING_KEYS` value through :func:`save_file_settings`.
+
+    The settings-registry writer for these keys; ``None`` restores the default.
+    A style must be a built-in or one under ``.repowise/styles/``: generation
+    reads an unknown name as the default, so saving one would change nothing.
+    """
+    if key == "wiki_style" and value is not None:
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        if not is_known_style(value, repo_path):
+            names = ", ".join(spec.name for spec in list_styles(repo_path))
+            raise ValueError(f"wiki_style: no style named {value!r}; known: {names}")
+    save_file_settings(repo_path, {key: value}, {})
+
+
 def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
     """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
     value = default if value is None else value
@@ -248,6 +291,37 @@ def config_fingerprint(repo_path: Path | str) -> str:
             h.update(name.encode())
             h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def carry_config_fingerprints(repo_path: Path | str, before: tuple[str, dict[str, str]]) -> None:
+    """Move state.json's config fingerprints past a config.yaml write that changes nothing.
+
+    *before* is ``(config_fingerprint, config_dependency_fingerprints)`` read
+    ahead of the write. Only a fingerprint that still matched it moves, so a
+    real config change waiting for the next update is still seen.
+    """
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = get_repowise_dir(repo_path) / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(state, dict):
+        return
+    old_fp, old_deps = before
+    changed = False
+    if state.get("config_fingerprint") == old_fp:
+        state["config_fingerprint"] = config_fingerprint(repo_path)
+        changed = True
+    stored = state.get("config_dependency_fingerprints")
+    if isinstance(stored, dict):
+        for bucket, value in config_dependency_fingerprints(repo_path).items():
+            if stored.get(bucket) == old_deps.get(bucket) and value != old_deps.get(bucket):
+                stored[bucket] = value
+                changed = True
+    if changed:
+        atomic_write_text(state_path, json.dumps(state, indent=2))
 
 
 def health_rules_fingerprint(repo_path: Path | str) -> str:
@@ -544,6 +618,7 @@ def _git_ignores(repo_path: Path | str, pattern: str) -> bool:
             ["git", "check-ignore", "-v", "--no-index", pattern],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=10,
         )

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.server.mcp_server._flow_path import expand_via_flow_path
 
@@ -187,13 +189,58 @@ async def test_multi_hop_path_within_depth_cap(session, repo_id):
     session.add(_edge(repo_id, mid2, builder, "imports"))
     await session.commit()
 
-    hits = [{"target_path": parser, "score": 5.0}]
+    # Retrieval returned builder, ranked low: a far endpoint it also matched.
+    hits = [{"target_path": parser, "score": 5.0}, {"target_path": builder, "score": 0.1}]
     combined, paths = await expand_via_flow_path(
         session, repo_id, hits, "how does parser feed the builder", set()
     )
-    assert any(h.get("target_path") == builder for h in combined)
+    assert next(h for h in combined if h.get("target_path") == builder)["score"] > 3.0
     # Undirected search: the path may be reported from either endpoint.
     assert paths and paths[0] in ([parser, mid1, mid2, builder], [builder, mid2, mid1, parser])
+
+
+async def test_a_far_file_only_its_name_matched_is_not_an_endpoint(session, repo_id):
+    """A word that is also a file name, three hops away through other files,
+    is a walk to a file name: nothing is injected and no path is served."""
+    parser, mid1, mid2, levels = (
+        "pkg/parser.py",
+        "pkg/helpers.py",
+        "pkg/vocabulary.py",
+        "pkg/levels.py",
+    )
+    for p in (parser, mid1, mid2, levels):
+        session.add(_page(repo_id, p))
+    session.add(_edge(repo_id, parser, mid1, "imports"))
+    session.add(_edge(repo_id, mid1, mid2, "imports"))
+    session.add(_edge(repo_id, mid2, levels, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": parser, "score": 5.0}]
+    combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "what level of detail does the parser keep", set()
+    )
+    assert paths == []
+    assert combined is hits
+
+
+@pytest.mark.parametrize(
+    "helper", ["tests/integration/test_instrument.py", "docs_src/tutorial/answer.py"]
+)
+async def test_a_copy_that_does_not_ship_is_not_an_endpoint(session, repo_id, helper):
+    """A test or a docs tutorial that defines its own ``get_answer`` does not anchor a flow."""
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, _CONF))
+    session.add(_symbol(repo_id, "get_answer", _ANSWER))
+    session.add(_symbol(repo_id, "get_answer", helper))
+    session.add(_edge(repo_id, _ANSWER, _CONF, "imports"))
+    session.add(_edge(repo_id, _CONF, helper, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}, {"target_path": _CONF, "score": 4.0}]
+    _combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does get_answer use confidence", {"get_answer"}
+    )
+    assert paths == [[_ANSWER, _CONF]]
 
 
 async def test_cross_language_anchor_dropped(session, repo_id):
@@ -315,3 +362,46 @@ async def test_the_anchor_cap_keeps_what_retrieval_ranked(session, repo_id):
     )
 
     assert [_ANSWER, ranked] in paths
+
+
+def test_bfs_never_routes_a_path_through_a_test():
+    """A test importing both endpoints is not a flow between them."""
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["tests/test_ab.py"],
+        "b.py": ["tests/test_ab.py"],
+        "tests/test_ab.py": ["a.py", "b.py"],
+    }
+    assert _bfs_path(adj, "a.py", "b.py", 4) is None
+    adj = {**adj, "a.py": ["m.py", "tests/test_ab.py"], "m.py": ["a.py", "b.py"]}
+    adj["b.py"] = ["m.py", "tests/test_ab.py"]
+    assert _bfs_path(adj, "a.py", "b.py", 4) == ["a.py", "m.py", "b.py"]
+
+
+def test_bfs_still_reaches_a_test_file_that_is_an_endpoint():
+    from repowise.server.mcp_server._flow_path import _bfs_path
+
+    adj = {
+        "a.py": ["m.py"],
+        "m.py": ["a.py", "tests/test_a.py"],
+        "tests/test_a.py": ["m.py"],
+    }
+    assert _bfs_path(adj, "a.py", "tests/test_a.py", 4) == ["a.py", "m.py", "tests/test_a.py"]
+
+
+async def test_a_name_only_a_test_defines_still_anchors_its_file(session, repo_id):
+    """With no shipped definition, the test that defines the name is the place
+    the question asks about, as a test endpoint already is in the walk."""
+    helper = "tests/integration/test_instrument.py"
+    session.add(_page(repo_id, _ANSWER))
+    session.add(_page(repo_id, helper))
+    session.add(_symbol(repo_id, "run_probe", helper))
+    session.add(_edge(repo_id, _ANSWER, helper, "imports"))
+    await session.commit()
+
+    hits = [{"target_path": _ANSWER, "score": 5.0}]
+    _combined, paths = await expand_via_flow_path(
+        session, repo_id, hits, "how does run_probe reach the answer module", {"run_probe"}
+    )
+    assert paths == [[_ANSWER, helper]] or paths == [[helper, _ANSWER]]

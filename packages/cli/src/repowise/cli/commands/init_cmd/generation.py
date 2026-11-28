@@ -104,6 +104,7 @@ def estimate_generation(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
     est = estimate_cost(
         plans,
@@ -111,7 +112,9 @@ def estimate_generation(
         provider.model_name,
         repo_path=repo_path,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     return plans, est
 
@@ -135,6 +138,7 @@ def concept_page_count(plans: list[Any]) -> int:
 # in the mode panel was the old state.
 _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("module_page", "Subsystem pages", "subsystem"),
+    ("flow_page", "Walkthrough pages", "walkthrough"),
     ("repo_overview", "Repo overview", "overview"),
     ("architecture_diagram", "Architecture diagram", "diagram"),
     ("onboarding", "Onboarding pages", "onboarding"),
@@ -142,7 +146,6 @@ _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("api_contract", "API contract pages", "API"),
     ("symbol_spotlight", "Symbol spotlights", "symbol"),
     ("scc_page", "Dependency cycle pages", "cycle"),
-    ("layer_page", "Layer pages", "layer"),
     ("infra_page", "Infrastructure pages", "infra"),
 )
 
@@ -185,19 +188,20 @@ def structural_page_summary(plans: list[Any]) -> str:
     file, API and symbol pages from the code itself with no provider call. This
     is the one line that says so. Empty string when there are none.
     """
-    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-
-    counts = {p.page_type: p.count for p in plans if p.page_type in STRUCTURAL_PAGE_TYPES}
+    counts = {p.page_type: p.count - p.model_count for p in plans if p.count > p.model_count}
     total = sum(counts.values())
     if not total:
         return ""
     parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
-    return f"{total} more pages built from code, no model, no cost: " + ", ".join(
-        parts
-    )
+    return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
-def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
+def announce_file_page_cap(
+    parsed_files: list[Any],
+    gen_config: Any,
+    *,
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Say so when the file bucket is being bounded, and how to undo it.
 
     A cap the user chose needs no explanation, but the one the size policy applies
@@ -205,12 +209,12 @@ def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
     are printed, since a run that emits fewer pages than there are files should say
     which files it kept and how to ask for all of them.
     """
-    from repowise.core.generation.selection import auto_file_page_cap, count_documentable_files
+    from repowise.core.generation.selection import auto_file_page_cap, count_eligible_file_pages
 
     requested = getattr(gen_config, "max_file_pages", None)
     if requested == 0:
         return  # explicitly uncapped: nothing is being held back
-    documentable = count_documentable_files(parsed_files)
+    documentable = count_eligible_file_pages(parsed_files, git_meta_map)
     cap = requested if requested else auto_file_page_cap(documentable)
     if not cap or cap >= documentable:
         return
@@ -274,8 +278,7 @@ def _enrich_knowledge_graph(
             # Optional enrichment: the reason goes to the log (shown with -v).
             logger.warning("kg_enrichment_skipped", error=f"{type(exc).__name__}: {exc}")
             console.print(
-                "  [dim]Knowledge graph layers and tour were skipped; "
-                "run with -v to see why.[/dim]"
+                "  [dim]Knowledge graph layers and tour were skipped; run with -v to see why.[/dim]"
             )
 
 
@@ -297,6 +300,48 @@ def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]
     return []
 
 
+def _generation_cost_tracker(
+    deterministic: bool, cost_tracker: Any | None, repo_path: Any, result: Any
+) -> Any | None:
+    """The run's tracker, a fresh one when indexing built none, ``None`` without a model."""
+    if deterministic:
+        return None
+    if cost_tracker is not None:
+        return cost_tracker
+    return build_cost_tracker(repo_path, result.repo_name)
+
+
+def _run_vector_store(repo_path: Path, embedder_impl: Any, *, summaries: bool, verbose: bool) -> Any:
+    """The store this run embeds into.
+
+    A model run reads earlier pages' summaries back from it (*summaries*); a
+    template run does not, so a keyless one builds no LanceDB store at all and
+    gets a throwaway in-memory one. Holding that on ``result`` lets the run's
+    search scope read the embedder off it, so a named embedder that fell back
+    to keyless is not reported as semantic search being available. ``None``
+    stays ``None`` over a real index (the clobber refusal), which persistence
+    must still clean.
+    """
+    from repowise.cli.providers.vector_store import _mock_would_clobber
+    from repowise.core.providers.embedding import is_semantic_embedder
+
+    if verbose:
+        # Opening the store can take seconds on a large index; say so.
+        with progress_steps(console) as steps, steps.step("vector_store"):
+            store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
+    else:
+        store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
+    if (
+        store is None
+        and not is_semantic_embedder(embedder_impl)
+        and not _mock_would_clobber(repo_path / ".repowise" / "lancedb", embedder_impl)
+    ):
+        from repowise.core.persistence.vector_store import InMemoryVectorStore
+
+        store = InMemoryVectorStore(embedder_impl)
+    return store
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -311,10 +356,12 @@ def run_repo_generation(
     timings: Any | None = None,
     warnings: list[str] | None = None,
     total_phases: int | None = None,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
-    Builds the embedder + vector store + cost tracker, runs the resume-friendly
+    Builds the embedder + vector store + cost tracker (or reuses *cost_tracker*,
+    the one indexing billed), runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
 
@@ -342,28 +389,31 @@ def run_repo_generation(
     from ._generation_persist import run_generation_with_persistence
 
     if verbose:
-        announce_file_page_cap(result.parsed_files, gen_config)
+        announce_file_page_cap(
+            result.parsed_files,
+            gen_config,
+            git_meta_map=getattr(result, "git_meta_map", None),
+        )
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
+    deterministic = bool(getattr(gen_config, "deterministic", False))
     # One run, one store: ``init`` builds it before the pipeline and it arrives
     # on ``result``. Only a caller whose embedder matches
     # ``embedder_name_resolved`` may pre-set it.
     vector_store: Any = getattr(result, "vector_store", None)
-    if vector_store is None and verbose:
-        # Opening the store can take seconds on a large index; say so.
-        with progress_steps(console) as steps, steps.step("vector_store"):
-            vector_store = build_vector_store(repo_path, embedder_impl)
-    elif vector_store is None:
-        vector_store = build_vector_store(repo_path, embedder_impl)
+    if vector_store is None:
+        vector_store = _run_vector_store(
+            repo_path, embedder_impl, summaries=not deterministic, verbose=verbose
+        )
     result.vector_store = vector_store
-
-    deterministic = bool(getattr(gen_config, "deterministic", False))
 
     # Cost tracker backed by the real DB so every LLM call is persisted to the
     # llm_costs table. Attached to the provider unconditionally (all providers
     # accept ``_cost_tracker`` as an attribute). A deterministic run makes no
     # calls, so it gets none: an empty ledger, not a ledger of zeroes.
-    cost_tracker = None if deterministic else build_cost_tracker(repo_path, result.repo_name)
+    # *cost_tracker* is the one indexing already billed for decision mining;
+    # reusing it keeps one ledger and one "Cost" total for the run.
+    cost_tracker = _generation_cost_tracker(deterministic, cost_tracker, repo_path, result)
     provider._cost_tracker = cost_tracker
 
     if verbose and not deterministic:
@@ -371,7 +421,6 @@ def run_repo_generation(
             "  [dim](each generated page is saved as it completes: safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
-
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,

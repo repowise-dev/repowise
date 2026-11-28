@@ -89,6 +89,36 @@ class ActionContext(BaseModel):
     )
 
 
+class SetupUnlocks(BaseModel):
+    """Depth rows usage has unlocked: Claude Code calls for the first two,
+    synced commits for the last. Never a calendar."""
+
+    always_load: bool
+    distill: bool
+    suggested_settings: bool
+
+
+class ActionsSetup(BaseModel):
+    """Setup steps left, and whether the finish-setup agent pass is offered."""
+
+    open: int = Field(description="Visible improve_signal actions: what the pass works through.")
+    offer: Literal["finish_setup"] | None = Field(
+        description="Set from the first agent call while steps are left and the pass is not dismissed."
+    )
+    dismissed: bool
+    completed: bool = Field(
+        False,
+        description="Steps reached zero once; the pass is never offered again for this repo.",
+    )
+    agent_calls: int | None = Field(description="Calls to this index from every agent.")
+    claude_code_calls: int = 0
+    first_call_at: str | None = None
+    synced_commits: int | None = Field(
+        description="Indexed commits made after the index was first built."
+    )
+    unlocks: SetupUnlocks
+
+
 class ActionsResponse(BaseModel):
     status: Literal["available"]
     anchor: str | None = Field(description="Newest indexed commit time; windows count back from it.")
@@ -100,6 +130,8 @@ class ActionsResponse(BaseModel):
     )
     rules: list[ActionRuleStatus]
     unavailable: dict[str, str]
+    #: Absent where the setup facts were not read (a workspace member's lead rows).
+    setup: ActionsSetup | None = None
 
 
 class ActionStateRequest(BaseModel):
@@ -136,3 +168,42 @@ class WorkspaceCrossRepoAction(BaseModel):
 class WorkspaceActionsResponse(BaseModel):
     repos: list[WorkspaceRepoActions]
     cross_repo: list[WorkspaceCrossRepoAction]
+
+
+class WorkspaceSetupRepo(BaseModel):
+    """One member's setup, as the workspace Setup table shows it."""
+
+    alias: str
+    #: The member's directory, relative to the workspace root.
+    path: str
+    repo_id: str | None
+    status: Literal["available", "not_indexed", "unavailable"]
+    reason: str = ""
+    index_state: Literal["up_to_date", "behind", "incomplete"] | None = None
+    #: Calls to this member's index from every agent; the agent essential is
+    #: met once one has landed.
+    agent_calls: int | None = None
+    first_call_at: str | None = None
+    #: The post-commit sync hook; ``None`` when it could not be read.
+    sync: bool | None = None
+    #: ``on`` = stored, ``found`` = a file on disk not yet read, ``none``.
+    coverage: Literal["on", "found", "none"] | None = None
+    evidence: Literal["on", "found", "none"] | None = None
+    #: Setup steps left: the member's visible improve_signal actions.
+    open: int = 0
+    offer: Literal["finish_setup"] | None = None
+    #: Index current, an agent call landed, and sync on.
+    essentials_done: bool = False
+
+
+class WorkspaceSetupResponse(BaseModel):
+    repos: list[WorkspaceSetupRepo]
+    #: Members with every essential done, of ``len(repos)``.
+    essentials_done: int
+    #: Steps left across members.
+    open: int
+    #: Set while any member offers the pass.
+    offer: Literal["finish_setup"] | None = None
+    #: The workspace form of the finish-setup prompt, naming the members with
+    #: steps left; ``None`` when none has.
+    prompt: str | None = None

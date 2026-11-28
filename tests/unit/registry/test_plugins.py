@@ -517,3 +517,11 @@ def test_plugins_command_imports_every_seam_defined_in_packages(plugins_json):
     assert "report-section" in defined
     missing = defined - set(plugins_json["seams"])
     assert not missing, f"add the modules defining {sorted(missing)} to BUILTIN_SEAM_MODULES"
+
+
+def test_every_seam_has_a_contract_check(plugins_json):
+    from repowise.core.plugin_testing import CONTRACTS
+
+    missing = set(plugins_json["seams"]) - set(CONTRACTS)
+    assert not missing, f"add {sorted(missing)} to repowise.core.plugin_testing.CONTRACTS"
+    assert not set(CONTRACTS) - set(plugins_json["seams"])
