@@ -517,3 +517,19 @@ class TestLibraryReceivers:
         }
         found = _resolve(tmp_path, files, "src/Consumer.cs")
         assert not any(name.startswith("Tag") for name in found)
+
+    def test_refuses_a_same_class_taker_on_another_type(self, tmp_path: Path) -> None:
+        """One holder, two library types: the overload that takes the call extends the other one."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f) { }\n"
+                "  public static void Tag(this IBar b, int n) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(1); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert not any(name.startswith("Tag") for name in found)
