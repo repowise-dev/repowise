@@ -35,7 +35,9 @@ from typing import Any
 # imports (``source``, ``FROM``) and calls go through the shared resolvers,
 # and every other file sees only their surface (functions, ENTRYPOINT/EXPOSE,
 # imports), so an edit that leaves it unchanged re-resolves just the file.
-PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp", "shell", "dockerfile"})
+# Objective-C resolves through the shared tiers plus its includes, which the
+# include-reach check covers like C/C++; a surface change to it still rebuilds.
+PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp", "objectivec", "shell", "dockerfile"})
 
 # Prose no parser extracts from. Its only edges are ``documents`` links, which
 # the builder re-derives for every doc on every build and no resolver reads

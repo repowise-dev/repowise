@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-_C_LANGUAGES = frozenset({"c", "cpp"})
+_C_LANGUAGES = frozenset({"c", "cpp", "objectivec"})
 
 
 def _carries_reach(attrs: Mapping[str, Any]) -> bool:
@@ -66,8 +66,9 @@ def include_reach_refusal(
 ) -> str | None:
     """Why the patched *graph* may differ from a full build, or ``None``.
 
-    *seed* is the snapshot the patch started from. Only C/C++ files are
-    compared: no other resolver follows includes transitively. A reach is
+    *seed* is the snapshot the patch started from. Only C, C++ and
+    Objective-C files are compared: no other resolver follows includes
+    transitively (an Objective-C++ definition pairs with a header it reaches). A reach is
     compared over the files that exist now: a deleted file leaves every
     reach, and what it declared is gone by name.
     """

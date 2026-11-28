@@ -39,8 +39,7 @@ _SCOPE_FLOOR = 8
 _NON_RESOLUTION_EDGES = frozenset({"defines", "has_method", "co_changes"})
 
 # Files that read a C/C++ declaration through includes and source text, not
-# only by a site's name. Objective-C is not patched: reaching one sends the
-# update to the full build.
+# only by a site's name.
 _C_LANGUAGES = frozenset({"c", "cpp", "objectivec"})
 _C_EXTENSIONS = frozenset(
     {".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h++", ".inl", ".ipp", ".tcc"}
