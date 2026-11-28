@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import replace
 from functools import cache
 from types import MappingProxyType
@@ -521,6 +521,18 @@ def _could_recurse(symbol: Symbol | None, argument_count: int | None) -> bool:
 # ``va_list ap, aq`` up to the end of its declaration or parameter list.
 _VA_LIST_DECLARATION = re.compile(r"\b(?:__builtin_)?va_list\b([^;(){}]*)")
 _VA_LIST_DECLARATOR = re.compile(r"\s*[&*]*\s*(\w+)\s*(?:=.*)?$", re.S)
+
+
+def _declarator_names(declarators: str) -> Iterator[str]:
+    """The names a declarator list (``ap, aq = x``) declares, up to a second word.
+
+    ``va_list ap, int n)``: a second word starts the next parameter.
+    """
+    for declarator in declarators.split(","):
+        named = _VA_LIST_DECLARATOR.match(declarator)
+        if named is None:
+            return
+        yield named.group(1)
 
 
 def _refuses_without_va_list(
@@ -1223,15 +1235,12 @@ class OverloadSelectionMixin:
         if found is None:
             start, end = self._spans_for(file_path).get(caller_id, (1, 0))
             body = "\n".join(self._text_of(file_path).splitlines()[start - 1 : end])
-            names: set[str] = set()
-            for declarators in _VA_LIST_DECLARATION.findall(body):
-                for declarator in declarators.split(","):
-                    # ``va_list ap, int n)``: a second word starts the next parameter.
-                    named = _VA_LIST_DECLARATOR.match(declarator)
-                    if named is None:
-                        break
-                    names.add(named.group(1))
-            found = self._cpp_va_lists[key] = frozenset(names)
+            found = frozenset(
+                name
+                for declarators in _VA_LIST_DECLARATION.findall(body)
+                for name in _declarator_names(declarators)
+            )
+            self._cpp_va_lists[key] = found
         return found
 
     def _csharp_arguments(self, file_path: str, call: CallSite) -> tuple[str | None, ...] | None:

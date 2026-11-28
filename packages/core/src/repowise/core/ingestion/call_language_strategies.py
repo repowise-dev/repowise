@@ -776,11 +776,7 @@ class LanguageStrategiesMixin:
         callee = self._symbols_by_id.get(callee_id)
         caller = self._symbols_by_id.get(call.caller_symbol_id or "")
         if scope:
-            return (
-                _is_member_function(callee)
-                and bool(self._declared_types_named(bare_type_name(callee.parent_name or "")))
-                and not self._cpp_names_type(scope)
-            )
+            return self._cpp_qualifier_misses_member(scope, callee)
         if not self._is_cpp_member_function(callee):
             return False
         assert callee is not None
@@ -872,6 +868,14 @@ class LanguageStrategiesMixin:
         if not scope or self._language_of(file_path) != "cpp" or self._cpp_names_type(scope):
             return False
         return bool(self._cpp_namespaces_named(bare_type_name(scope)))
+
+    def _cpp_qualifier_misses_member(self, scope: str, callee: Symbol | None) -> bool:
+        """Is *callee* a member or in-class friend a qualifier naming no type cannot reach?"""
+        return (
+            _is_member_function(callee)
+            and bool(self._declared_types_named(bare_type_name(callee.parent_name or "")))
+            and not self._cpp_names_type(scope)
+        )
 
     def _cpp_names_type(self, scope: str) -> bool:
         """Does qualifier *scope* name a repository class, struct, enum or type alias?"""
