@@ -102,6 +102,11 @@ _OWN_HEADER = (
         ("samples/hello/Program.cs", "docs_example"),
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/demo/App.tsx", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         # Browser scripts a served static tree ships are product code.
