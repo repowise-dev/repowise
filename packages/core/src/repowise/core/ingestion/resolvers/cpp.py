@@ -148,7 +148,9 @@ def _stem_fallback(module_path: str, ctx: ResolverContext) -> str | None:
     The stem map holds every file of every kind, so ``"data/Clump.hpp"``
     finds ``Clump.cpp`` beside ``Clump.hpp``. The exact file name wins; an
     include of a header otherwise takes only another header, never a
-    translation unit or a non-C file that happens to share the stem.
+    translation unit or a non-C file that happens to share the stem. An
+    include with no extension (``<format>``, ``<QString>``) names that exact
+    file or nothing in the repo.
     """
     # An angle include can still arrive wrapped (``<core/Logger.hpp>``).
     name = posixpath.basename(module_path.strip("<>")).lower()
@@ -156,6 +158,8 @@ def _stem_fallback(module_path: str, ctx: ResolverContext) -> str | None:
     for candidate in candidates:
         if posixpath.basename(candidate).lower() == name:
             return candidate
+    if "." not in name:
+        return None
     if name.endswith(_HEADER_EXTS):
         return next((c for c in candidates if c.lower().endswith(_HEADER_EXTS)), None)
     return candidates[0] if candidates else None

@@ -127,6 +127,15 @@ def test_stem_fallback_never_lands_a_header_include_on_a_source(tmp_path):
     assert resolve_cpp_import("<data/Clump.hpp>", "engine/loaders/Loader.cpp", ctx) is None
 
 
+def test_stem_fallback_takes_an_extensionless_include_only_by_exact_name(tmp_path):
+    # ``<format>`` is a standard header, not the repo's vendored format.cpp.
+    paths = ["third/format.cpp", "third/format.h", "qt/QString", "app/main.cpp"]
+    ctx = _make_ctx(tmp_path, paths)
+    ctx.stem_map["format"] = ["third/format.cpp", "third/format.h"]
+    assert resolve_cpp_import("format", "app/main.cpp", ctx) is None
+    assert resolve_cpp_import("QString", "app/main.cpp", ctx) == "qt/QString"
+
+
 def test_project_export_macro_discovery(tmp_path):
     _write(tmp_path, "CMakeLists.txt", """
         add_library(coffee STATIC src/brew.cc)
