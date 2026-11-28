@@ -235,6 +235,7 @@ _PATH_RECEIVERS = frozenset(
         ("python", "attribute"),
         ("apex", "field_access"),
         ("java", "field_access"),
+        ("csharp", "member_access_expression"),
         ("kotlin", "navigation_expression"),
     }
 )
