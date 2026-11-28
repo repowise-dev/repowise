@@ -228,3 +228,72 @@ class TestJsLocalValue:
     def test_a_control_header_naming_the_local_does_not_shadow_it(self) -> None:
         text = "function f() {\n  var options = { uri: '/a' };\n  if (options) {\n    request(options);\n"
         assert self._at(text) == "{ uri: '/a' }"
+
+
+class TestJsLocalValueBindings:
+    """A loop variable, a catch parameter or a destructured name that holds at the use is not the local."""
+
+    @staticmethod
+    def _at(content: str, name: str = "options") -> str | None:
+        from repowise.core.workspace.extractors.strings import js_local_value
+
+        return js_local_value(content, name, content.rindex("request("))
+
+    @pytest.mark.parametrize(
+        "between",
+        [
+            "for (const options of list) {\n",
+            "for (let options in table) {\n",
+            "for (const [options, v] of entries) {\n",
+            "for (const { options } of entries) {\n",
+            "for (let i = 0, options; i < 2; i++) {\n",
+            "try { go(); } catch (options) {\n",
+            "const { options } = other;\n",
+            "const [options] = others;\n",
+            "const { key: options } = other;\n",
+            "const { a: { options } } = other;\n",
+            "for (const { key: options } of entries) {\n",
+            "try { go(); } catch ({ message: options }) {\n",
+            "class S {\n  save<T>(options: T): void {\n",
+            "for (const options of list)\n  go(options) +\n  ",
+        ],
+    )
+    def test_a_binding_that_holds_at_the_use_refuses(self, between: str) -> None:
+        text = "function f() {\n  var options = { uri: '/a' };\n" + between + "request(options);\n"
+        assert self._at(text) is None
+
+    @pytest.mark.parametrize(
+        "between",
+        [
+            "for (const e of options.list) {\n",
+            "for (const e of get(options, 1)) {\n",
+            "for (let i = 0; i < options.length; i++) {\n",
+            "for (const options of list) { go(options); }\n",
+            "for (const options of list) go(options);\n",
+            "try { go(); } catch (e) { log(options); }\n",
+            "try { go(); } catch (options) { }\n",
+            "xs.forEach((x) => go(options));\n",
+            "load<Row>(options);\n",
+            "// for (const options of list)\n",
+            "const o = { options: 1 };\n",
+            "const { options: o } = other;\n",
+            "const { o = options } = other;\n",
+            "const { key: [o, { options: p }] } = other;\n",
+            "for (const { options: o } of entries) {\n",
+            "try { go(); } catch ({ options: o }) {\n",
+            "p.catch((e) => go(options));\n",
+            "const body = flag ? build(options) : {};\n",
+            "switch (k) {\n  case key(options): {\n    break;\n  }\n}\n",
+            "type Api = {\n  save(options: Opts): void\n  meta: { a: string }\n}\n",
+            "interface Api {\n  save(options: Opts): Result\n  nested: {\n    a: string\n  }\n}\n",
+            "const x = enabled ?\n  merge(options) :\n  defaults\nreturn { r: go() }\n",
+            "for (const options of list) go(options)\n",
+            "for await (const options of stream) {\n  go(options);\n}\n",
+            "const body = flag ?\n  build(options) : name ? { a: 1 } : null;\n",
+        ],
+    )
+    def test_a_binding_that_does_not_hold_at_the_use_does_not_refuse(self, between: str) -> None:
+        text = "function f() {\n  var options = { uri: '/a' };\n" + between + "request(options);\n"
+        assert self._at(text) == "{ uri: '/a' }"
+        # the same text with a loop that does hold refuses
+        assert self._at(text.replace(between, "for (const options of list) {\n")) is None
