@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.evidence.format_v1 import is_import_row
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from ..perf.actionability import BOUNDARY_NOUN, PerformanceFix
@@ -306,7 +307,10 @@ def _measured_step(
     step = (opportunity.measured_row or {}).get("next_step")
     if not step or not steps:
         return steps
-    name = str(steps[0].get("symbol") or "").rsplit("::", 1)[-1]
+    symbol = str(steps[0].get("symbol") or "")
+    name = symbol.rsplit("::", 1)[-1]
+    if is_import_row(symbol):  # an import row's step names its own place
+        name = ""
     action = f"In {name}, {step['next']}" if name else str(step["next"])
     return [{**steps[0], "action": action}, *steps[1:]]
 

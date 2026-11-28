@@ -536,7 +536,9 @@ async def step_findings(
     eager ``setdefault`` defaults the rows and drivers build
     (:func:`~repowise.core.evidence.next_step.eager_default_fact`). Facts in
     files that are not production code (``code_origin``) are left out, so a loop
-    in a test never reads as an N+1."""
+    in a test never reads as an N+1. An import row that loaded a library the
+    run never ran adds that package's production call sites
+    (:func:`_package_calls`)."""
     import json
 
     from ....evidence.ingest import load_origins
@@ -544,6 +546,7 @@ async def step_findings(
     from ....ingestion.symbol_identity import file_of_symbol
     from ...models import HealthFinding
 
+    rows = list(rows)
     targets: set[str] = set()
     for row in rows:
         targets.add(row.symbol_id)
@@ -588,7 +591,128 @@ async def step_findings(
         for f in sorted(found.values(), key=lambda f: (f.file_path, f.line_start or 0, f.id))
         if origins.get(f.file_path) == "production"
     ]
-    return out + [f for f in eager if origins.get(f["file_path"]) == "production"]
+    return (
+        out
+        + [f for f in eager if origins.get(f["file_path"]) == "production"]
+        + await _package_calls(session, repository_id, rows)
+    )
+
+
+async def _package_calls(
+    session: AsyncSession, repository_id: str, rows: Iterable[SymbolHotness]
+) -> list[dict[str, Any]]:
+    """Per library an import row among *rows* loaded and its run never ran, the
+    package's production call sites with each caller's symbol kind and the
+    production files importing it at their top level
+    (:func:`~repowise.core.evidence.next_step.package_calls`). None until the
+    stored call sites are complete, and none for a package nothing calls.
+
+    A call on a function's signature lines (a default value) runs when the
+    module defines the function, so it reads as import time.
+    """
+    from ....evidence.format_v1 import is_import_row
+    from ....evidence.ingest import load_origins
+    from ....evidence.next_step import never_called, package_calls
+    from ....evidence.payloads import json_list
+    from ..external_call_sites import external_call_sites_complete, list_external_call_sites
+
+    packages = sorted(
+        {
+            package
+            for row in rows
+            if is_import_row(row.symbol_id)
+            for package in never_called(json_list(getattr(row, "inside_json", None)))
+        }
+    )
+    if not packages or not await external_call_sites_complete(session, repository_id):
+        return []
+    sites = []
+    for i in range(0, len(packages), _BATCH_SIZE // 2):  # two bound values per package
+        sites += await list_external_call_sites(
+            session,
+            repository_id,
+            packages=[("pypi", p) for p in packages[i : i + _BATCH_SIZE // 2]],
+        )
+    origins = await load_origins(session, repository_id, {s.file_path for s in sites})
+    sites = [s for s in sites if origins.get(s.file_path) == "production"]
+    spans = await _caller_spans(session, repository_id, {s.caller_symbol_id for s in sites})
+    by_package: dict[str, list[tuple[str, str | None]]] = {}
+    for site in sites:
+        kind, start, head_end = spans.get(site.caller_symbol_id, (None, 0, 0))
+        if start <= site.line <= head_end:
+            kind = None  # in the signature: runs when the function is defined
+        by_package.setdefault(site.package, []).append((site.caller_symbol_id, kind))
+    importers = await _top_level_importers(session, repository_id, sorted(by_package))
+    origins = await load_origins(
+        session, repository_id, {p for found in importers.values() for p in found}
+    )
+    return [
+        package_calls(
+            p, found, sorted(f for f in importers[p] if origins.get(f) == "production")
+        )
+        for p, found in sorted(by_package.items())
+    ]
+
+
+async def _caller_spans(
+    session: AsyncSession, repository_id: str, callers: set[str]
+) -> dict[str, tuple[str, int, int]]:
+    """Per caller symbol: its kind, its first line and its signature's last line."""
+    from ...models import WikiSymbol
+
+    ordered = sorted(callers)
+    spans: dict[str, tuple[str, int, int]] = {}
+    for i in range(0, len(ordered), _BATCH_SIZE):
+        result = await session.execute(
+            select(
+                WikiSymbol.symbol_id, WikiSymbol.kind, WikiSymbol.start_line, WikiSymbol.signature
+            ).where(
+                WikiSymbol.repository_id == repository_id,
+                WikiSymbol.symbol_id.in_(ordered[i : i + _BATCH_SIZE]),
+            )
+        )
+        for sid, kind, start, signature in result:
+            head = (signature or "").count("\n") + 1
+            spans[sid] = (kind, start or 0, (start or 0) + head - 1)
+    return spans
+
+
+async def _top_level_importers(
+    session: AsyncSession, repository_id: str, packages: list[str]
+) -> dict[str, set[str]]:
+    """Per package, the files importing it (or a submodule) when they load,
+    not inside a function and not for type checking only."""
+    from ...models import GraphEdge
+
+    if not packages:
+        return {}
+    # One statement: the few packages an import row names, each as its node or a submodule's.
+    result = await session.execute(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.edge_type == "imports",
+            or_(
+                *(
+                    clause
+                    for package in packages
+                    for clause in (
+                        GraphEdge.target_node_id == f"external:{package}",
+                        GraphEdge.target_node_id.startswith(
+                            f"external:{package}.", autoescape=True
+                        ),
+                    )
+                )
+            ),
+            GraphEdge.type_only.is_(False),
+            GraphEdge.deferred.is_(False),
+        )
+    )
+    out: dict[str, set[str]] = {package: set() for package in packages}
+    for source, target in result:
+        package = target.removeprefix("external:").split(".", 1)[0]
+        if package in out:
+            out[package].add(source)
+    return out
 
 
 async def ranked_by_workload(

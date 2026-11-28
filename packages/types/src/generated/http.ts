@@ -3275,6 +3275,7 @@ export interface MeasuredCallee {
   kind: "own" | "repo" | "wait" | "import" | "native" | "library";
   share: number;
   leaf?: MeasuredLeaf | null;
+  called?: boolean | null;
 }
 
 export interface MeasuredChangedIn {

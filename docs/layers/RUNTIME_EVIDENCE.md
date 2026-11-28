@@ -665,7 +665,7 @@ they are joined.
 
 | Kind | Entry fields |
 |---|---|
-| `profile` | location (`function` `<module>` with no `line` is the file's import time); `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
+| `profile` | location (`function` `<module>` with no `line` is the file's import time); `self` (what the function costs, waits excluded) and `total` (inclusive) in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only; optional `inside` (up to 3 of `{name, kind, share}`, each with an optional `leaf` of the same shape; a `<module>` entry's `library` item may carry `called: false`) and `drivers` (up to 3 of `{function, share}`, plus `path` and `line` for a repo caller), shares of `total` |
 | `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
 | `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required); optional `classname` (a dotted name, placed on its file at ingest, when there is no `path`) and `first_in_class` |
 | `query_count` | `scope` (`{"kind": "test" or "request", "id"}`, optional `items`: how many items the test or request ran over); `site` location, or no `site` and the statement's `query` text, which joins to the one function the statement sites name (else the entry is skipped as `ambiguous_statement` or `no_statement_site`); `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
@@ -730,9 +730,20 @@ is counted there as `unplaced`.
   the outermost one, with the libraries and standard-library modules they load
   named by package in `inside` (`sqlalchemy`, `json`). A module a function
   imports starts its own row, driven by that function; a library a function
-  imports stays that function's cost. The row takes no next step: whether the
-  run needed the import is not in the profile. Go package `init`, the
-  CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
+  imports stays that function's cost. An installed library's item
+  (`site-packages`; never the standard library) of an imported module (not
+  the entry script) carries `called: false` when no sample of the run entered
+  that package from code: the run paid to load it and never ran it. The row's
+  next step says to import that library inside the functions that call it,
+  only when it is the row's heaviest item, holds at least a quarter of the
+  import, every production call site the index proved is in a function or
+  method body, and every production file importing it at its top level holds
+  one of those functions. A package called at import time (a module-level
+  logger, a decorator, a class body, a default value), imported by a file
+  that never calls it, or with no proven call site stays silent, and so does
+  every other import row. A call too short to take a sample reads as
+  never run. Fix first lists an import row only when it has that step. Go
+  package `init`, the CommonJS wrapper and Pascal blocks have no row yet; their self time is reported under
   `self_unattributed` as `module_body`, never dropped. An import row measured
   at another commit than the indexed one reads stale, as a module's top level
   has no stored body to compare.

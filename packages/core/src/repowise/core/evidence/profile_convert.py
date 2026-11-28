@@ -49,7 +49,12 @@ function's (kind ``import``). The row's ``inside`` names what the import spent
 its time on, by top-level package for a library or the standard library (kind
 ``library``: ``sqlalchemy``, ``json``), by name for a repo function run at
 import time (kind ``repo``), ``own`` for the modules' own top-level code and
-``import`` for the machinery itself. Ceiling: a Go package initializer or a
+``import`` for the machinery itself. An installed library's item
+(``site-packages``) of a module that was imported (not the program's entry
+script) carries ``"called": false`` when no
+stack of the run entered that package from code (:meth:`_Tally._mark_calls`):
+the run paid to load it and never ran it. Ceiling: a call too short to take
+a sample reads as never called. Ceiling: a Go package initializer or a
 JavaScript module wrapper has no row (no probe profile shows them above the
 share rule); its self time counts under ``self_unattributed`` as
 ``module_body``.
@@ -515,6 +520,22 @@ class _Tally:
         self._import = [is_import_frame(f) for f in frames]
         self._native = [is_native_frame(f) for f in frames]
         self._python = [f.language == "python" for f in frames]
+        # Per frame: the installed Python package it runs in (``site-packages``;
+        # the standard library, frozen modules and paths elsewhere are never
+        # judged: a C accelerator or a second spelling of the package could hide
+        # its use), and whether it is a module body.
+        self._package = [
+            _written_name(package_name(f.path))
+            if lib and py and _INSTALLED_RE.search(f.path.replace("\\", "/"))
+            else None
+            for f, lib, py in zip(frames, self._library, self._python, strict=True)
+        ]
+        self._installed = {p for p in self._package if p is not None}
+        self._module_body = [f.function == MODULE_FUNCTION for f in frames]
+        #: Packages some stack entered from code, not from the import loading them.
+        self._called: set[str] = set()
+        #: Module rows some stack reached through import machinery (not the entry script).
+        self._imported_rows: set[str] = set()
         self._frames = frames
         self._resolved = {r.index: r for r in resolution.resolved}
         self._origins = origins
@@ -601,9 +622,47 @@ class _Tally:
                     self._inclusive_n[sid] += samples
         if in_production:
             self.explained += weight
+        self._mark_calls(stack.frames, first)
         self._charge(stack.frames, rows, weight, samples)
         if first and weight > 0:
             self._split(stack.frames, first, last, weight)
+
+    def _mark_calls(self, frames: tuple[int, ...], first: dict[str, int]) -> None:
+        """The Python packages *frames* run as a call, and the module rows they reach
+        through an import.
+
+        A package's frame is a call when its own module body is not above it (with
+        no repo frame in between) and
+        the frame that entered the package (the one above its topmost frame in a
+        row of its frames) is code, not import machinery: ``from dateutil import
+        parser`` runs ``dateutil.__getattr__`` from the importer, which is loading,
+        not use. A call from another module's top level (``log =
+        structlog.get_logger()``) is use: that import needs the package.
+        """
+        loading: set[str] = set()
+        above: int | None = None
+        machinery: int | None = None
+        for k, i in enumerate(frames):
+            if machinery is None and self._import[i]:
+                machinery = k
+            if not self._unmaintained[i]:
+                # Repo code running under a package's import and calling back into
+                # it is use, not that package loading itself.
+                loading.clear()
+            package = self._package[i]
+            if package is not None:
+                if self._module_body[i]:
+                    loading.add(package)
+                elif package not in loading and (
+                    above is None
+                    or (self._package[above] != package and not self._import[above])
+                ):
+                    self._called.add(package)
+            above = i
+        if machinery is not None:
+            self._imported_rows.update(
+                sid for sid, at in first.items() if at > machinery and self._symbols[sid][1] is None
+            )
 
     def _split(
         self, frames: tuple[int, ...], first: dict[str, int], last: dict[str, int], weight: float
@@ -758,6 +817,14 @@ class _Tally:
                 ],
                 "share": share,
             }
+            if (
+                key[0] == "package"
+                and key[1] in self._installed
+                and key[1] not in self._called
+                and sid in self._imported_rows
+                and item["kind"] == "library"
+            ):
+                item["called"] = False
             leaves = self._leaves.get((sid, key))
             if leaves:
                 (leaf, weight), *_ = sorted(leaves.items(), key=lambda kv: (-kv[1], repr(kv[0])))

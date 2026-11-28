@@ -48,7 +48,9 @@ body: its time is the file's import time, stored as the row
 Optional on a profile entry, as shares of ``total``: ``inside``, up to three
 callees by ``name`` and ``kind`` (``own``, ``repo``, ``wait``, ``import``,
 ``native``, ``library``) with an optional ``leaf`` of the same shape (the
-frame the callee's stacks end in), and ``drivers``, up to three callers by
+frame the callee's stacks end in) and, on a ``<module>`` entry's ``library``
+item, ``"called": false`` when the run loaded that package and never ran it,
+and ``drivers``, up to three callers by
 ``function`` (with ``path`` and ``line`` when the caller is repo code). A bad
 item is dropped; the entry stays.
 A test entry with no ``path`` may carry ``classname``, the dotted name a
@@ -411,7 +413,10 @@ def profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | Non
         "self_samples": _count(raw.get("self_samples")),
         "total_samples": _count(raw.get("total_samples")),
         "call_count": _count(raw.get("calls")),
-        "inside": _split_items(raw.get("inside"), _inside_item),
+        "inside": _split_items(
+            raw.get("inside"),
+            _module_inside_item if where.get("function") == MODULE_FUNCTION else _inside_item,
+        ),
         "drivers": _split_items(raw.get("drivers"), _driver_item),
     }
     if entry["self_value"] is None and entry["total_value"] is None:
@@ -434,6 +439,14 @@ def _inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
     # One level only: a leaf names no leaf of its own.
     if isinstance(leaf, dict) and "leaf" not in leaf and (read := _inside_item(leaf)):
         item["leaf"] = read
+    return item
+
+
+def _module_inside_item(raw: dict[str, Any]) -> dict[str, Any] | None:
+    """An import row's ``inside`` item: a library may say the run never ran it."""
+    item = _inside_item(raw)
+    if item is not None and item["kind"] == "library" and raw.get("called") is False:
+        item["called"] = False
     return item
 
 

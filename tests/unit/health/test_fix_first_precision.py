@@ -653,6 +653,17 @@ def test_the_largest_measured_hotspot_with_a_step_leads_over_static_work() -> No
     assert queue.items[1].kind == "finding"
 
 
+def test_a_measured_import_with_a_step_is_named_by_its_file() -> None:
+    big = _finding("src/core.py", ccn=40, nloc=300)
+    queue = build_fix_first(
+        metrics=[_metric(), _metric("src/repo.py")], findings=[big],
+        performance=[_hotspot("perf4_m", "<module>", 0.2, True)],
+    )
+    lead = queue.lead
+    assert lead.title == "Speed up the import of repo.py"
+    assert lead.target == FixTarget("src/repo.py", None, None)
+
+
 def test_no_measured_hotspot_with_a_step_leaves_the_order_alone() -> None:
     big = _finding("src/core.py", ccn=40, nloc=300)
     queue = build_fix_first(

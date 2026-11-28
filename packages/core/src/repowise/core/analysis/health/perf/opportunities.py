@@ -494,7 +494,8 @@ def _measured_hotspot(
         terminal_sink=None,
         shared_path_suffix=(),
         intervention_symbol=key_intervention_symbol(key),
-        intervention_kind=key_intervention_kind(key),
+        # An import row is the file's top level, not a function.
+        intervention_kind="module" if is_import_row(symbol_id) else key_intervention_kind(key),
         terminal_sinks=(),
         resource_fingerprints=(),
         affected_call_sites_total=1,
@@ -554,8 +555,9 @@ def measured_hotspots(
         for f in ([m for m in members if not _inert(m)] or members)
     }
     # An import row (``<path>::<module>``) is no function to profile for
-    # repeated work; it speaks on the measured view only. Ceiling: no queue item
-    # for import time until a rule can say which import the run did not need.
+    # repeated work: it becomes an item only when a rule named the import the
+    # run did not need (its row carries a step), and speaks on the measured view
+    # otherwise.
     return [
         _measured_hotspot(
             symbol_id,
@@ -564,7 +566,9 @@ def measured_hotspots(
             (rows or {}).get(symbol_id),
         )
         for symbol_id in sorted(hot - owned)
-        if symbol_id in measured and "::" in symbol_id and not is_import_row(symbol_id)
+        if symbol_id in measured
+        and "::" in symbol_id
+        and (not is_import_row(symbol_id) or ((rows or {}).get(symbol_id) or {}).get("next_step"))
     ]
 
 

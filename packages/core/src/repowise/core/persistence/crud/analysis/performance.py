@@ -1362,7 +1362,7 @@ async def measured_costs(
     findings = await step_findings(
         session,
         repository_id,
-        [_Costed(sid, drivers) for (_, sid), (inside, drivers) in costs.items() if inside],
+        [_Costed(sid, drivers, inside) for (_, sid), (inside, drivers) in costs.items() if inside],
     )
     comparisons = list(comparisons)
     listed = [run for runs in groups.values() for run, _ in runs]
@@ -1565,10 +1565,12 @@ class _FunctionContext(NamedTuple):
 
 
 class _Costed(NamedTuple):
-    """A shown row as ``step_findings`` reads it: the function and its run's drivers."""
+    """A shown row as ``step_findings`` reads it: the function and what its run
+    measured calling it and inside it."""
 
     symbol_id: str
     drivers_json: str | None
+    inside_json: str | None
 
 
 async def _function_context(
