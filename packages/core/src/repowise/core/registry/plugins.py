@@ -45,8 +45,14 @@ ENTRY_POINT_GROUP = "repowise.plugins"
 ENV_VAR = "REPOWISE_PLUGINS"
 SEAM_ENV_PREFIX = "REPOWISE_SEAM_"
 
-#: Bumped on a breaking change to any registry or seam contract.
+#: Bumped on a breaking change to any registry or seam contract: a protocol
+#: method or required attribute added, removed or renamed, a parameter changed,
+#: or a failure rule that changes what reaches the implementation's caller. A
+#: new seam or a new optional field keeps it.
 PLUGIN_API_VERSION = 1
+#: Module attribute a plugin sets next to ``register`` to the lowest
+#: ``PLUGIN_API_VERSION`` it works with; a newer one marks the plugin ``failed``.
+MIN_API_ATTR = "MIN_PLUGIN_API_VERSION"
 
 _log = logging.getLogger("repowise.plugins")
 _SEAM_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_-]*")
@@ -104,12 +110,38 @@ def _reason(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+class PluginAPIError(Exception):
+    """A plugin needs a newer plugin API than this repowise has."""
+
+
+def check_api_version(module: object, plugin: str) -> None:
+    """Raise :class:`PluginAPIError` when *module* needs a newer plugin API.
+
+    The message names both versions and what to change.
+    """
+    needed = getattr(module, MIN_API_ATTR, None)
+    if needed is None:
+        return
+    if isinstance(needed, bool) or not isinstance(needed, int) or needed < 1:
+        raise PluginAPIError(
+            f"{MIN_API_ATTR} = {needed!r} is not a positive integer: set it to the plugin "
+            f"API version the plugin was written for (this repowise has {PLUGIN_API_VERSION})"
+        )
+    if needed > PLUGIN_API_VERSION:
+        raise PluginAPIError(
+            f"needs plugin API {needed}, this repowise has plugin API {PLUGIN_API_VERSION}: "
+            f"upgrade repowise (pip install -U repowise) to a release with plugin API {needed}, "
+            f"or install a version of {plugin} built for plugin API {PLUGIN_API_VERSION}"
+        )
+
+
 def _load(record: PluginRecord) -> None:
     global _current
     _current = record
     try:
         module_name, _, attr = record.target.partition(":")
         obj = importlib.import_module(module_name.strip())
+        check_api_version(obj, record.name)
         if attr:
             for part in attr.strip().split("."):
                 obj = getattr(obj, part)
@@ -271,10 +303,13 @@ class SeamRegistry(Generic[T]):
 __all__ = [
     "ENTRY_POINT_GROUP",
     "ENV_VAR",
+    "MIN_API_ATTR",
     "PLUGIN_API_VERSION",
     "SEAM_ENV_PREFIX",
+    "PluginAPIError",
     "PluginRecord",
     "SeamRegistry",
+    "check_api_version",
     "is_plugin_control_var",
     "load_plugins",
     "note_registration",

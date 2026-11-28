@@ -1,4 +1,4 @@
-"""``repowise plugins`` — list loaded plugins and the implementation chosen per seam."""
+"""``repowise plugins``: list loaded plugins and the implementation chosen per seam; ``check`` runs the seam contracts."""
 
 from __future__ import annotations
 
@@ -107,10 +107,16 @@ def _plugin_rows(records: list) -> list[dict]:
     return rows
 
 
-@click.command("plugins")
+@click.group("plugins", invoke_without_command=True)
 @format_option()
-def plugins_command(fmt: str) -> None:
+@click.pass_context
+def plugins_command(ctx: click.Context, fmt: str) -> None:
     """List loaded plugins and the implementation each seam uses."""
+    if ctx.invoked_subcommand is None:
+        _list_plugins(fmt)
+
+
+def _list_plugins(fmt: str) -> None:
     from rich.markup import escape
 
     from repowise.cli.helpers import console
@@ -170,3 +176,42 @@ def plugins_command(fmt: str) -> None:
         console.print(
             f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
         )
+
+
+@plugins_command.command("check")
+@format_option()
+def check_command(fmt: str) -> None:
+    """Check every loaded plugin against the contract of each seam it registered.
+
+    Exits 1 when a plugin failed to load or an implementation breaks a contract.
+    """
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.core.plugin_testing import check_record
+    from repowise.core.registry.plugins import PLUGIN_API_VERSION, load_plugins
+
+    _import_builtin_seams()
+    checks = [c for record in load_plugins() for c in check_record(record)]
+    failed = any(c.status == "fail" for c in checks)
+    if fmt == "json":
+        emit_json(
+            {
+                "api_version": PLUGIN_API_VERSION,
+                "ok": not failed,
+                "checks": [asdict(c) for c in checks],
+            }
+        )
+    else:
+        if not checks:
+            console.print("No plugins loaded, nothing to check.")
+        colors = {"pass": "green", "fail": "red", "skipped": "dim"}
+        for c in checks:
+            color = colors[c.status]
+            console.print(
+                f"[{color}]{c.status}[/{color}]  {escape(c.plugin)}  {escape(c.kind)}:{escape(c.name)}"
+            )
+            for f in c.failures:
+                console.print(f"  {escape(f.rule)}. Fix: {escape(f.fix)}")
+    if failed:
+        raise SystemExit(1)

@@ -148,18 +148,54 @@ the same data:
 }
 ```
 
-`api_version` is `PLUGIN_API_VERSION` from `repowise.core.registry`. Check it
-in your plugin if you depend on a contract that may change:
+`api_version` is `PLUGIN_API_VERSION` from `repowise.core.registry`. A
+plugin that relies on a contract added in a later API version declares the
+lowest version it works with in its module, next to `register`:
 
 ```python
-from repowise.core.registry import PLUGIN_API_VERSION
-
-if PLUGIN_API_VERSION != 1:
-    raise RuntimeError(f"repowise-hello supports plugin API 1, found {PLUGIN_API_VERSION}")
+MIN_PLUGIN_API_VERSION = 1
 ```
 
-An exception raised from `register()` (or at import) marks the plugin
-`failed`. repowise records it and carries on without it.
+On a repowise whose `PLUGIN_API_VERSION` is lower, the plugin is `failed`
+with a message naming both versions and what to change (upgrade repowise, or
+install a plugin version built for the older API), and `register()` never
+runs. An exception raised from `register()` (or at import) also marks the
+plugin `failed`. In both cases repowise records it and carries on without it.
+
+## Check the contracts
+
+```bash
+repowise plugins check
+repowise plugins check --format json
+```
+
+`repowise plugins check` loads every plugin and checks each implementation it
+registered against its seam's contract: every method and attribute of the
+seam's protocol, each method's parameters and whether it is `async`, or the
+seam's own type for seams built from a repowise class such as `Section`. Each
+failure names the seam, the rule broken and the fix, and the command exits 1
+on any failure or any plugin that did not load. Registrations of the other
+kinds (`cli-command`, `mcp-tool` and the rest) are validated when they
+register and show as `skipped`. The check never calls your implementation, so
+it needs no service or credentials.
+
+```json
+{
+  "api_version": 1,
+  "ok": false,
+  "checks": [
+    {
+      "plugin": "repowise_hello:register",
+      "kind": "event-sink",
+      "name": "hello-stderr",
+      "status": "fail",
+      "failures": [
+        {"seam": "event-sink", "name": "hello-stderr", "rule": "deliver is not async", "fix": "make `deliver` an `async def`"}
+      ]
+    }
+  ]
+}
+```
 
 ## When plugins load
 
@@ -279,10 +315,11 @@ module in the last column and call `.register(name, impl)`, for example
 | `event-sink` | `event_sinks` | every sink named in `events.sinks` (default: the seam default, `jsonl`) | after an index run stores component events | logged; the events stay in the store | `packages/core/src/repowise/core/events/sinks.py` |
 | `index-persistence` | `index_persistence` | every | `apply` inside each index write's transaction, before commit, including init's checkpoint (mode `checkpoint`); `publish` after commit and cleanup, except after the checkpoint | an `apply` failure rolls back and propagates, except in the checkpoint, which logs it and leaves the final write to apply; a `publish` failure propagates and the commit stays; a cleanup failure after the commit skips `publish` | `packages/core/src/repowise/core/pipeline/index_persistence.py` |
 | `report-section` | `report_sections` | every | `repowise report` builds a document | the section becomes one inconclusive item marked `failed`; other sections run | `packages/core/src/repowise/core/report/model.py` |
+| `first-look-section` | `first_look_sections` | every | `repowise report repo` collects its sections | `UnavailableError` marks the section unavailable with its message; any other exception is logged and the section reads "Could not be read from this index."; other sections run | `packages/core/src/repowise/core/report/first_look/model.py` |
 | `report-renderer` | `report_renderers` | one, chosen by `repowise report assessment --format` | when a report is written | propagates | `packages/core/src/repowise/core/report/render.py` |
-| `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates | `packages/core/src/repowise/core/changes/outcomes.py` |
-| `change-metadata` | `change_metadata_sources` | one | when change records are stored | propagates | `packages/core/src/repowise/core/changes/source.py` |
-| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages rather than files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
+| `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates, and in `repowise report` it marks the outcomes item unavailable | `packages/core/src/repowise/core/changes/outcomes.py` |
+| `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | when records are stored, a failing plugin source is logged (`change_metadata_failed`) and the built-in `git` source fills the records instead, marked `git`; a source name no implementation holds logs `changes_refresh_failed` and stores no new records; in the report, the section's failure rule applies | `packages/core/src/repowise/core/changes/source.py` |
+| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages rather than files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
 | `evidence-source` | `evidence_sources` | every; the host chooses which source to fetch, when, and with which credentials | when a host calls `run_fetch` (repowise itself schedules no fetch) | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
@@ -292,7 +329,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `authorizer` | `authorizers` | one | each repository or tool access check in `repowise serve`, MCP over HTTP and chat | propagates | `packages/server/src/repowise/server/auth.py` |
 | `chat-tools` | `tool_backends` | one | each chat turn builds its tool backend | propagates | `packages/server/src/repowise/server/chat_seams.py` |
 | `chat-store` | `conversation_stores` | one | each chat request opens its conversation store | propagates | `packages/server/src/repowise/server/chat_seams.py` |
-| `chat-hooks` | `turn_hooks` | one | each chat turn (preflight, usage, events) | an `on_event` failure ends the turn with an error; `preflight` and `on_usage` failures propagate | `packages/server/src/repowise/server/chat_seams.py` |
+| `chat-hooks` | `turn_hooks` | one | each chat turn (preflight, usage, events) | a `preflight`, `on_usage` or `on_event` failure is logged and ends the turn with an error event | `packages/server/src/repowise/server/chat_seams.py` |
 | `chat-dataset` | `datasets` | every | the chat `chart` tool lists or loads a dataset | returned to the model as a tool error; the turn continues | `packages/server/src/repowise/server/chat_datasets/__init__.py` |
 | `chat-view` | `view_builders` | every | chat builds a view of a tool result | logged and returned to the model as a tool error; the turn continues | `packages/server/src/repowise/server/chat_views.py` |
 
@@ -561,7 +598,22 @@ for name, section in report_sections.all():
 ## Testing a plugin
 
 Test your implementations directly, then add one test that loads the plugin
-the way repowise does.
+the way repowise does and checks it against every seam contract. That test
+is one call, running the same checks as `repowise plugins check`:
+
+```python
+from repowise.core.plugin_testing import assert_plugin_passes
+
+
+def test_plugin_meets_every_contract(monkeypatch):
+    monkeypatch.syspath_prepend("src")  # not needed once the package is installed
+    assert_plugin_passes("repowise_hello:register")
+```
+
+`assert_plugin_passes` raises `AssertionError` listing each failure with its
+fix. `check_plugin(target)` returns the same results as `SeamCheck` objects,
+and `check_implementation(seam, impl)` checks one object before you register
+it, returning a list of `ContractFailure` (`seam`, `name`, `rule`, `fix`).
 
 | Need | Use |
 |------|-----|
@@ -569,6 +621,7 @@ the way repowise does.
 | Load plugins again | `repowise.core.registry.plugins.reset()`, then `load_plugins()` |
 | Load only your plugin | set `REPOWISE_PLUGINS` with `monkeypatch.setenv` and patch `importlib.metadata.entry_points` to return `[]` |
 | What loaded | the `PluginRecord` list from `load_plugins()`: `status`, `error`, `seams` |
+| Contract checks | `assert_plugin_passes`, `check_plugin`, `check_implementation` from `repowise.core.plugin_testing` |
 
 ```python
 import importlib.metadata
@@ -616,10 +669,14 @@ shows how to restore each registry afterwards.
 The plugin API is experimental and can change in a minor release.
 
 - A breaking change to a registry or seam contract bumps `PLUGIN_API_VERSION`
-  and is named in [CHANGELOG.md](../CHANGELOG.md).
+  and is named in [CHANGELOG.md](../CHANGELOG.md). Breaking means a protocol
+  method or required attribute added, removed or renamed, a parameter
+  changed, or a failure rule that changes what reaches your code's caller.
 - Additive changes (a new seam, a new optional field) keep the version.
-- Pin `repowise` to a range you test, and check `PLUGIN_API_VERSION` in
-  `register()` if a mismatch would break silently.
+- Set `MIN_PLUGIN_API_VERSION` when you rely on a contract added in a later
+  version, and run `repowise plugins check` after upgrading repowise: a plugin
+  written for an older API still loads, and the check says whether its
+  implementations still meet the contracts.
 
 ## Proposing a new seam
 
