@@ -4,9 +4,12 @@
 stacks name (:mod:`repowise.core.test_runners.stacks`), the command that
 writes a report repowise reads, what that command needs first, where the
 report lands, and the exact ``repowise`` line that ingests it, then the
-runtime targets worth profiling (:mod:`.runtime_setup`). A report already on
+runtime targets worth profiling (:mod:`.runtime_setup`) and the JUnit XML
+report its tests can write for test timings. A report already on
 disk comes first. ``next_call`` is the sequence of steps an agent runs next,
-each with the directory it runs in. Nothing is written.
+each with the directory it runs in (and, for a step that needs it, the
+environment). Its test step writes the test timings with the coverage, so one
+run gives both. Nothing is written.
 """
 
 from __future__ import annotations
@@ -20,17 +23,26 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
+from .ci_snippet import ci_snippet
 from .runtime_setup import (
+    ARGS_PLACEHOLDER,
     CLASS_ORDER,
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
+    evidence_ingest_line,
+    is_offered,
+    offered_targets,
     runtime_targets,
     timed_target,
 )
 
 #: Builds the index evidence joins to; no model calls, no API key.
 INIT_COMMAND = "repowise init --yes --no-prose"
-SETUP_COMMAND = "repowise evidence setup --format json"
+#: What a person runs; ``SETUP_COMMAND`` is the same plan as JSON for an agent.
+EVIDENCE_SETUP = "repowise evidence setup"
+SETUP_COMMAND = f"{EVIDENCE_SETUP} --format json"
+#: The coverage part of the plan alone.
+COVERAGE_SETUP = "repowise coverage setup"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
 #: Says what is wrong with an index that exists but cannot be read.
 DOCTOR_COMMAND = "repowise doctor"
@@ -107,6 +119,8 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
         ingest = coverage_ingest_line(_written_reports(stack))
     else:
         ingest = None
+    has_map = shown["command"] and stack.push_reports
+    per_test_map = _joined(stack.root, stack.push_reports.split()[0]) if has_map else None
     return {
         "root": shown["root"],
         "stack": shown["stack"],
@@ -114,18 +128,23 @@ def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, A
         "package_manager": shown["package_manager"],
         "coverage": {
             "command": shown["command"],
+            # What the command needs in its environment, name to value (None: nothing).
+            "env": stack.environ() or None,
             "prerequisites": shown["prerequisites"],
             "reports": shown["reports"],
             "found": found,
             "found_current": bool(found) and current,
             "ingest": ingest,
+            # The file the command also writes that builds the per-test map
+            # (coverage.py's ``.coverage`` with test contexts); ingest it with the report.
+            "per_test_map": per_test_map,
             "reason": shown["reason"],
             "notes": shown["notes"],
         },
     }
 
 
-def _step(repo_root: Path, rel_dir: str, command: str) -> dict[str, str]:
+def _step(repo_root: Path, rel_dir: str, command: str) -> dict[str, Any]:
     return {"cwd": str(repo_root / rel_dir) if rel_dir else str(repo_root), "run": command}
 
 
@@ -143,22 +162,56 @@ def _found_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, A
     }
 
 
-def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Run the first unit with a coverage command and ingest what it wrote."""
-    for unit in units:
-        cov = unit["coverage"]
-        if cov["command"]:
-            where = unit["root"] or "the repository root"
-            return {
-                "purpose": f"Run the {unit['stack']} tests in {where} with coverage, then ingest the report.",
-                "steps": [
-                    *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
-                    _step(repo_root, unit["root"], cov["command"]),
-                    _step(repo_root, "", cov["ingest"]),
-                    _step(repo_root, "", COVERAGE_STATUS_COMMAND),
-                ],
-            }
-    return None
+def _timed(unit: dict[str, Any]) -> dict[str, Any] | None:
+    """The unit's test timings when its test step writes and ingests them, else None."""
+    timings = unit.get("test_timings") or {}
+    return timings if timings.get("command") and timings.get("ingest") else None
+
+
+def _wants_tests(unit: dict[str, Any], covered: bool, done: Collection[str]) -> bool:
+    """Whether the unit's tests still have something to measure: coverage, or its timings."""
+    timings = _timed(unit)
+    if not unit["coverage"]["command"]:
+        return False
+    return not covered or (timings is not None and timings["workload"] not in done)
+
+
+def _test_run(repo_root: Path, unit: dict[str, Any]) -> dict[str, Any]:
+    """The unit's test step: its coverage command, with the timings flag when it takes one,
+    and the environment both need."""
+    cov, timings = unit["coverage"], _timed(unit)
+    run = _step(repo_root, unit["root"], timings["command"] if timings else cov["command"])
+    env = {**(cov["env"] or {}), **((timings or {}).get("env") or {})}
+    if env:
+        run["env"] = env
+    return run
+
+
+def _coverage_call(
+    repo_root: Path, units: Sequence[dict[str, Any]], *, covered: bool, done: Collection[str]
+) -> dict[str, Any] | None:
+    """Run the first unit with a coverage command that still has something to measure, and ingest
+    what it wrote: the coverage report and, where the runner writes one, its test timings.
+
+    *covered*: coverage at this commit is stored, so only a unit whose test timings
+    are not (*done* lacks their workload) runs again.
+    """
+    unit = next((u for u in units if _wants_tests(u, covered, done)), None)
+    if unit is None:
+        return None
+    cov, timings = unit["coverage"], _timed(unit)
+    where = unit["root"] or "the repository root"
+    return {
+        "purpose": f"Run the {unit['stack']} tests in {where} with coverage"
+        + (" and test timings, then ingest both." if timings else ", then ingest the report."),
+        "steps": [
+            *(_step(repo_root, unit["root"], p) for p in cov["prerequisites"]),
+            _test_run(repo_root, unit),
+            _step(repo_root, "", cov["ingest"]),
+            *([_step(repo_root, "", timings["ingest"])] if timings else []),
+            _step(repo_root, "", COVERAGE_STATUS_COMMAND),
+        ],
+    }
 
 
 def _runtime_call(
@@ -177,7 +230,8 @@ def _runtime_call(
     best = min(targets, key=lambda t: CLASS_ORDER.index(t["class"]))
     cwd = {"cwd": best["cwd"]}
     return {
-        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile.",
+        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile."
+        + (f" {best['note']}" if best.get("note") else ""),
         "steps": [
             *({**cwd, "run": p} for p in best["prerequisites"]),
             {**cwd, "run": best["command"]},
@@ -198,6 +252,8 @@ def evidence_setup(
     coverage_only: bool = False,
     index_error: str | None = None,
     index_fix: str = DOCTOR_COMMAND,
+    ci: str | None = None,
+    branch: str | None = None,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -214,6 +270,9 @@ def evidence_setup(
     *index_error* is why an index that exists could not be read: the plan
     then sends the agent to *index_fix* (``repowise doctor`` unless the
     error names another), never to a fresh ``init``.
+    With *ci* (``github`` or ``gitlab``), ``ci`` holds the CI file that runs
+    each unit's tests with coverage on pushes to *branch*
+    (:func:`~.ci_snippet.ci_snippet`); the caller writes it.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -226,10 +285,27 @@ def evidence_setup(
     planned = [_coverage_unit(s, found[id(s)], _measures(root, found[id(s)], head)) for s in stacks]
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
+        for stack, unit in zip(stacks, planned, strict=True):
+            unit["test_timings"] = _test_timings(stack, head)
     covered = head is not None and coverage_commit == head
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
+    done = _measured_at(runtime, head)
+    # A unit whose timings report on disk was written at this commit already ran its tests
+    # here: its ingest failed or was refused, and running the suite again changes nothing.
+    ran = {
+        unit["test_timings"]["workload"] for stack, unit in zip(stacks, planned, strict=True)
+        if covered and unit.get("test_timings") and _timings_ran(root, stack, head)
+    }
+    next_call = _with_optional(
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done, ran=ran),
+        _optional_entry_points(planned, done),
+    )
     if next_call is not None:
         reason = None
+    elif indexed and covered and not coverage_only and not _offers_runtime(planned):
+        reason = (
+            "Coverage at this commit is ingested. No unit has an entry point, benchmark "
+            "or test suite repowise can profile, so there is nothing left to run."
+        )
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
@@ -240,13 +316,143 @@ def evidence_setup(
             "steps": [_step(root, "", index_fix)],
         }
         reason = f"The index could not be read: {index_error}"
-    return {
+    plan = {
         "repo": str(root),
         "indexed": indexed,
         "commit": head,
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+    if ci is not None:
+        plan["ci"] = ci_snippet(stacks, ci, branch)
+    return plan
+
+
+def _test_timings(stack: Stack, head: str | None) -> dict[str, Any] | None:
+    """How the unit's test run writes JUnit XML (or ``go test -json``), and the line that
+    ingests it; None when unknown.
+
+    ``flag`` is what to add to the unit's own test command (None: the runner
+    writes the report by default); ``env`` is what that command needs in its
+    environment for the report, name to value (None: nothing). ``command`` is
+    the unit's coverage command with the flag added, the one ``next_call`` runs,
+    so one run gives coverage and test timings (None when the flag cannot be
+    added to it). ``workload`` is the name the timings are stored under.
+    """
+    if not stack.junit_report:
+        return None
+    report = _joined(stack.root, stack.junit_report)
+    # ``go test`` names Go's runner; the workload reads ``go tests``.
+    runner = (stack.suite.split() or [stack.runner or stack.language])[0].removesuffix(" test")
+    workload = f"{stack.root}: {runner} tests" if stack.root else f"{runner} tests"
+    command = stack.to_dict()["command"]
+    return {
+        "flag": stack.junit_flag or None,
+        "env": stack.junit_environ() or None,
+        "report": report,
+        "command": stack.with_junit(command) if command else None,
+        "workload": workload,
+        "ingest": evidence_ingest_line(_report_arg(report), workload, "unit_test", head) if head else None,
+    }
+
+
+def _timings_ran(repo_root: Path, stack: Stack, head: str | None) -> bool:
+    """Whether the unit's test timings report is on disk and was written at *head*."""
+    from ..analysis.health.coverage import discover_artifacts
+
+    report = _joined(stack.root, stack.junit_report)
+    pattern = report if report.endswith((".xml", ".json")) else f"{report}/*.xml"
+    found = discover_artifacts(repo_root, globs=[pattern])
+    rel = [p.resolve().relative_to(repo_root.resolve()).as_posix() for p in found]
+    return bool(rel) and _measures(repo_root, rel, head)
+
+
+def _offers_runtime(planned: Sequence[dict[str, Any]]) -> bool:
+    """Whether any unit lists a runtime target with an ingest line (:func:`offered_targets`)."""
+    return any(is_offered(t) for u in planned for t in u.get("runtime", ()))
+
+
+def runtime_offer(
+    repo_root: str | Path,
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+    head: str | None,
+) -> list[dict[str, Any]]:
+    """:func:`~.runtime_setup.offered_targets` for the checkout at *repo_root*:
+    the runtime targets its plan prints an ingest line for. Blocking reads."""
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    return offered_targets(stacks, root, runtime, head, _go_mains(root, stacks))
+
+
+async def load_runtime_offer(
+    session: Any, repository_id: str, repo_root: str | Path | None, head: str | None
+) -> list[dict[str, Any]] | None:
+    """:func:`runtime_offer` from the stored build units and runtime inputs;
+    None when *repo_root* is not a checkout on this machine."""
+    import asyncio
+
+    from ..persistence.crud.build_units import load_build_units
+    from .runtime_setup import load_runtime_inputs
+
+    root = Path(repo_root) if repo_root else None
+    if root is None or not root.is_dir():
+        return None
+    units = await load_build_units(session, repository_id)
+    runtime = await load_runtime_inputs(session, repository_id)
+    return await asyncio.to_thread(runtime_offer, root, units=units, runtime=runtime, head=head)
+
+
+def offered_classes(offer: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """The workload classes in *offer*, in :data:`~.runtime_setup.CLASS_ORDER`."""
+    found = {t["class"] for t in offer}
+    return tuple(c for c in CLASS_ORDER if c in found)
+
+
+def _with_optional(
+    next_call: dict[str, Any] | None, optional: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """*next_call* carrying *optional* under ``optional``.
+
+    With no step left, the call is still there, with no steps, so an agent
+    that stops at a null ``next_call`` never stops before the entry points.
+    """
+    if optional is None:
+        return next_call
+    if next_call is None:
+        next_call = {"purpose": "Only entry points waiting for their arguments are left.", "steps": []}
+    return {**next_call, "optional": optional}
+
+
+def _optional_entry_points(
+    planned: Sequence[dict[str, Any]], done: Collection[str]
+) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments, or servers waiting for requests,
+    not measured here, by workload.
+
+    Never a step, so named here. An entry point counts as measured once any
+    run of it is stored at this commit (``app`` or ``app build``), but not one
+    stored under the unfilled name (``app <args>``). Only names,
+    so the default answer stays small; each target's command and ingest line
+    are in ``units[].runtime``.
+    """
+    workloads = [
+        t["workload"] for u in planned for t in u.get("runtime", ())
+        if t["class"] == "entry_point" and t["command"] and t["ingest"] and t["reason"]
+        and not any(
+            (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
+            for d in done
+        )
+    ]
+    if not workloads:
+        return None
+    return {
+        "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
+        "representative run, or send a server representative requests while it runs, then run "
+        "each command and its ingest line.",
+        "workloads": workloads,
     }
 
 
@@ -274,11 +480,18 @@ def _measured_at(runtime: RuntimeInputs | None, head: str | None) -> set[str]:
 
 
 def _next_call(
-    root: Path, planned: Sequence[dict[str, Any]], *, indexed: bool, covered: bool, done: set[str]
+    root: Path,
+    planned: Sequence[dict[str, Any]],
+    *,
+    indexed: bool,
+    covered: bool,
+    done: set[str],
+    ran: Collection[str] = (),
 ) -> dict[str, Any] | None:
     """Index first; then a report on disk, the best profile, the tests with coverage.
 
     *covered*: coverage at this commit is stored. *done*: workloads measured here.
+    *ran*: test-timing workloads whose report on disk was written at this commit.
     """
     if not indexed:
         return {
@@ -288,7 +501,7 @@ def _next_call(
     return (
         (None if covered else _found_call(root, planned))
         or _runtime_call(root, planned, done)
-        or (None if covered else _coverage_call(root, planned))
+        or _coverage_call(root, planned, covered=covered, done={*done, *ran})
     )
 
 
@@ -298,14 +511,20 @@ def timed_targets(
     *,
     units: BuildUnitIndex | None,
     runtime: RuntimeInputs,
+    stacks: Sequence[Stack] | None = None,
+    go_mains: Sequence[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """For each repo-relative path in *paths*, the workload ``perf measure``
     times for a change there (:func:`~.runtime_setup.timed_target`); a path
-    with none is left out. One stack detection for all of them. Blocking reads.
+    with none is left out. One stack detection for all of them, or *stacks*
+    when the caller already detected them for this tree. Pass *go_mains*
+    when the caller already cached :func:`detect_go_mains` for the session.
+    Blocking reads.
     """
     root = Path(repo_root)
-    stacks = detect_repo_stacks(root, units)
-    mains = _go_mains(root, stacks)
+    if stacks is None:
+        stacks = detect_repo_stacks(root, units)
+    mains = list(go_mains) if go_mains is not None else detect_go_mains(root, stacks)
     out: dict[str, dict[str, Any]] = {}
     # Files of one language in one directory share a unit, so its targets are read once.
     seen: dict[tuple[str, str], dict[str, Any] | None] = {}
@@ -319,7 +538,7 @@ def timed_targets(
     return out
 
 
-def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
+def detect_go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     """Go ``package main`` directories, read only when a unit is Go."""
     if not any(s.language == "go" for s in stacks):
         return []
@@ -328,13 +547,21 @@ def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     return go_main_packages(BuildFacts(root))
 
 
+_go_mains = detect_go_mains
+
+
 __all__ = [
+    "COVERAGE_SETUP",
     "COVERAGE_STATUS_COMMAND",
     "DOCTOR_COMMAND",
+    "EVIDENCE_SETUP",
     "INIT_COMMAND",
     "SETUP_COMMAND",
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "load_runtime_offer",
+    "offered_classes",
+    "runtime_offer",
     "timed_targets",
 ]

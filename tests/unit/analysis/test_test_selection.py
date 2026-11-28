@@ -12,6 +12,7 @@ from repowise.core.analysis.test_selection import (
     BUILD_CONFIG_REASON,
     MAX_INDEX_GAP,
     RUN_ALL,
+    GapPlan,
     Selection,
     SelectionInput,
     TestSelectionConfig,
@@ -29,6 +30,7 @@ from repowise.core.analysis.test_selection import (
     runner_args,
     runner_notes,
     select_tests,
+    split_rewired,
     with_rewired,
 )
 from repowise.core.phpunit_roots import read_phpunit_roots
@@ -361,6 +363,59 @@ def test_an_unimported_helper_adds_nothing_when_every_known_test_runs() -> None:
     assert "no test imports that helper" in sel.reasons[0]
 
 
+def _helper_route(readers):
+    tiers = _tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_a.py", "call-graph"),
+            _inferred("src/a.py", "tests/autobahn/client.py", "import-graph"),
+        ]
+    )
+    if readers is not None:
+        tiers["helper_readers"] = {"tests/autobahn/client.py": readers}
+    known = ["tests/test_a.py", "tests/test_b.py", "tests/autobahn/test_autobahn.py"]
+    return _select(["src/a.py"], tiers, known_tests=known)
+
+
+def test_an_unimported_helper_only_tests_name_selects_those_tests() -> None:
+    """A test starting the helper by path is its user; nothing else can be."""
+    sel = _helper_route(["tests/autobahn/test_autobahn.py"])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py", "tests/autobahn/test_autobahn.py")
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports; the 1 test file(s) "
+        "naming it run for it (e.g. tests/autobahn/test_autobahn.py).",
+    )
+
+
+def test_an_unimported_helper_no_test_names_runs_nothing_for_itself() -> None:
+    """A type-check input or a script run by hand: no test can run it."""
+    sel = _helper_route([])
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_a.py",)
+    assert sel.reasons == (
+        "tests/autobahn/client.py is a test helper no test imports or names, so no test runs it.",
+    )
+
+
+@pytest.mark.parametrize("readers", [None, ["tests/conftest.py"], ["tests/other_helper.py"]])
+def test_an_unimported_helper_other_test_code_names_still_runs_everything(readers) -> None:
+    """A conftest or helper naming it reaches tests unknown; one not read for is unknown."""
+    sel = _helper_route(readers)
+    assert sel.run_all
+    assert "no test imports that helper" in sel.reasons[0]
+
+
+def test_a_changed_helper_no_test_imports_or_names_needs_no_test() -> None:
+    path = "tests/typing/typing_options.py"
+    tiers = _tiers(inferred=[_inferred(path, path, "changed-test")])
+    tiers["helper_readers"] = {path: []}
+    sel = _select([path], tiers)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ()
+    tiers["helper_readers"] = {path: ["tests/test_typing.py"]}
+    assert _select([path], tiers).test_files == ("tests/test_typing.py",)
+
+
 def test_an_unimported_helper_still_runs_everything_when_a_peer_is_not_selected() -> None:
     tiers = _tiers(
         inferred=[
@@ -589,6 +644,105 @@ def test_a_test_deleted_after_the_index_is_not_a_stale_index() -> None:
     assert sel.test_files == ("tests/test_a.py",)
 
 
+# The index: tests/test_c.py -> src/c.py -> src/a.py (the change);
+# tests/test_b.py -> src/b.py -> src/x.py; tests/test_d.py -> src/d.py.
+_INDEX = {"src/a.py": ("src/c.py",), "src/c.py": ("tests/test_c.py",)}
+_INDEX |= {"src/x.py": ("src/b.py",), "src/b.py": ("tests/test_b.py",)}
+_INDEX |= {"src/d.py": ("tests/test_d.py",)}
+_FILES = {*_INDEX, *(t for ts in _INDEX.values() for t in ts), "src/y.py"}
+
+
+def _split(rewirings, packages=(), index=_INDEX, added=()):
+    from repowise.core.analysis.import_drift import Rewiring
+
+    plan = GapPlan(candidates=tuple(rewirings), packages=frozenset(packages))
+    found = {p: None if r is None else Rewiring(*map(frozenset, r)) for p, r in rewirings.items()}
+    tests = [f for f in _FILES if f.startswith("tests/")]
+    return split_rewired(plan, list(rewirings), found, [index], ["src/a.py"], _FILES, tests, added)
+
+
+def test_a_rewired_gap_file_whose_new_edges_miss_the_change_adds_no_tests() -> None:
+    # src/b.py now imports src/y.py, which reaches nothing changed.
+    assert _split({"src/b.py": [["src/y.py"], [], []]}) == ([], ["src/b.py"])
+    plan = with_rewired(plan_gap(["src/b.py"], _NONE), [], (), ["src/b.py"])
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "call-graph")])
+    tiers["inferred"].append(_inferred("src/b.py", "tests/test_b.py", "import-graph"))
+    sel = _select(["src/a.py"], tiers, index_gap=["src/b.py"], gap=plan)
+    assert sel.test_files == ("tests/test_a.py",)
+    assert "none of their new imports or strings leads to it" in " ".join(sel.reasons)
+
+
+def test_a_rewired_gap_file_with_a_new_edge_onto_a_route_keeps_its_tests() -> None:
+    # src/b.py now imports src/c.py, which reaches the change: test_b.py now does too.
+    assert _split({"src/b.py": [["src/c.py"], [], []]}) == (["src/b.py"], [])
+    # Through another rewired file: src/d.py now imports src/b.py.
+    both = {"src/b.py": [["src/c.py"], [], []], "src/d.py": [["src/b.py"], [], []]}
+    assert _split(both) == (["src/b.py", "src/d.py"], [])
+    # Through a gained string naming a module on a route.
+    assert _split({"src/b.py": [[], ["pkg", "c"], []]}) == (["src/b.py"], [])
+    assert _split({"src/b.py": [[], [], ["src"]]}) == (["src/b.py"], [])
+    plan = with_rewired(plan_gap(["src/b.py"], _NONE), ["src/b.py"], ())
+    tiers = _tiers(inferred=[_inferred("src/a.py", "tests/test_a.py", "call-graph")])
+    tiers["inferred"].append(_inferred("src/b.py", "tests/test_b.py", "import-graph"))
+    sel = _select(["src/a.py"], tiers, index_gap=["src/b.py"], gap=plan)
+    assert sel.test_files == ("tests/test_a.py", "tests/test_b.py")
+
+
+def test_a_rewired_gap_file_that_cannot_be_told_keeps_its_tests() -> None:
+    # Unparseable (no rewiring), a new import of a file added since, a package init.
+    assert _split({"src/b.py": None}) == (["src/b.py"], [])
+    assert _split({"src/b.py": [["src/new.py"], [], []]}) == (["src/b.py"], [])
+    assert _split({"src/b.py": [[], [], []]}, packages=["src/b.py"]) == (["src/b.py"], [])
+    # A file reaching one that cannot be told may reach the change through it.
+    unknown = {"src/d.py": None, "src/b.py": [["src/d.py"], [], []]}
+    assert _split(unknown) == (["src/b.py", "src/d.py"], [])
+    # A route never passes through a test: src/d.py depending on test_c.py
+    # (which reaches the change) does not reach it.
+    through_a_test = {**_INDEX, "tests/test_c.py": ("src/d.py",)}
+    assert _split({"src/b.py": [["src/d.py"], [], []]}, index=through_a_test) == (
+        [],
+        ["src/b.py"],
+    )
+    # One already on a route in the index keeps its tests whatever it gained.
+    assert _split({"src/c.py": [[], [], []]}) == (["src/c.py"], [])
+    # A string naming a file added since, gained or not, may now reach it.
+    held = {"src/b.py": [[], [], [], ["new"]]}
+    assert _split(held) == ([], ["src/b.py"])
+    assert _split(held, added=["src/new.py"]) == (["src/b.py"], [])
+    # A package file's own name names only a package above the file: with
+    # src/__init__.py on a route, "__init__.py" in src/b.py may name it, in
+    # lib/z.py it cannot.
+    on_route = {**_INDEX, "src/a.py": ("src/c.py", "src/__init__.py")}
+    named = [[], ["__init__", "py"], []]
+    assert _split({"src/b.py": named}, index=on_route) == (["src/b.py"], [])
+    assert _split({"lib/z.py": named}, index=on_route) == ([], ["lib/z.py"])
+    # A non-code index file is named by its own word: "index.html" in templates/.
+    to_html = {**_INDEX, "src/a.py": ("src/c.py", "templates/index.html")}
+    assert _split({"lib/z.py": [[], ["index", "html"], []]}, index=to_html) == (["lib/z.py"], [])
+    # A test runs only itself, and may now walk a tree or spawn a process.
+    assert _split({"tests/test_d.py": [[], [], []]}) == (["tests/test_d.py"], [])
+
+
+def test_a_file_added_since_the_index_is_read_whole() -> None:
+    from repowise.core.analysis.import_drift import Rewiring
+
+    def split(new_imports):
+        # src/b.py imports src/new.py (added since, so the index has no edges for it).
+        rewirings = {
+            "src/b.py": Rewiring(imports=frozenset({"src/new.py"})),
+            "src/new.py": Rewiring(imports=frozenset(new_imports)),
+        }
+        plan = GapPlan(candidates=("src/b.py",))
+        return split_rewired(
+            plan, ["src/b.py"], rewirings, [_INDEX], ["src/a.py"], _FILES, (), ["src/new.py"]
+        )
+
+    # The added file imports only what reaches nothing changed: b.py's tests stay out.
+    assert split({"src/y.py"}) == ([], ["src/b.py"])
+    # It imports the change: b.py's tests now reach it through the added file.
+    assert split({"src/a.py"}) == (["src/b.py"], [])
+
+
 def test_a_gap_route_through_an_unimported_helper_runs_everything() -> None:
     sel = _behind(
         ["src/b.py"], inferred=[_inferred("src/b.py", "tests/helpers.py", "import-graph")]
@@ -677,16 +831,23 @@ def test_always_run_is_appended_and_kept_on_a_full_run() -> None:
     assert runner_args(full, "pytest") == [RUN_ALL]
 
 
-def test_a_stale_map_is_stated() -> None:
+def test_a_stale_map_is_stated_for_the_files_it_matched_by_file() -> None:
     tiers = _tiers(
-        covered={"t::x": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}}
+        covered={
+            "t::x": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]},
+            "t::y": {"test_file": "tests/test_b.py", "source_files": ["src/b.py"]},
+        }
     )
-    sel = _select(["src/a.py"], tiers, map_current=False)
+    tiers["matched_by_file"] = ["src/b.py"]
+    sel = _select(["src/a.py", "src/b.py"], tiers)
     assert not sel.run_all
     assert sel.reasons == (
-        "The per-test map was measured at another commit, so covering tests are matched "
-        "by file, not by changed line.",
+        "The per-test map was measured at another commit, so covering tests of 1 changed "
+        "file(s) are matched by file, not by changed line (e.g. src/b.py).",
     )
+    # Every covered file matched by line: nothing to say.
+    tiers["matched_by_file"] = []
+    assert _select(["src/a.py", "src/b.py"], tiers).reasons == ()
 
 
 # -- config -------------------------------------------------------------------
@@ -1173,3 +1334,100 @@ def test_perl_tests_are_collected_and_their_helpers_are_code() -> None:
     assert is_code_file("t/lib/Helper.pm") and is_code_file("bin/run.pl")
     assert is_test_helper("t/lib/Helper.pm")
     assert not is_runnable_test("t/lib/Helper.pm")
+
+
+# -- changes inside function bodies ----------------------------------------------
+
+
+def _function_tiers(**extra):
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        **extra,
+    )
+    tiers["function_covered"] = ["src/a.py"]
+    tiers["measured_test_files"] = ["tests/test_a.py", "tests/test_wide.py"]
+    return tiers
+
+
+def test_a_change_inside_covered_functions_runs_their_test_files_whole() -> None:
+    """A fixture set up once per file runs the change for tests coverage did not credit."""
+    tiers = _function_tiers(
+        inferred=[
+            _inferred("src/a.py", "tests/test_wide.py", "import-graph"),
+            _inferred("src/a.py", "tests/conftest.py", "import-graph"),
+        ]
+    )
+    selection = _select(["src/a.py"], tiers, known_tests=["tests/test_a.py", "tests/test_wide.py"])
+    assert not selection.run_all
+    assert selection.test_files == ("tests/test_a.py",)
+    assert selection.tests == ("tests/test_a.py",)
+    assert "it covers the changed function lines" in selection.why["tests/test_a.py"]
+    assert any(
+        r.startswith("src/a.py: 1 test file(s) cover the changed function lines")
+        for r in selection.reasons
+    )
+    assert selection.broadcast == {}
+
+
+def test_a_test_the_map_never_ran_keeps_the_graphs_word() -> None:
+    tiers = _function_tiers(inferred=[_inferred("src/a.py", "tests/test_new.py", "import-graph")])
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_new.py"}
+    assert any("1 test file(s) the map never ran still run for it" in r for r in selection.reasons)
+
+
+def test_a_module_level_change_keeps_the_graph_tests_beside_coverage() -> None:
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        inferred=[_inferred("src/a.py", "tests/test_wide.py", "import-graph")],
+    )
+    selection = _select(["src/a.py"], tiers)
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_wide.py"}
+    assert selection.tests == ("tests/test_a.py::t", "tests/test_wide.py")
+
+
+def _module_tiers(readers: list[str], **extra):
+    tiers = _tiers(
+        covered={
+            "tests/test_a.py::t|run": {"test_file": "tests/test_a.py", "source_files": ["src/a.py"]}
+        },
+        **extra,
+    )
+    tiers["module_covered"] = {"src/a.py": readers}
+    tiers["measured_test_files"] = ["tests/test_a.py", "tests/test_wide.py", "tests/test_far.py"]
+    return tiers
+
+
+def test_a_module_level_change_runs_the_tests_reading_its_names() -> None:
+    """A measured test that ran no code reading a changed name, and imports none, is left out."""
+    tiers = _module_tiers(
+        ["tests/test_a.py", "tests/test_far.py"],
+        inferred=[
+            _inferred("src/a.py", "tests/test_wide.py", "import-graph"),
+            _inferred("src/a.py", "tests/test_new.py", "import-graph"),
+        ],
+    )
+    selection = _select(["src/a.py"], tiers)
+    assert not selection.run_all
+    # test_far reads a changed name through a module the graph walk did not name;
+    # test_new was never measured, so the graph's word stands.
+    assert set(selection.test_files) == {
+        "tests/test_a.py",
+        "tests/test_far.py",
+        "tests/test_new.py",
+    }
+    assert "module-readers" in selection.why["tests/test_far.py"]
+    assert any(
+        r.startswith("src/a.py: 2 test file(s) ran code reading a name its module-level change")
+        and "1 test file(s) the map never ran still run for it" in r
+        for r in selection.reasons
+    )
+
+
+def test_function_coverage_still_runs_the_tests_every_subset_runs() -> None:
+    selection = _select(["src/a.py"], _function_tiers(), unplaced_tests=["tests/test_z.py"])
+    assert set(selection.test_files) == {"tests/test_a.py", "tests/test_z.py"}

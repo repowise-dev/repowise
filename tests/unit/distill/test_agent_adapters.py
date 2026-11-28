@@ -802,3 +802,28 @@ class TestSourceCarriesTheDialect:
         assert result is not None
         options = [tok for tok in result.command.split() if tok.startswith("--")]
         assert options == ["--source"]
+
+
+def test_every_rewrite_label_names_its_own_agent_in_the_ledger() -> None:
+    """``repowise distill`` learns its agent only from the hook's ``--source``.
+
+    Core maps the label back to an agent without importing the CLI, so this
+    walks the adapter registry to keep the two vocabularies in step: a new
+    adapter, or a renamed label, fails here rather than filing its savings
+    under ``unknown``.
+    """
+    from repowise.cli.agent_adapters import _REGISTRY, adapter_for
+    from repowise.cli.agent_adapters.base import SHELL_POSIX, SHELL_POWERSHELL, hook_source_for
+    from repowise.core.agents.identity import slug_for_hook_adapter, slug_for_hook_source
+
+    for name in _REGISTRY:
+        adapter = adapter_for(name)
+        expected = slug_for_hook_adapter(adapter.name)
+        assert expected != "unknown", name
+        labels = (
+            [adapter.savings_source]
+            if adapter.savings_source
+            else [hook_source_for(SHELL_POSIX), hook_source_for(SHELL_POWERSHELL)]
+        )
+        for label in labels:
+            assert slug_for_hook_source(label) == expected, (name, label)

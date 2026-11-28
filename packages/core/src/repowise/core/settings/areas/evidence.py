@@ -27,7 +27,8 @@ SETTINGS = (
         "evidence.max_symbols_per_run",
         "int",
         1500,
-        "Most functions stored from one profile, costliest first; the rest are counted.",
+        "Most functions stored from one profile, costliest self time (waits excluded) first; "
+        "the rest are counted.",
         minimum=1,
     ),
     _s(
@@ -58,23 +59,33 @@ SETTINGS = (
         "int",
         10,
         "A measured function is ranked when it is among this many production functions with "
-        "the most inclusive time in its run.",
+        "the most self time in its run (built-ins and libraries it calls included, waits "
+        "excluded).",
         minimum=1,
     ),
     _s(
         "evidence.rank_min_samples",
         "int",
         30,
-        "Fewest samples on a function for it to be ranked; below this the run has not enough "
+        "Fewest self samples on a function for it to be ranked; below this the run has not enough "
         "samples in repo code. Runs that count no samples rank by their order alone.",
         minimum=1,
     ),
+    # Calibrated on two real profiles (2026-11-20; a 46k-sample CLI update and a
+    # 30k-sample unit-test run of a web backend), hand-triaged per function.
+    # Of the 19 functions the two ranked, the real, fixable hotspots held 2.9%
+    # to 16% self time each (one more, split over three functions, 1.3% each);
+    # the inherent work beside them (a renderer, a disk read, regexes) held
+    # 0.5% to 1.9%, with one parser at 3.4%. 2.5% sits in that gap: with the
+    # 2% lower bound below it admits 6 of the 7 real hotspots and 1 of the 10
+    # inherent rows, which has no fix strategy and so stays an observation.
+    # The old 5% admitted 2 of the 7.
     _s(
         "evidence.lead_min_share",
         "float",
-        0.05,
-        "Share of all samples a ranked function needs, in a workload class that may lead, to "
-        "become a lead candidate from one run.",
+        0.025,
+        "Self share of the run's time a ranked function needs to count as a measured cost from one "
+        "run.",
         minimum=0,
         maximum=1,
     ),

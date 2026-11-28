@@ -43,7 +43,7 @@ fail instead of silently doing nothing.
 |---|---|---|
 | `POST /api/repos` (`index: true`, the default) | Enqueues a first full index | Same work as `/index` below; the response carries `initial_job_id` |
 | `POST /api/repos/{repo_id}/index` | `initial_index` job: full pipeline plus LLM docs | Template wiki with no provider: no model, no cost |
-| `POST /api/repos/{repo_id}/sync` | Incremental index, then regenerate only the pages a recent change touched | Model calls on the changed-page subset, not the whole wiki |
+| `POST /api/repos/{repo_id}/sync` | Decision extraction inside the incremental index | Pages of the changed files re-render from structure with no model call; decision extraction can call the model (see below) |
 | `POST /api/repos/{repo_id}/full-resync` | `full_resync` job: regenerate all documentation | The most expensive endpoint in the API |
 | `POST /api/repos/{repo_id}/generate` | Writes an explicit page selection with a model (`repowise generate` over HTTP) | Fails (job `failed`) if no provider resolves |
 | `POST /api/pages/lookup/regenerate` | `single_page` job: regenerate one page | Same failure mode |
@@ -65,12 +65,22 @@ Verified against: `packages/server/src/repowise/server/routers/repos.py`
 `packages/core/src/repowise/core/analysis/health/refactoring/llm/enrich.py`
 (`enrich_suggestion`, `llm_enrichment_enabled`).
 
-The `sync` row is worth stating plainly, because the issue this page came from
-described `/sync` as "no LLM calls". That was true when the pipeline ran
-`generate_docs=False` and nothing else; it is not true today.
-`job_executor.py` runs `_incremental_page_regen` with `llm_client` whenever the
-mode is `sync` and a provider resolved, so a sync can bill for the pages a
-change touched.
+What a `sync` job spends, with a provider resolved: the pipeline runs with
+`generate_docs=False` and the provider (`job_executor.py`), and
+`_incremental_page_regen` (`job_incremental.py`) regenerates only the
+API-contract, symbol-spotlight and file pages of the changed files
+(`file_pages_only`, `page_generator/orchestrate.py`). Those page types render
+from structure, so the wiki side of a sync makes no model call; module,
+overview, onboarding and flow pages keep the text the last full run wrote.
+The analysis phase runs decision extraction with the same provider
+(`pipeline/phases/analysis.py`, `_run_decision_extraction`), and under the
+default `decisions:` policy the inline-marker, git-history, ADR, PR and comment
+sources may call the model (`analysis/decisions/policy.py`, `llm_allowed`). A
+sync with a provider can therefore bill for decision extraction.
+`decisions.llm: false` (`repowise config set decisions.llm false`) keeps
+decision capture local and the sync model-free. The CLI's `repowise update`
+gates the same mining on `decisions.update_mining`; the server's sync job does
+not read that key.
 
 ### 1.2 Endpoints that spend without a request
 
@@ -207,10 +217,10 @@ probe endpoints are unprotected by design:
 | `GET /api/jobs/{job_id}/stream` | bearer, or the per-job `?token=` described in section 4; this one route cannot carry a router-level bearer dependency because an `EventSource` cannot set headers |
 | everything else under `/api` | bearer |
 
-Counting the published document: 196 operations, 191 of which declare the
+Counting the published document: 244 operations, 239 of which declare the
 `APIKeyHeader` security scheme and 5 of which do not, and those 5 are exactly
 the table's first four rows (the stream route declares the scheme even though
-it also accepts the token, which is a third reason this page exists).
+it also accepts the token).
 
 Webhook behaviour when the secret is not configured mirrors the API key:
 loopback callers are accepted, a non-loopback caller gets `403`; a bad signature
@@ -223,12 +233,16 @@ string.
 
 ### 2.4 Two adjacent facts OpenAPI also omits
 
-- CORS is wide open: `allow_origins=["*"]`, `allow_credentials=True`,
-  `allow_methods=["*"]`, `allow_headers=["*"]` (`app.py`). Verified by request:
-  a preflight from an arbitrary origin is answered `200` with
-  `access-control-allow-origin` echoing that origin, and the same header comes
-  back on a simple request. Any origin can therefore call the API from a
-  browser, which is only safe because the key is what actually guards the data.
+- CORS allows any origin without credentials by default: `allow_origins=["*"]`,
+  `allow_credentials=False`, `allow_methods=["*"]`, `allow_headers=["*"]`
+  (`app.py`, `_cors_settings`). Verified by request: a preflight from an
+  arbitrary origin is answered `200` with `access-control-allow-origin: *`, and
+  the same header comes back on a simple request. Any origin can therefore call
+  the API from a browser, and the key is what guards the data. Setting
+  `REPOWISE_CORS_ORIGINS` to a comma-separated list of origins allows only those
+  origins and turns credentials on (browsers reject a wildcard origin with
+  credentials). `REPOWISE_CORS_ALLOW_CREDENTIALS` without explicit origins logs
+  a warning and changes nothing.
 - `POST /api/providers/{provider_id}/key` stores a key server-side and, when
   `repo_id` is supplied, also writes it to that repository's `.repowise/.env`
   (`routers/providers.py`, `provider_config.set_api_key`). The API can write a
@@ -594,13 +608,13 @@ Every claim above was checked against the code in
 `packages/server/src/repowise/server/` and, for the pipeline and provider
 behaviour, `packages/core/src/repowise/core/`. The counts and the
 "which operations declare auth" table come from generating the app's own
-OpenAPI document in this checkout (176 paths, 188 operations, 36 tags, 184
-operations declaring the security scheme). The runtime behaviours quoted as
-"verified by request" (auth outcomes and detail strings, error and 422 shapes,
-CORS headers, the 500 body, the SSE frame order and headers, the stream token's
-stability and cross-job rejection, the projection routes' status codes) were
-executed against a `create_app()` instance with an ASGI transport.
+OpenAPI document (228 paths, 244 operations, 45 tags, 239 operations declaring
+the security scheme). The runtime behaviours quoted as "verified by request"
+(auth outcomes and detail strings, error and 422 shapes, CORS headers, the 500
+body, the SSE frame order and headers, the stream token's stability and
+cross-job rejection, the projection routes' status codes) are executed against
+a `create_app()` instance with an ASGI transport.
 
-Where the code is genuinely ambiguous, the section says so rather than picking
-an answer: section 1.5 on cost accounting is the main one. If you change a route
-named here, change this page with it.
+Where the code leaves a question open, the section names both readings: section
+1.5 on cost accounting is the main one. If you change a route named here,
+change this page with it.

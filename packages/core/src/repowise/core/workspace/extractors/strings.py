@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from itertools import pairwise
 
@@ -538,6 +538,8 @@ def string_constants(
             if code is None and on_comment_line(content, m.start()):
                 continue
             _fold_members(content, m.end() - 1, m.group("name"), syntax, seen)
+    if syntax is JS_SYNTAX and "static" in content:
+        _record_class_statics(content, seen)
     # `x += "/v1"` and `x, err = f()` rebind a name without the plain form.
     for m in _COMPOUND_ASSIGN_RE.finditer(text):
         seen[m.group(1)] = None
@@ -547,13 +549,55 @@ def string_constants(
     return {name: text for name, text in seen.items() if text is not None}
 
 
-_CLASS_OPEN_RE = re.compile(r"class(?<![\w$]class)\s+[A-Za-z_$][\w$]*[^{;]*\{")
+def _record_class_statics(content: str, seen: dict[str, str | None]) -> None:
+    """Record each class's static fields as ``Name.field``, read from anywhere in the file.
+
+    Runs after the object literals fold, so a ``const Api = {...}`` beside a class
+    ``Api`` retires the key. A field the file also writes from outside
+    (``Api.BASE = x``, ``Api[k] = x``, ``Object.assign(Api, ...)``, ``Reflect.set``)
+    is no constant, nor is a class inside a comment.
+
+    Ceiling: a write through an alias (``const C = Api; C.BASE = x``) or a dynamic
+    one through ``this`` in a static member (``this[k] = x``) is not seen.
+    """
+    from repowise.core.ingestion.source_mask import mask_source
+
+    code = mask_source(content, ".js")
+    for cls in js_class_fields(content):
+        if code[cls.start - 1] != "{":
+            continue  # the class body opens inside a comment
+        for field_name, rhs in cls.static_fields.items():
+            key = cls.name + field_name.removeprefix("this")
+            unsettled = (
+                key in seen
+                or resolve_string(rhs, JS_SYNTAX) is None
+                or _static_rebinding_re(key).search(code) is not None
+            )
+            seen[key] = None if unsettled else rhs
+
+
+def _static_rebinding_re(key: str) -> re.Pattern[str]:
+    """A write to the static field *key* (``Api.BASE``) from outside its declaration."""
+    cls, member = (re.escape(part) for part in key.split(".", 1))
+    return re.compile(
+        rf"(?<![\w$.]){cls}\s*(?:\.\s*{member}\s*[-+*/%?|&]*=(?![=>])|\[[^\]]*\]\s*[-+*/%?|&]*=(?![=>]))"
+        rf"|(?:Object\s*\.\s*(?:assign|defineProperty|defineProperties)|Reflect\s*\.\s*set)\s*\(\s*{cls}\b"
+    )
+
+
+# The header stops at another `class` word, so `// the base class` above a
+# declaration does not take the next word (`export`) as the class name.
+_CLASS_OPEN_RE = re.compile(
+    r"class(?<![\w$]class)\s+(?P<name>[A-Za-z_$][\w$]*)(?:\s+extends\s+(?P<base>[A-Za-z_$][\w$]*))?(?:(?!(?<![\w$.])class\b)[^{;])*\{"
+)
 # A class field and what it is set to: a declaration on its own line
 # (`private base = x`, `base: string = x`) or `this.base = x` anywhere, with
 # `op` set for a compound assignment (`this.base += x`).
 _FIELD_DECL_RE = re.compile(
-    r"^[ \t]*(?P<mods>(?:(?:private|protected|public|readonly|static|override)[ \t]+)*)"
-    r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*[?!]?(?:[ \t]*:[^=\n]+)?=(?![=>])[ \t]*(?P<rhs>[^\n]+)$",
+    r"(?:^[ \t]*|(?<=[{;])[ \t]*)"
+    r"(?P<mods>(?:(?:private|protected|public|readonly|static|override)[ \t]+)*)"
+    r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*[?!]?(?:[ \t]*:[^=\n]+)?=(?![=>])[ \t]*"
+    r"(?P<rhs>[^\n;]+?)(?:[ \t]*(?:;|\}[ \t]*$)|$)",
     re.MULTILINE,
 )
 _THIS_ASSIGN_RE = re.compile(
@@ -562,46 +606,107 @@ _THIS_ASSIGN_RE = re.compile(
 _BARE_NAME_RE = re.compile(r"[A-Za-z_$][\w$]*")
 
 
+# A static member with a body at the top of a class body: a method
+# (`static async get(id) {`, `static get url() {`) or a `static {` block.
+_STATIC_MEMBER_RE = re.compile(
+    r"^[ \t]*(?:(?:public|private|protected|override)[ \t]+)*static\b[^\n=;({]*(?P<open>[({])",
+    re.MULTILINE,
+)
+
+
 @dataclass(frozen=True)
 class ClassFields:
-    """One class body's span and its fields: ``this.name -> rhs``, raw text."""
+    """One class body's span and its fields: ``this.name -> rhs``, raw text.
+
+    *static_fields* are what ``this.name`` reads inside the *static_spans*,
+    the bodies of the class's static members, where ``this`` is the class,
+    and what ``Name.name`` reads anywhere in the file, *name* being the class's.
+    """
 
     start: int
     end: int
     fields: dict[str, str]
+    static_fields: dict[str, str] = field(default_factory=dict)
+    static_spans: tuple[tuple[int, int], ...] = ()
+    name: str = ""
+    base_name: str = ""
+
+    def fields_at(self, pos: int) -> dict[str, str]:
+        """The fields ``this.name`` reads at *pos*: static in a static member."""
+        static = any(a <= pos < b for a, b in self.static_spans)
+        return self.static_fields if static else self.fields
 
 
 def js_class_fields(content: str) -> list[ClassFields]:
     """The fields each class in *content* sets exactly once, per class body.
 
     A declaration counts only directly in the body (not a method's local
-    ``url = x``) and not when ``static`` (read as ``A.base``, not ``this.base``).
-    A field set twice, or by ``+=``, is not a constant, nor one set to a bare
-    name (``this.base = base``), usually a constructor parameter shadowing any
-    constant of that name. Innermost classes come first.
+    ``url = x``). A ``static`` one is what ``this.base`` reads inside a static
+    method, and no instance field. A field set twice, or by ``+=``, is not a
+    constant, nor one set to a bare name (``this.base = base``), usually a
+    constructor parameter shadowing any constant of that name. Innermost
+    classes come first.
     """
     spans: list[tuple[int, int]] = []
+    names: dict[tuple[int, int], str] = {}
+    bases: dict[tuple[int, int], str] = {}
     for c in _CLASS_OPEN_RE.finditer(content):
         close = match_paren(content, c.end() - 1, len(content), closer="}")
         if close > 0:
             spans.append((c.end(), close))
+            names[spans[-1]] = c.group("name")
+            if c.group("base"):
+                bases[spans[-1]] = c.group("base")
     out: list[ClassFields] = []
     for start, end in sorted(spans, key=lambda s: s[1] - s[0]):
         inner = [s for s in spans if start < s[0] and s[1] < end]
+        statics = _static_spans(content, start, end)
         seen: dict[str, str | None] = {}
+        seen_static: dict[str, str | None] = {}
         depth, at = 0, start
         for m in _FIELD_DECL_RE.finditer(content, start, end):
             depth += content.count("{", at, m.start()) - content.count("}", at, m.start())
             at = m.start()
-            if depth == 0 and "static" not in m.group("mods"):
-                _record(seen, content, m)
+            if depth == 0:
+                _record(seen_static if "static" in m.group("mods") else seen, content, m)
         for m in _THIS_ASSIGN_RE.finditer(content, start, end):
             if not any(a <= m.start() < b for a, b in inner):
-                _record(seen, content, m)
+                in_static = any(a <= m.start() < b for a, b in statics)
+                _record(seen_static if in_static else seen, content, m)
         fields = {name: rhs for name, rhs in seen.items() if rhs}
-        if fields:
-            out.append(ClassFields(start, end, fields))
+        static_fields = {name: rhs for name, rhs in seen_static.items() if rhs}
+        if fields or static_fields or (start, end) in bases:
+            out.append(
+                ClassFields(
+                    start,
+                    end,
+                    fields,
+                    static_fields,
+                    statics,
+                    names[(start, end)],
+                    bases.get((start, end), ""),
+                )
+            )
     return out
+
+
+def _static_spans(content: str, start: int, end: int) -> tuple[tuple[int, int], ...]:
+    """The bodies of the static members directly in the class body ``content[start:end]``."""
+    out: list[tuple[int, int]] = []
+    for m in _STATIC_MEMBER_RE.finditer(content, start, end):
+        if content.count("{", start, m.start()) != content.count("}", start, m.start()):
+            continue  # inside a member, not directly in the class body
+        brace = m.start("open")
+        if m.group("open") == "(":
+            close = match_paren(content, brace)
+            body = _JS_BODY_RE.match(content, close + 1) if close > 0 else None
+            if body is None or body.group("arrow") or not body.group("open"):
+                continue
+            brace = body.start("open")
+        close = match_paren(content, brace, closer="}")
+        if close > 0:
+            out.append((brace, close))
+    return tuple(out)
 
 
 def _record(seen: dict[str, str | None], content: str, m: re.Match[str]) -> None:
@@ -817,6 +922,73 @@ def enclosing_local(content: str, code: str, name: str, offset: int) -> str | No
     if rebound.search(code, semi, offset):
         return None
     return content[rhs:semi].strip()
+
+
+# A `(` that opens a condition or a catch binding, not a parameter list.
+_CONTROL_PAREN_RE = re.compile(r"\b(?:if|for|while|switch|catch|with)\s*$")
+# What follows a parameter list: an optional return type with no brace in it,
+# then a block body, an arrow into a block, or an arrow into an expression.
+# The match ends at the `{` or the `=>`, so the return type reads up to them.
+_JS_BODY_RE = re.compile(
+    r"\s*(?::[^{};=`]*?)?\s*(?:(?P<arrow>=>)\s*)?(?P<open>\{)?(?:(?<=\{)|(?<==>))"
+)
+
+
+def js_first_parameter_scope(content: str, name: str, offset: int) -> bool:
+    """Whether *name* is the first parameter of a JS function whose body holds *offset*.
+
+    Reads the function declarations, methods and arrows above *offset* within
+    :data:`LOCAL_WINDOW`, with block and expression bodies, and any enclosing
+    one counts, so ``function api(path) { return retry(() => fetch(`/v1${path}`)) }``
+    holds the call through ``api``. Ceiling: a return type with a brace in it
+    (``: Promise<{ ok: boolean }>``) is not read as a definition.
+    """
+    n = re.escape(name)
+    first = re.compile(rf"\(\s*(?:\.\.\.)?{n}(?![\w$])|(?<![\w$.]){n}(?=\s*=>)")
+    for m in first.finditer(content, max(0, offset - LOCAL_WINDOW), offset):
+        if m.group().startswith("("):
+            if _CONTROL_PAREN_RE.search(content, max(0, m.start() - 8), m.start()):
+                continue
+            close = match_paren(content, m.start())
+            if close < 0 or close >= offset:
+                continue
+            body = _JS_BODY_RE.match(content, close + 1)
+        else:
+            body = _JS_BODY_RE.match(content, m.end())
+        if body is None or not (body.group("arrow") or body.group("open")):
+            continue
+        if body.group("open"):
+            end = match_paren(content, body.start("open"), closer="}")
+            if body.start("open") < offset and (end < 0 or offset < end):
+                return True
+        elif _expression_holds(content, body.end(), offset):
+            return True
+    return False
+
+
+def _expression_holds(content: str, start: int, offset: int) -> bool:
+    """Whether an arrow's expression body starting at *start* runs on to *offset*:
+    no bracket it did not open closes, and no top-level ``;``, ``,`` or line
+    break that ends the statement (automatic semicolon insertion) ends it."""
+    text = "(" + content[start:offset]
+    if any(_scan(text, 0, len(text), closer=c)[0] >= 0 for c in ")]}"):
+        return False
+    if any(_scan(content, start, offset, sep=s)[1] for s in ";,"):
+        return False
+    return not any(_ends_statement(content, start, nl) for nl in _scan(content, start, offset, sep="\n")[1])
+
+
+# A line that carries on the expression above it: a member, an operator or a ternary.
+_CONTINUED_LINE_RE = re.compile(r"\s*(?:[.?:+\-*/%&|]|=>)")
+
+
+def _ends_statement(content: str, start: int, newline: int) -> bool:
+    """Whether the line break at *newline* ends an arrow body begun at *start*:
+    the body has text before it and the next line does not carry it on."""
+    before = content[start:newline].rstrip()
+    if not before or before[-1] in "+-*/%&|?:=.":
+        return False  # the body starts on the next line, or an operator carries on
+    return _CONTINUED_LINE_RE.match(content, newline + 1) is None
 
 
 def on_comment_line(content: str, offset: int) -> bool:
@@ -1160,6 +1332,7 @@ __all__ = [
     "enclosing_local",
     "inline_names",
     "js_class_fields",
+    "js_first_parameter_scope",
     "js_local_value",
     "literal_span",
     "map_entry",

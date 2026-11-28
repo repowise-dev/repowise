@@ -134,6 +134,8 @@ def _edges(graph_builder: Any) -> set[tuple]:
             tuple(d.get("call_lines", [])),
             bool(d.get("type_only", False)),
             bool(d.get("deferred", False)),
+            bool(d.get("guarded", False)),
+            bool(d.get("module_form", False)),
         )
         for u, v, d in graph_builder.graph().edges(data=True)
     }
@@ -375,16 +377,16 @@ def test_surface_changes_fall_back_to_a_full_rebuild(
 
 def test_unsupported_language_falls_back(tmp_path: Path) -> None:
     tree = tmp_path / "repo"
-    helper = "#!/bin/sh\nf() { echo one; }\n"
-    _write(tree, {**_FILES, "tools/helper.sh": helper})
+    helper = "sub f { return 'one'; }\nf();\n"
+    _write(tree, {**_FILES, "tools/helper.pl": helper})
     first = build_repo_graph(tree, [], collect_sources=True)[2]
     seed = _seed_rows(first)
-    (tree / "tools/helper.sh").write_text(helper.replace("echo one", "echo two"))
+    (tree / "tools/helper.pl").write_text(helper.replace("'one'", "'two'"))
 
     patched = _patched(tree, seed)
 
     assert not patched.patch_plan.eligible
-    assert "shell edits are not patched" in (patched.patch_plan.reason or "")
+    assert "perl edits are not patched" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -415,6 +417,48 @@ def test_module_level_call_edit_matches_full_build(tmp_path: Path) -> None:
     }
     assert patched_module_calls == {("service.py::__module__", "util.py::second")}
     _assert_equals_full(tree, patched, tmp_path / "module-calls-oracle")
+
+
+def test_a_handler_edit_that_unguards_an_import_matches_full_build(tmp_path: Path) -> None:
+    """``except ImportError`` -> ``except Exception`` moves no line and changes
+    nothing another file resolves against, so it is a body patch; the edited
+    file is re-resolved, so its edge loses the stale mark and closes the cycle."""
+    tree = tmp_path / "guarded"
+    files = {
+        "a.py": "try:\n    from b import B\nexcept ImportError:\n    B = None\nA = 1\n",
+        "b.py": "from a import A\nB = 2\n",
+    }
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert original.graph()["a.py"]["b.py"]["guarded"] is True
+
+    (tree / "a.py").write_text(files["a.py"].replace("ImportError", "Exception"))
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == ("a.py",)
+    assert not patched.graph()["a.py"]["b.py"].get("guarded")
+    _assert_equals_full(tree, patched, tmp_path / "guarded-oracle")
+
+
+def test_a_top_level_read_of_a_module_form_import_matches_full_build(tmp_path: Path) -> None:
+    """Adding ``X = b.B`` at the top level moves no import, yet the ``import b``
+    edge now reads ``b`` at load: the patched edge must lose ``module_form`` so
+    the cycle stops reading as static only."""
+    tree = tmp_path / "module-form"
+    files = {"a.py": "import b\nA = 1\n", "b.py": "import a\nB = 2\n"}
+    _write(tree, files)
+    original = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert original.graph()["a.py"]["b.py"]["module_form"] is True
+
+    (tree / "a.py").write_text("import b\nA = b.B\n")
+
+    patched = _patched(tree, _seed_rows(original))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.graph()["a.py"]["b.py"].get("module_form")
+    _assert_equals_full(tree, patched, tmp_path / "module-form-oracle")
 
 
 def test_go_package_clause_change_falls_back(
@@ -480,6 +524,59 @@ def test_go_interface_edges_survive_a_body_patch(tmp_path: Path) -> None:
     patched = _patched(tree, _seed_rows(first))
 
     assert patched.patch_plan.eligible
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+# gin's shape: ``engine.trees`` is a ``methodTrees``, declared in a sibling file
+# of the package, and a range over it types ``tree.root.getValue``.
+_GO_TREE = (
+    "package gin\n\ntype node struct{}\n\n"
+    "func (n *node) getValue(path string) int { return 0 }\n\n"
+    "type leaf struct{}\n\nfunc (l *leaf) getValue(path string) int { return 1 }\n\n"
+    "type methodTree struct {\n\tmethod string\n\troot   *node\n}\n\n"
+    "type leafTree struct {\n\tmethod string\n\troot   *leaf\n}\n\n"
+    "type methodTrees []methodTree\n"
+)
+_GO_ENGINE = (
+    "package gin\n\ntype Engine struct {\n\ttrees methodTrees\n}\n\n"
+    "func (engine *Engine) handle(p string) {\n"
+    "\tfor _, tree := range engine.trees {\n"
+    "\t\tif v := tree.root.getValue(p); v > 0 {\n\t\t\treturn\n\t\t}\n\t}\n}\n"
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "patched_scope"),
+    [
+        # The named container's element changes: the unedited sibling's range
+        # now yields a ``leafTree``. Fields, parameters and return types carry
+        # the type, so no name scopes it: the update builds in full.
+        ("type methodTrees []methodTree", "type methodTrees []leafTree", None),
+        # The type stops being a container: the range yields nothing typed.
+        ("type methodTrees []methodTree", "type methodTrees struct{}", None),
+        # A field's type changes: the sibling spells the field and is re-resolved.
+        ("\troot   *node\n}\n\ntype leafTree", "\troot   *leaf\n}\n\ntype leafTree", ("gin.go", "tree.go")),
+        # A body edit changes no declaration: only the edited file is resolved.
+        ("return 0 }", "return 2 }", ("tree.go",)),
+    ],
+    ids=["named-container", "container-dropped", "field-type", "body"],
+)
+def test_go_sibling_declaration_edit_matches_full_build(
+    tmp_path: Path, old: str, new: str, patched_scope: tuple[str, ...] | None
+) -> None:
+    tree = tmp_path / "repo"
+    _write(tree, {"go.mod": "module example.com/gin\n\ngo 1.22\n", "tree.go": _GO_TREE, "gin.go": _GO_ENGINE})
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert first.graph().has_edge("gin.go::Engine::handle", "tree.go::node::getValue")
+    (tree / "tree.go").write_text(_GO_TREE.replace(old, new))
+
+    patched = _patched(tree, _seed_rows(first))
+
+    if patched_scope is None:
+        assert not patched.patch_plan.eligible
+    else:
+        assert patched.patch_plan.eligible, patched.patch_plan.reason
+        assert patched.patch_plan.scope == patched_scope
     _assert_equals_full(tree, patched, tmp_path)
 
 

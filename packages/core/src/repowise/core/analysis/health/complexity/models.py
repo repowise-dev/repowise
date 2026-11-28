@@ -163,6 +163,9 @@ class FunctionComplexity:
     # walk digests. None where the file yields no token rows.
     body_digest: str | None = None
     body_tokens: int | None = None
+    # ``(callee, line)`` of each value built as an eager ``setdefault`` default
+    # (``perf.eager_defaults``), stored per function symbol; Python only.
+    eager_defaults: tuple[tuple[str, int], ...] = ()
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

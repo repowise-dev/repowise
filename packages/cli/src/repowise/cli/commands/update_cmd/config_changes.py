@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,27 @@ class ConfigChanges:
     rebuild_required: bool
 
 
+def retain_stale_buckets(
+    stored: Any, current: dict[str, str], stale: Collection[str]
+) -> dict[str, str]:
+    """*current* with *stale* buckets' hashes kept from *stored* (#5944).
+
+    A deferred-docs run finishes the traversal, git and health work a config
+    edit asked for but not the page generation; stamping those buckets while
+    leaving ``generation`` at its stored hash is what makes the next run see
+    exactly the unfinished work. A stale bucket with no stored hash (legacy
+    state, or a bucket the old index never tracked) is stamped with an empty
+    sentinel so it still reads as changed instead of being stamped current.
+    """
+    if not stale:
+        return current
+    stored_map = stored if isinstance(stored, dict) else {}
+    return {
+        **current,
+        **{bucket: stored_map.get(bucket, "") for bucket in stale},
+    }
+
+
 def classify_config_changes(repo_path: Path, state: dict, cfg: dict[str, Any]) -> ConfigChanges:
     """Compare the stored config fingerprints with the live ones (missing = unchanged)."""
     from repowise.cli.helpers import config_fingerprint
@@ -34,12 +56,12 @@ def classify_config_changes(repo_path: Path, state: dict, cfg: dict[str, Any]) -
     curr_config_fp = config_fingerprint(repo_path)
     config_changed = prev_config_fp is not None and prev_config_fp != curr_config_fp
     curr_dependency_fps = config_dependency_fingerprints(repo_path, config=cfg)
-    changed_dependencies = (
-        changed_config_dependencies(
-            state.get("config_dependency_fingerprints"), curr_dependency_fps
-        )
-        if config_changed
-        else set()
+    # The buckets are compared even when the broad fingerprint matches: a
+    # deferred-docs run stamps the config file it read but leaves the
+    # ``generation`` bucket's hash behind (#5944), and that stale bucket is
+    # exactly what must still read as changed on the next run.
+    changed_dependencies = changed_config_dependencies(
+        state.get("config_dependency_fingerprints"), curr_dependency_fps
     )
     legacy_config_change = config_changed and changed_dependencies is None
     dependency_changes = changed_dependencies or set()
@@ -52,8 +74,7 @@ def classify_config_changes(repo_path: Path, state: dict, cfg: dict[str, Any]) -
     health_config_changed = git_config_changed or bool({"health", "other"} & dependency_changes)
     generation_config_changed = git_config_changed or "generation" in dependency_changes
     config_rebuild_required = config_changed and bool(
-        legacy_config_change
-        or dependency_changes - {"state_only"}
+        legacy_config_change or dependency_changes - {"state_only"}
     )
     return ConfigChanges(
         prev_fingerprint=prev_config_fp,

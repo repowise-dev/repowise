@@ -1,11 +1,14 @@
 """Speedscope JSON (``speedscope.app/file-format-schema.json``): sampled and evented profiles.
 
-pyinstrument (``-r speedscope``) writes one evented profile whose frames
-carry the function's first line; py-spy (``--format speedscope``) writes
+pyinstrument (``-r speedscope``) writes one evented profile, and the recipe
+``evidence setup`` prints writes one sampled profile from pyinstrument's own
+samples; both carry the function's first line; py-spy (``--format speedscope``) writes
 one sampled profile per thread whose frames carry the executing line. Every
 profile in the file is merged into one run. Frame names are what the tool
 wrote (a Python ``co_qualname`` or ``co_name``), and ``col``, when present,
-is the 1-based column of a JavaScript function's start.
+is the 1-based column of a JavaScript function's start. ``testsFailed``,
+a key outside the schema that repowise's own test-suite recipe writes, is
+how many tests failed in the profiled run.
 """
 
 from __future__ import annotations
@@ -73,6 +76,7 @@ def read(data: bytes) -> ProfileRun:
         tool_name=tool,
         tool_version=version,
         skipped=skipped,
+        tests_failed=_count(doc.get("testsFailed")),
     )
 
 
@@ -109,6 +113,11 @@ def _frame(raw: Any) -> ProfileFrame:
 
 def _whole(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _count(value: Any) -> int | None:
+    """A whole count of zero or more, else None."""
+    return value if _whole(value) and value >= 0 else None
 
 
 def _weight(value: Any) -> float | None:

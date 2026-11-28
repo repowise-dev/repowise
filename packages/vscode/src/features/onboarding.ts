@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { Commands, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
+import { runCliInTerminal } from "../core/cliTerminal";
 
 /** Grace period before the one deferred CLI-presence probe runs. */
 const PRESENCE_CHECK_DELAY_MS = 1000;
@@ -84,19 +85,7 @@ export function registerOnboarding(ctx: RepowiseContext): vscode.Disposable {
       return;
     }
 
-    // Reuse a Repowise terminal if one is open, else create it.
-    const terminal =
-      vscode.window.terminals.find((t) => t.name === "Repowise") ??
-      vscode.window.createTerminal("Repowise");
-    terminal.show();
-
-    const cliPath = ctx.config.cliPath();
-    const exe = cliPath
-      ? cliPath.includes(" ")
-        ? `"${cliPath}"`
-        : cliPath
-      : "repowise";
-    terminal.sendText(`${exe} init`);
+    runCliInTerminal(ctx.config.cliPath(), ["init"]);
 
     // The index directory appearing is the completion signal; we do not parse
     // terminal output. Watch under the open folder for `.repowise` to be born.

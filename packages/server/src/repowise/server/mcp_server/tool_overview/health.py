@@ -36,7 +36,10 @@ async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
         metrics_rows = await _get_health_metrics(session, repository.id)
         if not metrics_rows:
             return {}
-        health_summary = await _get_health_summary(session, repository.id, metrics=metrics_rows)
+        # Measured hotspots only when they lead with a next step (``crud.agent_hidden``).
+        health_summary = await _get_health_summary(
+            session, repository.id, metrics=metrics_rows, include_measured_hotspots=False
+        )
         scored = health_summary["file_count"]
         code_files = scored + health_summary["unanalysed_file_count"]
         if health_summary["average_health"] is None:

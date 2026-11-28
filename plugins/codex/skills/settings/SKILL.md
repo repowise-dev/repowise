@@ -1,6 +1,6 @@
 ---
 name: settings
-description: Use when the user asks what Repowise can be configured to do, how to turn a feature on or off, what it costs in tokens or model calls, why Repowise behaves a certain way in this repository, or asks you to change a Repowise option.
+description: What Repowise can be configured to do, what each option costs, and changing an option.
 ---
 
 # Repowise Settings

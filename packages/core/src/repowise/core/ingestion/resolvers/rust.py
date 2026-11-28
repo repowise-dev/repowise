@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Container
 from functools import lru_cache
 from pathlib import Path
@@ -46,6 +47,12 @@ def resolve_rust_import(
     ``_reexport_depth`` caps ``pub use`` hop-following at one level —
     re-export cycles between crate roots must not recurse.
     """
+    # Literal include paths are relative to the source file, including
+    # inside inline modules. They may refer to a file in any language.
+    if module_path.startswith("./"):
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), module_path))
+        return target if target in ctx.path_set else None
+
     # Strip `as <alias>` suffix from aliased imports (e.g. "typst_syntax as syntax")
     if " as " in module_path:
         module_path = module_path.split(" as ")[0].strip()
@@ -136,10 +143,13 @@ def resolve_rust_import(
             if resolved is not None:
                 return resolved
 
-    # Cargo workspace sibling crate: `use sibling_crate::...`
+    # Cargo workspace sibling crate: `use sibling_crate::...`. The importer's
+    # own crate counts too: a binary names its library by the crate's import
+    # name (`use leviathan::engine` in `src/main.rs`), and the probe above
+    # only tried the whole path, prefix included, as a module path.
     if ws_index is not None:
         sibling_src = ws_index.lookup(prefix)
-        if sibling_src is not None and sibling_src != crate_root:
+        if sibling_src is not None:
             resolved = _probe_rust_path(sibling_src, parts[1:], frozen_path_set)
             if resolved is None and _reexport_depth == 0:
                 # `use crate_x::ReexportedName`: the name is no module file —

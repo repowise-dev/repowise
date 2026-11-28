@@ -44,6 +44,11 @@ def _resolve_db_url() -> None:
         return
     local_repowise = Path.cwd() / ".repowise"
     if not local_repowise.exists():
+        console.print(
+            f"[dim]No index in {Path.cwd()}: the dashboard lists only repos added from it. "
+            "Run serve from a repo indexed with 'repowise init', or index one with "
+            "'repowise init <path>'.[/dim]"
+        )
         return
     local_db = local_repowise / "wiki.db"
     os.environ["REPOWISE_DB_URL"] = f"sqlite+aiosqlite:///{local_db.as_posix()}"

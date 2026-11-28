@@ -178,8 +178,22 @@ def test_a_profile_keeps_its_costliest_symbols_under_the_cap() -> None:
     kept, dropped = cap_rows("profile", rows, caps)
     assert dropped == 5
     assert [r["symbol_id"] for r in kept] == ["a::3", "a::7", "a::2"]
-    kept, dropped = cap_rows("test_timing", [{"test_id": str(i)} for i in range(5)], caps)
+    tests = [{"test_id": str(i), "duration_s": None if i == 1 else float(i % 3)} for i in range(5)]
+    kept, dropped = cap_rows("test_timing", tests, caps)
     assert (len(kept), dropped) == (5, 0)
+
+
+def test_a_test_run_keeps_its_slowest_tests_under_the_cap() -> None:
+    """Cut by duration, not by the report's order: the slow tail is what matters."""
+    durations = [0.1, None, 4.0, 0.2, 4.0, 9.0, 0.3]
+    rows = [{"test_id": f"t{i}", "duration_s": d} for i, d in enumerate(durations)]
+    caps = EvidenceCaps(max_symbols_per_run=100, max_rows_per_run=4, history_runs=1, max_runs=1)
+    kept, dropped = cap_rows("test_timing", rows, caps)
+    assert dropped == 3
+    # Ties keep the report's order; an untimed test goes last.
+    assert [r["test_id"] for r in kept] == ["t5", "t2", "t4", "t6"]
+    kept, _ = cap_rows("test_timing", rows, EvidenceCaps(100, 100, 1, 1))
+    assert kept[-1]["test_id"] == "t1"
 
 
 def test_the_run_key_covers_the_provenance() -> None:
@@ -196,3 +210,113 @@ def test_the_run_key_covers_the_provenance() -> None:
     ):
         assert run_key("{}", other, "profile") != key
     assert run_key("{ }", base, "profile") != key
+
+
+def test_a_failed_test_count_is_part_of_the_run_and_its_key() -> None:
+    base = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False)
+    red = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=2)
+    redder = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=3)
+    zero = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=0)
+    # Every count is its own run, and a run that reports none differs from one that reports 0.
+    keys = {run_key("{}", p, "profile") for p in (base, red, redder, zero)}
+    assert len(keys) == 4
+
+
+def test_go_receiver_and_jvm_package_names_resolve_to_indexed_symbols() -> None:
+    symbols = {
+        "srv/cache.go": symbol_lookup(
+            [
+                IndexedSymbol("srv/cache.go::Cache.Get", "Cache.Get", "Get", 10),
+                IndexedSymbol("srv/cache.go::Store.Get", "Store.Get", "Get", 25),
+                IndexedSymbol("srv/cache.go::Load", "Load", "Load", 40),
+            ]
+        ),
+        "src/main/java/com/acme/Cache.java": symbol_lookup(
+            [
+                IndexedSymbol("src/main/java/com/acme/Cache.java::Cache.get", "Cache.get", "get", 12),
+            ]
+        ),
+    }
+
+    assert resolve_location(_loc("srv/cache.go", "Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "(*Cache).Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "srv.Cache.Get"), symbols) == (
+        "srv/cache.go::Cache.Get",
+        None,
+    )
+    assert resolve_location(_loc("srv/cache.go", "example.com/m/srv.Load"), symbols) == (
+        "srv/cache.go::Load",
+        None,
+    )
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.acme.Cache.get"), symbols
+    ) == ("src/main/java/com/acme/Cache.java::Cache.get", None)
+    assert resolve_location(_loc("src/main/java/com/acme/Cache.java", "Cache.get"), symbols) == (
+        "src/main/java/com/acme/Cache.java::Cache.get",
+        None,
+    )
+
+    # A same-named method on another type stays unknown; a bare ambiguous name stays ambiguous.
+    assert resolve_location(_loc("srv/cache.go", "srv.(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "(*Other).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    assert resolve_location(_loc("srv/cache.go", "Get"), symbols) == (None, "ambiguous_symbol")
+    assert resolve_location(
+        _loc("src/main/java/com/acme/Cache.java", "com.other.Cache.get"), symbols
+    ) == (None, "unknown_symbol")
+
+    # Receiver matching directory does not drop the type and mistakenly resolve to another receiver's method.
+    symbols["pkg/node/list.go"] = symbol_lookup(
+        [
+            IndexedSymbol("pkg/node/list.go::list.Get", "list.Get", "Get", 10),
+        ]
+    )
+    assert resolve_location(_loc("pkg/node/list.go", "(*node).Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+
+    # JVM file under a directory named like a class does not drop the class prefix.
+    symbols["src/main/java/Cache/Foo.java"] = symbol_lookup(
+        [
+            IndexedSymbol("src/main/java/Cache/Foo.java::Foo.get", "Foo.get", "get", 10),
+        ]
+    )
+    assert resolve_location(_loc("src/main/java/Cache/Foo.java", "Cache.get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+
+
+def test_a_package_qualified_name_never_joins_a_method_of_the_same_name() -> None:
+    symbols = {
+        "srv/store.go": symbol_lookup([IndexedSymbol("srv/store.go::Store.Get", "Store.Get", "Get", 5)]),
+        "src/com/acme/Util.kt": symbol_lookup([IndexedSymbol("src/com/acme/Util.kt::get", "get", "get", 3)]),
+    }
+
+    # ``srv.Get`` is the package function Get, not the method Store.Get.
+    assert resolve_location(_loc("srv/store.go", "srv.Get"), symbols) == (None, "unknown_symbol")
+    assert resolve_location(_loc("srv/store.go", "example.com/m/srv.Get"), symbols) == (
+        None,
+        "unknown_symbol",
+    )
+    # A Kotlin top-level function strips its whole package.
+    assert resolve_location(_loc("src/com/acme/Util.kt", "com.acme.get"), symbols) == (
+        "src/com/acme/Util.kt::get",
+        None,
+    )

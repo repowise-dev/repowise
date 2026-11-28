@@ -15,7 +15,10 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
-from repowise.core.workspace.extractors.http.dialect import build_consumer_contract
+from repowise.core.workspace.extractors.http.dialect import (
+    build_consumer_contract,
+    method_from_callee,
+)
 from repowise.core.workspace.extractors.http.paths import (
     absolute_host,
     extract_path_from_url,
@@ -305,6 +308,70 @@ class TestLiteralSpan:
         assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
 
 
+class TestOptionsMethod:
+    def test_a_method_on_a_later_line_of_the_options_is_read(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            "await apiRequest(`/api/sessions/${id}`, {\n"
+            "  headers: { 'Content-Type': 'application/json' },\n"
+            "  method: 'DELETE',\n"
+            "});\n"
+            "fetch('/api/events', {\n  headers: { a: 'b' },\n  method: 'POST',\n});\n"
+        )
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.method == "DELETE"
+        (row,) = fetch_calls(content)
+        assert row.method == "POST"
+
+    def test_a_method_inside_the_body_is_not_the_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/rpc', { body: JSON.stringify({ method: 'DELETE' }) });"
+        (row,) = fetch_calls(content)
+        assert row.method is None
+
+    @pytest.mark.parametrize(
+        ("options", "method"),
+        [
+            ("{ method: 'DELETE' as const }", "DELETE"),
+            ("{ method: 'POST' } as RequestInit", "POST"),
+            ("{ method: 'POST' } as unknown as RequestInit", "POST"),
+            ("{ method: 'PATCH' as unknown as Method }", "PATCH"),
+            ("{ method: 'POST' } satisfies RequestInit", "POST"),
+            ("{ ...opts, method: 'PUT' }", "PUT"),
+            # A body passed as the second argument, with a field of its own.
+            ("{ method: 'card', amount: 10 }", None),
+            ("{ method }", None),
+        ],
+    )
+    def test_the_options_method_reads_through_casts_and_spreads(self, options, method):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        (row,) = fetch_calls(f"fetch('/api/a', {options});")
+        assert row.method == method
+
+    def test_one_url_fetched_twice_gives_a_row_per_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/a');\nfetch('/api/a', { method: 'POST' });\n"
+        assert [r.method for r in fetch_calls(content)] == [None, "POST"]
+
+    def test_a_typed_wrapper_call_is_read_with_its_name_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = (
+            "return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {\n"
+            "  limit,\n});\n"
+            "return apiDelete<{ ok: boolean }>(`/api/repos/${repoId}`);\n"
+            'return apiPost<Paginated<Array<Commit>>>("/api/commits");\n'
+        )
+        rows = list(wrapper_calls(content, frozenset()))
+        assert [r.callee for r in rows] == ["apiGet", "apiDelete", "apiPost"]
+        assert {r.method for r in rows} == {None}
+        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE", "POST"]
+
+
 class TestConsumerContracts:
     def _ctx(self, content: str, suffix: str = ".go") -> ScanContext:
         return ScanContext("svc", f"client{suffix}", suffix, content, {}, None)
@@ -422,3 +489,79 @@ class TestLocust:
 
     def test_a_client_attribute_without_locust_is_not_read(self):
         assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []
+
+
+def test_a_spaced_comparison_is_not_read_as_type_arguments():
+    from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+    assert list(wrapper_calls('if (api < limit && max > ("/api/x")) {}', frozenset())) == []
+
+
+class TestImportedUrlBuilders:
+    def _extract_paths(self, tmp_path, files: dict[str, str]) -> set[tuple[str, str, str]]:
+        from repowise.core.workspace.extractors.http import HttpExtractor
+
+        for rel, text in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return {
+            (c.meta["client"], c.meta["method"], c.meta["path"])
+            for c in HttpExtractor().extract(tmp_path, "web")
+            if c.role == "consumer"
+        }
+
+    def test_namespace_import(self, tmp_path):
+        files = {
+            "src/endpoints.ts": "export const user = () => `/api/user`;\n",
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}
+
+    def test_named_import(self, tmp_path):
+        files = {
+            "src/endpoints.ts": "export const user = () => `/api/user`;\n",
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import { user } from './endpoints';\n"
+                "axios.get(user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}
+
+    def test_argument_hole(self, tmp_path):
+        files = {
+            "src/endpoints.ts": (
+                "export const conv = (id: string) => `/api/conv/${id}`;\n"
+                "export const userByOrg = (org: string, u: string) => `/api/orgs/${org}/users/${u}`;\n"
+            ),
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.conv(123));\n"
+                "axios.post(endpoints.userByOrg('org1', 'u1'), data);\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {
+            ("axios", "GET", "/api/conv/{param}"),
+            ("axios", "POST", "/api/orgs/{param}/users/{param}"),
+        }
+
+    def test_branching_builder_is_unresolved(self, tmp_path):
+        files = {
+            "src/endpoints.ts": (
+                "export const branching = (m: string) => m === 'admin' ? '/admin' : '/user';\n"
+                "export const user = () => '/api/user';\n"
+            ),
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.branching('admin'));\n"
+                "axios.get(endpoints.user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}

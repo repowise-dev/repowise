@@ -820,6 +820,14 @@ class TestGoCallAssignments:
         body = "func f() {\n\td, err := New()\n}"
         assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
 
+    def test_a_generic_call(self) -> None:
+        body = "func f() {\n\tx := New[T](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", None, "New"),)
+
+    def test_a_generic_qualified_call_with_nested_type_args(self) -> None:
+        body = "func f() {\n\tx := pkg.New[Pair[int, string]](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", "pkg", "New"),)
+
     def test_arguments_may_span_lines_and_quote_parens(self) -> None:
         body = 'func f() {\n\td := New(\n\t\t")", `(`,\n\t)\n\td.Run()\n}'
         assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]
@@ -954,6 +962,13 @@ class TestClassScope:
     def test_a_java_field_without_the_underscore_convention(self) -> None:
         source = "class C {\nprivate final CacheLoader loader;\n}"
         assert fields(source, "java", [])["loader"] == "CacheLoader"
+
+    def test_a_java_field_named_by_capitals(self) -> None:
+        source = (
+            "class C {\npublic static final ImmutableSet<Kind>\n"
+            "    KINDS = ImmutableSet.of(Kind.A);\n}"
+        )
+        assert fields(source, "java", [])["KINDS"] == "ImmutableSet"
 
     def test_a_local_inside_a_method_is_not_a_field(self) -> None:
         source = "class C {\nvoid run() {\nCacheLoader loader = a();\n}\n}"

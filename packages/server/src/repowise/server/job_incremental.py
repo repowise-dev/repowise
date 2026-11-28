@@ -114,7 +114,7 @@ async def _stale_page_ages(session_factory: Any | None, repo_id: str | None) -> 
 
 
 async def _stale_structure_ids(session_factory: Any | None, repo_id: str | None) -> set[str]:
-    """Stale whole-repo structure page ids (cycles), which only an id render heals.
+    """Stale whole-repo page ids (cycles, keyless flows, model-free onboarding), healed by id.
 
     An unreachable store degrades to "nothing stale": the missing-page render
     still runs and the next sync retries. Any other error is a bug and raises.

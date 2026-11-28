@@ -60,7 +60,7 @@ def record_why_delivery(tool: str, live: Any, result: Any, call: dict[str, Any])
 
         # An unbound server (a test, an ad-hoc call) has no ledger of its own;
         # the budget layer's working-directory fallback must not pick one.
-        if getattr(_state, "_repo_path", None) is None:
+        if _state.served_path() is None:
             return
         ids = delivered_decision_ids(result)
         if not ids:

@@ -1,7 +1,10 @@
-"""``repowise perf measure``: time a command before and after a change.
+"""``repowise perf``: time a command before and after a change, and gate on exact evidence.
 
-Runs only the command typed after ``--``, the way ``distill`` does. The rule
-that turns run times into a verdict lives in :mod:`repowise.core.perf_measure`.
+``perf measure`` runs only the command typed after ``--``, the way
+``distill`` does; the rule that turns run times into a verdict lives in
+:mod:`repowise.core.perf_measure`. ``perf check`` runs nothing: it compares
+the exact values of stored benchmark runs with a saved baseline, by the rule
+in :mod:`repowise.core.perf_check`.
 """
 
 from __future__ import annotations
@@ -16,9 +19,18 @@ from pathlib import Path
 import click
 from rich.markup import escape
 
-from repowise.cli.ci import cannot_evaluate
-from repowise.cli.helpers import ensure_repowise_dir, find_repowise_repo_root, get_repowise_dir
+from repowise.cli.ci import EXIT_GATE_FAILED, cannot_evaluate
+from repowise.cli.helpers import (
+    ensure_repowise_dir,
+    find_repowise_repo_root,
+    get_db_url_for_repo,
+    get_repowise_dir,
+    reconcile_schema_best_effort,
+    resolve_command_target,
+    run_async,
+)
 from repowise.cli.output import emit_json, format_option, notice_console
+from repowise.core import perf_check
 from repowise.core.command_runner import (
     CommandRun,
     UnrenderableCommandError,
@@ -50,7 +62,7 @@ _EXIT_REGRESSED = 1
 
 @click.group("perf")
 def perf_group() -> None:
-    """Measure a command's wall time and compare it before and after a change."""
+    """Compare a command's wall time, or a benchmark's allocations, before and after a change."""
 
 
 @perf_group.command(
@@ -344,4 +356,280 @@ def _emit_comparison(result: Comparison, job: _Job, *, baseline: str | None) -> 
         raise click.exceptions.Exit(_EXIT_REGRESSED)
 
 
-__all__ = ["perf_group", "perf_measure_command"]
+@perf_group.command(
+    "check", short_help="Fail when a change makes a benchmark allocate more per operation."
+)
+@click.option(
+    "--save",
+    "save_name",
+    metavar="NAME",
+    help="Store the newest benchmark run of each workload as exact baseline NAME.",
+)
+@click.option(
+    "--against",
+    "against_name",
+    metavar="NAME",
+    help="Compare the newest benchmark runs with exact baseline NAME.",
+)
+@click.option(
+    "--workload",
+    default=None,
+    help="Only this workload's runs. With --save, the baseline's other workloads are kept.",
+)
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@format_option()
+def perf_check_command(
+    save_name: str | None,
+    against_name: str | None,
+    workload: str | None,
+    repo: str | None,
+    fmt: str,
+) -> None:
+    """Gate a change on exact runtime evidence: allocations per operation.
+
+    \b
+        repowise perf check --save base
+        <edit the code, run the benchmarks again, repowise evidence add the results>
+        repowise perf check --against base
+
+    Reads the newest stored benchmark run of each workload (go test -bench
+    -benchmem results ingested with repowise evidence add). --save stores
+    their allocations per operation in .repowise/perf/exact/NAME.json, beside
+    perf measure's baselines and never in place of one. --against compares
+    the newest runs now with that baseline: a benchmark that allocates more
+    per operation than before regresses. A workload whose newest run is still
+    the saved one, not ingested since, was not run again and is not judged;
+    a benchmark the run now lacks is listed as dropped.
+
+    Timing never gates: time per operation is stored, but only exact values
+    are compared. perf measure compares wall time.
+
+    Exit codes: 0 saved, or no exact value grew; 1 a benchmark allocates more
+    per operation; 2 nothing could be judged (no index, no exact value on
+    both sides, a bad baseline) or a usage error.
+    """
+    if (save_name is None) == (against_name is None):
+        cannot_evaluate(fmt, "usage", "pass exactly one of --save or --against")
+    notices = notice_console(fmt)
+    repo_path = resolve_command_target(path=repo).narrow(notices, command="perf", repo_option=False)
+    try:
+        if save_name is not None:
+            perf_check.snapshot_path(get_repowise_dir(repo_path), save_name)  # refuse a bad name first
+            current = _current_snapshot(repo_path, workload, fmt)
+            if not current["workloads"]:
+                cannot_evaluate(fmt, "no_exact_evidence", _no_exact(repo_path))
+            if workload is not None:
+                current = _keep_other_workloads(repo_path, save_name, current)
+            path = perf_check.save_snapshot(ensure_repowise_dir(repo_path), save_name, current)
+            _emit_snapshot_saved(save_name, path, current, fmt)
+        else:
+            assert against_name is not None
+            base = perf_check.load_snapshot(get_repowise_dir(repo_path), against_name)
+            if workload is not None:
+                if workload not in base["workloads"]:
+                    cannot_evaluate(
+                        fmt, "baseline", f"baseline {against_name!r} has no workload {workload!r}"
+                    )
+                base = {**base, "workloads": {workload: base["workloads"][workload]}}
+            head = _current_snapshot(repo_path, workload, fmt)
+            result = perf_check.compare(base, head)
+            if result["verdict"] == "regressed":
+                result["causes"] = _regression_causes(repo_path, base, head, result["regressed"])
+            _emit_check(result, against_name, fmt)
+    except BaselineError as exc:
+        cannot_evaluate(fmt, "baseline", str(exc))
+    except OSError as exc:
+        cannot_evaluate(fmt, "io_error", f"could not read or store the baseline: {exc}")
+
+
+def _keep_other_workloads(repo_path: Path, name: str, current: dict) -> dict:
+    """*current* (one workload) over baseline *name*'s other workloads, when it exists."""
+    if not perf_check.snapshot_path(get_repowise_dir(repo_path), name).is_file():
+        return current
+    kept = perf_check.load_snapshot(get_repowise_dir(repo_path), name)["workloads"]
+    return {**current, "workloads": dict(sorted({**kept, **current["workloads"]}.items()))}
+
+
+_NO_EXACT = (
+    "no stored benchmark run reports allocations per operation; run the Go benchmark "
+    "results target `repowise evidence setup` prints and its ingest line, then save"
+)
+_NOTHING_TO_GATE = (
+    "no stored benchmark run reports allocations per operation, and this repository has no "
+    "Go benchmark (`go test -bench`) that `repowise evidence setup` can run, so there is "
+    "nothing to gate; `repowise perf measure -- <command>` compares a command's wall time "
+    "before and after a change"
+)
+
+
+def _no_exact(repo_path: Path) -> str:
+    """Why there is nothing to save: name setup's Go benchmark results target only when it prints one."""
+    head = read_head_commit(repo_path)
+    # Without a commit setup offers nothing to ingest, which says nothing about the benchmarks.
+    offer = run_async(_runtime_offer(repo_path, head)) if head else None
+    if offer is None or any(t.get("format") in perf_check.EXACT_FORMATS for t in offer):
+        return _NO_EXACT
+    return _NOTHING_TO_GATE
+
+
+async def _runtime_offer(repo_path: Path, head: str) -> list[dict] | None:
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.evidence.setup import load_runtime_offer
+
+    async with repo_index_session(repo_path) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        return await load_runtime_offer(session, repo_id, repo_path, head)
+
+
+def _current_snapshot(repo_path: Path, workload: str | None, fmt: str) -> dict:
+    """The newest benchmark run of each workload with its exact values; exits 2 without an index."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        current = run_async(_read_current(repo_path, workload))
+    except SQLAlchemyError as exc:
+        cannot_evaluate(fmt, "store_error", f"could not read the stored evidence: {exc}")
+    if current is None:
+        cannot_evaluate(fmt, "no_index", "No index for this repository. Run `repowise init`.")
+    return current
+
+
+async def _read_current(repo_path: Path, workload: str | None) -> dict | None:
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import (
+        benchmark_results,
+        get_repository_by_path,
+        list_evidence_runs,
+    )
+
+    url = get_db_url_for_repo(repo_path)
+    await reconcile_schema_best_effort(url)
+    engine = create_engine(url)
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo_row = await get_repository_by_path(session, str(repo_path))
+            if repo_row is None:
+                return None
+            runs = await list_evidence_runs(session, repo_row.id)
+            newest = perf_check.newest_runs(runs, workload)
+            rows = await benchmark_results(session, [run.id for run in newest.values()])
+            return perf_check.snapshot(newest, rows)
+    finally:
+        await engine.dispose()
+
+
+def _emit_snapshot_saved(name: str, path: Path, snap: dict, fmt: str) -> None:
+    counts = {w: len(v["benchmarks"]) for w, v in snap["workloads"].items()}
+    if fmt == "json":
+        emit_json(
+            {
+                "mode": "save",
+                "verdict": "saved",
+                "baseline": name,
+                "path": str(path),
+                "metrics": list(perf_check.EXACT_METRICS),
+                "benchmarks": counts,
+            }
+        )
+        return
+    click.echo(f"Saved exact baseline {name!r} to {path}")
+    for workload, count in counts.items():
+        click.echo(f"  {workload}: {count} benchmarks")
+
+
+def _regression_causes(
+    repo_path: Path, base: dict, head: dict, regressed: list[dict]
+) -> list[dict]:
+    """Per regressed workload, the commits between the baseline's run and the run
+    now that changed what its regressed benchmarks ran (``evidence.compare``'s
+    cause line). Best effort: a check never fails on it."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.evidence.compare import cause_words
+    from repowise.core.evidence.compare_history import benchmark_cause
+    from repowise.core.persistence.crud import benchmark_results
+
+    keys: dict[str, set[str]] = {}
+    for change in regressed:
+        keys.setdefault(change["workload"], set()).add(change["benchmark"])
+
+    async def read() -> list[dict]:
+        out: list[dict] = []
+        async with repo_index_session(repo_path) as opened:
+            if opened is None:
+                return out
+            session, repo_id = opened
+            for name, benchmarks in sorted(keys.items()):
+                before, now = base["workloads"].get(name), head["workloads"].get(name)
+                if before is None or now is None:
+                    continue
+                rows = await benchmark_results(session, [now["run_id"]])
+                functions = sorted(
+                    {r.symbol_id for r in rows if r.benchmark_key in benchmarks and r.symbol_id}
+                )
+                cause = await benchmark_cause(
+                    session,
+                    repo_id,
+                    repo_path,
+                    before.get("commit_sha"),
+                    now.get("commit_sha"),
+                    functions,
+                )
+                if cause is not None:
+                    out.append(
+                        {
+                            "workload": name,
+                            "line": cause_words(cause),
+                            "commits": [
+                                {
+                                    "sha": c.sha,
+                                    "subject": c.subject,
+                                    "pr": c.pr,
+                                    "functions": list(c.functions),
+                                }
+                                for c in cause.commits
+                            ],
+                        }
+                    )
+        return out
+
+    try:
+        return run_async(read())
+    except Exception:  # the verdict stands without its cause
+        return []
+
+
+def _emit_check(result: dict, name: str, fmt: str) -> None:
+    if result["verdict"] == "cannot_judge":
+        cannot_evaluate(fmt, "cannot_judge", f"nothing to judge against {name!r}: {result['reason']}")
+    if fmt == "json":
+        emit_json({**result, "baseline": name})
+    else:
+        verdict = "Regressed" if result["verdict"] == "regressed" else "Passed"
+        click.echo(
+            f"{verdict}: {len(result['regressed'])} of {result['compared']} benchmarks "
+            f"allocate more per operation than baseline {name!r}"
+        )
+        for change in (*result["regressed"], *result["improved"]):
+            click.echo(
+                f"  {change['change']:<9} {change['workload']}: {change['benchmark']} "
+                f"allocs/op {change['base']:g} -> {change['head']:g}"
+            )
+        for cause in result.get("causes", ()):
+            click.echo(f"  {cause['workload']}: {cause['line']}")
+        notices = notice_console(fmt)
+        dropped = [f"{d['workload']}: {d['benchmark']}" for d in result["dropped"]]
+        for names, words in (
+            (result["not_rerun"], "not run again since the baseline"),
+            (result["missing"], "no stored run now"),
+            (dropped, "benchmark gone from the run now"),
+        ):
+            if names:
+                notices.print(f"[yellow]Not judged ({words}):[/yellow] {escape(', '.join(names))}")
+        notices.print("[dim]Timing is not judged; perf measure compares wall time.[/dim]")
+    if result["verdict"] == "regressed":
+        raise click.exceptions.Exit(EXIT_GATE_FAILED)
+
+
+__all__ = ["perf_check_command", "perf_group", "perf_measure_command"]

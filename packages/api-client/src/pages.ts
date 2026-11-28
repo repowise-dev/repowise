@@ -87,6 +87,51 @@ export async function listAllPages(
 }
 
 /**
+ * Page types whose row in a *list* is drawn from something a summary doesn't
+ * carry: an onboarding slot lives in metadata, and a cycle page's label is
+ * parsed out of its body. There are a couple of dozen such pages against
+ * thousands of files, so they are fetched in full and merged in.
+ *
+ * The overview is here for the same reason it is worth having early anyway:
+ * it is the page a reader opens on, and Present reads its guided tour.
+ */
+const TREE_HYDRATED_TYPES = [
+  "repo_overview",
+  "architecture_diagram",
+  "onboarding",
+  "scc_page",
+] as const;
+
+/**
+ * Every page a docs tree draws, without the bodies: summary rows, with the few
+ * page types a row needs in full merged in. A reader fetches the one page it
+ * shows with {@link getPageById}.
+ *
+ * On a 10k-page wiki the full listing is ~76 MB over twenty-one sequential
+ * round trips; this is ~9 MB over six.
+ */
+export async function listPageTree(
+  repoId: string,
+  pageType?: string,
+): Promise<PageSummary[]> {
+  const hydrating = pageType
+    ? TREE_HYDRATED_TYPES.filter((t) => t === pageType)
+    : TREE_HYDRATED_TYPES;
+
+  const [summaries, ...hydrated] = await Promise.all([
+    listAllPages(repoId, {
+      ...(pageType ? { page_type: pageType } : {}),
+      fields: "summary",
+    }),
+    ...hydrating.map((page_type) => listAllPages(repoId, { page_type })),
+  ]);
+
+  if (hydrated.length === 0) return summaries;
+  const full = new Map<string, PageSummary>(hydrated.flat().map((p) => [p.id, p]));
+  return summaries.map((p) => full.get(p.id) ?? p);
+}
+
+/**
  * Get page by its ID using the query-param endpoint (avoids path conflicts).
  *
  * Pass `repoId` whenever the caller knows it: a workspace server keeps a

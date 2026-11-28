@@ -8,6 +8,7 @@ always produced for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -81,9 +82,9 @@ def test_the_root_stack_matches_every_stack_fixture(case):
         ("node_jest_npm", "npx jest --ci", "npx jest --coverage --coverageReporters=lcov --ci", "coverage/lcov.info"),
         # pnpm reads ``pnpm test --flag`` as its own option and passes a ``--`` on to the script.
         ("node_vitest_pnpm", "pnpm test",
-         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure", "coverage/lcov.info"),
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage", "coverage/lcov.info"),
         ("node_vitest_pnpm", "pnpm test -- --ci",
-         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure -- --ci",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage -- --ci",
          "coverage/lcov.info"),
         ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
         ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
@@ -255,7 +256,21 @@ def test_npm_workspace_members_get_their_own_stacks():
     root, member = detect_stacks(*_load("node_monorepo"))
     assert (root.root, member.root) == ("", "packages/a")
     # The member has no lockfile of its own: the workspace root's picks npm and its install.
-    assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
+    assert (member.package_manager, member.requires) == ("npm", ("npm ci", "npm install --no-save jest-junit@16"))
+
+
+@pytest.mark.parametrize("lockfile", ["bun.lock", "bun.lockb"])
+def test_bun_workspace_members_inherit_the_root_lockfile(lockfile):
+    files = {
+        "package.json": _package({"test": "turbo run test"}, private=True, workspaces=["packages/*"]),
+        "packages/a/package.json": _package(
+            {"test": "vitest"}, devDependencies={"vitest": "^3"}
+        ),
+    }
+    found = detect_stacks([*files, lockfile], files)
+    member = next(stack for stack in found if stack.root == "packages/a")
+    assert member.package_manager == "bun"
+    assert member.requires[0] == "bun install --frozen-lockfile"
 
 
 MONOREPO = {
@@ -423,7 +438,7 @@ def test_the_dotnet_sdk_covers_the_app_projects_too():
 # JavaScript workspaces, installs and runners, in the layouts real repositories use
 # ---------------------------------------------------------------------------
 
-_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
 
 
 def _package(scripts: dict | None = None, **fields) -> str:
@@ -502,6 +517,47 @@ def test_a_runner_at_the_end_of_a_chain_is_recognised(script, runner, command):
     assert (stack.runner, stack.test) == (runner, command)
 
 
+@pytest.mark.parametrize(
+    ("script", "runner"),
+    [
+        # An exec wrapper runs the command after its own flags, whatever the tool.
+        ("nub exec --node vitest run", "vitest"),
+        ("pnpm exec vitest run", "vitest"),
+        ("npm exec -- jest --ci", "jest"),
+        ("npx --yes vitest", "vitest"),
+        ("bunx vitest run", "vitest"),
+        ("cross-env CI=1 yarn exec jest", "jest"),
+        # A flag that takes a value leaves the value where the runner would be.
+        ("npx -p vitest node run.js", None),
+        ("npx --package=vitest vitest run", None),
+        # Only ``-p`` and ``--package`` themselves: a longer flag starting the same way is a plain flag.
+        ("npx --package-lock=false vitest run", "vitest"),
+        ("npx -p-x vitest run", "vitest"),
+        ("npm exec --prefix pkg vitest", None),
+        # The wrapped command keeps its own reading: c8 still gets its lcov report step.
+        ("npx c8 mocha", "report:c8"),
+        ("bundle exec rspec", None),
+    ],
+)
+def test_an_exec_wrapper_runs_the_runner_it_names(script, runner):
+    files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.runner == runner
+    if runner == "vitest":
+        assert stack.test == f"pnpm run test {_VITEST}"
+
+
+def test_vitest_writes_its_report_where_the_ingest_line_looks():
+    # The config's own directory would put lcov.info under coverage/raw/default.
+    files = {
+        "package.json": _package({"test": "vitest run"}, devDependencies={"@vitest/coverage-v8": "1"}),
+        "vitest.config.ts": "export default { test: { coverage: { reportsDirectory: './coverage/raw/default' } } }",
+    }
+    (stack,) = detect_stacks([*files, "pnpm-lock.yaml"], files)
+    assert stack.test.endswith(" --coverage.reportsDirectory=coverage")
+    assert stack.reports == "coverage/lcov.info"
+
+
 def test_a_test_script_chaining_other_scripts_falls_back_to_the_one_running_the_runner():
     scripts = {
         "test": "npm-run-all build lint test:unit",
@@ -541,6 +597,54 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
                              {**files, "pnpm-workspace.yaml": "packages: []\n"})
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
+
+
+_BERRY_LOCK = (
+    "# This file is generated by running \"yarn install\" inside your project.\n"
+    "# Manual changes might be lost - proceed with caution!\n\n"
+    "__metadata:\n  version: 8\n  cacheKey: 10c0\n"
+)
+_CLASSIC_LOCK = "# THIS IS AN AUTOGENERATED FILE. DO NOT EDIT THIS FILE DIRECTLY.\n# yarn lockfile v1\n"
+
+
+@pytest.mark.parametrize(
+    ("extra", "package_manager", "install", "add"),
+    [
+        # Yarn classic refuses to add to a workspace root without -W.
+        ({}, None, "yarn install --frozen-lockfile", "yarn add -D -W"),
+        # Yarn Berry has no -W; its config file or packageManager field says it is Berry.
+        ({".yarnrc.yml": "nodeLinker: node-modules\n"}, None, "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@4.5.0", "yarn install --immutable", "yarn add -D"),
+        ({}, "yarn@1.22.22", "yarn install --frozen-lockfile", "yarn add -D -W"),
+        # With neither, the lockfile tells: a Berry one opens with __metadata.
+        ({"yarn.lock": _BERRY_LOCK}, None, "yarn install --immutable", "yarn add -D"),
+        ({"yarn.lock": _CLASSIC_LOCK}, None, "yarn install --frozen-lockfile", "yarn add -D -W"),
+    ],
+)
+def test_a_yarn_workspace_root_adds_with_the_flag_its_yarn_needs(tmp_path, extra, package_manager, install, add):
+    fields = {"workspaces": ["packages/*"], **({"packageManager": package_manager} if package_manager else {})}
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "vitest": "1"}, **fields),
+             **extra}
+    (stack,) = detect_stacks(["yarn.lock", *files], files)
+    assert stack.requires == (install, f"{add} jest-junit@16")
+
+
+def test_a_berry_lockfile_above_a_member_is_read_from_the_checkout(tmp_path):
+    # The member's install comes from the workspace root's lockfile, and only its head is read.
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "package.json").write_text(
+        _package({"test": "vitest run"}, devDependencies={"vitest": "1"}), encoding="utf-8"
+    )
+    (tmp_path / "yarn.lock").write_text(_BERRY_LOCK + '\n"left-pad@npm:1.3.0":\n' * 5000, encoding="utf-8")
+    assert "yarn.lock" in files_to_read(["yarn.lock", "web/package.json"])
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert stack.requires[0] == "yarn install --immutable"
+
+
+def test_a_yarn_member_adds_without_the_root_flag():
+    files = {"web/package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1"})}
+    (stack,) = detect_stacks(["yarn.lock", "web/package.json"], files)
+    assert stack.requires[-1] == 'yarn add -D "@vitest/coverage-v8@1"'
 
 
 # ---------------------------------------------------------------------------
@@ -686,11 +790,640 @@ def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
     [
         ("/opt/py lib/repowise/jacoco.gradle", '"/opt/py lib/repowise/jacoco.gradle"'),
         ("C:/Users/a b/repowise/jacoco.gradle", '"C:/Users/a b/repowise/jacoco.gradle"'),
-        # The setup output's one quoting rule leaves a path holding $ or a backtick as it is.
-        ("/home/$u/jacoco.gradle", "/home/$u/jacoco.gradle"),
+        # A shell would expand `$u`, so the path is single-quoted like any other.
+        ("/home/$u/jacoco.gradle", "'/home/$u/jacoco.gradle'"),
     ],
 )
 def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, installed, argument):
     monkeypatch.setattr(stacks, "JACOCO_INIT_SCRIPT", PurePosixPath(installed))
+    # The fake path has no file to read: keep the cached CI step from reading it on a cold cache.
+    monkeypatch.setattr(stacks, "_gradle_init", lambda: ())
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
+
+
+_MONOREPO = {
+    "backend/requirements.txt": "fastapi\n",
+    "backend/requirements-dev.txt": "pytest\npytest-cov\n",
+    "backend/pytest.ini": "[pytest]\nmarkers =\n    e2e: end to end\n",
+    "backend/app.py": "",
+    "backend/tests/test_app.py": "",
+    # A deploy's dependencies, no tests: not a unit to run.
+    "backend/deploy/requirements.txt": "modal\n",
+    "backend/deploy/app.py": "",
+    # A script folder whose requirements name pytest has a suite.
+    "scripts/avatar/requirements.txt": "pytest>=8\n",
+    "scripts/avatar/run.py": "",
+    "scripts/avatar/test_run.py": "",
+}
+
+
+def _monorepo_stacks(units: BuildUnitIndex | None = None) -> dict[str, str]:
+    paths = sorted(_MONOREPO)
+    files = {p: _MONOREPO[p] for p in files_to_read(paths, units)}
+    return {s.root: s.test for s in detect_stacks(paths, files, units) if s.language == "python"}
+
+
+def test_a_pip_application_in_a_subdirectory_runs_its_tests():
+    stacks_by_root = _monorepo_stacks()
+    assert set(stacks_by_root) == {"backend", "scripts/avatar"}
+    (backend,) = [s for s in detect_stacks(sorted(_MONOREPO), _MONOREPO) if s.root == "backend"]
+    assert backend.requires[-1] == "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"
+    assert backend.test.startswith("pytest --cov=")
+
+
+def _backend(**changed: str):
+    files = {**_MONOREPO, **{f"backend/{k.replace('__', '/').replace('_dot_', '.')}": v for k, v in changed.items()}}
+    (backend,) = [s for s in detect_stacks(sorted(files), files) if s.root == "backend"]
+    return backend
+
+
+def test_a_tests_directory_is_named_when_other_test_files_would_be_collected():
+    # A script folder's test_*.py beside backend/tests/ would join a bare pytest run.
+    backend = _backend(scripts__test_seed_dot_py="")
+    assert backend.test.startswith("pytest tests --cov=") and backend.test_paths == ("tests",)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        "services__tests__test_billing_dot_py",  # a package's own suite keeps running
+        "vendor__lib__test_lib_dot_py",  # a vendored file is not ours
+        "test_smoke_dot_py",  # a root test file keeps running
+    ],
+)
+def test_a_bare_run_stays_when_the_other_test_files_are_suites_or_not_ours(other):
+    backend = _backend(**{other: ""})
+    assert backend.test_paths == ()
+
+
+def test_xdist_named_only_outside_the_install_adds_no_flag():
+    backend = _backend(**{"tox_dot_ini": "[testenv]\ndeps = pytest-xdist\n"})
+    assert "-n auto" not in backend.test
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "flag"),
+    [
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest-xdist"]\n', True),
+        ('[project]\nname = "a"\n[project.optional-dependencies]\ntest = ["pytest"]\nperf = ["pytest-xdist"]\n', False),
+        ('[dependency-groups]\ndev = ["pytest-xdist"]\n', True),
+        ('[dependency-groups]\nlint = ["pytest-xdist"]\n', False),
+        ('[tool.poetry.group.dev.dependencies]\npytest-xdist = "*"\n', True),
+    ],
+)
+def test_xdist_counts_only_where_the_install_brings_it(pyproject, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest\n", "pyproject_dot_toml": pyproject})
+    assert ("-n auto" in backend.test) is flag
+
+
+def test_pytests_own_testpaths_keep_deciding():
+    backend = _backend(scripts__test_seed_dot_py="", pytest_dot_ini="[pytest]\ntestpaths = tests\n")
+    assert backend.test.startswith("pytest --cov=") and backend.test_paths == ()
+
+
+def test_conflicting_pins_install_one_requirements_file_at_a_time():
+    backend = _backend(**{"requirements_dot_txt": "fastapi\npytest==9.1.1\n",
+                          "requirements-dev_dot_txt": "pytest==8.3.4\npytest-cov\n"})
+    assert backend.requires == (
+        "python -m pip install -r requirements.txt",
+        "python -m pip install -r requirements-dev.txt pytest pytest-cov",
+    )
+    assert [line for line in backend.setup if "pip install" in line] == [
+        "- run: pip install -r requirements.txt   # adjust to your install",
+        "- run: pip install -r requirements-dev.txt pytest pytest-cov   # adjust to your install",
+    ]
+    assert any("pin pytest to different versions" in note for note in backend.notes)
+
+
+@pytest.mark.parametrize(("dev", "flag"), [("pytest-xdist==3.6\n", True), ("pytest_xdist\n", True), ("pytest\n", False)])
+def test_a_declared_xdist_spreads_the_coverage_run(dev, flag):
+    backend = _backend(**{"requirements-dev_dot_txt": dev})
+    assert (" -n auto " in backend.test) is flag
+    # The suite profile runs in one process: its paths never carry the flag.
+    assert backend.test_paths == ()
+
+
+def test_a_configured_worker_count_is_left_alone():
+    backend = _backend(**{"requirements-dev_dot_txt": "pytest-xdist\n", "pytest_dot_ini": "[pytest]\naddopts = -n 4\n"})
+    assert "-n auto" not in backend.test
+
+
+def test_the_build_unit_index_names_the_same_pip_applications():
+    roots = ("backend", "backend/deploy", "scripts/avatar")
+    index = BuildUnitIndex.from_units(
+        [
+            BuildUnit(f"manifest:{r}", "manifest", r.rsplit("/", 1)[-1], r, f"{r}/requirements.txt", "manifest-root")
+            for r in roots
+        ],
+        sorted(_MONOREPO),
+    )
+    assert set(_monorepo_stacks(index)) == {"backend", "scripts/avatar"}
+
+
+_NESTED = {
+    "pyproject.toml": '[project]\nname = "app"\n',
+    "app/__init__.py": "",
+    "tests/test_app.py": "",
+    # A unit of its own whose conftest imports what only its own install brings.
+    "enterprise/pyproject.toml": '[project]\nname = "enterprise"\n',
+    "enterprise/__init__.py": "",
+    "enterprise/server/__init__.py": "",
+    "enterprise/tests/unit/conftest.py": "import server\n",
+    "enterprise/tests/unit/test_server.py": "",
+}
+
+
+def _python_by_root(tree: dict[str, str]) -> dict[str, object]:
+    paths = sorted(tree)
+    files = {p: tree[p] for p in files_to_read(paths) if p in tree}
+    return {s.root: s for s in detect_stacks(paths, files) if s.language == "python"}
+
+
+def test_the_root_unit_ignores_a_nested_unit_and_covers_only_its_own_packages():
+    found = _python_by_root(_NESTED)
+    assert set(found) == {"", "enterprise"}
+    root = found[""]
+    assert root.test == "pytest --ignore=enterprise --cov=app --cov-report=xml --cov-context=test"
+    assert (root.test_paths, root.test_ignores) == ((), ("enterprise",))
+    # The nested unit keeps its own run and its own packages.
+    assert found["enterprise"].test.startswith("pytest --cov=server ")
+    assert found["enterprise"].test_ignores == ()
+
+
+def test_a_named_tests_directory_needs_no_ignore():
+    # A script's test file makes the root name tests/, which the nested unit is not under.
+    found = _python_by_root({**_NESTED, "scripts/test_seed.py": ""})
+    assert found[""].test.startswith("pytest tests --cov=app ") and found[""].test_ignores == ()
+
+
+def test_a_root_whose_only_tests_are_a_nested_units_prints_no_run():
+    # A root pytest.ini marks a suite, but every test sits in the nested unit.
+    tree = {**{p: t for p, t in _NESTED.items() if p != "tests/test_app.py"}, "pytest.ini": "[pytest]\n"}
+    assert set(_python_by_root(tree)) == {"enterprise"}
+
+
+def test_a_workspace_member_the_root_runs_is_not_ignored():
+    tree = {**_NESTED, "pyproject.toml": '[project]\nname = "app"\n[tool.uv.workspace]\nmembers = ["enterprise"]\n',
+            "uv.lock": ""}
+    found = _python_by_root(tree)
+    assert set(found) == {""} and found[""].test_ignores == ()
+    assert "--cov=enterprise" in found[""].test
+
+
+def test_a_root_requirements_file_keeps_its_pytest_guess():
+    """The repository root's requirements file is the project's; only units below it need a suite."""
+    paths = ["requirements.txt", "main.py", "test_main.py"]
+    (stack,) = detect_stacks(paths, {"requirements.txt": "flask\n"})
+    assert (stack.root, stack.language, stack.runner) == ("", "python", "pytest")
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"api/requirements.txt": "pytest_mock\n"},  # packaging spells _ and - alike
+        {"api/requirements.txt": "flask\n", "api/pytest.ini": "[pytest\naddopts = -q\n"},  # does not parse
+        {"api/Requirements (1).TXT": "pytest\n"},  # any name the registry glob takes
+    ],
+)
+def test_a_subdirectory_suite_is_seen_from_any_pytest_signal(files):
+    paths = sorted([*files, "api/app.py"])
+    stacks_found = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert [(s.root, s.language) for s in stacks_found] == [("api", "python")]
+
+
+def test_a_root_note_named_like_requirements_does_not_make_a_python_unit():
+    paths = ["package.json", "package-lock.json", "Requirements for launch.txt", "src/index.test.js"]
+    files = {"package.json": json.dumps({"scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}})}
+    assert [s.language for s in detect_stacks(paths, files)] == ["node"]
+
+
+def test_jest_writes_junit_through_jest_junit_with_repo_relative_files():
+    files = {"web/package.json": _package({"test": "jest --ci"}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["web/package.json", "web/package-lock.json", "web/a.test.ts"], files)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    # The classname names the test file; the prefix makes it repo-relative from the unit.
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath} JEST_JUNIT_FILE_PATH_PREFIX=web/"
+    # The reporter is installed for the run, and said why.
+    assert stack.requires == ("npm ci", "npm install --no-save jest-junit@16")
+    assert stack.prepare == ("- run: npm install --no-save jest-junit@16",)
+    assert "jest-junit" in stack.notes[-1]
+
+
+def test_jest_junit_in_the_package_needs_no_install_and_the_root_no_prefix():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "yarn.lock", "a.test.ts"], files)
+    assert stack.junit_vars() == "JEST_JUNIT_CLASSNAME={filepath}"
+    assert (stack.requires, stack.prepare, stack.notes) == (("yarn install --frozen-lockfile",), (), ())
+
+
+def test_rspec_without_the_formatter_gem_writes_no_junit():
+    (stack,) = detect_stacks(*_load("ruby"))
+    # RSpec aborts on a formatter it cannot load, so the command gets no flag.
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+    # The formatter gem is missing from the fixture's Gemfile, so setup says so.
+    assert "rspec_junit_formatter" in stack.notes[-1]
+    assert stack.test == "bundle exec rspec"
+
+
+def test_rspec_with_the_formatter_gem_needs_no_note():
+    gemfile = (
+        'source "https://rubygems.org"\n'
+        'gem "rspec"\n'
+        'gem "rspec_junit_formatter"\n'
+        'gem "simplecov-cobertura"\n'
+    )
+    (stack,) = detect_stacks(["Gemfile", "spec/a_spec.rb"], {"Gemfile": gemfile})
+    assert (stack.junit_report, stack.junit_flag) == (
+        "junit.xml",
+        "--format progress --format RspecJunitFormatter --out junit.xml",
+    )
+    # One run writes coverage (through SimpleCov, in-process) and the timings report.
+    assert stack.with_junit(stack.test) == (
+        "bundle exec rspec --format progress --format RspecJunitFormatter --out junit.xml"
+    )
+    assert stack.notes == ()
+
+
+def test_minitest_and_rake_test_write_no_junit():
+    (stack,) = detect_stacks(*_load("ruby_cobertura"))
+    assert stack.runner == "rake test"
+    assert (stack.junit_report, stack.junit_flag) == ("", "")
+    assert stack.with_junit(stack.test) is None
+
+
+def test_phpunit_writes_junit():
+    (stack,) = detect_stacks(*_load("php"))
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/phpunit --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
+def test_pest_writes_junit_the_same_way():
+    composer = {"require": {"php": "^8.2"}, "require-dev": {"pestphp/pest": "^3"}}
+    (stack,) = detect_stacks(
+        ["composer.json", "composer.lock", "tests/ATest.php"],
+        {"composer.json": json.dumps(composer)},
+    )
+    assert stack.runner == "pest"
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--log-junit junit.xml")
+    assert stack.with_junit(stack.test) == (
+        "vendor/bin/pest --coverage-clover clover.xml --log-junit junit.xml"
+    )
+
+
+def test_other_runners_need_no_junit_environment():
+    files = {"package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "1", "@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.junit_vars() == "" and stack.junit_flag.startswith("--reporter=default")
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest", "npx jest --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest --ci --runInBand", "npx jest --coverage --coverageReporters=lcov --ci --runInBand"),
+        ("yarn.lock", "jest", "yarn jest --coverage --coverageReporters=lcov"),
+        ("pnpm-lock.yaml", "vitest run", f"pnpm exec vitest run {_VITEST}"),
+        # Not the runner alone: the script stays, hooks and all.
+        ("package-lock.json", "cross-env CI=1 jest", "npm test -- --coverage --coverageReporters=lcov"),
+        ("package-lock.json", "jest 'src/**'", "npm test -- --coverage --coverageReporters=lcov"),
+        # A shell comment would swallow the flags appended after it, so the runner runs directly.
+        ("package-lock.json", "jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        # Not the runner alone and commented: no command, since every flag would land in the comment.
+        ("package-lock.json", "cross-env CI=1 jest # unit tests", None),
+        # A bare -- would turn the flags appended after it into test patterns.
+        ("package-lock.json", "jest --", "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_test_script_with_hooks_runs_the_runner_directly(lock, script, command):
+    scripts = {"pretest": "node scripts/check-tokens.js", "test": script}
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", lock], {"package.json": _package(scripts, devDependencies=deps)})
+    assert stack.test == (command or "")
+    direct = command is not None and not command.startswith("npm test")
+    assert any("would also run the `pretest` script" in n for n in stack.notes) is direct
+
+
+@pytest.mark.parametrize(
+    ("script", "command"),
+    [
+        ("jest # unit tests", "npx jest --coverage --coverageReporters=lcov"),
+        ("vitest run  # CI", f"npx vitest run {_VITEST}"),
+        # The comment is not read as the script's own flags.
+        ("jest # add --coverage later", "npx jest --coverage --coverageReporters=lcov"),
+        ("cross-env CI=1 jest # unit tests", ""),
+        # A # inside quotes is no comment: the script stays.
+        ('jest -t "a #b"', "npm test -- --coverage --coverageReporters=lcov"),
+    ],
+)
+def test_a_commented_test_script_runs_the_runner_without_the_comment(script, command):
+    deps = {"jest": "29", "jest-junit": "16", "vitest": "1", "@vitest/coverage-v8": "1"}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"],
+                             {"package.json": _package({"test": script}, devDependencies=deps)})
+    assert stack.test == command
+    # No hooks were skipped, so no hooks note.
+    assert not any("would also run" in n for n in stack.notes)
+
+
+@pytest.mark.parametrize(
+    ("lock", "script", "command"),
+    [
+        ("package-lock.json", "jest --coverage", "npm test --"),
+        ("pnpm-lock.yaml", "jest --coverage", "pnpm run test"),
+        ("yarn.lock", "jest --coverage --ci", "yarn test"),
+    ],
+)
+def test_a_jest_script_that_measures_coverage_still_writes_test_timings(lock, script, command):
+    files = {"package.json": _package({"test": script}, devDependencies={"jest": "29"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    # The command takes the JUnit flag appended to it: npm needs its separator, pnpm its run form.
+    assert (stack.runner, stack.test) == ("jest", command)
+    assert (stack.junit_report, stack.junit_flag) == ("junit.xml", "--reporters=default --reporters=jest-junit")
+    assert stack.requires[-1].endswith("jest-junit@16")
+
+
+def test_a_script_that_measures_behind_c8_keeps_no_junit_flag():
+    files = {"package.json": _package({"test": "c8 --reporter=lcov mocha"}, devDependencies={"mocha": "10"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert (stack.runner, stack.junit_flag) == ("covered", "")
+
+
+def test_a_test_script_without_hooks_stays_the_script():
+    files = {"package.json": _package({"test": "jest"}, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.test == "npm test -- --coverage --coverageReporters=lcov" and stack.notes == ()
+
+
+def test_the_hooks_note_names_both_hooks_and_runs_the_first():
+    scripts = {"pretest": "tsc", "test": "jest", "posttest": "node report.js"}
+    files = {"package.json": _package(scripts, devDependencies={"jest": "29", "jest-junit": "16"})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert stack.notes == (
+        "This runs the test runner directly: `npm test` would also run the `pretest` and `posttest` "
+        "scripts. Run `npm run pretest` first when the tests need it.",
+    )
+
+
+def test_a_manifest_in_a_data_folder_is_no_unit(tmp_path):
+    """A data folder is known from its contents, so only a checkout can tell."""
+    files = {"go.mod": "module example.com/app\n", "main.go": "", "main_test.go": ""}
+    for i in range(4):
+        item = f"backend/data/problems/p{i}"
+        files |= {f"{item}/case{n}.json": "{}" for n in range(12)}
+        files |= {f"{item}/{name}": "" for name in ("python.py", "Solution.java", "go.go")}
+    files["backend/data/problems/p0/package.json"] = _package({"test": "vitest run"})
+    _write(tmp_path, files)
+    paths = list(files)
+    assert "backend/data/problems/p0" in {s.root for s in detect_stacks(paths, files)}
+    assert [(s.root, s.language) for s in detect_repo_stacks(tmp_path)] == [("", "go")]
+
+
+def _walked(root: Path) -> list[str]:
+    """The listing as the walk built it before: a pathlib ``relative_to`` per file."""
+    from repowise.core.fs_walk import INDEX_BLOCKED_DIRS, walk_repo
+
+    return sorted(
+        (Path(d) / name).relative_to(root).as_posix()
+        for d, _, names in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
+        for name in names
+    )
+
+
+def test_the_checkout_listing_matches_the_walk_without_ignored_folders(tmp_path, monkeypatch):
+    files = {
+        ".gitignore": "downloads/\n*.log\n",
+        "pyproject.toml": "[project]\nname = 'app'\n",
+        "app/a/b/c/deep.py": "",
+        "app/debug.log": "",
+        "web/package.json": _package({"test": "vitest run"}),
+        "web/.gitignore": "cache/\n",
+        "web/cache/package.json": _package({"test": "jest"}),
+        "web/src/index.js": "",
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/lib/x.js": "",
+        "node_modules/dep/package.json": _package(),
+        "vendor/lib/go.mod": "module v\n",
+    }
+    _write(tmp_path, files)
+    # Windows without the privilege makes no link; the walk lists a link and never enters it.
+    with contextlib.suppress(OSError):
+        (tmp_path / "linked").symlink_to(tmp_path / "app", target_is_directory=True)
+    ignored = ("downloads/", "web/cache/")
+    expected = [p for p in _walked(tmp_path) if not p.startswith(ignored)]
+    assert "app/debug.log" in expected  # an ignored file in a walked folder is still listed
+    # Separators and the root's spelling do not change the listing.
+    monkeypatch.chdir(tmp_path.parent)
+    for root in (tmp_path, Path(tmp_path.name), Path(str(tmp_path) + os.sep)):
+        assert sorted(stacks._listing(root)) == expected
+    assert all("\\" not in p for p in expected)
+
+
+def test_a_manifest_in_an_ignored_folder_starts_no_stack(tmp_path):
+    """Ignored folders hold downloads and build trees the index never reads."""
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/test/a.test.js": "",
+    })
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
+    """Git keeps a tracked file in an ignored folder; the downloads beside it stay out."""
+    import subprocess
+
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/.gitkeep": "",
+    })
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-f", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    _write(tmp_path, {"downloads/tool/package.json": _package({"test": "jest"}),
+                      "downloads/notes.txt": ""})
+    assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_delphi_project_gets_a_stack_that_reads_codecoverage_reports():
+    paths = ["App.dproj", "App.dpr", "uMain.pas", "Tests/Tests.dproj", "Tests/Tests.dpr", "Tests/uMainTests.pas"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.language == "delphi"
+    assert stack.runner == "DelphiCodeCoverage"
+    assert stack.report_paths() == ("**/CodeCoverage_Summary.xml",)
+    assert stack.test == ""  # the build command is the project's own
+    assert "CodeCoverage.exe" in stack.notes[0]
+    assert "-xml -xmllines" in stack.notes[0]
+    assert "Tests/Tests.dpr" in stack.notes[0]
+
+
+def test_delphi_without_a_test_project_says_so():
+    (stack,) = detect_stacks(["App.dproj", "App.dpr", "uMain.pas"], {})
+    assert stack.language == "delphi"
+    assert stack.to_dict()["command"] is None
+    assert "no test project" in stack.to_dict()["reason"]
+
+
+def test_a_repository_without_delphi_projects_gets_no_delphi_stack():
+    stacks_found = detect_stacks(["go.mod", "main.go"], {"go.mod": "module x\n"})
+    assert all(s.language != "delphi" for s in stacks_found)
+
+
+# ---------------------------------------------------------------------------
+# Test timings ride on the test command
+# ---------------------------------------------------------------------------
+
+_MOCHA = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+
+
+@pytest.mark.parametrize(
+    ("lock", "timed"),
+    [
+        # npm hands the flag to the script only after ``--``; pnpm reads ``pnpm test --x`` as its own.
+        ("package-lock.json", f"npx --yes c8 --reporter=lcov npm test -- {_MOCHA}"),
+        ("pnpm-lock.yaml", f"npx --yes c8 --reporter=lcov pnpm run test {_MOCHA}"),
+        ("yarn.lock", f"npx --yes c8 --reporter=lcov yarn test {_MOCHA}"),
+    ],
+)
+def test_mocha_writes_junit_through_its_own_xunit_reporter(lock, timed):
+    files = {"package.json": _package({"test": "mocha --check-leaks test/"}, devDependencies={"mocha": "11"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    assert stack.runner == "c8" and stack.junit_report == "junit.xml"
+    assert stack.with_junit(stack.test) == timed
+    # The runner's own line, for profiling the suite.
+    assert stack.suite == "mocha --check-leaks test/"
+
+
+def test_a_chained_command_takes_no_junit_flag():
+    stack = stacks.Stack("node", "jest", junit_report="junit.xml", junit_flag="--reporters=jest-junit")
+    assert stack.with_junit("npx c8 jest && npx c8 report") is None
+    assert stacks.Stack("java", junit_report="target/surefire-reports").with_junit("mvn verify") == "mvn verify"
+    assert stacks.Stack("go").with_junit("go test ./...") is None
+
+
+def test_go_writes_test2json_events_beside_its_coverage(tmp_path):
+    _write(tmp_path, {"go.mod": "module example.com/x\n\ngo 1.22\n", "x_test.go": "package x\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert stack.with_junit(stack.test) == "go test -coverprofile=coverage.out ./... -json > go-test.json"
+    assert stack.junit_report == "go-test.json"
+
+
+@pytest.mark.parametrize(
+    ("files", "report"),
+    [
+        ({"pom.xml": "<project><modules><module>a</module></modules></project>"},
+         "**/target/surefire-reports/*.xml"),
+        ({"build.gradle": "plugins { id 'java' }\n", "settings.gradle": "include 'a'\n"},
+         "**/build/test-results/test/*.xml"),
+    ],
+)
+def test_a_multi_module_jvm_build_reads_every_modules_reports(files, report):
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == report
+
+
+def test_pytest_with_per_test_contexts_runs_on_the_c_tracer(tmp_path):
+    _write(tmp_path, {"pyproject.toml": '[project]\nname = "app"\n', "app/__init__.py": "",
+                      "tests/test_app.py": "def test_x():\n    pass\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert "--cov-context=test" in stack.test
+    assert stack.environ() == {"COVERAGE_CORE": "ctrace"}
+
+
+def test_an_unknown_pinned_package_manager_is_refused_in_one_line():
+    files = {"package.json": _package(
+        {"test": "nub exec --node vitest run"}, packageManager="nub@0.8.3", devDependencies={"vitest": "^4.1.5"},
+    )}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    # No install is guessed; the runner runs through npx, which fails fast when it is missing.
+    assert (stack.package_manager, stack.requires) == ("nub", ())
+    assert stack.test.startswith("npx --no vitest run --coverage.enabled")
+    (note,) = stack.notes
+    assert note == ("`package.json` pins `nub` as its package manager, which Repowise does not know, so it "
+                    'prints no install: install the dependencies and `@vitest/coverage-v8@^4.1.5` with nub first.')
+    assert stack.suite == "vitest run" and stack.junit_report == "junit.xml"
+    assert "nub" in stack.setup[-1] and not any("cache:" in line for line in stack.setup)
+
+
+def test_an_unknown_package_manager_with_a_script_it_cannot_run_has_no_command():
+    files = {"package.json": _package({"test": "nub run build && nub exec --node vitest run"},
+                                      packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    assert stack.test == "" and stack.to_dict()["reason"].startswith("`package.json` pins `nub`")
+
+
+def test_a_pinned_mocha_unit_runs_mocha_from_node_modules_under_c8():
+    files = {"package.json": _package({"test": "mocha test/"}, packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    # c8 is fetched as for every Mocha unit; mocha itself is never fetched.
+    assert stack.test == "npx --yes c8 --reporter=lcov mocha test/"
+
+
+def test_rust_without_nextest_config_keeps_coverage_command_and_adds_note():
+    files = {"Cargo.toml": '[package]\nname = "my_app"\n', "src/main.rs": "fn main() {}\n"}
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.test == "cargo llvm-cov --lcov --output-path lcov.info"
+    assert stack.junit_report == ""
+    assert any("cargo-nextest" in n for n in stack.notes)
+
+
+def test_rust_with_nextest_config_runs_llvm_cov_nextest_and_sets_junit_report():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+    assert stack.prepare == (
+        "- uses: taiki-e/install-action@cargo-llvm-cov",
+        "- uses: taiki-e/install-action@cargo-nextest",
+    )
+    assert stack.requires == ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
+    assert stack.notes == ()
+
+
+def test_rust_with_nextest_target_prefixed_path():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "target/junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == "target/nextest/ci/target/junit.xml"
+
+
+def test_rust_with_nextest_workspace_and_custom_profile():
+    files = {
+        "Cargo.toml": '[workspace]\nmembers = ["app"]\n',
+        "app/Cargo.toml": '[package]\nname = "app"\n',
+        "app/src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.default.junit]\npath = "reports/nextest.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile default --workspace --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/default/reports/nextest.xml"
+    assert stack.notes == ()
+
+
+def test_rust_detects_nextest_config_from_ancestor_directory(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+            "crates/core/Cargo.toml": '[package]\nname = "core"\n',
+            "crates/core/src/lib.rs": "pub fn f() {}\n",
+        },
+    )
+    stacks = detect_repo_stacks(tmp_path)
+    (stack,) = [s for s in stacks if s.language == "rust"]
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+

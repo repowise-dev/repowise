@@ -9,7 +9,7 @@ codex:
   dir: codebase-exploration
   frontmatter: |
     name: codebase-exploration
-    description: Use when exploring, understanding, or answering questions about a Repowise-indexed codebase, including architecture, where code is implemented, how a module works, or which files are relevant before reading source.
+    description: Explore this codebase, its architecture, where code lives and how a module works.
 ---
 
 # Codebase Exploration with Repowise

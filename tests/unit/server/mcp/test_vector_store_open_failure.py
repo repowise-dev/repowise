@@ -167,6 +167,60 @@ def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_op
     assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
 
 
+def test_a_keyed_embedder_with_no_key_never_imports_or_opens_lancedb(
+    tmp_path, no_lancedb_open, monkeypatch
+):
+    """With its key missing the configured embedder serves as keyless, so the
+    first tool call does not wait on an import nothing will read."""
+    from repowise.core.providers.embedding import resolve
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    for name in ("_vector_store", "_decision_store", "_vector_store_ready", "_embedder_status"):
+        monkeypatch.setattr(_state, name, None, raising=False)
+    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(resolve, "_global_key", lambda name: None)
+
+    async def _go():
+        _state._lancedb_ready = asyncio.Event()
+        try:
+            await _server._warm_lancedb()
+            assert _state._lancedb_ready.is_set()
+        finally:
+            _state._lancedb_ready = None
+        await _server._load_vector_stores(str(tmp_path))
+
+    asyncio.run(_go())
+
+    assert isinstance(_state._vector_store._embedder, KeylessEmbedder)
+    assert build_meta(timing_ms=1.0)["embedder_degraded"] is True
+
+
+def test_a_keyed_embedder_with_its_key_still_warms_lancedb(monkeypatch):
+    imported: list[str] = []
+
+    async def _to_thread(fn, *args, **kwargs):
+        imported.extend(args)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    async def _go():
+        _state._lancedb_ready = asyncio.Event()
+        try:
+            await _server._warm_lancedb()
+            assert _state._lancedb_ready.is_set()
+        finally:
+            _state._lancedb_ready = None
+
+    asyncio.run(_go())
+
+    assert imported == ["lancedb"]
+
+
 def test_stdio_loads_numpy_before_the_transport_reads_stdin(monkeypatch):
     """On Windows numpy's first load never returns while a stdin read is
     pending, and the transport keeps one pending all session, so a tool that
@@ -270,7 +324,11 @@ def test_cli_search_opens_the_store_only_for_a_mode_that_reads_it(monkeypatch, m
     monkeypatch.setattr(search_cmd._ta, "run", _run)
     search_cmd._run_search(Path("."), "q", 5, mode)
 
-    assert seen == {"tool_name": "search_codebase", "reads_vectors": opens}
+    assert seen == {
+        "tool_name": "search_codebase",
+        "reads_vectors": opens,
+        "arguments": {"query": "q", "limit": 5, "mode": mode},
+    }
 
 
 def test_the_cli_bridge_skips_the_store_when_told_the_call_reads_no_vectors(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rich.markup import escape
 from rich.table import Table
 
 from repowise.cli.helpers import console
@@ -21,7 +22,9 @@ def render_checks(ctx: CheckContext, checks: list[DoctorCheck], all_ok: bool) ->
     table.add_column("Detail")
     pct, color = ctx.coord_drift_pct, ctx.coord_drift_color
     for c in checks:
-        detail = c.detail
+        # Details are plain text (the JSON carries them as is): brackets such as
+        # an install line's `repowise[local-embed]` must print, not parse as markup.
+        detail = escape(c.detail)
         if c.name == "Coordinator drift":
             detail = detail.replace(f"Drift={pct}", f"Drift=[{color}]{pct}[/{color}]")
         table.add_row(c.name, _status_markup(c.level), detail)

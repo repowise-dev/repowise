@@ -18,8 +18,10 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
-from repowise.cli.helpers import resolve_repo_path
+from repowise.cli.helpers import console, get_head_commit, get_repowise_dir, resolve_repo_path
+from repowise.cli.ui import WARN
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
@@ -154,9 +156,9 @@ def _check_folder_coverage(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]),
     help=(
-        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | mock "
+        "Embedder for RAG: gemini | openai | openrouter | ollama | fastembed | edenai | mock "
         "(default: auto-detect)."
     ),
 )
@@ -342,7 +344,7 @@ def _check_folder_coverage(
         "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
-        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        ".repowise/ is touched, and 'repowise agents print-config <agent>' prints the config "
         "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
         "does not turn setup back on."
@@ -512,8 +514,10 @@ def _check_folder_coverage(
         "Progress output. 'rich' (default) draws a live checklist in a terminal "
         "and one short line per step anywhere else. 'json' writes one JSON event "
         "per line to stdout (stages, steps, warnings) and ends with a summary "
-        "line: status, mode, restart_required, spend, warnings, files_written "
-        "and next commands. Human text goes to stderr."
+        "line: status, mode, restart_required, restart_hosts, spend, warnings, "
+        "files_written, next commands, long_running, first_prompt, mcp_tools "
+        "and connect. Human text goes "
+        "to stderr."
     ),
 )
 @click.option(
@@ -599,6 +603,8 @@ def _run_init(opts: InitOptions) -> None:
                 "Run `repowise init` again when it finishes."
             )
         try:
+            if not opts.dry_run:
+                sweep_orphan_temps(get_repowise_dir(repo_path))
             _run_single_repo(opts, repo_path, start)
         finally:
             release_update_lock(repo_path)
@@ -609,9 +615,24 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     if run is None:
         return
     index_repository(run)
+    # Before anything is written for an agent: an index of nothing helps no one.
+    if not opts.resume and not getattr(run.result, "file_count", 0):
+        raise reasoned_error(
+            f"No source files to index in {repo_path} (.gitignore and excludes applied). "
+            "Run init in a code repository: repowise init <path>",
+            reason="no_source_files",
+        )
     # Each one is an analysis step the pipeline skipped on an error.
     if run.run_warnings:
         run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
+    if get_head_commit(repo_path) is None:
+        # Said, not a gap: the code index is complete, only history is missing.
+        note = (
+            "No git commits here, so hotspots, ownership and decisions are empty. "
+            "Commit this folder to git, then run repowise update."
+        )
+        console.print(f"[{WARN}]{note}[/]")
+        run.run_warnings.append(note)
 
     if _generate(run):
         return

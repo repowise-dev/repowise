@@ -32,22 +32,9 @@ Agents record their own decisions; see
 **Decisions** page of a repository is a digest: what is in force, what came in
 recently, the background, and history.
 
-## One switch
+## Reading the results
 
-`decisions.mode` turns the whole layer up or down. Set it with
-`repowise decision config mode <off|read-only|full>`.
-
-| Mode | Agents see decisions | Decisions are recorded |
-|------|----------------------|------------------------|
-| `full` (default) | Yes | Yes |
-| `read-only` | Yes: what the repository already holds | No: no mining, no prompt to record, no agent putting one in force, nothing sent anywhere |
-| `off` | No: every hook, MCP tool and the generated agent file stay silent | No |
-
-Each mode sets the defaults of the finer switches (capture prompt, agent
-acceptance, sync and the rest); one you set afterwards wins, except under
-`off`. Details: [CONFIG.md](../reference/CONFIG.md#mode).
-
-## What a decision record is
+### What a decision record is
 
 | | What it is | Reaches agents unasked? |
 |---|---|---|
@@ -78,9 +65,9 @@ Putting in force, reaffirming, merging, pinning, withdrawing, superseding,
 deprecating and dismissing each add a row, so the history of who granted and
 withdrew authority survives.
 
-## How decisions are recorded
+### How decisions are recorded
 
-### By the agent, at commit time
+#### By the agent, at commit time
 
 The agent that made a choice is the one that knows why. It records it in one
 call and cites the commit:
@@ -93,7 +80,10 @@ repowise decision add --agent claude_code --decision D --rationale R \
 The record comes into force when that commit lands on the default branch,
 whether by merge, squash or rebase. A commit reverted on the default branch
 grants nothing. After a commit whose message states a choice, a hook asks the
-agent once a session to record it (`capture_prompt`, on in `full`).
+agent once a session to record it (`capture_prompt`, on in `full`). A session
+that never commits can be asked as it stops instead: `repowise config set
+decisions.stop_prompt true` (off by default) asks once a session, only when the
+session did real work and recorded nothing.
 
 | Flag | Meaning |
 |------|---------|
@@ -115,7 +105,7 @@ without review"). It is stored, not delivered: those rules belong in
 `CLAUDE.md` or `AGENTS.md`, and `repowise decision discover --agreements`
 prints a prompt that moves them there.
 
-### In the pull request description
+#### In the pull request description
 
 On repowise.dev, the review bot also reads a short decisions block an agent
 writes into the pull request description. Each entry is saved with the pull
@@ -140,7 +130,7 @@ local layer never needs it.
   ends in `/`. No globs or absolute paths.
 - At most five entries. Editing the description before merge replaces them.
 
-### By a person
+#### By a person
 
 ```bash
 repowise decision add                                        # guided prompts
@@ -150,7 +140,7 @@ repowise decision add --title T --decision D [--affects PATH ...]   # no prompts
 Guided prompts put the decision in force, signed by you. Flags store it as
 background until someone confirms it (`repowise decision confirm ID`).
 
-### From history
+#### From history
 
 | Source | Key | Reads | Needs an LLM key | On by default |
 |--------|-----|-------|------------------|---------------|
@@ -180,28 +170,7 @@ files (at most 20) to check against the code, put in force with evidence, or
 dismiss. With none, the agent records the decisions behind those files. The
 dashboard copies the same text.
 
-## People: pin, veto, edit
-
-| Power | How |
-|-------|-----|
-| Pin | `repowise decision pin ID` holds a decision as law. It is listed by name in the generated agent file, and an agent that tries to retire it is refused and told to ask a person. `decision unpin ID` releases it; it stays in force |
-| Veto | `repowise decision dismiss ID` or `deprecate ID --reason R` withdraws a decision. A pinned one needs `--force`, which only a person may pass |
-| Edit | Ask your agent: the dashboard's per-decision prompts cover review, pin, unpin, veto and edit |
-| Approve | Optional. `repowise decision config approval --on` makes every new decision wait for a person (`decision confirm`), even after its commit lands |
-
-Each signature records who signed and the kind of signer: `person`, `agent`,
-or `import` (the committed manifest or an ADR). The person defaults to
-`git config user.name`; `--as` records a different identity. Agents sign as
-themselves (`--agent claude_code --session "$SESSION_ID"`); the dashboard
-badges any decision a person did not sign, and a generated `CLAUDE.md` line
-marks it `[accepted by SLUG, not a person]`.
-`repowise decision config agent-acceptance --off` keeps granting to people.
-
-`repowise decision status` is the digest for a person: counts in force and
-pinned, the decisions that came into force in the last seven days with who
-signed and the commit that landed them, and what capture did.
-
-## Lifecycle
+### Lifecycle
 
 An accepted decision has a currency, derived from the code on every read:
 
@@ -226,9 +195,104 @@ An accepted decision has a currency, derived from the code on every read:
   Repowise does not infer it from text similarity
   ([why](../architecture/decisions.md#supersession-and-conflict-detection)).
 
-## How agents get them
+## Tuning
 
-At the moment they matter, with near-zero fixed cost per session (details in
+### One switch
+
+`decisions.mode` turns the whole layer up or down. Set it with
+`repowise decision config mode <off|read-only|full>`.
+
+| Mode | Agents see decisions | Decisions are recorded |
+|------|----------------------|------------------------|
+| `full` (default) | Yes | Yes |
+| `read-only` | Yes: what the repository already holds | No: no mining, no prompt to record, no agent putting one in force, nothing sent anywhere |
+| `off` | No: every hook, MCP tool and the generated agent file stay silent | No |
+
+Each mode sets the defaults of the finer switches (capture prompt, agent
+acceptance, sync and the rest); one you set afterwards wins, except under
+`off`. Details: [CONFIG.md](../reference/CONFIG.md#mode).
+
+### People: pin, veto, edit
+
+| Power | How |
+|-------|-----|
+| Pin | `repowise decision pin ID` holds a decision as law. It is listed by name in the generated agent file, and an agent that tries to retire it is refused and told to ask a person. `decision unpin ID` releases it; it stays in force |
+| Veto | `repowise decision dismiss ID` or `deprecate ID --reason R` withdraws a decision. A pinned one needs `--force`, which only a person may pass |
+| Edit | Ask your agent: the dashboard's per-decision prompts cover review, pin, unpin, veto and edit |
+| Approve | Optional. `repowise decision config approval --on` makes every new decision wait for a person (`decision confirm`), even after its commit lands |
+
+Each signature records who signed and the kind of signer: `person`, `agent`,
+or `import` (the committed manifest or an ADR). The person defaults to
+`git config user.name`; `--as` records a different identity. Agents sign as
+themselves (`--agent claude_code --session "$SESSION_ID"`); the dashboard
+badges any decision a person did not sign, and a generated `CLAUDE.md` line
+marks it `[accepted by SLUG, not a person]`.
+`repowise decision config agent-acceptance --off` keeps granting to people.
+
+`repowise decision status` is the digest for a person: counts in force and
+pinned, the decisions that came into force in the last seven days with who
+signed and the commit that landed them, and what capture did.
+
+### Sharing decisions
+
+#### The tracked manifest
+
+`repowise decision export` writes the decisions in force to
+`.repowise/decisions.yaml`, a file you commit; `repowise decision import`
+reads it back. Each entry carries a `base_token` for the exported content:
+on `import`, edits apply unless the store has changed since that export,
+conflicting entries are skipped and listed in the summary, and
+`import --force` overrides the check. A file without tokens still
+applies, and the summary marks its entries as not checked for staleness. Once the file exists,
+`repowise update` keeps it current. `update` never creates it, and leaves it
+alone when it holds something the index has not read (a colleague's committed
+edit, say), with one line saying `decision import` reconciles it. Format and
+merge rules: [architecture/decisions.md](../architecture/decisions.md#tracked-manifest).
+
+#### Sync with repowise.dev
+
+For a repository also on repowise.dev, `repowise decision config sync --on`
+keeps the two in step on every `update`: `decision push` sends the decisions
+recorded here, `decision pull` brings down the ones in force there, such as
+one the review bot learned from a pull request. A pulled decision keeps its id
+there and follows its changes. Sync is off by default, needs
+`repowise login` and a GitHub `origin`, and in `read-only` mode only pulls.
+
+#### Capture policy
+
+`decision config preset` picks which sources `init` mines,
+`decision source set SRC --off` (or `--no-llm` to keep a source's parse and
+skip its model stage) switches one source, and `decision llm --off` stops
+every decision model call. `decision config show` prints the resolved policy,
+with reasons.
+
+| Preset | What it mines |
+|--------|---------------|
+| `default` | What a config with no `decisions:` block gets: ADR, markers, commits, PR bodies, comments, with the model on |
+| `off` | Nothing from history. Agents and people still record |
+| `local_only` | ADR, markers and sessions, deterministic only. No model calls |
+| `balanced` | `default` minus comments, plus sessions and session discovery |
+| `full` | Every source, model on |
+
+Switching a source off stops new mining; it deletes nothing, and decisions in
+force keep governing. With no provider configured, model stages report
+`skipped`, never `failed`. Full block reference:
+[CONFIG.md](../reference/CONFIG.md#the-decisions-block).
+
+## Accuracy and limits
+
+- Every stored field is checked against the verbatim source span. A field that
+  is not grounded is cleared; a record with no grounded field is rejected.
+- Confidence is capped at 0.99 and rises with source authority and independent
+  corroboration. It ranks; it is not a probability.
+- The `session` source ships off: of 139 records it produced here, none had a
+  context ([measurement](../architecture/decisions.md#session-mining)).
+- Staleness measures whether governed files changed, not whether the decision
+  is still true; `needs_review` asks an agent to settle it.
+
+## Where it shows up
+
+Agents get decisions at the moment they matter, with near-zero fixed cost per session (details in
 [HOOKS.md](../agent/HOOKS.md)):
 
 | Where | What the agent gets |
@@ -236,6 +300,7 @@ At the moment they matter, with near-zero fixed cost per session (details in
 | Editing a governed file | One line per decision in force (up to three per file, each once a session, at most six a session) |
 | After a commit | The capture prompt when the message states a choice; with `upkeep_prompt` on, the decisions the commit's files are under and the one command to settle each (still holds, replaced, knowingly broken) |
 | `CLAUDE.md` / `AGENTS.md` | One pointer line to `get_why` when any decision is in force, plus the pinned decisions by name |
+| Stopping | Nothing, unless `decisions.stop_prompt` is on: then, once a session that did real work and recorded no decision, a request to record one or reply that there is none |
 | Session start | Nothing, unless `decisions.session_start` is on |
 | `get_context`, `get_risk`, `get_change_risk` | A one-line pointer to `get_why` when a decision governs a named file; `get_risk` flags stale or contradicted governance |
 | `get_answer` | Decisions in force that answer a why-question, cited in the answer |
@@ -259,62 +324,8 @@ agent and when last. Code health reports `ungoverned_hotspot`,
 `stale_governance` and `contradictory_decision` findings
 ([CODE_HEALTH.md](CODE_HEALTH.md)).
 
-## Sharing decisions
-
-### The tracked manifest
-
-`repowise decision export` writes the decisions in force to
-`.repowise/decisions.yaml`, a file you commit; `repowise decision import`
-reads it back. Each entry carries a `base_token` for the exported content:
-on `import`, edits apply unless the store has changed since that export,
-conflicting entries are skipped and listed in the summary, and
-`import --force` overrides the check. Older files without tokens still
-apply, and the summary marks those entries as not checked for staleness. Once the file exists,
-`repowise update` keeps it current. `update` never creates it, and leaves it
-alone when it holds something the index has not read (a colleague's committed
-edit, say), with one line saying `decision import` reconciles it. Format and
-merge rules: [architecture/decisions.md](../architecture/decisions.md#tracked-manifest).
-
-### Sync with repowise.dev
-
-For a repository also on repowise.dev, `repowise decision config sync --on`
-keeps the two in step on every `update`: `decision push` sends the decisions
-recorded here, `decision pull` brings down the ones in force there, such as
-one the review bot learned from a pull request. A pulled decision keeps its id
-there and follows its changes. Sync is off by default, needs
-`repowise login` and a GitHub `origin`, and in `read-only` mode only pulls.
-
-### Capture policy
-
-`decision config preset` picks which sources `init` mines,
-`decision source set SRC --off` (or `--no-llm` to keep a source's parse and
-skip its model stage) switches one source, and `decision llm --off` stops
-every decision model call. `decision config show` prints the resolved policy,
-with reasons.
-
-| Preset | What it mines |
-|--------|---------------|
-| `default` | What a config with no `decisions:` block gets: ADR, markers, commits, PR bodies, comments, with the model on |
-| `off` | Nothing from history. Agents and people still record |
-| `local_only` | ADR, markers and sessions, deterministic only. No model calls |
-| `balanced` | `default` minus comments, plus sessions and session discovery |
-| `full` | Every source, model on |
-
-Switching a source off stops new mining; it deletes nothing, and decisions in
-force keep governing. With no provider configured, model stages report
-`skipped`, never `failed`. Full block reference:
-[CONFIG.md](../reference/CONFIG.md#the-decisions-block).
-
-## Accuracy
-
-- Every stored field is checked against the verbatim source span. A field that
-  is not grounded is cleared; a record with no grounded field is rejected.
-- Confidence is capped at 0.99 and rises with source authority and independent
-  corroboration. It ranks; it is not a probability.
-- The `session` source ships off: of 139 records it produced here, none had a
-  context ([measurement](../architecture/decisions.md#session-mining)).
-- Staleness measures whether governed files changed, not whether the decision
-  is still true; `needs_review` asks an agent to settle it.
+In the dashboard, the **Decisions** page of a repository is the digest described in
+[Quick start](#quick-start).
 
 ## Reference
 

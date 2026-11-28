@@ -37,6 +37,7 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     leaves full-text search working.
     """
     from repowise.cli.providers import resolve_embedder
+    from repowise.cli.providers.embedders import is_free_embedder
     from repowise.core.providers.llm.resolve import repo_getenv
 
     env_lookup = repo_getenv(repo_path)
@@ -47,7 +48,7 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     # Nothing was chosen, so whatever resolve_embedder returns was inferred
     # from a key. Only the ones that cannot bill survive that.
     resolved = resolve_embedder(None, repo_path=repo_path)
-    return resolved if resolved in ("mock", "ollama") else "mock"
+    return resolved if is_free_embedder(resolved) else "mock"
 
 
 def load_prior_page_ids(
@@ -181,9 +182,14 @@ def regenerate_deterministic_page_ids(
     unrelated module/overview/onboarding pages while the level ladder reaches
     the requested structural level.
     """
+    if any(pid.startswith("onboarding:") for pid in page_ids):
+        git_meta_map, page_ids = _with_repo_wide_git(
+            repo_path, git_meta_map, parsed_files, page_ids, degraded
+        )
     if not page_ids:
         return []
-    return _render_pages(
+    degraded_before = len(degraded)
+    pages = _render_pages(
         repo_path=repo_path,
         parsed_files=parsed_files,
         source_map=source_map,
@@ -201,6 +207,32 @@ def regenerate_deterministic_page_ids(
         vector_store=vector_store,
         stats_out=stats_out,
     )
+    onboarding = {pid for pid in page_ids if pid.startswith("onboarding:")}
+    if onboarding and len(degraded) == degraded_before:
+        from .catch_up import retire_unproduced
+
+        # An onboarding page whose gate fails is not yielded; no later run would yield it.
+        # shortcut: a page whose own render raises is dropped without a degraded
+        # entry, so it reads as not yielded too (as in the catch-up's generate path);
+        # upgrade when the generator reports the ids that failed.
+        retire_unproduced(repo_path, onboarding, pages)
+    return pages
+
+
+def _with_repo_wide_git(
+    repo_path: Path, git_meta_map: dict, parsed_files: list, page_ids: set[str], degraded: list[str]
+) -> tuple[dict, set[str]]:
+    """Every file's git row, for the onboarding pages that count history repo-wide.
+
+    An update indexes git for its changed files only. Without the stored rows the
+    page would be built from that slice. Unreadable: the onboarding pages stay
+    stale for the next run.
+    """
+    full = with_stored_git_meta(repo_path, git_meta_map, [pf.file_info.path for pf in parsed_files])
+    if full is not None:
+        return full, page_ids
+    degraded.append("Onboarding page refresh: stored git history unreadable")
+    return git_meta_map, {pid for pid in page_ids if not pid.startswith("onboarding:")}
 
 
 def _render_pages(
@@ -652,7 +684,7 @@ async def _load_spotlight_render_keys(repo_path: Path) -> dict[str, list[str]]:
         await engine.dispose()
 
 
-# Repo-wide pages the cascade marks stale on any decay. Both are model-written.
+# Repo-wide pages the cascade marks stale on any decay. Both are model types.
 _REPO_WIDE_MODEL_TYPES = ("repo_overview", "onboarding")
 
 
@@ -661,30 +693,30 @@ def split_cascade_overflow(rows: list[Any], skipped_paths: list[str]) -> tuple[i
 
     ``rows`` are ``(page_type, target_path, metadata_json)``. Mirrors the
     ``none`` cascade the persist step applies: each file's page, the module,
-    flow and SCC pages that cover it, and the repo-wide pages.
+    flow and SCC pages that cover it, and the repo-wide pages. A model-free
+    page counts as structural (``is_model_written``).
     """
     import json
 
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.models import is_model_written
 
     skipped = set(skipped_paths)
     model = structural = 0
     for page_type, target_path, meta_json in rows:
-        if page_type in _REPO_WIDE_MODEL_TYPES:
-            model += 1
-        elif page_type == "file_page":
+        if page_type == "file_page":
             structural += target_path in skipped
-        else:
+            continue
+        if page_type not in _REPO_WIDE_MODEL_TYPES:
             try:
                 meta = json.loads(meta_json or "{}")
             except (TypeError, ValueError):
                 continue
-            members = meta.get("file_paths") or meta.get("files") or []
-            if skipped.intersection(members):
-                if page_type in MODEL_WRITTEN_PAGE_TYPES:
-                    model += 1
-                else:
-                    structural += 1
+            if not skipped.intersection(meta.get("file_paths") or meta.get("files") or []):
+                continue
+        if is_model_written(page_type, meta_json):
+            model += 1
+        else:
+            structural += 1
     return model, structural
 
 
@@ -705,11 +737,16 @@ async def _load_cascade_overflow_split(
     try:
         from sqlalchemy import select as sa_select
 
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
+                    Page.repository_id == repo.id,
                     Page.page_type.in_(
                         [
                             "file_page",

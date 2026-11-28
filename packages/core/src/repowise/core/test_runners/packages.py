@@ -18,6 +18,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+from ..dotnet_test_projects import TEST_PACKAGES as _TEST_PACKAGES
 from ..ingestion.external_systems.maven_model import load_maven_reactor
 from ..ingestion.package_roots import module_for, owning_package
 from ..ingestion.resolvers.dotnet.msbuild import MSBuildProject, parse_csproj
@@ -56,10 +57,14 @@ def is_js_test(test: str) -> bool:
 
 def quote_arg(path: str) -> str:
     """*path* as one shell argument."""
-    # Double quotes hold a space in sh, PowerShell and cmd alike. Ceiling: a
-    # path with ``"``, ``$`` or a backtick is left as is; upgrade by quoting
-    # per shell once a plan names its shell.
-    return f'"{path}"' if re.search(r"\s", path) and not re.search(r'["$`]', path) else path
+    # A path with ``$``, a backtick or ``"`` expands or breaks inside double
+    # quotes, so single-quote it; a space alone keeps the double quotes that
+    # sh, PowerShell and cmd all understand. Ceiling: a path that also holds
+    # ``'`` is left as is; upgrade by quoting per shell once a plan names its
+    # shell.
+    if re.search(r'["$`]', path):
+        return f"'{path}'" if "'" not in path else path
+    return f'"{path}"' if re.search(r"\s", path) else path
 
 
 def relative_to(path: str, owner: str) -> str:
@@ -163,22 +168,6 @@ def js_root_runs(tests: Iterable[str]) -> dict[str, list[str | None]]:
     return {path: list(npm_test_run(path, "")) for path in files}
 
 
-#: NuGet ids that make a project a test project: the test SDK and each
-#: framework's runner.
-_TEST_PACKAGES = frozenset(
-    {
-        "microsoft.net.test.sdk",
-        "mstest",
-        "mstest.testadapter",
-        "nunit3testadapter",
-        "tunit",
-        "xunit",
-        "xunit.runner.visualstudio",
-        "xunit.v3",
-        "xunit.v3.mtp-v1",
-        "xunit.v3.mtp-v2",
-    }
-)
 #: MSBuild files every project below their directory imports.
 _SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
 #: The .NET test project naming convention (``Shop.Tests``, ``Shop.UnitTests``,
@@ -186,8 +175,10 @@ _SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
 _TEST_PROJECT_NAME = re.compile(r"(Tests|\.Test|\.Specs)$", re.IGNORECASE)
 
 
-def _declares_tests(is_test_project: bool, packages: Iterable[str]) -> bool:
-    return is_test_project or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
+def _declares_tests(is_test_project: bool | None, packages: Iterable[str]) -> bool:
+    if is_test_project is False:
+        return False
+    return bool(is_test_project) or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
 
 
 def _shared_declares_tests(root: Path, directory: str, seen: dict[str, bool]) -> bool:
@@ -212,6 +203,10 @@ def _declared_test_project(
 ) -> bool:
     """Whether *project* (*parsed*) says it runs tests, itself or through a
     shared build file on its path from the repository root."""
+    if parsed.is_test_project is False:
+        return False
+    # A project's own conditioned test package (per-TFM groups) still means it
+    # runs tests for some target; only shared build files need the unconditional set.
     if _declares_tests(parsed.is_test_project, parsed.package_references):
         return True
     parts = project.split("/")[:-1]

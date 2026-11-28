@@ -21,7 +21,12 @@ import click
 import structlog
 
 from repowise.cli._setup import configure_cli_logging
-from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.commands._index_outcome import (
+    record_index_outcome,
+    refresh_read_snapshots,
+    refresh_repo_contracts,
+    refresh_stale_routes,
+)
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     adopt_moved_repo_best_effort,
@@ -31,6 +36,7 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     release_update_lock,
@@ -45,6 +51,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -93,6 +100,7 @@ from .reporting import (
     _render_update_report,
     render_changed_files,
     render_header,
+    render_slower,
     show_full_completion,
 )
 from .stale_targets import (
@@ -199,6 +207,10 @@ def _finish_outcome(
             keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
+        with timed(timings, "routes"):
+            refresh_stale_routes(repo_path)
+        # Opt-in; off, it reads one setting and writes nothing (no timing row).
+        refresh_repo_contracts(repo_path)
     with timed(timings, "editor_files"):
         _refresh_editor_stamp(repo_path, agents_md, degraded)
 
@@ -531,10 +543,13 @@ def _render_full_upgrade_dry_run(
 
     scope = resolve_index_scope(state, config)
 
-    planned_provider = (
-        provider_name or config.get("provider") or state.get("provider") or "auto-detect"
-    )
-    planned_model = model or config.get("model") or state.get("model") or "provider default"
+    from repowise.core.providers.llm.resolve import resolve_llm
+
+    # The names the run would resolve, not the ones the last index ran on: a
+    # repo that names no provider follows the default, which may have changed.
+    planned = resolve_llm(repo_path, provider=provider_name, model=model, autodetect=False)
+    planned_provider = planned.provider or "auto-detect"
+    planned_model = planned.model or "provider default"
     current_git_tier = scope["git_tier"].upper()
     recorded_pages = state.get("total_pages")
     page_label = f"{recorded_pages:,}" if isinstance(recorded_pages, int) else "unknown"
@@ -887,6 +902,11 @@ def _load_sync_base(opts: UpdateOptions, run: UpdateRun) -> None:
     # repair marker is written against ``last_sync_commit``, and --since wins.
     if opts.since is None and run.index_only:
         _widen_to_pending_repair(run)
+    else:
+        from repowise.core.pipeline.incremental.repair import unchecked_repair_marker
+
+        # Another base re-covers none of the marker's range: keep it.
+        run.unchecked_repair = unchecked_repair_marker(run.state, run.base_ref, None)
 
     _verify_sync_base(run)
 
@@ -919,7 +939,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -940,9 +959,13 @@ def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
 
 
 def _widen_to_pending_repair(run: UpdateRun) -> None:
-    from .persistence import resolve_repair_base
+    from repowise.core.pipeline.incremental.repair import (
+        resolve_repair_base,
+        unchecked_repair_marker,
+    )
 
     repaired_ref, give_up = resolve_repair_base(run.repo_path, run.state, run.base_ref, run.head)
+    run.unchecked_repair = unchecked_repair_marker(run.state, repaired_ref, give_up)
     if give_up is not None:
         console.print(
             f"[yellow]Dropping the pending repair of an earlier update: {give_up}. "
@@ -1154,12 +1177,17 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
     if run.stale_pages_planned:
+        from repowise.cli.commands._page_freshness import WHOLE_WIKI_REMEDY, stale_remedy
+
         from .catch_up import catch_up_command
 
+        model = stale_remedy(run.state, run.repo_path) == "model"
         console.print(
-            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
-            "left stale refresh with the next commit, or now with "
-            f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
+            f"[dim]{run.stale_pages_planned} page(s) the last update at this commit left "
+            "stale will refresh with the next commit, or now with "
+            f"[bold]{catch_up_command(run.repo_path)}[/bold]."
+            + (f" It {WHOLE_WIKI_REMEDY}." if model else "")
+            + "[/dim]"
         )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1316,9 +1344,11 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
     import atexit
 
+    from repowise.core.update_lock import release_own_update_lock
+
     # The lock now owns the hook's suppression window; drop the queued marker.
     clear_update_queued(repo_path)
-    atexit.register(release_update_lock, repo_path)
+    atexit.register(release_own_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
     return None
 
@@ -1367,6 +1397,9 @@ def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
         save_state(repo_path, state)
 
     _assess_store_upgrade(opts, run)
+    from .page_history import trim_page_history
+
+    trim_page_history(repo_path, dry_run=opts.dry_run)
 
     # This run only reaches changed files, so name the command for missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit
@@ -1409,9 +1442,14 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
+        or run.config.generation_changed
         or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
@@ -1436,8 +1474,9 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         ),
     }
     # The widened range held nothing, so the repair is done. Gated as the widening
-    # is: another base says nothing about the marker's range.
-    if opts.since is None and run.index_only:
+    # is: another base says nothing about the marker's range, and a marker git
+    # could not check widened nothing.
+    if opts.since is None and run.index_only and run.unchecked_repair is None:
         persisted.pop("pending_repair", None)
     if not run.index_only and head:
         persisted["last_docs_commit"] = head
@@ -1705,7 +1744,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         # A generation-config, renderer or upgrade rebuild re-renders the full page set.
         affected.regenerate = [pf.file_info.path for pf in run.parsed_files]
     if run.renderer_changed and not run.full_generation and not run.index_only:
-        # A model wiki: model-written levels are only marked stale, for an opt-in
+        # A model run: the levels a model writes are only marked stale, for an opt-in
         # `generate --stale`.
         from .deterministic import load_cascade_overflow_split
 
@@ -1714,9 +1753,16 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         if split and split[0]:
             from .catch_up import catch_up_command
 
+            # Only `--docs` brings a wiki built from code here, and it asks for a
+            # model, so `--full` after it writes the whole wiki with one.
+            pages, remedy = (
+                ("written by a model", "rewrite them")
+                if resolve_docs_mode(run.state) == "llm"
+                else ("of the types a model writes", "write the whole wiki with a model")
+            )
             console.print(
-                f"  {split[0]} pages written by a model are marked stale: run "
-                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to rewrite them "
+                f"  {split[0]} pages {pages} are marked stale: run "
+                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to {remedy} "
                 "(it estimates the cost first)."
             )
 
@@ -1724,10 +1770,18 @@ def _widen_for_full_render(run: UpdateRun) -> None:
 def _report_page_plan(run: UpdateRun) -> None:
     affected = run.affected
     if affected.stale_due_to_budget > 0:
+        from repowise.cli.commands._page_freshness import stale_remedy
+
         from .catch_up import catch_up_command
         from .deterministic import load_cascade_overflow_split
         from .reporting import render_cascade_budget_warning
 
+        # A docs run asks for a model, so it gets the renderer notice's remedy.
+        # shortcut: with no provider and no terminal the run then stops and `--full`
+        # stays a code rebuild; resolve the provider before the plan to tell them apart.
+        remedy = stale_remedy(run.state, run.repo_path)
+        if remedy == "code" and not run.index_only:
+            remedy = "model"
         # The detector puts the budget overflow first in decay_only.
         skipped = affected.decay_only[: affected.stale_due_to_budget]
         render_cascade_budget_warning(
@@ -1735,6 +1789,7 @@ def _report_page_plan(run: UpdateRun) -> None:
             affected.stale_due_to_budget,
             load_cascade_overflow_split(run.repo_path, skipped),
             catch_up_command(run.repo_path),
+            remedy,
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -2072,6 +2127,7 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         head_ts=run.head_ts,
         force_full_rescore=config.health_changed,
         full_git_summary=(run.full_git_summaries[0] if run.full_git_summaries else None),
+        unchecked_repair=run.unchecked_repair,
         # Only a history-window change invalidates mined decisions.
         history_window_changed=config.git_changed,
         reconcile_full_scope=config.traversal_changed,
@@ -2090,7 +2146,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 
@@ -2168,7 +2229,7 @@ def _docs_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     flush_cost_tracker(docs.cost_tracker)
     _enrich_knowledge_graph(run, docs)
     _persist_docs(run, docs)
-    _rescore_after_persist(run)
+    _rescore_after_persist(run, docs)
 
     # The persist above only rescanned the changed files.
     if run.scanner_changed:
@@ -2219,6 +2280,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         run.repo_path,
         reasoning=opts.reasoning,
         interactive=_docs_provider_prompt_allowed(run.emitter),
+        # --yes answers no questions, so it never installs a package either.
+        allow_install=not opts.yes,
     )
 
     # Persist this update's model spend to llm_costs, as init does.
@@ -2334,7 +2397,7 @@ def _full_rescore_this_run(run: UpdateRun) -> bool:
     )
 
 
-def _rescore_after_persist(run: UpdateRun) -> None:
+def _rescore_after_persist(run: UpdateRun, docs: DocsPass) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
@@ -2351,7 +2414,9 @@ def _rescore_after_persist(run: UpdateRun) -> None:
                 run.exclude_patterns,
                 timings=run.timings,
             )
-    if rescored:
+    # Scored over git rows that did not land: not stamped, so the next update
+    # re-scores after the repair.
+    if rescored and "Git persist" not in docs.failed_steps:
         # No timestamp (git unavailable): keep the existing stamp.
         if run.head_ts is not None:
             run.state["last_full_rescore_at"] = run.head_ts
@@ -2577,6 +2642,16 @@ def run_update(
     repo_path = target.repo_path
     assert repo_path is not None  # single mode always sets repo_path
     run.repo_path = repo_path
+    outcome = _update_single_repo(opts, run)
+    if not opts.dry_run and outcome in (UpdateOutcome.REGENERATED, UpdateOutcome.NOOP):
+        from repowise.cli.commands.sources_cmd import sync_after_update
+
+        sync_after_update(run.repo_path)
+    return outcome
+
+
+def _update_single_repo(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
+    """The single-repo update, from preparing the checkout to the outcome."""
     _prepare_repo(run.repo_path)
     if not opts.dry_run:
         # A moved or copied checkout still names its old path; adopt the store's
@@ -2600,10 +2675,17 @@ def run_update(
         run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
     ):
         return _already_up_to_date(opts, run)
+    return _update_changed_files(opts, run)
 
+
+def _update_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
+    """Under the update lock: detect the changes, rebuild the index, write the pages."""
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
+    # Temp files killed cache writes left; the age guard spares one in flight.
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")
@@ -2624,7 +2706,6 @@ def run_update(
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
-
-    return _docs_update(opts, run)
+    outcome = _index_only_update(opts, run) if run.index_only else _docs_update(opts, run)
+    render_slower(run.repo_path)
+    return outcome

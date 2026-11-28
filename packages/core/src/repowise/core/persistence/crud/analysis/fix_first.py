@@ -175,7 +175,9 @@ async def _function_changes(
     blame pass skipped for size; ``None`` when the repository keeps no
     function history at all."""
     b = GitFunctionBlame
-    any_row = await session.execute(select(b.id).where(b.repository_id == repo_id).limit(1))
+    any_row = await session.execute(
+        select(b.id).where(b.repository_id == repo_id, b.history_only.is_(False)).limit(1)
+    )
     if any_row.first() is None:
         return None, set()
     leads = [(f.file_path, symbol_key(f.file_path, f.function_name)) for f in findings] + [
@@ -190,7 +192,7 @@ async def _function_changes(
         session,
         keys,
         lambda piece: select(b.symbol_id, b.mod_count).where(
-            b.repository_id == repo_id, b.symbol_id.in_(piece)
+            b.repository_id == repo_id, b.symbol_id.in_(piece), b.history_only.is_(False)
         ),
     )
     changes = {r.symbol_id: r.mod_count for r in rows}
@@ -227,7 +229,9 @@ async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -
         session,
         candidates,
         lambda piece: (
-            select(b.file_path).where(b.repository_id == repo_id, b.file_path.in_(piece)).distinct()
+            select(b.file_path)
+            .where(b.repository_id == repo_id, b.file_path.in_(piece), b.history_only.is_(False))
+            .distinct()
         ),
     )
     return candidates - {r.file_path for r in blamed}
@@ -412,6 +416,13 @@ async def _performance(session: AsyncSession, repo_id: str) -> list[Any]:
                 case((p.actionability_state == "expected", reason)).label(
                     "actionability_reason"
                 ),
+                # Read for ``investigate`` rows only: an observation leaves the queue.
+                case(
+                    (
+                        p.actionability_state == "investigate",
+                        json_text(p.details_json, "prerequisites"),
+                    )
+                ).label("prerequisites"),
                 case((ready, p.details_json)).label("details_json"),
             )
             .where(p.repository_id == repo_id, p.status == "open")
@@ -823,6 +834,12 @@ def clear_fix_first_cache() -> None:
     _cache.clear()
 
 
+def drop_fix_first_repo(repository_id: str) -> None:
+    """Forget every queue kept for *repository_id*."""
+    for key in [k for k in _cache if k[1] == repository_id]:
+        del _cache[key]
+
+
 async def load_fix_first(
     session: AsyncSession,
     repository_id: str,
@@ -897,6 +914,33 @@ def queue_view(
     return replace(full, items=items, totals=replace(full.totals, shown=len(items)))
 
 
+def without_sources(queue: FixFirstQueue, opportunity_ids: frozenset[str]) -> FixFirstQueue:
+    """*queue* less the items built on *opportunity_ids*, re-ranked and recounted.
+
+    The agent surfaces (MCP, generated agent files) show no runtime evidence
+    yet, so a cause minted from a measurement alone stays on the people's
+    surfaces (REST, CLI, web). An item
+    taken out leaves the candidates and the eligible count, so the totals
+    describe the items listed.
+    """
+    kept = [i for i in queue.items if i.source.opportunity_id not in opportunity_ids]
+    dropped = len(queue.items) - len(kept)
+    if not dropped:
+        return queue
+    improves = dict(queue.by_improves)
+    for item in queue.items:
+        if item.source.opportunity_id in opportunity_ids:
+            improves[item.improves] = improves.get(item.improves, 0) - 1
+    totals = replace(
+        queue.totals,
+        candidates=queue.totals.candidates - dropped,
+        eligible=queue.totals.eligible - dropped,
+        shown=len(kept),
+    )
+    items = tuple(replace(item, rank=rank) for rank, item in enumerate(kept, 1))
+    return replace(queue, items=items, totals=totals, by_improves=improves)
+
+
 async def _build(
     session: AsyncSession,
     repository_id: str,
@@ -948,8 +992,10 @@ __all__ = [
     "FINDING_FILES",
     "SNAPSHOT_KIND",
     "clear_fix_first_cache",
+    "drop_fix_first_repo",
     "load_fix_first",
     "queue_view",
     "stored_item_counts",
+    "without_sources",
     "write_fix_first_snapshot",
 ]

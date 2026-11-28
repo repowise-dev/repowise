@@ -342,3 +342,49 @@ def test_sources_dropped_only_when_fts_only_and_keyless(monkeypatch):
         _keyless(monkeypatch, state)
         (kept,) = _slim_served_rows([_row("file_page", "d.py", "D", sources=["fts"])])
         assert kept["sources"] == ["fts"]
+
+
+def test_symbol_and_file_rows_drop_what_ranking_alone_reads(monkeypatch):
+    _keyless(monkeypatch)
+    symbol = {
+        "type": "symbol", "symbol_id": "src/a.py::f", "name": "f", "kind": "function",
+        "file": "src/a.py", "start_line": 3, "end_line": 9, "signature": "def f(x)",
+        "qualified_name": "a.f", "language": "python", "score": 160.0, "next": "get_symbol",
+    }
+    file_row = {"type": "file", "file": "src/b.py", "score": 140.0, "next": "get_context"}
+    _slim_served_rows([symbol, file_row])
+    assert set(symbol) == {
+        "type", "symbol_id", "name", "kind", "path", "start_line", "end_line", "signature"
+    }
+    assert set(file_row) == {"type", "path", "score"}
+
+
+def test_a_signature_the_definition_line_shows_whole_is_dropped():
+    from repowise.server.mcp_server.tool_search.tool import _drop_echoed_signatures
+
+    shown = {"type": "symbol", "path": "a.py", "start_line": 3, "signature": "def f(x) -> int"}
+    split = {"type": "symbol", "path": "a.py", "start_line": 9, "signature": "def g(x, y) -> int"}
+    unlisted = {"type": "symbol", "path": "b.py", "start_line": 1, "signature": "def h()"}
+    response = {
+        "results": [shown, split, unlisted],
+        "lines": [
+            {"path": "a.py", "line": 3, "kind": "definition", "text": "def f(x) -> int:"},
+            {"path": "a.py", "line": 9, "kind": "definition", "text": "def g("},
+        ],
+    }
+    _drop_echoed_signatures(response)
+    assert "signature" not in shown
+    assert split["signature"] and unlisted["signature"]
+
+
+def test_another_repos_definition_line_keeps_the_signature():
+    from repowise.server.mcp_server.tool_search.tool import _drop_echoed_signatures
+
+    row = {"type": "symbol", "repo": "web", "path": "src/i.ts", "start_line": 1, "signature": "f()"}
+    response = {
+        "results": [row],
+        "lines": [{"repo": "api", "path": "src/i.ts", "line": 1, "kind": "definition",
+                   "text": "function f() {"}],
+    }
+    _drop_echoed_signatures(response)
+    assert row["signature"] == "f()"

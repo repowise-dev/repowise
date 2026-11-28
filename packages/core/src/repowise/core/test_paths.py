@@ -131,6 +131,33 @@ _REPO_METADATA_DIR = ".github"
 _SOURCE_TREE = "src"
 _FEATURE_NAMED_TESTS_DIR = "tests"
 
+# A file-system router turns each folder under its root into a URL segment, so
+# a ``test/`` folder there is the page or endpoint served at ``/test``
+# (``app/api/email/[id]/test/route.ts``), not a suite. Below a root, a
+# ``test``/``tests`` folder makes no test tree for a file the router serves; a
+# ``.test.``/``.spec.`` name and ``__tests__/`` still do, and a ``test/`` above
+# the root (a fixture app inside a suite) still counts. Each row is a root and
+# what a served file looks like beneath it:
+#   Next.js App Router ``app/``: the convention basenames (route, page, ...)
+#   Remix ``app/routes/``: any script file
+#   SvelteKit ``src/routes/``: the ``+`` files (``+page.svelte``, ``+server.ts``)
+#   Next.js, Nuxt and Astro ``pages/``: any script, component or Markdown page
+#   Nuxt/Nitro ``server/api/`` and ``server/routes/``: any script file
+# Which framework a repo runs is read from package.json in
+# ``ingestion/framework_facts/``; this classifier is path-only and memoized,
+# so it keys on the root plus a served-file shape instead. Ceiling: a repo with
+# no router that keeps plainly named suites or helpers under ``pages/test/``,
+# ``server/routes/tests/`` (an Express backend) or ``app/test/route.ts`` reads
+# as production; passing framework facts in as context would settle that case.
+_ROUTER_URL_TEST_SEGMENTS: frozenset[str] = frozenset({"test", "tests"})
+_NEXT_APP_ROUTE_STEMS: frozenset[str] = frozenset(
+    {
+        "page", "layout", "route", "template", "default", "error", "loading",
+        "not-found", "global-error", "forbidden", "unauthorized",
+    }
+)  # fmt: skip
+_PAGE_EXTS: frozenset[str] = frozenset({".vue", ".svelte", ".astro", ".md", ".mdx"})
+
 # The separators a directory segment splits into words on.
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
@@ -192,6 +219,10 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # filename rules became source rules.
 # jscodeshift keeps codemod input and expected output in ``__testfixtures__``
 # beside the transform, so those files are test support wherever they sit too.
+# ``.semgrep/`` is the directory Semgrep reads a repository's own rules from
+# when no config is named. The rules are YAML; a source file beside one is the
+# target ``semgrep --test`` checks it against (``# ruleid:`` comments mark the
+# lines it must match), written to hold the very pattern the rule forbids.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -199,7 +230,7 @@ _SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata", ".semgrep"}
 )
 
 # Helper directories named for tests, matched on the segment's words run
@@ -420,36 +451,77 @@ def _is_support_compound(filename: str) -> bool:
 
 
 def _is_test_dir(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether any directory segment marks this path as sitting in a test tree."""
-    return _has_test_segment(segments, original, filename, language) or _has_test_layout(
-        segments, original, _conventions().dir_suffixes
-    )
+    return _has_test_segment(
+        segments, original, filename, language, package_root
+    ) or _has_test_layout(segments, original, _conventions().dir_suffixes)
 
 
 def _tree_segments(
     segments: list[str], original: list[str], filename: str
 ) -> tuple[list[str], list[str]]:
-    """*segments* with the ``src/**/tests/`` folders a JS-family file ignores blanked.
+    """*segments* with the folders that make no test tree for this file blanked.
 
-    Blanked rather than dropped, so the layout rules keep their positions.
+    Those are the ``src/**/tests/`` folders a JS-family file ignores and the
+    ``test/`` URL segments under a file-system router root. Blanked rather
+    than dropped, so the layout rules keep their positions.
     """
-    if (
-        PurePosixPath(filename.lower()).suffix not in _conventions().js_family_exts
-        or _SOURCE_TREE not in segments
-    ):
+    ext = PurePosixPath(filename.lower()).suffix
+    js_family = ext in _conventions().js_family_exts
+    src = segments.index(_SOURCE_TREE) if js_family and _SOURCE_TREE in segments else None
+    router = _router_root_end(segments, filename, ext, js_family)
+    if src is None and router is None:
         return segments, original
-    src = segments.index(_SOURCE_TREE)
-    keep = [i < src or seg != _FEATURE_NAMED_TESTS_DIR for i, seg in enumerate(segments)]
+    keep = [
+        not (src is not None and i > src and seg == _FEATURE_NAMED_TESTS_DIR)
+        and not (router is not None and i >= router and seg in _ROUTER_URL_TEST_SEGMENTS)
+        for i, seg in enumerate(segments)
+    ]
     return (
         [seg if k else "" for seg, k in zip(segments, keep, strict=True)],
         [seg if k else "" for seg, k in zip(original, keep, strict=True)],
     )
 
 
+def _router_root_end(segments: list[str], filename: str, ext: str, js_family: bool) -> int | None:
+    """Where the URL segments start under the outermost router root that serves this file.
+
+    Outermost, because a folder under a root is itself a URL segment even when
+    it is named like a root: ``pages/test/app/page.tsx`` serves ``/test/app``.
+    """
+    for i in range(len(segments)):
+        seg, above = segments[i], segments[i - 1] if i else ""
+        if seg == "routes" and above == "src":
+            served = filename.startswith("+")
+        elif (seg == "routes" and above == "app") or (
+            seg in ("api", "routes") and above == "server"
+        ):
+            served = js_family
+        elif seg == "pages":
+            served = js_family or ext in _PAGE_EXTS
+        elif seg == "app":
+            served = (js_family or ext == ".mdx") and PurePosixPath(
+                filename.lower()
+            ).stem in _NEXT_APP_ROUTE_STEMS
+        else:
+            continue
+        if served:
+            return i + 1
+    return None
+
+
 def _has_test_segment(
-    segments: list[str], original: list[str], filename: str, language: str | None
+    segments: list[str],
+    original: list[str],
+    filename: str,
+    language: str | None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
     rules = _conventions()
@@ -469,14 +541,59 @@ def _has_test_segment(
         or _is_support_name(filename)
         or any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
     )
+    is_rust = filename.lower().endswith(".rs")
     return any(
-        _is_test_segment(seg, orig, lang_tokens, corroborated)
-        for seg, orig in zip(segments, original, strict=True)
+        _is_test_segment(
+            seg,
+            orig,
+            lang_tokens,
+            corroborated,
+            package_root=package_root,
+            dir_parts=original[: i + 1],
+            filename=filename if i == len(segments) - 1 else "",
+            rust_crate_src=is_rust and segments[i + 1 : i + 2] == ["src"],
+        )
+        for i, (seg, orig) in enumerate(zip(segments, original, strict=True))
     )
 
 
-def _is_test_segment(seg: str, orig: str, lang_tokens: frozenset[str], corroborated: bool) -> bool:
+def _is_tests_prefix_dir(seg: str) -> bool:
+    """Whether a compound directory segment begins with 'tests', e.g. tests-build, tests-integration.
+
+    Rust workspaces name test-harness crates ``tests-*`` with ``publish = false``.
+    Ceiling: a published crate whose name begins with ``tests`` (e.g. a testing framework library)
+    stays production via the package_root probe.
+    """
+    words = _words(seg)
+    return bool(words) and len(words) >= 2 and words[0] == "tests"
+
+
+def _is_tests_harness_dir(
+    seg: str,
+    orig: str,
+    dir_parts: list[str] | None,
+    filename: str,
+    rust_crate_src: bool,
+    package_root: PackageRootProbe | None,
+) -> bool:
+    if not (rust_crate_src and _is_tests_prefix_dir(seg)):
+        return False
+    return not _is_package_root(dir_parts or [orig], filename, package_root)
+
+
+def _is_test_segment(
+    seg: str,
+    orig: str,
+    lang_tokens: frozenset[str],
+    corroborated: bool,
+    package_root: PackageRootProbe | None = None,
+    dir_parts: list[str] | None = None,
+    filename: str = "",
+    rust_crate_src: bool = False,
+) -> bool:
     if _is_named_test_dir(seg):
+        return True
+    if _is_tests_harness_dir(seg, orig, dir_parts, filename, rust_crate_src, package_root):
         return True
     words = _words(seg)
     head = words[-1] if words else ""
@@ -618,7 +735,10 @@ def _classify_with_context(
     if (
         needs_test_dir
         and not _is_test_dir(
-            *_tree_segments(segments, original_segments, filename), filename, language
+            *_tree_segments(segments, original_segments, filename),
+            filename,
+            language,
+            package_root,
         )
         and not _dotnet_project_collects(path, filename, dotnet_projects)
     ):
@@ -750,7 +870,7 @@ def in_test_tree(path: str, language: str | None = None) -> bool:
     if not segments or _REPO_METADATA_DIR in segments:
         return False
     return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
-        *_tree_segments(segments, original[:-1], original[-1]), "", language
+        *_tree_segments(segments, original[:-1], original[-1]), original[-1], language
     )
 
 
@@ -848,6 +968,90 @@ def nodeid_test_file(test_id: str) -> str | None:
         return None
     looks_pathy = "/" in head or "\\" in head or head.endswith(_TEST_ID_FILE_EXTS)
     return head if looks_pathy else None
+
+
+def nodeid_without_params(test_id: str) -> str:
+    """*test_id* without the parameter id of a parametrized test.
+
+    ``tests/test_x.py::TestC::test_f[1-a]`` gives ``tests/test_x.py::TestC::test_f``,
+    the test function's symbol id. Only the part after the file is cut, so a
+    path with brackets (``app/[id]/page.test.ts``) keeps them; a name holds no
+    ``[``, so whatever the parameter id holds (``::`` included) goes with it.
+    """
+    head, sep, rest = test_id.partition("::")
+    if not sep:
+        return test_id
+    return f"{head}::{rest.partition('[')[0]}"
+
+
+def nodeid_function(test_id: str) -> str:
+    """The test function a ``path::qualname`` test id names, as its id after the file.
+
+    Parameters are cut (:func:`nodeid_without_params`) and so is a JVM runner's
+    argument list: ``CartTest.java::CartTest::adds(int)[1]`` gives
+    ``CartTest::adds``. Empty when the id names no function after its file.
+    """
+    _, _, local = nodeid_without_params(test_id).partition("::")
+    return local.partition("(")[0]
+
+
+def dotted_module_paths(dotted: str, *, min_parts: int = 1) -> list[tuple[str, tuple[str, ...]]]:
+    """Where a dotted test name may live: ``(module path, names after it)``, longest first.
+
+    A runner that names a test by module rather than by file (coverage.py
+    dynamic contexts, JUnit XML ``classname``) writes ``tests.unit.test_x.TestC``.
+    Each split gives a module path without its extension (``tests/unit/test_x``)
+    and the names that follow it (``("TestC",)``); the caller keeps the first
+    one that names a file it knows. Splits of fewer than *min_parts* parts are
+    left out, and a name with a part that is not an identifier gives none.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if len(parts) < min_parts or not all(p.isidentifier() for p in parts):
+        return []
+    return [
+        ("/".join(parts[:k]), tuple(parts[k:]))
+        for k in range(len(parts), max(min_parts, 1) - 1, -1)
+    ]
+
+
+def _without_extension(path: str) -> str:
+    head, slash, name = path.rpartition("/")
+    return head + slash + (name.rpartition(".")[0] or name)
+
+
+def files_by_stem(paths: Collection[str]) -> dict[str, list[str]]:
+    """*paths* keyed by their file name without its extension, for :func:`dotted_name_file`."""
+    out: dict[str, list[str]] = {}
+    for path in paths:
+        out.setdefault(_without_extension(path).rpartition("/")[2], []).append(path)
+    return out
+
+
+def dotted_name_file(
+    dotted: str, by_stem: dict[str, list[str]]
+) -> tuple[str, tuple[str, ...]] | None:
+    """The file a dotted test name lives in, and the names inside it, as its symbol ids read.
+
+    The longest module path that is the tail of one file of *by_stem*
+    (:func:`files_by_stem`) wins. A Python file is a module, so the names are
+    the ones after it: ``tests.test_x.TestC`` gives ``("TestC",)``. Any other
+    file is named for the class it declares, which leads the names:
+    ``com.acme.CartTest$Totals`` and ``.../com/acme/CartTest.java`` give
+    ``("CartTest", "Totals")``. A module path two files end with is refused
+    (``None``), never guessed, as is a name that leads to no file.
+    """
+    for module, rest in dotted_module_paths(dotted.replace("$", ".")):
+        hits = [
+            path
+            for path in by_stem.get(module.rpartition("/")[2], ())
+            if (stem := _without_extension(path)) == module or stem.endswith("/" + module)
+        ]
+        if len(hits) > 1:
+            return None
+        if hits:
+            path = hits[0]
+            return path, rest if path.endswith(".py") else (module.rpartition("/")[2], *rest)
+    return None
 
 
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})

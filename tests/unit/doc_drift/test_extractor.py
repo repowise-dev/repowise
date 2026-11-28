@@ -132,6 +132,12 @@ def test_placeholders_and_templates_are_not_paths(token: str):
     assert _targets(f"Create `{token}` now.", DriftKind.PATH) == []
 
 
+def test_an_ellipsis_placeholder_is_not_a_path_in_either_spelling():
+    """``docs/0N_....md`` and ``docs/0N_\u2026.md`` both elide part of a name."""
+    text = "See `docs/0N_....md`, `docs/0N_\u2026.md` and `docs/a.md` for details."
+    assert _targets(text, DriftKind.PATH) == ["docs/a.md"]
+
+
 def test_urls_are_never_paths_or_links():
     text = "See [docs](https://example.com/a.py) and `https://x.dev/b.py`."
     assert extract(text, "docs/x.md") == []

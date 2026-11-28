@@ -164,14 +164,31 @@ def test_a_build_file_change_runs_everything_and_says_why(repo) -> None:
     assert "Dockerfile changed: build or test configuration can change any test." in _err(result)
 
 
-def test_a_new_untested_file_runs_everything(repo) -> None:
+def test_a_new_file_runs_the_tests_reaching_the_code_beside_it(repo) -> None:
     _write(repo, {"src/c.py": "C = 1\n"})
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "new")
     result = _run(repo, "main...feat", "--format", "json")
     data = json.loads(result.stdout)
+    assert data["run_all"] is False and data["args"] == ["tests/test_a.py"]
+    assert data["selected"]["basis"]["src/c.py"] == "new-file"
+    assert any(
+        r.startswith("src/c.py changed: it is new in this change, beside 2 existing code file(s)")
+        for r in data["reasons"]
+    )
+
+
+def test_a_new_file_nothing_names_or_sits_beside_runs_everything(repo) -> None:
+    _write(repo, {"lone/c.py": "C = 1\n"})
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "new")
+    result = _run(repo, "main...feat", "--format", "json")
+    data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"]
-    assert data["reasons"][0].startswith("src/c.py: no coverage")
+    assert data["reasons"][0] == (
+        "lone/c.py changed: it is new in this change, no changed file names it and no "
+        "existing code sits beside it."
+    )
 
 
 def test_no_index_runs_everything(repo) -> None:
@@ -193,13 +210,15 @@ def _move_main(repo, files: dict[str, str]) -> None:
 
 
 def test_an_index_behind_the_base_adds_the_tests_reaching_the_gap(repo) -> None:
-    # src/c.py was added since, so no test in the index reaches it.
+    # src/c.py was added since, so no test in the index reaches it; src/b.py's
+    # new import leads nowhere near the change.
     _move_main(repo, {"src/b.py": "import os\n\nB = 2\n", "src/c.py": "C = 1\n"})
     result = _run(repo, "main...feat", "--format", "args")
     assert result.stdout == "tests/test_a.py\n"
-    assert "The index predates 1 changed file(s) outside this change; the tests reaching" in (
-        _err(result)
-    )
+    assert (
+        "The index predates 1 changed file(s) outside this change; none of their new "
+        "imports or strings leads to it."
+    ) in _err(result)
 
 
 def test_a_lockfile_changed_after_the_index_runs_everything(repo) -> None:
@@ -416,7 +435,10 @@ async def _add_to_index(root: Path, test: str, source: str) -> None:
     ("b_after", "expected"),
     [
         ("B = 2\n", "tests/test_a.py\n"),
-        ("import os\n\nB = 2\n", "tests/test_a.py tests/test_b.py\n"),
+        # A new import leading nowhere near the change adds nothing.
+        ("import os\n\nB = 2\n", "tests/test_a.py\n"),
+        # One onto the change: test_b.py now reaches it through src/b.py.
+        ("from src import a\n\nB = 2\n", "tests/test_a.py tests/test_b.py\n"),
     ],
 )
 def test_only_files_whose_imports_moved_since_the_index_add_their_tests(
@@ -666,3 +688,63 @@ def test_a_change_outside_the_checkout_runs_every_test(nested_repo) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.stdout)
     assert data["run_all"] is True and data["args"] == [":all"], data
+
+
+@pytest.mark.parametrize("fmt", ["table", "json", "list", "args"])
+def test_outside_a_git_repository_reports_not_a_git_repository(tmp_path, fmt: str) -> None:
+    result = _run(tmp_path, "--format", fmt)
+    assert result.exit_code == 2, result.output
+    combined = result.output + result.stderr
+    assert "Not a git repository (or git is not installed)." in combined
+    assert "--output" not in combined
+    assert "shallow CI clone" not in combined
+    if fmt == "json":
+        data = json.loads(result.stdout)
+        assert data["error"] == "not_a_git_repository"
+        assert "Not a git repository" in data["message"]
+
+
+def test_the_tables_print_bracketed_paths_as_written(monkeypatch) -> None:
+    """#6032: rich read a Next.js `[slug]` segment as markup and dropped it."""
+    from rich.console import Console
+
+    from repowise.cli.commands import impacted_tests_cmd as mod
+
+    record = Console(record=True, width=240, color_system=None)
+    monkeypatch.setattr(mod, "console", record)
+    page = "app/blog/[slug]/page.tsx"
+    many = [
+        {"source_file": page, "test_file": f"__tests__/[id]/t{i}.test.tsx", "via": "call-graph"}
+        for i in range(mod._TABLE_CANDIDATES + 1)
+    ]
+    mod._print_covered(
+        {"covered": {"tests/[slug].test.ts::renders": {"source_files": [page]}}, "map_empty": False}
+    )
+    mod._print_inferred(many)
+    mod._print_unknown(["app/[locale]/layout.tsx"])
+
+    out = record.export_text()
+    assert "tests/[slug].test.ts::renders" in out
+    assert out.count(page) == mod._TABLE_CANDIDATES + 2  # covered, each row, and the "more" row
+    assert "__tests__/[id]/t0.test.tsx" in out
+    assert "app/[locale]/layout.tsx" in out
+    assert "app/blog//page.tsx" not in out
+
+
+def test_inferred_candidates_say_no_per_test_coverage(capsys) -> None:
+    from repowise.cli.commands.impacted_tests_cmd import _print_inferred
+
+    _print_inferred(
+        [
+            {
+                "source_file": "src/a.py",
+                "test_file": "tests/test_a.py",
+                "via": "import-graph",
+            }
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "1 candidate(s) for 1 file(s)" in output
+    assert "with no per-test coverage" in output
+    assert "with no coverage." not in output

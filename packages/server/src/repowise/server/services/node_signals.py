@@ -13,17 +13,19 @@ from __future__ import annotations
 import json
 from typing import Any, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.serving import CrossRepoLookup, serve_findings
 from repowise.core.analysis.decisions.scope import SCOPE_BASIS_FOOTPRINT
+from repowise.core.analysis.held_origins import counts_as_hotspot
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
     GitMetadata,
     GraphNode,
+    HealthFileMetric,
     Page,
 )
 from repowise.server.schemas import GraphNodeResponse
@@ -40,10 +42,14 @@ class NodeSignals:
         "is_dead",
         "is_hotspot",
         "primary_owner",
+        "shown_hotspot",
     )
 
     def __init__(self) -> None:
         self.is_hotspot: bool = False
+        #: A hotspot the hotspot list shows (its origin not held): what every
+        #: hotspot count reads, so a count matches the rows its link opens.
+        self.shown_hotspot: bool = False
         self.churn_percentile: float | None = None
         self.is_dead: bool = False
         self.dead_confidence: float | None = None
@@ -83,13 +89,19 @@ async def collect_node_signals(
             signals[path] = existing
         return existing
 
-    # Git metadata: hotspot + churn + owner
-    git_q = select(GitMetadata).where(GitMetadata.repository_id == repo_id)
+    # Git metadata: hotspot + churn + owner, with the file's stored origin
+    g, h = GitMetadata, HealthFileMetric
+    git_q = (
+        select(g, h.code_origin, h.is_test)
+        .outerjoin(h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path))
+        .where(g.repository_id == repo_id)
+    )
     if node_ids is not None:
-        git_q = git_q.where(GitMetadata.file_path.in_(node_ids))
-    for gm in (await session.execute(git_q)).scalars():
+        git_q = git_q.where(g.file_path.in_(node_ids))
+    for gm, code_origin, is_test in (await session.execute(git_q)).all():
         s = _entry(gm.file_path)
         s.is_hotspot = bool(gm.is_hotspot)
+        s.shown_hotspot = counts_as_hotspot(gm.is_hotspot, code_origin, is_test)
         s.churn_percentile = gm.churn_percentile
         s.primary_owner = gm.primary_owner_name
 

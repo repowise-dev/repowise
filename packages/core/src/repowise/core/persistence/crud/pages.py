@@ -7,16 +7,19 @@ every public name, so existing imports are unaffected.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     Page,
     PageVersion,
+    Repository,
     _new_uuid,
     _now_utc,
 )
@@ -83,6 +86,7 @@ def _apply_page_upsert(
     created_at: datetime,
     updated_at: datetime,
     now: datetime,
+    snapshotted: list[tuple[str, str]] | None = None,
 ) -> Page:
     """Apply the insert / version-snapshot / idempotent-touch branch for one
     page against a PRE-RESOLVED ``existing`` row.
@@ -90,7 +94,9 @@ def _apply_page_upsert(
     Extracted verbatim from :func:`upsert_page` so the single-page and batch
     callers share one implementation of the version semantics. Does NOT flush:
     the caller owns the flush (one per call for ``upsert_page``, one per batch
-    for :func:`upsert_pages_from_generated`).
+    for :func:`upsert_pages_from_generated`). A page that gets a new snapshot
+    has ``(page id, owning repository id)`` appended to *snapshotted*, so the
+    caller can trim its history.
     """
     if existing is not None:
         # The page keeps the prose it already has (see
@@ -178,6 +184,8 @@ def _apply_page_upsert(
             archived_at=now,
         )
         session.add(snapshot)
+        if snapshotted is not None:
+            snapshotted.append((existing.id, existing.repository_id))
 
         # Update Page in place (preserves created_at)
         existing.page_type = page_type
@@ -283,6 +291,7 @@ async def upsert_page(
     existing_result = await session.execute(select(Page).where(Page.id == page_id))
     existing = existing_result.scalar_one_or_none()
 
+    snapshotted: list[tuple[str, str]] = []
     page = _apply_page_upsert(
         session,
         existing,
@@ -313,8 +322,10 @@ async def upsert_page(
         created_at=created_at or now,
         updated_at=updated_at or now,
         now=now,
+        snapshotted=snapshotted,
     )
     await session.flush()
+    await _trim_snapshotted(session, snapshotted)
     return page
 
 
@@ -362,6 +373,7 @@ async def load_prior_pages(
             metadata=metadata,
             provider_name=row.provider_name,
             freshness_status=row.freshness_status or "",
+            summary=row.summary or "",
         )
     return prior
 
@@ -422,6 +434,132 @@ async def upsert_page_from_generated(
     )
 
 
+#: ``wiki.page_versions_keep`` when no config sets it; the registry holds the same.
+DEFAULT_PAGE_VERSIONS_KEEP = 10
+
+
+#: Highest cap the setting accepts; any SQL integer bind holds it.
+MAX_PAGE_VERSIONS_KEEP = 100_000
+
+
+def page_versions_keep(repo_root: Path | str | None) -> int | None:
+    """How many earlier versions each page keeps: ``wiki.page_versions_keep``.
+
+    The default when there is no root or the config does not set it. ``None``
+    when the config cannot be read or holds a value the setting refuses: a
+    user who set a higher cap must not lose history to a typo, so the caller
+    trims nothing until the value is fixed.
+    """
+    if not repo_root:
+        return DEFAULT_PAGE_VERSIONS_KEEP
+    try:
+        from repowise.core.settings.writers import current
+
+        resolved = current(repo_root, "wiki.page_versions_keep")
+    except Exception:  # a broken config.yaml must not fail a page write
+        return None
+    value = resolved.value
+    if resolved.problem is not None or isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if not 1 <= value <= MAX_PAGE_VERSIONS_KEEP:
+        return None
+    return value
+
+
+async def prune_page_versions(
+    session: AsyncSession,
+    keep: int,
+    *,
+    page_ids: Iterable[str] | None = None,
+    repository_id: str | None = None,
+) -> int:
+    """Delete all but the *keep* newest versions of each page; return rows deleted.
+
+    *page_ids* limits the trim to those pages, in chunks that each cost one
+    DELETE through the ``page_id`` index. Without it every page in the store
+    (or in *repository_id*) is trimmed, which reads the whole table once.
+    The live page is a ``wiki_pages`` row and is never touched here.
+
+    Newest is the highest ``version``, then the latest ``archived_at`` (two
+    writers racing on one page can snapshot the same version), then the id.
+    """
+    if keep < 1:
+        raise ValueError(f"keep must be at least 1, got {keep}")
+    keep = min(keep, MAX_PAGE_VERSIONS_KEEP)
+    chunks: list[list[str] | None]
+    if page_ids is None:
+        chunks = [None]
+    else:
+        unique = list(dict.fromkeys(page_ids))
+        chunks = [
+            unique[i : i + _PAGE_SELECT_CHUNK] for i in range(0, len(unique), _PAGE_SELECT_CHUNK)
+        ]
+    deleted = 0
+    for chunk in chunks:
+        recency = (
+            func.row_number()
+            .over(
+                partition_by=PageVersion.page_id,
+                order_by=(
+                    PageVersion.version.desc(),
+                    PageVersion.archived_at.desc(),
+                    PageVersion.id.desc(),
+                ),
+            )
+            .label("recency")
+        )
+        ranked = select(PageVersion.id, recency)
+        if chunk is not None:
+            ranked = ranked.where(PageVersion.page_id.in_(chunk))
+        if repository_id is not None:
+            ranked = ranked.where(PageVersion.repository_id == repository_id)
+        sub = ranked.subquery()
+        stmt = delete(PageVersion).where(
+            PageVersion.id.in_(select(sub.c.id).where(sub.c.recency > keep))
+        )
+        # "fetch" drops the deleted rows from the session too, so a snapshot the
+        # caller loaded earlier is not flushed or read back after it is gone.
+        result = await session.execute(stmt, execution_options={"synchronize_session": "fetch"})
+        deleted += result.rowcount or 0
+    return deleted
+
+
+async def _trim_snapshotted(session: AsyncSession, snapshotted: list[tuple[str, str]]) -> None:
+    """Hold each page that just took a snapshot to its owning repository's cap.
+
+    Page ids are global, so a write can resolve a page another repository
+    owns; the snapshot belongs to that owner and is trimmed by the owner's
+    cap, never by the writer's.
+    """
+    by_owner: dict[str, list[str]] = {}
+    for page_id, owner in snapshotted:
+        by_owner.setdefault(owner, []).append(page_id)
+    for owner, page_ids in by_owner.items():
+        local_path = (
+            await session.execute(select(Repository.local_path).where(Repository.id == owner))
+        ).scalar_one_or_none()
+        keep = page_versions_keep(local_path)
+        if keep is not None:
+            await prune_page_versions(session, keep, page_ids=page_ids, repository_id=owner)
+
+
+async def page_versions_over_cap(session: AsyncSession, repository_id: str, keep: int) -> bool:
+    """Whether any of *repository_id*'s pages holds more than *keep* earlier versions.
+
+    Counts through the ``(repository_id, page_id)`` index alone, so it costs
+    milliseconds where a trim of the whole table costs seconds, and another
+    repository's history in a shared store never sets it off.
+    """
+    over = (
+        select(PageVersion.page_id)
+        .where(PageVersion.repository_id == repository_id)
+        .group_by(PageVersion.page_id)
+        .having(func.count() > keep)
+        .limit(1)
+    )
+    return (await session.execute(over)).first() is not None
+
+
 # Chunk the id SELECT to stay under SQLite's host-parameter limit (same reason
 # as ``persist._PRUNE_CHUNK``).
 _PAGE_SELECT_CHUNK = 500
@@ -471,6 +609,7 @@ async def upsert_pages_from_generated(
 
     now = _now_utc()
     out: list[Page] = []
+    snapshotted: list[tuple[str, str]] = []
     for gp in pages:
         out.append(
             _apply_page_upsert(
@@ -505,9 +644,11 @@ async def upsert_pages_from_generated(
                 created_at=_parse_dt(gp.created_at) or now,
                 updated_at=_parse_dt(gp.updated_at) or now,
                 now=now,
+                snapshotted=snapshotted,
             )
         )
     await session.flush()
+    await _trim_snapshotted(session, snapshotted)
     return out
 
 
@@ -839,7 +980,11 @@ async def get_page_versions(
     result = await session.execute(
         select(PageVersion)
         .where(PageVersion.page_id == page_id)
-        .order_by(PageVersion.version.desc())
+        .order_by(
+            PageVersion.version.desc(),
+            PageVersion.archived_at.desc(),
+            PageVersion.id.desc(),
+        )
         .limit(limit)
     )
     return list(result.scalars().all())
@@ -868,7 +1013,8 @@ _FILE_SCOPED_PAGE_TYPES = frozenset({"file_page", "symbol_spotlight"})
 # file.  A scoped file render cannot refresh these, but update already rebuilds
 # the complete graph and can render an exact id from that view without a model.
 # Keep this deliberately narrow: module/overview/onboarding pages are
-# model-written and belong to ``repowise generate --stale``; layer pages are
+# model-written (bar the ``is_model_free`` ones) and belong to
+# ``repowise generate --stale``; layer pages are
 # retired and swept independently.
 _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES = frozenset({"scc_page"})
 
@@ -890,14 +1036,23 @@ async def get_stale_update_targets(
     which must be rendered from the complete parsed/graph view.  Returning both
     from one query keeps the up-to-date fast path to a single store read.
     """
+    from repowise.core.generation.models import MODEL_FREE_PAGE_TYPES, is_model_free
+
+    # Metadata only where it decides: a file page's is the bulk of the row.
+    model_free_meta = case(
+        (Page.page_type.in_(MODEL_FREE_PAGE_TYPES), Page.metadata_json), else_=None
+    )
     result = await session.execute(
-        select(Page.id, Page.page_type, Page.target_path, Page.provider_name).where(
+        select(
+            Page.id, Page.page_type, Page.target_path, Page.provider_name, model_free_meta
+        ).where(
             Page.repository_id == repository_id,
             Page.page_type.in_(
                 sorted(
                     _FILE_SCOPED_PAGE_TYPES
                     | _UPDATE_WIDE_DETERMINISTIC_PAGE_TYPES
                     | _UPDATE_WIDE_STUB_PAGE_TYPES
+                    | MODEL_FREE_PAGE_TYPES
                 )
             ),
             Page.freshness_status.in_(["stale", "expired"]),
@@ -905,7 +1060,11 @@ async def get_stale_update_targets(
     )
     stale_paths: list[str] = []
     deterministic_ids: set[str] = set()
-    for page_id, page_type, target_path, provider_name in result:
+    for page_id, page_type, target_path, provider_name, metadata_json in result:
+        if page_type in MODEL_FREE_PAGE_TYPES:
+            if is_model_free(metadata_json):
+                deterministic_ids.add(page_id)
+            continue
         if page_type in _UPDATE_WIDE_STUB_PAGE_TYPES:
             if provider_name == "template":
                 deterministic_ids.add(page_id)

@@ -399,6 +399,7 @@ async def _db(tmp_path: Path, repo_root: Path):
 @pytest.mark.usefixtures("_private_user_config")
 async def test_refresh_rebuilds_then_extends(tmp_path, history):
     from repowise.core.persistence.crud import (
+        LISTED_ID_CHARS,
         ChangeFilter,
         get_change,
         list_changes,
@@ -427,6 +428,12 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
             # The forge ref is what `changes list` prints, so `show` takes it too.
             assert (await get_change(session, repo_id, "#13")).change_id == "pr-13"
             assert await get_change(session, repo_id, "#999") is None
+            # A long id is listed cut short, and `show` takes it as listed.
+            rows, _ = await list_changes(session, repo_id, limit=None)
+            long_id = next(r.change_id for r in rows if len(r.change_id) > LISTED_ID_CHARS)
+            listed = long_id[:LISTED_ID_CHARS]
+            assert (await get_change(session, repo_id, listed)).change_id == long_id
+            assert await get_change(session, repo_id, "commit-ffffffffffff") is None
 
         newer = r.commit("z.py", "chore: z (#40)")
         async with get_session(factory) as session:
@@ -457,6 +464,33 @@ async def test_attribution_off_stores_no_provenance(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == (None, None, None)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_failing_metadata_plugin_falls_back_to_git_and_still_stores_changes(
+    tmp_path, history, monkeypatch
+):
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+
+    class Down:
+        def metadata(self, repo_path, changes):
+            raise ConnectionError("tracker unreachable")
+
+    change_metadata_sources.register("test-down", Down())
+    monkeypatch.setenv("REPOWISE_SEAM_CHANGE_METADATA", "test-down")
+    r, _ = history
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True) == 9
+        async with get_session(factory) as session:
+            row = await get_change(session, repo_id, "pr-7")
+            assert (row.metadata_source, row.approvals) == ("git", 1)
+    finally:
+        await engine.dispose()
+        change_metadata_sources._impls.pop("test-down", None)
 
 
 # ---------------------------------------------------------------------------
@@ -629,3 +663,83 @@ async def test_persist_git_builds_changes_over_the_commit_window_it_walked(tmp_p
             assert total == 9
     finally:
         await engine.dispose()
+
+
+def test_record_names_what_decided_the_category():
+    files = json.dumps(
+        [
+            {"path": "src/b.py", "added": 3, "deleted": 1},
+            {"path": "CHANGES/13.bugfix.rst", "added": 1, "deleted": 0},
+        ]
+    )
+    record = change_record(_row(files_json=files, category="fix"))
+    assert record["category_basis"] == {
+        "signal": "changelog_fragment",
+        "value": "CHANGES/13.bugfix.rst",
+    }
+    assert change_record(_row())["category_basis"] == {"signal": "title", "value": None}
+    # Stored before fragments were read: no basis until an update re-labels it.
+    assert change_record(_row(files_json=files, category="other"))["category_basis"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_a_changelog_fragment_makes_a_change_a_fix_and_survives_reconcile(tmp_path):
+    from sqlalchemy import update
+
+    from repowise.core.changes.store import reconcile_categories
+    from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import Change
+
+    r = _Repo(tmp_path / "repo")
+    r.commit("src/a.py", "Initial layout")
+    for path in ("src/proxy.py", "CHANGES/41.bugfix.rst"):
+        (r.root / path).parent.mkdir(parents=True, exist_ok=True)
+        (r.root / path).write_text("x\n", encoding="utf-8")
+    r.git("add", "-A")
+    r.git("commit", "-q", "-m", "Close the proxy connection when the tunnel fails (#41)")
+
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            await refresh_changes(session, repo_id, r.root, rebuild=True)
+        async with get_session(factory) as session:
+            assert (await get_change(session, repo_id, "pr-41")).category == "fix"
+            # An index written before fragments were read holds the title's label.
+            await session.execute(
+                update(Change).where(Change.change_id == "pr-41").values(category="other")
+            )
+            assert await reconcile_categories(session, repo_id) >= 1
+        async with get_session(factory) as session:
+            assert (await get_change(session, repo_id, "pr-41")).category == "fix"
+    finally:
+        await engine.dispose()
+
+
+def test_change_row_reads_labels_a_metadata_source_filled():
+    from repowise.core.changes.reconstruct import ReconstructedChange
+    from repowise.core.changes.source import ChangeMetadata
+    from repowise.core.changes.store import change_row
+
+    change = ReconstructedChange(
+        change_id="pr-5",
+        identity_kind="pr",
+        identity_value="5",
+        shape="squash",
+        forge="github",
+        forge_ref="#5",
+        title="Handle empty headers",
+        merged_at=None,
+        head_sha="c" * 40,
+        author_name="Ann",
+        author_email="ann@example.com",
+        commit_shas=["c" * 40],
+        files=[("src/h.py", 2, 1)],
+        category="other",
+    )
+    labelled = change_row(
+        change, provenance=None, source="forge", metadata=ChangeMetadata(labels=("type: bug",))
+    )
+    assert labelled["category"] == "fix"
+    assert change_row(change, provenance=None, source="git", metadata=None)["category"] == "other"

@@ -233,3 +233,23 @@ async def test_start_files_rank_on_exact_words_not_page_length(tmp_path):
         rows = await _targets(session, "repo-web")
     await engine.dispose()
     assert [(r["path"], r["doc_words"]) for r in rows] == [("long.py", 1), ("short.py", 5)]
+
+
+async def test_git_facts_count_hotspots_in_the_hotspot_lists_scope(tmp_path):
+    # A production hotspot, a test-origin one and a generated one (#6266): the
+    # hotspot list shows only the first, so the report counts and names only it.
+    from repowise.core.report.sections._estate import _git_facts
+
+    repo = tmp_path / "web"
+    files = {
+        "app.py": (0.5, True, False, 0, "production", None),
+        "test_app.py": (0.9, True, False, 0, "test", None),
+        "app_pb2.py": (0.8, True, False, 0, "generated", None),
+    }
+    await _index(repo, "web", commits=30, health=None, files=files)
+    engine, factory = await open_repo_db(repo)
+    async with factory() as session:
+        facts = await _git_facts(session, "repo-web")
+    await engine.dispose()
+    assert facts["hotspots"] == 1
+    assert facts["top_hotspots"] == ["app.py"]

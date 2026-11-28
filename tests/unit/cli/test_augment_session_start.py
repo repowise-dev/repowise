@@ -53,7 +53,7 @@ def test_current_index_without_agent_block_gives_only_the_call_first_line(
     monkeypatch.setattr(session_start, "_git_head", lambda p: _INDEXED)
     out = _handle(repo)
     assert out is not None
-    assert out.endswith(session_start.AGENT_STEER)
+    assert out.endswith(session_start.AGENT_STEER_DEFERRED)
     assert "current" not in out
     assert _INDEXED[:8] not in out
 
@@ -114,7 +114,7 @@ def test_git_failure_never_claims_current(repo, monkeypatch) -> None:
     out = _handle(repo)
     assert out is not None
     assert "current" not in out
-    assert out.endswith(session_start.AGENT_STEER)
+    assert out.endswith(session_start.AGENT_STEER_DEFERRED)
     _write_agent_block(repo)
     assert _handle(repo) is None
 

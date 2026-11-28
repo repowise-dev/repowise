@@ -31,9 +31,13 @@ PINNED_IDS = {
     "claude-code-mcp-entry",
     "claude-desktop-mcp-entry",
     "coordinator-drift",
+    "coverage-evidence",
     "database",
     "distill-config",
     "distill-rewrite-hook",
+    "embedder-package",
+    "provider-extra",
+    "evidence-freshness",
     "fts-index-sync",
     "git-repository",
     "grammar-*",
@@ -48,6 +52,7 @@ PINNED_IDS = {
     "provider-config",
     "providers",
     "repowise-dir",
+    "runtime-evidence",
     "setting-*",
     "settings",
     "stale-pages",
@@ -57,6 +62,7 @@ PINNED_IDS = {
     "update-lock",
     "vector-store",
     "vector-store-sync",
+    "wiki-db-free-space",
 }
 
 _KEBAB = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")

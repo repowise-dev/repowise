@@ -188,13 +188,28 @@ def test_conventional_entry_point_survives_having_no_importers(
     assert [f["entry_point"] for f in ctx.execution_flows] == ["src/main.py::f"]
 
 
+def test_a_framework_anchored_route_keeps_its_flow(sample_config, sample_repo_structure):
+    """A file-system route is reached from its framework's anchor, not by path."""
+    path = "app/dashboard/page.tsx"
+    graph = _graph_with({path: {"is_entry_point": False}}, imports=[])
+    graph.add_node("framework:nextjs", language="external")
+    graph.add_edge("framework:nextjs", path, edge_type="framework", imported_names=[])
+    flows = [_flow(f"{path}::f", 0.95, ["a", "b"])]
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_Builder(flows, graph)
+    )
+
+    assert [f["entry_point"] for f in ctx.execution_flows] == [f"{path}::f"]
+
+
 @pytest.mark.parametrize(
     "path",
     [
         "src/features/api/index.ts",  # barrel: reached by the names it forwards
         "pkg/sub/__init__.py",
         "scripts/release.sh",  # never-flag glob: CI invokes it by name
-        "app/dashboard/page.tsx",  # never-flag glob: a file-system route
     ],
 )
 def test_filter_bails_out_where_dead_code_is_kinder(sample_config, sample_repo_structure, path):

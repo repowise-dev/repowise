@@ -18,7 +18,7 @@ function ownerGroup(setting: RegistrySetting): SettingsGroupId | null {
   if (area === "providers" || key === "provider" || key === "model") return "models";
   if (key.startsWith("refactoring.") || area === "decisions") return "models";
   if (key.startsWith("coverage.")) return "coverage";
-  if (key === "mcp.tools") return "agents";
+  if (key === "mcp.tools" || key === "mcp.always_load") return "agents";
   return null;
 }
 

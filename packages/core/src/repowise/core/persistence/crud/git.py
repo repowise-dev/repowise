@@ -935,6 +935,19 @@ async def get_latest_commit_committed_at(session: AsyncSession, repository_id: s
     return result.scalar_one_or_none()
 
 
+async def get_latest_commit_shas_at_timestamp(
+    session: AsyncSession, repository_id: str, committed_at: datetime
+) -> set[str]:
+    """Return all commit SHAs persisted at or after *committed_at* for a repository."""
+    result = await session.execute(
+        select(GitCommit.sha).where(
+            GitCommit.repository_id == repository_id,
+            GitCommit.committed_at >= committed_at,
+        )
+    )
+    return set(result.scalars().all())
+
+
 async def get_git_commit(session: AsyncSession, repository_id: str, sha: str) -> GitCommit | None:
     """Return one commit by sha (or a unique prefix), or None."""
     result = await session.execute(
@@ -1079,6 +1092,7 @@ async def get_git_function_mod_counts(session: AsyncSession, repository_id: str)
         select(GitFunctionBlame.mod_count).where(
             GitFunctionBlame.repository_id == repository_id,
             GitFunctionBlame.mod_count > 0,
+            GitFunctionBlame.history_only.is_(False),
         )
     )
     return [int(mod_count) for (mod_count,) in result.all()]
@@ -1102,6 +1116,7 @@ async def get_function_commit_shas(
         ).where(
             GitFunctionBlame.repository_id == repository_id,
             GitFunctionBlame.commit_shas_json.isnot(None),
+            GitFunctionBlame.history_only.is_(False),
         )
     )
     out: dict[str, list[tuple[str, int, int, list[str]]]] = {}
@@ -1146,6 +1161,84 @@ async def get_git_function_blames(
     q = q.order_by(GitFunctionBlame.mod_count.desc()).limit(limit).offset(offset)
     result = await session.execute(q)
     return list(result.scalars().all())
+
+
+async def function_blame_rows(
+    session: AsyncSession,
+    repository_id: str,
+    spans: Sequence[tuple[str, int, int]],
+) -> dict[str, GitFunctionBlame]:
+    """Each symbol's own ``git_function_blame`` row, history-only rows included.
+
+    *spans* are ``(symbol_id, start_line, end_line)`` of indexed symbols. A
+    row serves a symbol when its file, bare name and both lines match, so a
+    method finds its row although rows key on ``path::name``; a symbol with
+    no such row has no entry.
+    """
+    from ...ingestion.symbol_identity import file_of_symbol, id_segment_name, local_symbol_id
+
+    wanted: dict[tuple[str, str, int, int], str] = {}
+    for symbol_id, start, end in spans:
+        name = id_segment_name(local_symbol_id(symbol_id).rpartition("::")[2])
+        wanted[(file_of_symbol(symbol_id), name, start, end)] = symbol_id
+    paths = sorted({key[0] for key in wanted})
+    matched: dict[str, GitFunctionBlame] = {}
+    for start in range(0, len(paths), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitFunctionBlame).where(
+                GitFunctionBlame.repository_id == repository_id,
+                GitFunctionBlame.file_path.in_(paths[start : start + _BATCH_SIZE]),
+            )
+        )
+        for row in result.scalars():
+            key = (row.file_path, row.function_name, row.start_line, row.end_line)
+            if key in wanted:
+                matched[wanted[key]] = row
+    return matched
+
+
+async def function_owner_history(
+    session: AsyncSession,
+    repository_id: str,
+    spans: Sequence[tuple[str, int, int]],
+) -> dict[str, dict]:
+    """Owner and last change of each function, from the blame of its own lines.
+
+    *spans* are ``(symbol_id, start_line, end_line)`` of indexed symbols. A
+    blame row serves a symbol when its file, bare name and both lines match,
+    so a method finds its row although rows key on ``path::name``. A function
+    with no such row has no entry: never the file's owner in its place.
+
+    Ceiling: rows key on ``path::name``, so of two same-named functions in a
+    file (two classes' ``__init__``, an overload stub and its implementation)
+    one row is stored and the other function gets no entry. Upgrade path: key
+    rows on the symbol id, with Fix first matching blame rows by name.
+    """
+    from ...evidence.payloads import owner_history_payload
+
+    matched = await function_blame_rows(session, repository_id, spans)
+    newest: dict[str, str] = {}
+    for symbol_id, row in matched.items():
+        try:
+            shas = json.loads(row.commit_shas_json or "[]")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(shas, list) and shas:
+            newest[symbol_id] = str(shas[0])
+    commits: dict[str, GitCommit] = {}
+    shas = sorted(set(newest.values()))
+    for start in range(0, len(shas), _BATCH_SIZE):
+        result = await session.execute(
+            select(GitCommit).where(
+                GitCommit.repository_id == repository_id,
+                GitCommit.sha.in_(shas[start : start + _BATCH_SIZE]),
+            )
+        )
+        commits.update({c.sha: c for c in result.scalars()})
+    return {
+        symbol_id: owner_history_payload(row, commits.get(newest.get(symbol_id, "")))
+        for symbol_id, row in matched.items()
+    }
 
 
 # ---------------------------------------------------------------------------

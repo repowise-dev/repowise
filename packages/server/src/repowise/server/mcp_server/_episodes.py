@@ -165,7 +165,7 @@ def episode_evidence(
     ``ProgrammingError`` inside ``_put``, which swallows it and silently drops
     *every* banked block. Banking belongs to whichever thread will attach.
     """
-    if not paths and not query:
+    if (not paths and not query) or root is None:
         return [], []
     store_path = default_store_path(root)
     # Opening the store would CREATE it. A repo that never derived episodes
@@ -300,7 +300,7 @@ def episode_counts(root: Path, paths: Sequence[str]) -> dict[str, int]:
     this repository's store. Paths with no episodes are absent from the result
     so a caller can omit the field instead of serving a zero.
     """
-    if not paths:
+    if not paths or root is None:
         return {}
     store_path = default_store_path(root)
     # Opening the store would CREATE it. A repo that never derived episodes

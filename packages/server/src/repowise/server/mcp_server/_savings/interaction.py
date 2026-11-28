@@ -68,6 +68,10 @@ class Interaction:
     provider_kind: str | None = None
     #: Wall time in whole ms per named stage, from :data:`STAGES`.
     stage_ms: dict[str, int] = field(default_factory=dict)
+    #: Files this call served in place of a Read, with one Read's tokens each,
+    #: noted where the counterfactual already sized them. Capped like the
+    #: ledger's per-event list (``MAX_AVOIDED_FILES``); first size per path wins.
+    avoided_files: dict[str, int] = field(default_factory=dict)
 
     def observe_pre_budget(self, tokens: int | None) -> None:
         """Record the raw size, first positive writer only.
@@ -84,6 +88,14 @@ class Interaction:
         if self.pre_budget_input_tokens is None and tokens is not None and tokens > 0:
             self.pre_budget_input_tokens = tokens
 
+    def note_avoided_file(self, path: str, tokens: int) -> None:
+        """Note *path* as served in place of a Read costing *tokens*."""
+        from repowise.core.savings.contracts import MAX_AVOIDED_FILES
+
+        if path in self.avoided_files or len(self.avoided_files) >= MAX_AVOIDED_FILES:
+            return
+        self.avoided_files[path] = tokens
+
 
 _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction", default=None)
 
@@ -95,10 +107,32 @@ _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction
 #: it rather than accumulating for the life of the server.
 _SESSIONS: WeakKeyDictionary[Any, tuple[str, dict[str, str], str]] = WeakKeyDictionary()
 
+#: File reads each connection has already been credited with. Weak for the same
+#: reason as :data:`_SESSIONS`: the record ends with the connection.
+_CREDITED_READS: WeakKeyDictionary[Any, set[bytes]] = WeakKeyDictionary()
+
 
 def current() -> Interaction | None:
     """The invocation in flight, or ``None`` outside one."""
     return _CURRENT.get()
+
+
+def first_credit(read: bytes) -> bool:
+    """Whether this connection is being credited with *read* for the first time.
+
+    A call with no session to remember it by always counts as the first.
+    """
+    session = _session()
+    if session is None:
+        return True
+    try:
+        credited = _CREDITED_READS.setdefault(session, set())
+    except TypeError:  # a session that cannot be weak-referenced
+        return True
+    if read in credited:
+        return False
+    credited.add(read)
+    return True
 
 
 #: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.
@@ -135,7 +169,9 @@ STAGES = frozenset(
         "impacted_tests",
         "patch_coverage",
         "prior_fixes",
+        "measured",
         "cross_repo",
+        "in_repo_contracts",
         "branch_overlap",
     }
 )
@@ -235,6 +271,22 @@ def _context() -> Any | None:
         return None
 
 
+def _session() -> Any | None:
+    """The live connection's session, or ``None`` outside a request.
+
+    ``session`` is a property that raises ``ValueError`` outside a request
+    rather than returning None, and ``getattr`` with a default does not
+    suppress an exception raised by a property, so the access is the guard.
+    """
+    context = _context()
+    if context is None:
+        return None
+    try:
+        return context.session
+    except ValueError:
+        return None
+
+
 def _attribution() -> tuple[str, dict[str, str], str | None]:
     """Resolve who is calling, once per connection.
 
@@ -244,13 +296,7 @@ def _attribution() -> tuple[str, dict[str, str], str | None]:
     """
     from repowise.core.savings.normalization import normalize_mcp_identity
 
-    # ``session`` is a property that raises outside a request rather than
-    # returning None, and ``getattr`` with a default does not suppress an
-    # exception raised *by* a property. So the access itself is the guard.
-    try:
-        session = _context().session  # type: ignore[union-attr]
-    except Exception:
-        session = None
+    session = _session()
     if session is None:
         return UNKNOWN_AGENT, {}, None
 

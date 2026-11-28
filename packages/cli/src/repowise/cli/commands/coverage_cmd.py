@@ -11,6 +11,7 @@ its own.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.markup import escape
@@ -36,15 +37,25 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
 from repowise.core.analysis.health.coverage.contexts import (
+    COVERAGE_DATA_FILE_NOTE,
     PER_TEST_COVERAGE_COMMAND,
     is_coverage_data_file,
 )
+from repowise.core.evidence.setup import COVERAGE_SETUP
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     """Resolve the repo path for coverage subcommands (workspace-aware)."""
     target = resolve_command_target(path=path)
     return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
+
+
+def _report_display_path(path: Path, repo_root: Path) -> str:
+    """Repo-relative POSIX path for *path*, falling back to its file name outside *repo_root*."""
+    try:
+        return path.resolve().relative_to(repo_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path.name
 
 
 #: How a ``coverage add`` run ended, reported as its telemetry ``outcome``. The
@@ -174,6 +185,7 @@ def coverage_add(
     ensure_repowise_dir(repo_path)
 
     from repowise.core.analysis.health.coverage import (
+        EMPTY_COVERAGE_REPORT_NOTE,
         CoverageConfig,
         build_coverage_map,
         discover_artifacts,
@@ -204,10 +216,8 @@ def coverage_add(
             console.print(
                 "[yellow]No coverage report found.[/yellow] Looked for "
                 "coverage/lcov.info, .coverage, **/cobertura.xml, and similar.\n"
-                f"Generate one (e.g. [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], "
-                "which needs pytest-cov, "
-                "or [cyan]cargo llvm-cov --lcov --output-path coverage/lcov.info[/cyan]) "
-                "then re-run, or pass a path:\n"
+                f"[cyan]{COVERAGE_SETUP}[/cyan] prints this repository's test command "
+                "with coverage and the exact ingest line. Or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
             )
             _record_ingest_outcome("no_report")
@@ -224,8 +234,16 @@ def coverage_add(
             get_session,
         )
         from repowise.core.persistence.crud import save_coverage_files, save_test_coverage
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            console.print(
+                "[yellow]No index yet. Run `repowise init` once before adding coverage.[/yellow]"
+            )
+            return "no_index", None
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
@@ -258,7 +276,14 @@ def coverage_add(
                 allow_partial=allow_partial,
             )
             for path, err in errors:
-                console.print(f"[yellow]  {path.name}: {err}[/yellow]")
+                # A coverage.py data file's note is said below, once its contexts are read;
+                # any other error about it is printed here as for every report.
+                if err == EMPTY_COVERAGE_REPORT_NOTE:
+                    console.print(
+                        f"[dim]  {escape(_report_display_path(path, repo_path))}: {err}[/dim]"
+                    )
+                elif err != COVERAGE_DATA_FILE_NOTE:
+                    console.print(f"[yellow]  {path.name}: {err}[/yellow]")
             if stale := resolved.alignment.warning():
                 console.print(f"[yellow]{escape(stale)}[/yellow]")
             # Counted from `resolved`, not from inside the `resolved.files`
@@ -284,12 +309,20 @@ def coverage_add(
                     # above); a .coverage without contexts is worth calling out
                     # so the user knows why no map was built.
                     if is_coverage_data_file(report_path):
+                        console.print(f"[yellow]  {report_path.name}: {COVERAGE_DATA_FILE_NOTE}[/yellow]")
                         console.print(
                             f"[yellow]{report_path.name}: no per-test contexts "
                             f"(recorded without per-test contexts); per-test map "
                             f"skipped.[/yellow]"
                         )
                     continue
+                if is_coverage_data_file(report_path):
+                    # DF-3: what the file was used for, not what it lacks, when a report beside it
+                    # gives the per-file numbers.
+                    others = [p.name for p in report_paths if not is_coverage_data_file(p)]
+                    used = f"; per-file coverage comes from {', '.join(others)}" if others else (
+                        "; it holds no per-file coverage, which `coverage lcov` or `coverage xml` exports")
+                    console.print(f"[dim]{report_path.name}: used for the test-to-code map{used}.[/dim]")
                 map_readable = True
                 creport.origin_dir = report_origin_dir(report_path, repo_path)
                 rtc = resolve_test_reports(
@@ -435,7 +468,7 @@ def coverage_setup(repo: str | None, fmt: str) -> None:
     """
     from repowise.cli.commands.evidence_cmd import _print_setup
 
-    _print_setup(repo, fmt, coverage_only=True)
+    _print_setup(repo, fmt, coverage_only=True, command="coverage")
 
 
 @coverage_group.command("status")
@@ -462,8 +495,16 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             get_repository_by_path,
             get_test_coverage_summary,
         )
-
         url = get_db_url_for_repo(repo_path)
+        from repowise.core.persistence.database import has_db_store
+
+        # A configured database counts as existing (see has_db_store); only the
+        # repo-local default must already be on disk, so none is created here.
+        if not has_db_store(repo_path):
+            notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+            if fmt == "json":
+                emit_json({"repo": str(repo_path), "indexed": False})
+            return
         # An index from an older repowise lacks newer columns; back-fill them.
         await reconcile_schema_best_effort(url)
         engine = create_engine(url)
@@ -494,9 +535,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
             if not summary.get("file_count") and not map_summary.get("pair_count"):
                 console.print(
                     "[yellow]No coverage ingested.[/yellow] Run "
-                    "[cyan]repowise coverage add <report>[/cyan]. A .coverage file "
-                    f"recorded with [cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov) "
-                    "also builds the per-test map."
+                    f"[cyan]{COVERAGE_SETUP}[/cyan] for this repository's test command "
+                    "with coverage and the exact ingest line."
                 )
                 return
 
@@ -523,6 +563,14 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     console.print(
                         f"  Report paths matched: {paths['matched']} of {paths['total']}"
                     )
+                unreported = summary.get("unreported_file_count") or 0
+                if unreported:
+                    named = summary.get("unreported_files") or []
+                    more = f" and {unreported - len(named)} more" if unreported > len(named) else ""
+                    console.print(
+                        f"  Not in the report: {unreported} indexed production file(s) "
+                        f"({escape(', '.join(named))}{more})"
+                    )
                 if (summary.get("freshness") or {}).get("status") == "stale":
                     console.print(
                         f"  [yellow]Measured at {(summary['ingested_commit_sha'] or '')[:8]}, "
@@ -545,7 +593,8 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                     "[cyan]sf apex run test --code-coverage --output-dir <dir>[/cyan] with "
                     "[cyan]repowise coverage add[/cyan].[/dim]"
                 )
-            else:
+            elif await _runs_pytest(session, repo_row.id, repo_path):
+                # The map comes from coverage.py's per-test contexts: a hint only where pytest runs.
                 console.print(
                     "[dim]No test-to-code map yet - record one with "
                     f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan] (needs pytest-cov), then "
@@ -553,3 +602,81 @@ def coverage_status(repo: str | None, fmt: str) -> None:
                 )
 
     run_async(_do())
+
+
+async def _runs_pytest(session: Any, repository_id: str, repo_path: Path) -> bool:
+    """Whether a unit of the checkout runs its tests with pytest (the coverage stacks decide)."""
+    from repowise.core.persistence.crud.build_units import load_build_units
+    from repowise.core.test_runners.stacks import detect_repo_stacks
+
+    units = await load_build_units(session, repository_id)
+    return any(s.runner == "pytest" for s in detect_repo_stacks(repo_path, units))
+
+
+@coverage_group.command("export")
+@click.argument(
+    "report", required=False, type=click.Path(exists=True, dir_okay=False, readable=True)
+)
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
+@click.option(
+    "--output",
+    "-o",
+    "output",
+    default="per-test-map.json.gz",
+    show_default=True,
+    help="File to write the gzipped map to.",
+)
+def coverage_export(report: str | None, repo: str | None, output: str) -> None:
+    """Write the per-test map as a small gzipped file, for an upload from CI.
+
+    With no REPORT, the map `coverage add` stored; with one (a `.coverage` with
+    per-test contexts, or a per-test lcov), that report's map, no index needed.
+    Either way in the stored layout: a few MB where the raw database is
+    gigabytes to parse.
+    """
+    from repowise.core.persistence.crud.analysis.coverage_map import (
+        dump_per_test_map,
+        per_test_map_from_records,
+    )
+
+    async def _stored():
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_session,
+        )
+        from repowise.core.persistence.crud import get_repository_by_path
+        from repowise.core.persistence.crud.analysis.coverage_map import get_per_test_map
+
+        repo_path = _resolve_coverage_repo(repo)
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        async with get_session(create_session_factory(engine)) as session:
+            repo_row = await get_repository_by_path(session, str(repo_path))
+            return await get_per_test_map(session, repo_row.id) if repo_row else None
+
+    if report:
+        from repowise.core.analysis.health.coverage.contexts import parse_contexts_file
+
+        parsed = parse_contexts_file(report)
+        tmap = (
+            per_test_map_from_records(parsed.records, parsed.source_format)
+            if parsed.has_contexts
+            else None
+        )
+    else:
+        tmap = run_async(_stored())
+    if tmap is None:
+        console.print(
+            "[yellow]No per-test map to export.[/yellow] Record one with "
+            f"[cyan]{PER_TEST_COVERAGE_COMMAND}[/cyan], then "
+            "[cyan]repowise coverage export .coverage[/cyan]."
+        )
+        raise click.exceptions.Exit(1)
+    data = dump_per_test_map(tmap)
+    Path(output).write_bytes(data)
+    console.print(
+        f"Wrote {escape(output)}: {len(tmap.tests)} tests, {tmap.pair_count} test-file pairs, "
+        f"{len(data) / 1e6:.1f} MB."
+    )

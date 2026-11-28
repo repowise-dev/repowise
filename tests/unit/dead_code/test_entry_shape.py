@@ -213,6 +213,46 @@ def test_the_analyzer_drops_a_program_and_keeps_a_library_module():
     assert "pkg/run_once.py" not in by_path
 
 
+def test_the_analyzer_drops_a_hand_run_tooling_script():
+    # A ``node`` script under tools/: no exports, ends in ``main();``.
+    script = "tools/perf/analyze_perf.js"
+    py_script = "scripts/sync.py"
+    helper = "tools/lib/format.py"
+    shipped = "src/report.js"
+    g = _build_graph(
+        nodes={
+            script: {"language": "javascript", "symbols": [{"name": "main", "visibility": "private"}]},
+            py_script: {"symbols": [{"name": "sync", "visibility": "public"}]},
+            helper: {"symbols": [{"name": "fmt", "visibility": "public"}]},
+            shipped: {"language": "javascript", "symbols": [{"name": "main", "visibility": "private"}]},
+        },
+    )
+    old = {"commit_count_90d": 0, "last_commit_at": _old_date(400)}
+    run_main = b"function main() {\n  console.log(1);\n}\n\nmain();\n"
+    source = {
+        script: run_main,
+        py_script: b"def sync():\n    pass\n\nsync()\n",
+        helper: b"def fmt(x):\n    return str(x)\n",
+        shipped: run_main,
+    }
+    report = DeadCodeAnalyzer(
+        g, git_meta_map=dict.fromkeys(source, old), source_map=source
+    ).analyze(
+        {
+            "detect_unused_exports": False,
+            "detect_unused_internals": False,
+            "detect_zombie_packages": False,
+        }
+    )
+    by_path = {f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    assert script not in by_path
+    assert py_script not in by_path
+    # A tooling module with an API and no script shape is still judged.
+    assert helper in by_path
+    # The same script shape outside tooling keeps its finding.
+    assert shipped in by_path
+
+
 # --- members of a loaded set that export more --------------------------------------
 
 _TOOL = 'import { defineTool } from "kit"\n\nexport default defineTool({\n  name: "x",\n})\n'

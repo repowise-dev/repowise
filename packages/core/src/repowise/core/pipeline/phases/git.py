@@ -24,7 +24,8 @@ logger = structlog.get_logger(__name__)
 def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """Strip in-memory-only signals from git metadata dicts.
 
-    The per-file ``BlameIndex`` (attached under ``"blame_index"``) is consumed
+    The per-file ``BlameIndex`` (attached under ``"blame_index"``, or
+    ``"history_blame_index"`` for a file blamed for function owners only) is consumed
     by the health biomarkers (``function_hotspot`` / ``code_age_volatility``)
     and is never meant to round-trip through the DB or JSON artifacts —
     serializing it raises "Object of type BlameIndex is not JSON serializable".
@@ -36,6 +37,7 @@ def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """
     for meta in git_metadata_list:
         meta.pop("blame_index", None)
+        meta.pop("history_blame_index", None)
 
 
 def label_co_change_structure(graph_builder: Any, git_meta_map: dict[str, dict]) -> int:

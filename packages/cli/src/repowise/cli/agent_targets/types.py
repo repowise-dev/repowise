@@ -175,6 +175,25 @@ class Registration:
 
 
 @dataclass(frozen=True)
+class ServerMap:
+    """The MCP servers one config file hands the host, read for ``doctor``.
+
+    What :meth:`AgentTarget.server_maps` returns, one per file the host loads
+    servers from. *name_prefix* is what the host puts before each name it finds
+    here: a plugin's servers are namespaced, which is exactly why a plugin and
+    a direct entry both load instead of one overriding the other.
+    """
+
+    config_path: Path
+    scope: Scope
+    servers: dict
+    name_prefix: str = ""
+    #: The one command that drops this file's repowise entry, or None when
+    #: removing it is a hand edit (an entry repowise did not write).
+    remove_command: str | None = None
+
+
+@dataclass(frozen=True)
 class FileWrite:
     """What happened to one file.
 
@@ -382,6 +401,17 @@ class AgentTarget(Protocol):
         without one — ``doctor`` run from anywhere still wants them. Passing it
         adds the project-scope registrations. Never raises: a probe that cannot
         read a config reports no registration rather than guessing at one.
+        """
+        ...
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """The MCP server maps the host loads together in *repo_path*.
+
+        Every file the host reads servers from at once, whoever wrote it, so
+        ``doctor`` can count repowise entries under different names (each one
+        loads its own copy of the tools and instructions). Not a file the host
+        does not load, such as a config for a separate app. Never raises: an
+        unreadable file contributes an empty map.
         """
         ...
 

@@ -38,9 +38,12 @@ from repowise.server.mcp_server.tool_answer.callers import (
 from repowise.server.mcp_server.tool_answer.confidence import (
     _degraded_confidence,
     _retrieval_quality,
+    body_leaves_out,
     file_hybrid_rank,
+    hit_stems,
     lead_leaves_retrieval,
 )
+from repowise.server.mcp_server.tool_answer.config import _BODY_NOTE, _RATIONALE_NOTE
 from repowise.server.mcp_server.tool_answer.evidence import (
     _drop_already_surfaced,
     _first_resolvable_id,
@@ -56,16 +59,6 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
-
-_RATIONALE_NOTE = (
-    " code_rationale carries rationale comments mined from the candidate "
-    "source — they may already answer the question."
-)
-_BODY_NOTE = (
-    " symbol_bodies carries the live body of the symbol(s) you named, so "
-    "answer from that rather than re-reading the file."
-)
-
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.
@@ -147,8 +140,9 @@ async def _degraded_payload(
     repo_root = _repo_root(ctx)
     # A named body that leaves out the rest of the question is served as
     # evidence, never as the answer the payload leads with.
+    body_candidates = _gather_body_candidates(hits, "", anchor_names=question_ids or set())
     symbol_bodies, served_named_body = _build_symbol_bodies(
-        _gather_body_candidates(hits, "", anchor_names=question_ids or set()),
+        body_candidates,
         repo_root,
         question=question,
         hits=hits,
@@ -187,11 +181,18 @@ async def _degraded_payload(
         lead = best_guesses[0]["file"]
     else:
         lead = next((r.get("path") for r in code_rationale[:1] if can_lead_answer(r)), None)
+    lead_outside_top = lead_leaves_retrieval(hits, lead)
+    body_answered = (
+        served_named_body
+        and not lead_outside_top
+        and _lead_answers_by_name(question, question_ids, symbol_bodies, body_candidates, hits)
+    )
     confidence = _degraded_confidence(
         reason,
         retrieval_quality,
-        lead_outside_top=lead_leaves_retrieval(hits, lead),
+        lead_outside_top=lead_outside_top,
         graph_answered=graph_callers.graph_answered,
+        body_answered=body_answered,
     )
 
     payload: dict = {
@@ -218,13 +219,6 @@ async def _degraded_payload(
             symbol_bodies, ctx, repository, exclude_spec
         )
         payload["note"] += _BODY_NOTE
-    elif best_guesses and retrieval_quality != "weak":
-        # Not on a weak retrieval, where `_meta.hint` says to refine the query
-        # and two disagreeing hints are worse than one.
-        payload["next_action_hint"] = (
-            f"Start from {best_guesses[0]['file']} — it ranked highest, and "
-            "best_guesses says why each candidate is in the running."
-        )
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -233,6 +227,7 @@ async def _degraded_payload(
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
                 has_bodies=served_named_body,
+                body_answers=body_answered,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
@@ -250,19 +245,27 @@ async def _degraded_payload(
             )
         )
     await _attach_call_path(
-        payload, question, question_ids or set(), symbol_bodies, ctx, repository, exclude_spec
+        payload,
+        question,
+        question_ids or set(),
+        symbol_bodies,
+        ctx,
+        repository,
+        exclude_spec,
+        lifted_by_body=body_answered and retrieval_quality == "weak",
     )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 
 
 async def _attach_call_path(
     payload: dict, question: str, question_ids: set[str], symbol_bodies: list[dict],
-    ctx, repository, exclude_spec,
+    ctx, repository, exclude_spec, *, lifted_by_body: bool = False,
 ) -> None:
     """Swap the named body for the call path when the question asks how a call travels.
 
     The trust hint is re-read without bodies, and the upgrade line a body
-    held back is added, so ``_meta`` describes the reply served.
+    held back is added, so ``_meta`` describes the reply served. A grade the
+    body lifted over a weak retrieval goes back to "low" with the body.
     """
     start, hops = await _call_path_from_named(
         payload["degraded"], question, question_ids, symbol_bodies, ctx, repository, exclude_spec
@@ -270,6 +273,8 @@ async def _attach_call_path(
     if not hops:
         return
     _serve_call_path(payload, start, hops)
+    if lifted_by_body:
+        payload["confidence"] = "low"
     meta = payload["_meta"]
     meta["hint"] = _answer_hint(
         payload["confidence"],
@@ -285,6 +290,34 @@ async def _attach_call_path(
                 repo_id=getattr(repository, "id", None),
             )
         )
+
+
+def _lead_answers_by_name(
+    question: str,
+    question_ids: set[str] | None,
+    symbol_bodies: list[dict],
+    body_candidates: list[tuple[int, int, int, str, dict]],
+    hits: list[dict],
+) -> bool:
+    """Is the body the reply leads with the code the question names, carrying the rest?
+
+    A body anchored some other way (a value line, a concept) is evidence, and a
+    named body that leaves out the rest of the question is only the place asked
+    about; neither answers it. The owner's name counts as named, as when the
+    body was selected (the served entry does not carry it).
+    """
+    lead = symbol_bodies[0] if symbol_bodies else None
+    if lead is None or _named_body([lead], question_ids or set()) is None:
+        return False
+    owner = next(
+        (
+            sym.get("parent_name")
+            for _tier, _kind, start, path, sym in body_candidates
+            if (path, sym.get("name"), start) == (lead["path"], lead["name"], lead["lines"][0])
+        ),
+        None,
+    )
+    return not body_leaves_out(question, {**lead, "parent_name": owner}, hit_stems(hits))
 
 
 def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:

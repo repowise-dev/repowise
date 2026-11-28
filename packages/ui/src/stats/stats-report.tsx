@@ -1,6 +1,6 @@
 import * as React from "react";
 import type { StatsHighlights, StatsVelocity } from "@repowise-dev/types/stats";
-import { formatBytes, formatDate, formatNumber } from "../lib/format";
+import { formatBytes, formatDate, formatDateWith, formatNumber } from "../lib/format";
 import { repoArchetype } from "./archetype";
 import { ArrivalsTimeline } from "./arrivals-timeline";
 import { ChronotypeList } from "./chronotype-list";
@@ -8,7 +8,7 @@ import { ChurnLedger } from "./churn-ledger";
 import { Gauges, type Gauge } from "./gauges";
 import { LanguageSplit } from "./language-split";
 import { ageLabel, gapLabel, momentum, shortCount } from "./numbers";
-import { OriginBlock, utcDate } from "./origin-block";
+import { OriginBlock } from "./origin-block";
 import { PunchCard } from "./punch-card";
 import { RecordsList, type RecordLinks } from "./records-list";
 import { DEFAULT_WEEKEND_PRESET } from "./weekend";
@@ -23,8 +23,9 @@ export interface StatsReportProps extends RecordLinks {
 const MICRO = "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
 const H2 = "text-lg font-semibold text-[var(--color-text-primary)]";
 
+/** "Mar 2026", in the viewer's zone; a date-only value stays on its own day. */
 function monthYear(iso: string): string {
-  return utcDate(iso).replace(/ \d+,/, "");
+  return formatDateWith(iso, { month: "short", year: "numeric" });
 }
 
 function span(start: string, end: string): string {
@@ -55,7 +56,7 @@ function Headline({ data, weekendDays }: { data: StatsHighlights; weekendDays: r
   const asOf = data.origin.last_commit_at;
   return (
     <header className="flex flex-col gap-3 pb-8">
-      {asOf && <span className={MICRO}>As of {utcDate(asOf)}</span>}
+      {asOf && <span className={MICRO}>As of {formatDate(asOf)}</span>}
       <p className="max-w-[24ch] text-[clamp(28px,6.5vw,44px)] font-normal leading-[1.1] tracking-[-0.02em] text-[var(--color-text-primary)] [text-wrap:balance]">
         {archetype ? (
           <>
@@ -159,7 +160,7 @@ function silenceGauge({ longest_silence: s }: StatsHighlights["rhythm"]): Gauge 
 function busiestDayGauge({ busiest_day: day, busiest_month: month }: StatsHighlights["rhythm"]): Gauge | null {
   if (!day) return null;
   const monthNote = month
-    ? `. Busiest month ${monthYear(`${month.month}-15T00:00:00Z`)}, ${formatNumber(month.total)}`
+    ? `. Busiest month ${monthYear(`${month.month}-01`)}, ${formatNumber(month.total)}`
     : "";
   return {
     label: "Busiest day",

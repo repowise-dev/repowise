@@ -299,6 +299,8 @@ def _shed_in_rows(
         if excess <= 0:
             return
         row, label = rows[i], f"{path}[{i}].{name}"
+        if name not in row:
+            continue  # the same row listed twice, already shed at its first index
         scoped = limits if aliased else _RowLimits(
             limits.headroom,
             limits.char_budget,
@@ -600,13 +602,28 @@ def _identity_card(tgt: dict[str, Any]) -> dict[str, Any]:
 
 
 def _symbols_trimmed(tgt: dict[str, Any]) -> dict[str, Any]:
-    """*tgt* with its symbols cut to their entitled floor, for sizing only."""
+    """*tgt* with its symbols and files cut to their entitled floors, for sizing only.
+
+    The files cut mirrors :func:`_fit_target`: the floor is the list the
+    budgeter holds, not the pre-cap population, so a floor from
+    ``files_total`` would exceed the rows present and the trim could never
+    shed one. Without it stage 2a sizes the survivors with full file lists
+    and evicts targets that would fit once stage 2b trims those lists.
+    """
     docs = tgt.get("docs")
-    symbols = docs.get("symbols") if isinstance(docs, dict) else None
-    if not isinstance(symbols, list):
+    if not isinstance(docs, dict):
         return tgt
-    floor = entitled_floor(max(len(symbols), int(docs.get("symbols_total") or 0)))
-    return {**tgt, "docs": {**docs, "symbols": symbols[:floor]}}
+    trimmed = dict(docs)
+    symbols = docs.get("symbols")
+    if isinstance(symbols, list):
+        floor = entitled_floor(max(len(symbols), int(docs.get("symbols_total") or 0)))
+        trimmed["symbols"] = symbols[:floor]
+    files = docs.get("files")
+    if isinstance(files, list):
+        trimmed["files"] = files[: entitled_floor(len(files))]
+    if trimmed == docs:
+        return tgt
+    return {**tgt, "docs": trimmed}
 
 
 def _fit_target(
@@ -619,9 +636,10 @@ def _fit_target(
 ) -> None:
     """Degrade one target toward *share* chars.
 
-    Symbols trim to their entitled floor, then optional blocks go largest
-    first, then symbols trim to one. A target that still exceeds its share
-    after that is only its identity card, and stage 3 decides.
+    Symbols trim to their entitled floor, then files trim to theirs, then
+    optional blocks go largest first, then symbols trim to one. A target
+    that still exceeds its share after that is only its identity card, and
+    stage 3 decides.
     """
     docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
     symbols = docs.get("symbols") if docs is not None else None
@@ -632,6 +650,15 @@ def _fit_target(
         # The floor is the whole list's, so a later pass cannot erode it.
         floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
         _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+    files = docs.get("files") if docs is not None else None
+    if isinstance(files, list) and files:
+        # The floor is the list the budgeter holds, not the pre-cap
+        # population: files arrive capped at _SYMBOL_CAP rows, so a floor
+        # from files_total would exceed the rows present and the trim could
+        # never shed one.
+        _trim_files(
+            result, name, tgt, files, share, entitled_floor(len(files)), collector, record_counts
+        )
     _drop_blocks(result, name, tgt, docs, share, collector, record_counts)
     if has_symbols and _compact_size(tgt) > share:
         _trim_to_one_symbol(result, name, tgt, share, collector, record_counts)
@@ -726,6 +753,9 @@ def _trim_symbols(
 
     Compact JSON is additive, so the target's size with a symbol list ``S`` is
     its size with no symbols plus each kept symbol's cost plus the commas.
+    Past the floor the first symbol that busts the share ends the list:
+    skipping it for a shorter later symbol would keep a non-prefix, so the
+    ranked order would no longer decide what stays.
     """
     docs = tgt["docs"]
     costs = [len(json.dumps(s, separators=(",", ":"), default=str)) for s in ordered]
@@ -737,6 +767,12 @@ def _trim_symbols(
         if len(kept) < floor or base + used + sym_cost + len(kept) <= share:
             kept.append(sym)
             used += sym_cost
+        else:
+            # Past the floor the first symbol that busts the share ends
+            # the list: skipping it for a shorter later symbol would keep
+            # a non-prefix, so the ranked order would no longer decide
+            # what stays.
+            break
     docs["symbols"] = kept
     if len(kept) == len(ordered):
         return
@@ -755,6 +791,77 @@ def _trim_symbols(
             f"{name} :: symbols dropped from response",
             "\n".join(json.dumps(s, separators=(",", ":"), default=str) for s in dropped),
         )
+
+
+def _trim_files(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    rows: list[dict[str, Any]],
+    share: int,
+    floor: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Keep the highest-ranked file rows that fit *share*, never fewer than *floor*.
+
+    The rows arrive ranked (PageRank, then path) from the card builder, so
+    the tail is the cheapest loss, as with symbols. Compact JSON is additive,
+    so the target's size with a file list ``F`` is its size with no files
+    plus each kept row's cost plus the commas. Past the floor the first row
+    that busts the share ends the list: skipping it for a shorter later row
+    would keep a non-prefix, so the ranked order would no longer decide
+    what stays.
+    """
+    docs = tgt["docs"]
+    costs = [len(json.dumps(row, separators=(",", ":"), default=str)) for row in rows]
+    docs["files"] = []
+    base = len(json.dumps(tgt, separators=(",", ":"), default=str))
+    kept: list[dict[str, Any]] = []
+    used = 0
+    for row, row_cost in zip(rows, costs, strict=True):
+        if len(kept) < floor or base + used + row_cost + len(kept) <= share:
+            kept.append(row)
+            used += row_cost
+        else:
+            # Past the floor the first row that busts the share ends the
+            # list: skipping it for a shorter later row would keep a
+            # non-prefix, so the ranked order would no longer decide
+            # what stays.
+            break
+    docs["files"] = kept
+    if len(kept) == len(rows):
+        return
+    if record_counts:
+        _write_files_counts(docs, rows, kept)
+    # The counts land after the fit, so the target can end up over its share
+    # by their size; shed more rows, never below the floor, until it truly
+    # fits. Without this the next step drops the whole list it just trimmed.
+    while len(kept) > floor and _compact_size(tgt) > share:
+        kept.pop()
+        docs["files"] = kept
+        if record_counts:
+            _write_files_counts(docs, rows, kept)
+    kept_ids = {id(row) for row in kept}
+    dropped = [row for row in rows if id(row) not in kept_ids]
+    result["truncated"] = True
+    if collector is not None:
+        collector.add(
+            f"{name} :: files dropped from response",
+            "\n".join(json.dumps(row, separators=(",", ":"), default=str) for row in dropped),
+        )
+
+
+def _write_files_counts(
+    docs: dict[str, Any], rows: list[dict[str, Any]], kept: list[dict[str, Any]]
+) -> None:
+    """Keep the file list's total/emitted/omitted family honest after a trim."""
+    total = max(len(rows), int(docs.get("files_total") or 0))
+    docs["files_total"] = total
+    docs["files_emitted"] = len(kept)
+    docs["files_reduced_reason"] = _with_budget_reason(docs.get("files_reduced_reason"))
+    docs["files_truncated"] = True
+    docs["files_omitted"] = total - len(kept)
 
 
 def truncate_to_budget(
@@ -782,8 +889,8 @@ def truncate_to_budget(
     2.   **Fair share per target.** Each target gets an equal share of the
          room the envelope leaves, with a small target's slack passed on. A
          target over its share degrades in place (see :func:`_fit_target`):
-         symbols to their entitled floor, optional blocks largest first, then
-         symbols to one. Every target the caller named stays visible.
+         symbols and files to their entitled floors, optional blocks largest
+         first, then symbols to one. Every target the caller named stays visible.
          When the identity cards alone cannot fit (many targets on a narrow
          budget), whole targets are evicted first, so the survivors keep
          their detail.

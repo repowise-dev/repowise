@@ -103,6 +103,19 @@ async def change_setting(
             f"{setting.key} is saved for your user account, not this repository.",
             remedy=f"Run `repowise config set {setting.key} <value>` in a terminal.",
         )
+    if setting.key == "provider" and not body.reset and isinstance(body.value, str):
+        from repowise.core.extras import missing_message
+        from repowise.core.providers.llm.registry import provider_missing_extra
+
+        extra = provider_missing_extra(body.value)
+        if extra:
+            # Never installed from here: the command runs where repowise is installed.
+            _refuse(
+                409,
+                "extra_missing",
+                missing_message(extra, f"The {body.value} provider"),
+                remedy="Run that command, then set the provider again.",
+            )
     try:
         if body.reset:
             change = reset_value(repo_path, setting.key)

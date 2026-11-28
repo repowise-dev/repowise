@@ -15,6 +15,7 @@ from repowise.core.git_sha import is_sha_prefix
 
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, count, join_sections, repo_suffix
+from .setup import SETUP_STEP_RULES, render_setup_step
 
 _CONSTRAINTS = (
     "**Confirm each item before changing anything.** The analysis is stored, not live; the code may have moved since it ran.",
@@ -52,6 +53,9 @@ def _detail_line(d: Mapping[str, Any]) -> str:
 
 
 def render_action(action: Mapping[str, Any], flavor: str = "generic", repo_name: str | None = None) -> str:
+    if action["rule"] in SETUP_STEP_RULES:
+        # A setup step is a command to run, not code to change.
+        return render_setup_step(action, flavor, repo_name)
     use_mcp = flavor == "claude-code-mcp"
     details = action["details"]
     total = action["details_total"]

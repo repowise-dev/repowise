@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.pipeline.phase_timing import PhaseTimings, timed
+
 from ._common import logger
 
 
@@ -187,7 +189,12 @@ def _refreshed_metric(refreshed: Any, stored: Any, commit: str | None) -> dict:
 
 
 async def persist_partial_health(
-    session: Any, repo_id: str, report: Any, repo_path: Any = None
+    session: Any,
+    repo_id: str,
+    report: Any,
+    repo_path: Any = None,
+    *,
+    timings: PhaseTimings | None = None,
 ) -> None:
     """Upsert health findings + metrics for the changed-files subset.
 
@@ -195,6 +202,10 @@ async def persist_partial_health(
     whole repo), this writer only touches rows whose ``file_path`` is in
     the partial report — so unchanged files keep their existing findings
     and metrics across an incremental ``repowise update``.
+
+    ``timings`` records each step under ``persist.health.*``. The steps after
+    the scoped writes are repository-wide, so ``persist.health`` alone cannot
+    say which of them an update pays for.
     """
     from repowise.core.analysis.lineage import similar_by_source
     from repowise.core.evidence.hotness import refresh_symbol_hotness
@@ -221,12 +232,13 @@ async def persist_partial_health(
     # findings, refresh on the next run that analyses any file.
     if not changed_paths and not performance_paths:
         # Measured functions still follow the new commit and any deleted ones.
-        await refresh_symbol_hotness(
-            session,
-            repo_id,
-            head_commit=await _analyzed_commit(session, repo_id),
-            repo_path=repo_path,
-        )
+        with timed(timings, "persist.health.hotness"):
+            await refresh_symbol_hotness(
+                session,
+                repo_id,
+                head_commit=await _analyzed_commit(session, repo_id),
+                repo_path=repo_path,
+            )
         return
     analyzed_commit = await _analyzed_commit(session, repo_id)
     # One savepoint over the findings and everything derived from them. This
@@ -281,41 +293,47 @@ async def persist_partial_health(
         fact_rows = getattr(report, "function_facts", None)
         if fact_rows is not None:
             renames = getattr(report, "renamed_paths", None) or {}
-            await write_function_facts(
-                session,
-                repo_id,
-                fact_rows,
-                file_paths={*changed_paths, *performance_paths},
-                roles=getattr(report, "execution_roles", None),
-                tests=getattr(report, "function_tests", None),
-                # Where a moved function came from: its file was deleted or renamed away.
-                departed={*renames, *(getattr(report, "deleted_paths", None) or ())},
-                renames=renames,
-                commit=analyzed_commit,
-                similar=similar_by_source(repo_path, getattr(report, "base_commit", None)),
-            )
+            with timed(timings, "persist.health.facts"):
+                await write_function_facts(
+                    session,
+                    repo_id,
+                    fact_rows,
+                    file_paths={*changed_paths, *performance_paths},
+                    roles=getattr(report, "execution_roles", None),
+                    tests=getattr(report, "function_tests", None),
+                    # Where a moved function came from: its file was deleted or renamed away.
+                    departed={*renames, *(getattr(report, "deleted_paths", None) or ())},
+                    renames=renames,
+                    commit=analyzed_commit,
+                    similar=similar_by_source(repo_path, getattr(report, "base_commit", None)),
+                )
         # The measured functions follow the facts just written: ids, lineage
         # and bodies. Nothing is read past one lookup without stored evidence.
-        await refresh_symbol_hotness(
-            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
-        )
+        with timed(timings, "persist.health.hotness"):
+            await refresh_symbol_hotness(
+                session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+            )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,
         # from the merged stored rows, by the same writer the full path uses.
         # That is what makes the two paths agree, and it retires the file-scoped
         # plan bookkeeping that used to try to reach a shared intervention from
         # its callers.
-        await finalize_performance_opportunities(
-            session,
-            repo_id,
-            analyzed_commit=analyzed_commit,
-            plan_policy=getattr(report, "performance_plan_policy", None),
-            execution_roles=getattr(report, "execution_roles", None),
-        )
+        with timed(timings, "persist.health.finalize_performance"):
+            await finalize_performance_opportunities(
+                session,
+                repo_id,
+                analyzed_commit=analyzed_commit,
+                plan_policy=getattr(report, "performance_plan_policy", None),
+                execution_roles=getattr(report, "execution_roles", None),
+            )
         # Repository-wide, like the queue above and for the same reason: an
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
-        await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+        with timed(timings, "persist.health.finalize_refactoring"):
+            await finalize_refactoring_opportunities(
+                session, repo_id, analyzed_commit=analyzed_commit
+            )
     # Per-function blame rollup for the changed files (keeps git_function_blame
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)
@@ -334,9 +352,10 @@ async def persist_partial_health(
         prune_unscored_health_rows,
     )
 
-    await prune_unscored_health_rows(session, repo_id)
-    await clear_unanalysed_scores(session, repo_id)
-    await backfill_is_test(session, repo_id)
+    with timed(timings, "persist.health.repairs"):
+        await prune_unscored_health_rows(session, repo_id)
+        await clear_unanalysed_scores(session, repo_id)
+        await backfill_is_test(session, repo_id)
     # Then every file's git-derived markers, against the metadata the git step
     # just stored. The files this run walked too: the analysis scored them
     # before the git step re-ranked the table, so a percentile-gated marker
@@ -344,14 +363,16 @@ async def persist_partial_health(
     # its gate. Before the snapshot, or the trend would describe the store as it
     # stood one update ago.
     if repo_path is not None:
-        try:
-            await refresh_unchanged_history(session, repo_id, repo_path, skip_paths=set())
-        except Exception as exc:
-            # Never fails the run: the next update re-derives the whole thing
-            # from the stored git metadata, so nothing is stranded behind.
-            logger.debug("health_history_refresh_skipped", repo_id=repo_id, error=str(exc))
+        with timed(timings, "persist.health.history"):
+            try:
+                await refresh_unchanged_history(session, repo_id, repo_path, skip_paths=set())
+            except Exception as exc:
+                # Never fails the run: the next update re-derives the whole thing
+                # from the stored git metadata, so nothing is stranded behind.
+                logger.debug("health_history_refresh_skipped", repo_id=repo_id, error=str(exc))
     # The store now holds the merged repository, so the snapshot describes the
     # whole of it, not this run's changed files.
     from repowise.core.pipeline.persist import snapshot_health_from_store
 
-    await snapshot_health_from_store(session, repo_id)
+    with timed(timings, "persist.health.snapshot"):
+        await snapshot_health_from_store(session, repo_id)

@@ -213,6 +213,63 @@ async def test_growth_stops_at_the_trained_length(monkeypatch):
     assert _body(seen[0])["options"]["num_ctx"] == 20_000
 
 
+def _serve_tags(monkeypatch, names: list[str]) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"models": [{"name": name} for name in names]}
+
+    monkeypatch.setattr("httpx.get", lambda url, *, timeout: FakeResponse())
+
+
+def test_model_options_leave_out_models_that_cannot_generate(monkeypatch):
+    _serve_tags(monkeypatch, ["embeddinggemma:latest", "gemma4:26b", "nomic-bert:latest"])
+    can_generate = {"embeddinggemma:latest": False, "gemma4:26b": True, "nomic-bert:latest": False}
+    monkeypatch.setattr(
+        ollama,
+        "_read_model_facts",
+        lambda url, model: _ModelFacts(generates=can_generate[model]),
+    )
+
+    options = OllamaProvider(base_url="http://localhost:11434").available_model_options()
+
+    assert [option.model for option in options] == ["gemma4:26b"]
+
+
+def test_model_options_judge_by_name_when_the_server_reports_no_capabilities(monkeypatch):
+    _serve_tags(monkeypatch, ["nomic-embed-text:latest", "mxbai-embed-large", "llama3.2:latest"])
+
+    options = OllamaProvider(base_url="http://localhost:11434").available_model_options()
+
+    assert [option.model for option in options] == ["llama3.2:latest"]
+
+
+def test_model_options_fall_back_when_every_pulled_model_only_embeds(monkeypatch):
+    _serve_tags(monkeypatch, ["embeddinggemma:latest"])
+
+    options = OllamaProvider(
+        model="qwen3.5:4b", base_url="http://localhost:11434"
+    ).available_model_options()
+
+    assert [option.model for option in options] == ["qwen3.5:4b"]
+
+
+def test_model_facts_read_an_embedding_model(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"capabilities": ["embedding"]}
+
+    monkeypatch.setattr("httpx.post", lambda url, *, json, timeout: FakeResponse())
+    assert _READ_MODEL_FACTS("http://localhost:11434", "embeddinggemma") == _ModelFacts(
+        generates=False
+    )
+
+
 def test_model_facts_parse_show(monkeypatch):
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -234,7 +291,7 @@ def test_model_facts_parse_show(monkeypatch):
     monkeypatch.setattr("httpx.post", fake_post)
     facts = _READ_MODEL_FACTS("http://localhost:11434", "qwen3.5:4b")
     assert seen == {"url": "http://localhost:11434/api/show", "json": {"model": "qwen3.5:4b"}}
-    assert facts == _ModelFacts(trained=262144, num_ctx=16384, thinks=True)
+    assert facts == _ModelFacts(trained=262144, num_ctx=16384, thinks=True, generates=True)
 
 
 def test_model_facts_empty_when_server_is_down(monkeypatch):

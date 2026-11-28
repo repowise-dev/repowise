@@ -183,3 +183,45 @@ def test_resolve_scope_uses_ranked_seed_verbatim() -> None:
     assert plan.generate_ids == {"file_page:a.py"}
     assert plan.seed_count == 1
     assert plan.unknown_page_ids == ()
+
+
+def test_narrow_leaves_a_model_free_page_out_of_the_plan_and_the_price() -> None:
+    # Issue #6079: a stale model_free onboarding page was planned and priced.
+    from repowise.core.generation.scope import narrow_to_model_written
+
+    free = _Row(
+        "onboarding:onboarding/active_landscape",
+        "onboarding",
+        "onboarding/active_landscape",
+        "template",
+        freshness_status="stale",
+        metadata_json='{"model_free": true}',
+    )
+    module = _Row("module_page:src", "module_page", "src", "openai")
+    overview = _Row("repo_overview:demo", "repo_overview", "demo", "openai")
+    deps = build_page_dependencies(
+        module_groups=[], scc_groups=[], repo_wide_ids=(overview.id, free.id)
+    )
+
+    def plan(*rows: _Row):
+        records = load_page_records(list(rows))
+        scope = resolve_scope(
+            records=records,
+            intent=PageSelectionIntent(stale=True),
+            cascade_mode="full",
+            deps=deps,
+        )
+        return narrow_to_model_written(scope, records)
+
+    alone = plan(free, module, overview)
+    assert alone.generate_ids == set()
+    assert alone.cost_plans == []
+
+    # A stale model page pulls the repo-wide pages in; the model-free one stays out.
+    module.freshness_status = "stale"
+    pulled = plan(free, module, overview)
+    assert pulled.generate_ids == {module.id, overview.id}
+    assert {p.page_type: p.count for p in pulled.cost_plans} == {
+        "module_page": 1,
+        "repo_overview": 1,
+    }

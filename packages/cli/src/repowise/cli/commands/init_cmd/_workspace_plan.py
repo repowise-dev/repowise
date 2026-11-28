@@ -40,6 +40,7 @@ from repowise.cli.ui.plan_screen.workspace import (
 from repowise.cli.ui.subscription import SubscriptionContext
 
 from ._plan import outside_lines, say_no_answer
+from ._workspace_repos import default_primary
 
 
 @dataclass
@@ -69,6 +70,8 @@ def apply_workspace_advanced(
     answers: WorkspaceAnswers, adv: dict[str, Any], repo_path: Path | None = None
 ) -> None:
     """Fold the advanced-config answers into the workspace run."""
+    from repowise.cli.ui.mode_selection import chosen_embedder
+
     answers.commit_limit = adv.get("commit_limit") or answers.commit_limit
     answers.follow_renames = adv.get("follow_renames", answers.follow_renames)
     answers.skip_tests = adv.get("skip_tests", answers.skip_tests)
@@ -78,7 +81,7 @@ def apply_workspace_advanced(
         answers.exclude_patterns = list(answers.exclude_patterns) + list(adv["exclude"])
     answers.test_run = adv.get("test_run", answers.test_run)
     answers.reasoning = adv.get("reasoning") or answers.reasoning
-    answers.embedder_name = adv.get("embedder") or answers.embedder_name
+    answers.embedder_name = chosen_embedder(adv) or answers.embedder_name
     answers.embedder_name_resolved = resolve_embedder(answers.embedder_name, repo_path=repo_path)
     answers.onboarding = adv.get("onboarding", answers.onboarding)
     if adv.get("wiki_style"):
@@ -98,6 +101,8 @@ class WorkspacePlan:
     sync: bool | None = None
     #: ``True`` / ``False`` answered the global MCP question; ``None`` never asked it.
     global_consent: bool | None = None
+    #: The primary the screen opened with; a different one was picked by the user.
+    primary_default: str = ""
 
 
 @dataclass
@@ -131,7 +136,11 @@ def _refresh(screen: _Screen, answers: WorkspaceAnswers) -> None:
         if screen.selection is not None
         else None
     )
-    resolved = resolve_embedder(answers.embedder_name, repo_path=primary)
+    resolved = resolve_embedder(
+        answers.embedder_name,
+        repo_path=primary,
+        provider=getattr(screen.selection, "provider_name", None),
+    )
     requested = embedder_was_requested(answers.embedder_name, load_config(primary).get("embedder"))
     plan = state.plan
     state.plan = replace(
@@ -180,6 +189,8 @@ def _edit_plan(screen: _Screen, answers: WorkspaceAnswers) -> None:
         language=answers.language,
         commit_limit=answers.commit_limit,
         ask_file_pages=False,
+        provider=getattr(screen.selection, "provider_name", None),
+        embedder_flag=answers.embedder_name,
     )
     apply_workspace_advanced(answers, adv, repo_path=_primary_path(screen))
     if screen.state.plan.editor_setup:
@@ -225,7 +236,7 @@ def run_workspace_plan_screen(
 
     ``None`` when nobody can answer (EOF on the first read or inside a
     question): the caller runs the non-interactive defaults, every repo
-    with the first as primary. Ctrl-C still stops the run.
+    with :func:`default_primary` as primary. Ctrl-C still stops the run.
     """
     from repowise.cli.editor_setup import is_editor_setup_disabled
     from repowise.cli.ui.provider_selection import _detect_provider_status
@@ -236,12 +247,13 @@ def run_workspace_plan_screen(
     with console.status("  Checking for a model…"):
         detected = _detect_provider_status(repos[0].path)
     work = replace(answers, exclude_patterns=list(answers.exclude_patterns))
+    primary_default = default_primary(repos)
     screen = _Screen(
         state=WorkspacePlanState(
             root=scan.root,
             repos=rows,
             selected=list(range(len(rows))),
-            primary=repos[0].alias,
+            primary=primary_default,
             plan=PlanState(
                 repo_name=repos[0].name,
                 scan=rows[0].scan,
@@ -273,4 +285,5 @@ def run_workspace_plan_screen(
         answers=work,
         sync=screen.sync if plan.editor_setup and hook is None else None,
         global_consent=(not plan.this_repo_only) if plan.can_keep_global else None,
+        primary_default=primary_default,
     )

@@ -15,7 +15,13 @@ from repowise.core.analysis.health.queue.order import DUE_TIERS, Tier
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when ranking, eligibility or the item shape changes meaning.
-FIX_FIRST_MODEL_VERSION = 3
+#:
+#: 4: a measured hotspot carries its function's measured row (next step, why,
+#: self share as gain, drivers, tests, one verify command) and leads the queue
+#: when its run is an entry point, load test or production run and a rule named
+#: its next step (the largest self share leads); without a next step it is
+#: listed, never first.
+FIX_FIRST_MODEL_VERSION = 4
 
 FixTier = Tier
 FIX_TIERS: tuple[str, ...] = get_args(FixTier)
@@ -59,6 +65,7 @@ FixExclusion = Literal[
     "history_only",
     "vendored",
     "docs_example",
+    "data",
     "deprecated",
     "gated_off",
     "cold_path",

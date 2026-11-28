@@ -357,3 +357,39 @@ async def test_ambiguous_candidate_in_a_vanished_file_is_listed_not_dropped(tmp_
         }
     ]
     assert "not_rendered" in result["note"]
+
+
+def test_a_live_grep_reply_declares_the_read_it_replaced(tmp_path, monkeypatch) -> None:
+    """The live lines stand in for reading the file to find the name.
+
+    The reply used to declare nothing, so a served answer earned 0 in the
+    savings ledger. And if sizing that read fails, the reply is unchanged.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._savings import reads
+    from repowise.server.mcp_server.tool_symbol import misses
+
+    (tmp_path / "consts.py").write_text("A = 1\nLIMIT = 10\nB = 2\n", encoding="utf-8")
+    ctx = SimpleNamespace(path=tmp_path)
+
+    def serve() -> dict:
+        return misses._live_grep_response(
+            ctx, None, "consts.py::LIMIT", None, time.perf_counter()
+        )
+
+    reply = serve()
+    assert reply["resolution"] == "live_grep"
+    declared = reply["_meta"].pop("replaced_tokens")
+    assert declared == reads.read_tokens("A = 1\nLIMIT = 10\nB = 2\n")
+
+    def boom(text: str) -> int:
+        raise RuntimeError("sizing exploded")
+
+    monkeypatch.setattr(reads, "read_tokens", boom)
+    failed = serve()
+    assert "replaced_tokens" not in failed["_meta"]
+    for one in (reply, failed):
+        one["_meta"].pop("timing_ms", None)
+    assert failed == reply

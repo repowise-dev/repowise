@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 
+from sqlalchemy import and_, select
 from sqlalchemy import func as sa_func
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis import module_health as _fold
@@ -41,11 +41,16 @@ top_level_module = module_label
 async def aggregate_modules(session: AsyncSession, repo_id: str) -> dict[str, ModuleAccumulator]:
     """Fetch the four inputs for *repo_id* and fold them by top-level module."""
 
+    # Each git row carries its file's stored origin, so the fold counts hotspots
+    # in the hotspot list's scope (a file with no health row reads production).
+    g, h = GitMetadata, HealthFileMetric
     files = (
-        (await session.execute(select(GitMetadata).where(code_file_rows(repo_id))))
-        .scalars()
-        .all()
-    )
+        await session.execute(
+            select(*g.__table__.columns, h.code_origin, h.is_test)
+            .outerjoin(h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path))
+            .where(code_file_rows(repo_id))
+        )
+    ).all()
     sym_rows = (
         await session.execute(
             select(WikiSymbol.file_path, WikiSymbol.docstring).where(

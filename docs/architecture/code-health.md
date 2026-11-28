@@ -352,8 +352,11 @@ findings decided (TP / (TP + FP), unsure left out), from its latest blind judgin
 | `complex_conditional` | c 2/5, cpp 3/8, csharp 2/8, dart 1/5, fsharp 3/5, go 3/8, java 3/8, javascript 2/5, kotlin 2/8, objectivec 3/5, php 3/5, python 3/8, ruby 2/5, rust 1/8, typescript 1/8 |
 | `god_class` | csharp 3/8, kotlin 1/5, python 3/6, scala 3/5, typescript 2/7 |
 
-Languages are file tags: `.tsx` files are `typescript`, `.jsx` files `javascript`; Vue,
-Svelte, Astro and Razor files keep their own tags and are not listed.
+Languages are file tags: `.tsx` files are `typescript`, `.jsx` files `javascript`. Vue and
+Svelte files keep their own tags but are parsed as TypeScript buffers (their `<script>`
+blocks sit at byte-identical offsets in a valid TS buffer), so their cells are aliased to
+the `typescript` cells: a `.vue` or `.svelte` file never scores differently from the `.ts`
+it contains. Astro and Razor files keep their own tags and are not listed.
 
 The inverse, `scoring._SCORED_ONLY_IN`, maps a marker to the only languages where it
 scores; in every other language it behaves like an `_ADVISORY_BY_LANGUAGE` cell. It holds
@@ -426,7 +429,7 @@ would need a written rationale and a recalibration corpus.
 ### 6.2 Validation and calibration
 
 Headline results (jEdit 4.0 / 4.1 held out with no git history, structural markers only): [layer page](../layers/CODE_HEALTH.md#accuracy-and-limits) and
-[BENCHMARKS.md](../BENCHMARKS.md#code-health-predicts-defects).
+[BENCHMARKS.md](../BENCHMARKS.md#code-health-that-predicts-bugs).
 
 - **Protocol.** Files scored at a commit T0 before the bug window, in a detached worktree
   whose history stops at T0; labels are the next six months of fix commits;

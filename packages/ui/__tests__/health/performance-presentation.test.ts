@@ -7,8 +7,10 @@ import {
   boundaryLabel,
   causeStandingText,
   facetValueLabel,
+  fixStrategyLabel,
   humanizeToken,
   moduleScopeLabel,
+  observationsText,
   opportunityEvidenceLine,
   opportunityTitle,
   planPresentation,
@@ -49,6 +51,30 @@ describe("performance presentation", () => {
       expect(title.length, marker).toBeGreaterThan(0);
       expect(title[0], marker).toBe(title[0]!.toUpperCase());
     }
+  });
+
+  it("titles a measured hotspot by what found it, not as a static cause", () => {
+    const hotspot = opportunity({
+      biomarker_type: "measured_hotspot",
+      boundary_kind: null,
+      intervention_symbol: "pkg/coverage_map.py::_decode_lines",
+    });
+    expect(opportunityTitle(hotspot)).toBe(
+      "Measured hotspot with no static cause in _decode_lines",
+    );
+    expect(whyRankedPhrase({ factor: "measured_rank", value: 1, points: 3 })).toBe(
+      "place 1 in its measured run",
+    );
+    expect(fixStrategyLabel("reduce_measured_self_time")).toBe(
+      "Find and cut the work the run measured",
+    );
+  });
+
+  it("counts a measured hotspot's run, never zero observations", () => {
+    const hotspot = opportunity({ biomarker_type: "measured_hotspot", observations_total: 0 });
+    expect(observationsText(hotspot)).toBe("measured run");
+    expect(observationsText(opportunity({ observations_total: 1 }))).toBe("1 observation");
+    expect(observationsText(opportunity({ observations_total: 1234 }))).toBe("1,234 observations");
   });
 
   it("names an absent boundary rather than leaving it blank", () => {
@@ -99,9 +125,11 @@ describe("performance presentation", () => {
     expect(facetValueLabel("boundary", "none")).toBe("In-process");
   });
 
-  it("names a static cost proof by loop size, never as measured", () => {
-    expect(facetValueLabel("proof", "proven")).toBe("Loop size known");
+  it("names a proven cost as known or measured, and a static cost never as measured", () => {
+    expect(facetValueLabel("proof", "proven")).toBe("Loop size known or measured");
     expect(facetValueLabel("proof", "unproven")).toBe("Unproven: loop size unknown");
+    expect(facetValueLabel("static_cost", "size_unknown")).toBe("Unknown in the code");
+    expect(facetValueLabel("static_cost", "grows_with_data")).toBe("Grows with the data");
   });
 
   it("separates a plan that exists from one that needs a refresh and from none", () => {

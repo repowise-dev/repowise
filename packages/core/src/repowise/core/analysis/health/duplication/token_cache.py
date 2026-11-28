@@ -17,8 +17,12 @@ budget gates in the detector stay live — they re-evaluate against the
 cached lengths, so config changes apply to cached entries too.
 
 Best-effort by design: any load/save error degrades to a full
-re-tokenize. The cache file is rewritten with only the current file set
-each run, so deleted files age out naturally.
+re-tokenize. Each run keeps only the entries it used or created, so deleted
+files age out naturally. A run that kept most of the base file writes only
+what differs from it (entries added, hashes dropped) to a small delta file
+beside it; one whose difference outgrows :data:`_COMPACT_SHARE` of the base
+rewrites the base and removes the delta. An update that touched a few files
+of a large repository then writes kilobytes, not the whole cache.
 
 Entries key on the tokenizing code (:data:`TOKEN_INPUTS`) by fingerprint, so a
 scoring change or an analyzer-stamp bump keeps them.
@@ -26,6 +30,8 @@ scoring change or an analyzer-stamp bump keeps them.
 
 from __future__ import annotations
 
+import contextlib
+import secrets
 import sys
 from pathlib import Path
 
@@ -40,6 +46,14 @@ log = structlog.get_logger(__name__)
 #: Bump when the payload's shape changes; tokenizer changes key on the fingerprint.
 _CACHE_VERSION = 2
 _CACHE_FILENAME = "duplication_cache.pkl"
+#: Entries added and hashes dropped since the base file was written.
+_DELTA_FILENAME = "duplication_cache_delta.pkl"
+#: Bump when the delta payload's shape changes.
+_DELTA_VERSION = 1
+#: The base is rewritten once the delta holds more changes than this share of
+#: its entries. The delta is rewritten whole each run, so this bounds both
+#: that write and how much the base can lag behind the live set.
+_COMPACT_SHARE = 0.1
 
 #: Every module whose code shapes an entry, relative to ``repowise/core``.
 TOKEN_INPUTS: tuple[str, ...] = (
@@ -61,6 +75,14 @@ def tokenizer_fingerprint() -> str:
     return source_fingerprint(TOKEN_INPUTS, f"{grammar_choices()}{import_kinds_signature()}")
 
 
+def persisted_bytes(cache_dir: Path) -> int:
+    """Bytes the cache holds on disk; raises ``OSError`` when there is no base."""
+    size = (Path(cache_dir) / _CACHE_FILENAME).stat().st_size
+    with contextlib.suppress(OSError):
+        size += (Path(cache_dir) / _DELTA_FILENAME).stat().st_size
+    return size
+
+
 # (kinds, identifier names, nloc, window tuples)
 _Entry = tuple[list[str], list[str], int, list[tuple[int, int, int, int]]]
 
@@ -70,6 +92,13 @@ class DuplicationTokenCache:
 
     def __init__(self, cache_dir: Path, window_tokens: int) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
+        self._delta_path = Path(cache_dir) / _DELTA_FILENAME
+        # The base file this cache loaded or last wrote: its id, which a delta
+        # must name to apply, and its keys, which a delta is taken against.
+        self._base_id: str | None = None
+        self._base_keys: frozenset[str] = frozenset()
+        # (added keys, removed keys) of the delta on disk.
+        self._delta_shape: tuple[frozenset[str], frozenset[str]] = (frozenset(), frozenset())
         self._window_tokens = window_tokens
         self._entries: dict[str, _Entry] = {}
         self._fresh: dict[str, _Entry] = {}
@@ -87,24 +116,97 @@ class DuplicationTokenCache:
                 or payload.get("tokenizer") != tokenizer_fingerprint()
             ):
                 return
-            self._entries = payload.get("files", {})
+            entries = payload.get("files", {})
+            base_id = payload.get("base_id")  # absent in files written before deltas
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> full tokenize
             log.debug("duplication_cache_load_failed", error=str(exc))
+            return
+        try:
+            delta = load_sealed_pickle(self._delta_path, domain=_DELTA_FILENAME)
+            if (
+                base_id is None
+                or delta.get("version") != _DELTA_VERSION
+                or delta.get("base_id") != base_id
+            ):
+                raise ValueError("token cache delta extends another base")
+            added: dict[str, _Entry] = delta["added"]
+            removed: set[str] = delta["removed"]
+        except FileNotFoundError:
+            added, removed = {}, set()
+        except Exception as exc:
+            # The newest state is unknown: start cold rather than serve a base
+            # whose delta was lost. The next save rewrites the base.
+            log.debug("duplication_cache_delta_load_failed", error=str(exc))
+            return
+        self._base_id = base_id
+        self._base_keys = frozenset(entries)
+        self._delta_shape = (frozenset(added), frozenset(removed))
+        for content_hash in removed:
+            entries.pop(content_hash, None)
+        entries.update(added)
+        self._entries = entries
 
     def save(self) -> None:
-        """Atomically persist the entries used or created this run."""
+        """Atomically persist the entries used or created this run.
+
+        Writes only the difference from the base file when it is small,
+        otherwise rewrites the base and drops the delta.
+        """
         try:
+            if self._base_id is not None:
+                fresh = self._fresh
+                base_keys = self._base_keys
+                added = {k: v for k, v in fresh.items() if k not in base_keys}
+                removed = {k for k in base_keys if k not in fresh}
+                if len(added) + len(removed) <= _COMPACT_SHARE * len(base_keys):
+                    if self._delta_shape != (frozenset(added), frozenset(removed)):
+                        # Entries are pure functions of their key, so equal
+                        # key sets mean the delta on disk already holds this.
+                        dump_sealed_pickle(
+                            self._delta_path,
+                            {
+                                "version": _DELTA_VERSION,
+                                "base_id": self._base_id,
+                                "added": added,
+                                "removed": removed,
+                            },
+                            domain=_DELTA_FILENAME,
+                        )
+                        self._delta_shape = (frozenset(added), frozenset(removed))
+                    return
+            base_id = secrets.token_hex(8)
             payload = {
                 "version": _CACHE_VERSION,
                 "window_tokens": self._window_tokens,
                 "tokenizer": tokenizer_fingerprint(),
+                "base_id": base_id,
                 "files": self._fresh,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
+            self._drop_delta(base_id)
+            self._base_id = base_id
+            self._base_keys = frozenset(self._fresh)
+            self._delta_shape = (frozenset(), frozenset())
         except Exception as exc:
             log.debug("duplication_cache_save_failed", error=str(exc))
+
+    def _drop_delta(self, base_id: str) -> None:
+        """Remove the delta of the replaced base.
+
+        One left behind names that base and so fails the next load. When it
+        cannot be removed (a lock on Windows), an empty delta for *base_id*
+        replaces it so later loads are not cold every run.
+        """
+        try:
+            self._delta_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            empty = {"version": _DELTA_VERSION, "base_id": base_id, "added": {}, "removed": set()}
+            with contextlib.suppress(Exception):
+                dump_sealed_pickle(self._delta_path, empty, domain=_DELTA_FILENAME)
 
     def release_memory(self) -> None:
         """Drop cached representations after a full scan has persisted them.

@@ -17,7 +17,14 @@ import {
 } from "@/lib/api/code-health";
 import { getRefactoringPlan, getRefactoringPlanPrompt } from "@/lib/api/refactoring";
 import { getFileContent } from "@/lib/api/files";
+import {
+  getEvidenceTests,
+  getMeasured,
+  getMeasuredFunctions,
+  listEvidenceRuns,
+} from "@/lib/api/runtime-evidence";
 import { getRelatedWork, relatedWorkHref } from "@/lib/api/related-work";
+import { useRuntimeEvidence } from "@/components/setup/use-setup-actions";
 
 /** Shared with the map, which uses the same name to pin a cause's files. */
 const OPPORTUNITY_PARAM = "opportunity";
@@ -34,6 +41,7 @@ function currentParams(): URLSearchParams {
 export function PerformanceTab({ repoId }: { repoId: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const runtimeEvidence = useRuntimeEvidence(repoId);
   // Held stable across renders: the queue memoizes its rows against it, and a
   // fresh object every render would defeat that for twenty rows at a time.
   const adapter: PerformanceViewAdapter = useMemo(() => {
@@ -46,6 +54,10 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
         getPerformanceOpportunity(repoId, opportunityId, options),
       getPerformanceOpportunityFindings: (opportunityId, options) =>
         getPerformanceOpportunityFindings(repoId, opportunityId, options),
+      getMeasured: (options) => getMeasured(repoId, options),
+      listEvidenceRuns: () => listEvidenceRuns(repoId),
+      getMeasuredFunctions: (target) => getMeasuredFunctions(repoId, target),
+      getEvidenceTests: (options) => getEvidenceTests(repoId, options),
       getRefactoringPlan: (planId) => getRefactoringPlan(repoId, planId),
       getRefactoringPlanPrompt: async (planId, flavor) =>
         (await getRefactoringPlanPrompt(repoId, planId, { flavor })).text,
@@ -99,6 +111,7 @@ export function PerformanceTab({ repoId }: { repoId: string }) {
       onFiltersChange={onFiltersChange}
       openOpportunityId={searchParams.get(OPPORTUNITY_PARAM)}
       onOpenOpportunityChange={onOpenOpportunityChange}
+      runtimeEvidence={runtimeEvidence}
     />
   );
 }

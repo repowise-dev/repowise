@@ -153,8 +153,16 @@ _DEEP_CACHE_NAME = "commit_deep_cache.json"
 #: Matches every deep region's file (:func:`_deep_cache_name`).
 _DEEP_CACHE_GLOB = "commit_deep_cache*.json"
 _WINDOW_CACHE_VERSION = 3  # v3: records are reused by sha, slices carry their skip
-#: Past this many commits the cache lacks, one full walk beats patching it.
+#: Past this many scattered commits the cache lacks, one full walk beats patching it.
 _MAX_PATCHED_COMMITS = 2_000
+#: A run of at least this many adjacent missing commits is read with one ranged
+#: walk (``--skip``/``-N``), which diffs only the run. Deepening the window
+#: leaves one such run below the cached commits however deep the jump.
+_MIN_WALKED_RUN = 400
+#: Each ranged walk re-traverses (without diffing) every commit above its run,
+#: so past this many runs one full walk is cheaper. A deeper window, with or
+#: without new commits on top, leaves at most two.
+_MAX_WALKED_RUNS = 8
 #: Commits per ``git log --no-walk`` call, well inside the Windows command-line limit.
 _PATCH_CHUNK = 400
 
@@ -322,7 +330,7 @@ def _cached_window_records(
 
     order = _slice_order(repo, head, skip, depth)
     pool = _reusable_records(repo, cached["records"], cached.get("shallow") is not False)
-    return _CachedWindow(_patched(repo, order, pool), at_head=False)
+    return _CachedWindow(_patched(repo, order, pool, head, skip), at_head=False)
 
 
 def _taken_at_head(repo: object, cached: dict, head: str, skip: int, depth: int) -> bool:
@@ -335,18 +343,68 @@ def _taken_at_head(repo: object, cached: dict, head: str, skip: int, depth: int)
     return same_slice and cached.get("shallow") is False and not _shallow_commits(repo)
 
 
-def _patched(repo: object, order: list[str], pool: dict[str, str]) -> list[str] | None:
-    """*order*'s records, diffing only the commits *pool* lacks; ``None`` to walk afresh."""
-    missing = [sha for sha in order if sha not in pool]
-    if len(missing) > _MAX_PATCHED_COMMITS:
+def _patched(
+    repo: object, order: list[str], pool: dict[str, str], head: str, skip: int
+) -> list[str] | None:
+    """*order*'s records, diffing only the commits *pool* lacks; ``None`` to walk afresh.
+
+    *order* is the slice of ``head``'s walk that starts *skip* commits down. A
+    long run of adjacent missing commits (a deeper window, or many new
+    commits) is read with one ranged walk over the same revisions, so it
+    costs what diffing those commits costs and nothing more. The rest are
+    diffed by sha, which pays per call and so stops at
+    :data:`_MAX_PATCHED_COMMITS`. A ranged walk whose shas are not exactly the
+    run's is a miss, never a guess.
+    """
+    runs = _missing_runs(order, pool)
+    long_runs = [(start, end) for start, end in runs if end - start >= _MIN_WALKED_RUN]
+    scattered = [
+        sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
+    ]
+    if len(scattered) > _MAX_PATCHED_COMMITS or len(long_runs) > _MAX_WALKED_RUNS:
         return None
-    for start in range(0, len(missing), _PATCH_CHUNK):
-        chunk = missing[start : start + _PATCH_CHUNK]
+    if not _walk_runs(repo, order, long_runs, pool, head, skip):
+        return None
+    for start in range(0, len(scattered), _PATCH_CHUNK):
+        chunk = scattered[start : start + _PATCH_CHUNK]
         for record in _log_records(repo, "--no-walk=unsorted", *chunk):
             pool[_record_sha(record)] = record
     if any(sha not in pool for sha in order):
         return None
     return [pool[sha] for sha in order]
+
+
+def _walk_runs(
+    repo: object,
+    order: list[str],
+    runs: list[tuple[int, int]],
+    pool: dict[str, str],
+    head: str,
+    skip: int,
+) -> bool:
+    """Read each run of *order* into *pool* with one ranged walk; ``False`` on any mismatch."""
+    for start, end in runs:
+        records = _log_records(repo, head, f"--skip={skip + start}", f"-{end - start}")
+        if [_record_sha(record) for record in records] != order[start:end]:
+            return False
+        pool.update(zip(order[start:end], records, strict=True))
+    return True
+
+
+def _missing_runs(order: list[str], pool: dict[str, str]) -> list[tuple[int, int]]:
+    """``(start, end)`` positions in *order* of each maximal run of shas *pool* lacks."""
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for position, sha in enumerate(order):
+        if sha in pool:
+            if start is not None:
+                runs.append((start, position))
+                start = None
+        elif start is None:
+            start = position
+    if start is not None:
+        runs.append((start, len(order)))
+    return runs
 
 
 def _slice_order(repo: object, head: str, skip: int, depth: int) -> list[str]:
@@ -384,29 +442,63 @@ def _report(stats_sink: dict[str, int | bool] | None, *, succeeded: bool, commit
         stats_sink.update(succeeded=succeeded, commits=commits)
 
 
-def _depth_newer_than(repo: object, commit_limit: int, since_ts: int) -> int | None:
+def _depth_newer_than(
+    repo: object,
+    commit_limit: int,
+    since_ts: int,
+    *,
+    known_shas: frozenset[str] | set[str] | None = None,
+) -> int | None:
     """How deep in the window the commits newer than *since_ts* reach.
 
-    ``None`` when git fails. A ``%ct``-only pass is cheap next to the numstat
+    ``None`` when git fails. A ``%H %ct``-only pass is cheap next to the numstat
     walk, and both traverse the same revisions in the same order, so every
     commit past this depth is one the walk's ``ts <= since_ts`` check drops.
     """
+    fmt = "%H %ct" if known_shas is not None else "%ct"
     try:
-        stamps = repo.git.log(  # type: ignore[attr-defined]
-            f"-{commit_limit}", "--no-merges", "--format=%ct"
-        ).split()
+        lines = repo.git.log(  # type: ignore[attr-defined]
+            f"-{commit_limit}", "--no-merges", f"--format={fmt}"
+        ).splitlines()
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return None
     return max(
-        (position + 1 for position, stamp in enumerate(stamps) if _stamp_after(stamp, since_ts)),
+        (
+            position + 1
+            for position, line in enumerate(lines)
+            if _entry_needed(line, since_ts, known_shas)
+        ),
         default=0,
     )
 
 
-def _stamp_after(stamp: str, since_ts: int) -> bool:
+def _entry_needed(
+    entry: str,
+    since_ts: int,
+    known_shas: frozenset[str] | set[str] | None,
+) -> bool:
+    parts = entry.split()
+    if not parts:
+        return False
+    if len(parts) == 1:
+        return _stamp_after(parts[0], since_ts, allow_equal=known_shas is not None)
+    sha, stamp = parts[0], parts[1]
     try:
-        return int(stamp) > since_ts
+        val = int(stamp)
+    except ValueError:
+        return True
+    if val > since_ts:
+        return True
+    if val == since_ts:
+        return sha not in (known_shas if known_shas is not None else ())
+    return False
+
+
+def _stamp_after(stamp: str, since_ts: int, *, allow_equal: bool = False) -> bool:
+    try:
+        val = int(stamp)
+        return val >= since_ts if allow_equal else val > since_ts
     except ValueError:  # unparseable stamp: keep it in the window
         return True
 
@@ -573,7 +665,9 @@ class _FileBuckets:
     ) -> None:
         """File one commit under each of its changed paths that is tracked here."""
         from .git_indexer import _CommitRec
+        from .git_indexer.records import commit_credit
 
+        credit = commit_credit(header)
         for target, added, deleted in changes:
             if target not in self.files:
                 continue
@@ -594,6 +688,7 @@ class _FileBuckets:
                         agent_tier=prov.autonomy_tier,
                         attribution=prov.attribution,
                         pure_move=target in pure_moves,
+                        credit=credit,
                     )
                 )
 
@@ -605,6 +700,7 @@ def load_commit_index(
     *,
     commit_sink: list[dict] | None = None,
     since_ts: int | None = None,
+    known_shas: set[str] | None = None,
     provenance_classifier: object | None = None,
     trace_index: object | None = None,
     cache_dir: Path | None = None,
@@ -666,7 +762,7 @@ def load_commit_index(
     # diffing commits whose fate is already known.
     depth = commit_limit
     if since_ts is not None:
-        newer = _depth_newer_than(repo, commit_limit, since_ts)
+        newer = _depth_newer_than(repo, commit_limit, since_ts, known_shas=known_shas)
         if newer is None:
             return {}
         depth = newer
@@ -698,7 +794,7 @@ def load_commit_index(
     labeler = _CommitLabeler(repo, depth, provenance_classifier, trace_index, commit_sink)
     buckets = _FileBuckets(indexable_files)
     commits_parsed = 0
-    for header, numstat_lines in _commits_after(records, since_ts):
+    for header, numstat_lines in _commits_after(records, since_ts, known_shas=known_shas):
         commits_parsed += 1
         # The full footprint (every file, not just the indexable subset): the
         # agent-trace overlap check and the commit sink both need it.
@@ -722,17 +818,33 @@ def load_commit_index(
     return buckets.records
 
 
-def _commits_after(records: list[str], since_ts: int | None) -> Iterator[tuple[dict, list[str]]]:
+def _commits_after(
+    records: list[str],
+    since_ts: int | None,
+    *,
+    known_shas: set[str] | None = None,
+) -> Iterator[tuple[dict, list[str]]]:
     """``(header, numstat_lines)`` of each parseable record newer than *since_ts*.
 
     Skips rather than stops at an older commit: the walk is newest first, but
-    commit times can be slightly out of order.
+    commit times can be slightly out of order. When *known_shas* is supplied,
+    commits occurring at *since_ts* whose shas are not in *known_shas* are
+    retained so same-second commits are not dropped (#6150).
     """
     from .git_indexer import _parse_commit_record
 
     for record in records:
         parsed = _parse_commit_record(record)
-        if parsed is not None and (since_ts is None or parsed[0]["ts"] > since_ts):
+        if parsed is None:
+            continue
+        ts = parsed[0]["ts"]
+        sha = parsed[0].get("sha")
+        if since_ts is None:
+            yield parsed
+        elif known_shas is not None:
+            if ts > since_ts or (ts == since_ts and sha not in known_shas):
+                yield parsed
+        elif ts > since_ts:
             yield parsed
 
 
@@ -852,9 +964,7 @@ class _RegionReader:
     a walk that stops early leaves at most that many reads unused.
     """
 
-    def __init__(
-        self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]
-    ) -> None:
+    def __init__(self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
         self._ahead = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2))
@@ -1095,9 +1205,7 @@ def load_sampled_commit_index(
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
     try:
-        while (
-            not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more()
-        ):
+        while not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more():
             if not walks.walk_next(sample, per_file_limit, underfilled):
                 break
             report(sample.global_commits + sample.deep_commits, total_commits)

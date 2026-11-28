@@ -11,7 +11,9 @@ dependency or optional dependency (a ``name @ file:...`` entry included), a
 Poetry dependency (``dev-dependencies`` included) or a uv ``workspace = true``
 source, matched by name. A uv or Poetry ``path`` source is matched only by
 the directory it points at, so one pointing outside the repo, or at a
-directory holding no unit, links nothing; a uv source pinned to git, a URL or
+directory that holds no package, links nothing. One pointing at a root that
+lost its name to an earlier package links that root's ``manifest:`` unit, not
+the package that kept the name. A uv source pinned to git, a URL or
 an index names an outside distribution and links nothing either, whatever
 the dependency list says, unless another of that name's marker-split sources
 is ``workspace = true``. Ceiling: PEP 735 ``[dependency-groups]`` entries are
@@ -26,7 +28,7 @@ from pathlib import Path
 
 import structlog
 
-from repowise.core.build_units.adapters import Found
+from repowise.core.build_units.adapters import Found, linked_unit_id
 from repowise.core.build_units.adapters.manifest_roots import package_manifests
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.external_systems import _dist_key, pypi
@@ -108,14 +110,16 @@ def units(ctx: ResolverContext) -> Found:
         if _MANIFEST in names and (found := _read(repo / root / _MANIFEST, repo, root)):
             read[root] = found
     # A name taken twice keeps its first root in sorted order; the later
-    # root is no unit here, so the fallback claims it, and a path source
-    # pointing at it links nothing rather than the other package.
+    # root is no unit here, so the fallback claims it. A path source
+    # pointing at it links that manifest unit, not the package that won.
     by_root: dict[str, str] = {}
+    dropped: set[str] = set()
     taken: set[str] = set()
     for root, (name, _named, _paths) in read.items():
         uid = f"python:{_dist_key(name)}"
         if uid in taken:
             log.warning("build_units_duplicate_id", unit_id=uid, root=root)
+            dropped.add(root)
             continue
         taken.add(uid)
         by_root[root] = uid
@@ -123,6 +127,9 @@ def units(ctx: ResolverContext) -> Found:
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for root, uid in by_root.items():
         name, named, paths = read[root]
+        linked = {
+            target for path in paths if (target := linked_unit_id(path, by_root, dropped))
+        }
         unit = BuildUnit(
             id=uid,
             ecosystem="python",
@@ -130,7 +137,7 @@ def units(ctx: ResolverContext) -> Found:
             root=root,
             manifest=f"{root}/{_MANIFEST}" if root else _MANIFEST,
             source="pyproject",
-            deps=tuple(named | {by_root[path] for path in paths if path in by_root}),
+            deps=tuple(named | linked),
         )
         out.append((unit, ()))
     return Found(out)

@@ -125,6 +125,8 @@ class CrossRepoEnricher:
         # (repo, file, contract_id, role) -> origin, so a link row can name how
         # each of its ends was read.
         self._contract_origin_index: dict[tuple[Any, Any, Any, Any], str] = {}
+        # Same key -> every line it was read at, so a link row can name call sites.
+        self._contract_lines_index: dict[tuple[Any, Any, Any, Any], list[int]] = defaultdict(list)
 
         # Service-granular system graph from the workspace update. Read-only;
         # views over it live in core/types.
@@ -377,15 +379,18 @@ class CrossRepoEnricher:
             symbol_id = contract.get("symbol_id")
             if symbol_id:
                 self._contract_symbol_index[symbol_id].append(contract)
+            key = (
+                contract.get("repo"),
+                contract.get("file_path"),
+                contract.get("contract_id"),
+                contract.get("role"),
+            )
             origin = contract.get("origin")
             if origin:
-                key = (
-                    contract.get("repo"),
-                    contract.get("file_path"),
-                    contract.get("contract_id"),
-                    contract.get("role"),
-                )
                 self._contract_origin_index[key] = origin
+            line = contract.get("line")
+            if isinstance(line, int) and line > 0:
+                self._contract_lines_index[key].append(line)
 
         _log.debug(
             "Contract enricher loaded: %d contracts, %d links",
@@ -697,6 +702,16 @@ class CrossRepoEnricher:
             **({"strategy": strategy} if (strategy := link.get("strategy")) else {}),
             **({"origin": origin} if origin else {}),
         }
+
+    def link_lines(self, link: dict, side: str) -> list[int]:
+        """Sorted lines the *side* end of *link* was read at; empty when not stored."""
+        contract_id = (
+            link.get("consumer_contract_id") or link.get("contract_id")
+            if side == "consumer"
+            else link.get("contract_id")
+        )
+        key = (link.get(f"{side}_repo"), link.get(f"{side}_file"), contract_id, side)
+        return sorted(set(self._contract_lines_index.get(key, ())))
 
     def get_cross_repo_partners(self, repo_alias: str, file_path: str) -> list[dict]:
         """Return cross-repo co-change partners for a file.

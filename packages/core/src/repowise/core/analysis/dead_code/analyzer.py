@@ -73,6 +73,7 @@ from .finding_helpers import (  # noqa: F401  (moved helpers re-exported)
 )
 from .go_name_uses import drop_go_package_uses
 from .kotlin_multiplatform import settle_platform_declarations
+from .load_time_calls import mark_load_time_calls
 from .meta_annotations import MetaAnnotations
 from .models import DeadCodeFindingData, DeadCodeKind, DeadCodeReport
 from .module_strings import drop_named_modules
@@ -325,14 +326,16 @@ class DeadCodeAnalyzer:
         cfg = config or {}
         dynamic_patterns = cfg.get("dynamic_patterns", _DEFAULT_DYNAMIC_PATTERNS)
         # Machine output known only by its content (a webpack chunk, a minified
-        # bundle) joins the whitelist, which every pass already honours.
-        whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
+        # bundle) and code a data folder holds join the whitelist, which every
+        # pass already honours.
+        whitelist = set(cfg.get("whitelist", [])) | self._unjudged_by_origin()
 
-        findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        # The settle passes rescan every file's text; an unchanged file's
-        # tokens come from the last run's cache in the index directory.
+        # The unreachable-file pass and the settle passes rescan every file's
+        # text; an unchanged file's tokens come from the last run's cache in
+        # the index directory.
         cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
         with token_cache(cache_dir):
+            findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
             findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
@@ -403,7 +406,9 @@ class DeadCodeAnalyzer:
         findings = clamp_unverified_absence(findings, self._source_map)
         findings = drop_internals_used_in_own_file(findings, self._source_map)
         findings = clamp_path_mentions(findings, self._source_map)
-        findings = drop_program_entries(findings, self._source_map)
+        findings = drop_program_entries(
+            findings, self._source_map, self._public_top_level_names(findings), self._repo_root
+        )
         type_names = self._public_top_level_names(findings, kinds=_TYPE_DECLARATION_KINDS)
         findings = drop_reference_assembly_api(findings, self._source_map, type_names)
         findings = clamp_named_types(findings, self._source_map, type_names)
@@ -418,6 +423,7 @@ class DeadCodeAnalyzer:
             BuildFacts(repo_root=self._repo_root, dotnet_index=self._dotnet_index),
         )
 
+        findings = mark_load_time_calls(findings, self._source_map, self._repo_root)
         return apply_deletion_gate(findings, self.graph, self._repo_root)
 
     def _detect_zombie_packages(self, whitelist: set[str]) -> list[DeadCodeFindingData]:
@@ -793,17 +799,21 @@ class DeadCodeAnalyzer:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _content_machine_output(self) -> set[str]:
-        """Files ``code_origin`` reads as generated or vendored from their bytes.
+    def _unjudged_by_origin(self) -> set[str]:
+        """Files ``code_origin`` reads as generated, vendored or data.
 
-        The path-only rules are asked per candidate by ``never_flag_path``.
-        ``is_test=False`` skips the test-path check, which cannot change
-        either answer and is half the cost.
+        Generated and vendored are read from the file's bytes; the path-only
+        rules are asked per candidate by ``never_flag_path``. Data is code a
+        content folder holds for the product to read by path, which no import
+        reaches. ``is_test=False`` skips the test-path check, half the cost: a
+        test file is never judged anyway, so whether it reads as test or as
+        data here changes nothing.
         """
         return {
             path
             for path, data in self._source_map.items()
-            if code_origin(path, data, is_test=False) in ("generated", "vendored")
+            if code_origin(path, data, is_test=False, repo_root=self._repo_root)
+            in ("generated", "vendored", "data")
         }
 
     def _should_never_flag(self, path: str, whitelist: set[str]) -> bool:

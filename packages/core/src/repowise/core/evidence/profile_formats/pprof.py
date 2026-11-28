@@ -10,13 +10,17 @@ the resolver checks every Go frame on, which also catches a line the
 compiler labelled with the wrong function.
 
 The weight is the ``cpu`` (or ``wall``) sample value in its time unit, with
-the ``samples/count`` value as the sample count. Memory and other profiles
+the ``samples/count`` value as the sample count. ``perf_to_profile`` names its
+values after the perf event instead; for the ``cpu-clock`` and ``task-clock``
+events, whose periods are nanoseconds of CPU, ``<event>_event`` is the weight
+and ``<event>_sample`` the count. Memory, hardware-counter and other profiles
 are refused.
 """
 
 from __future__ import annotations
 
 import gzip
+import re
 import zlib
 from collections.abc import Collection, Iterator
 from pathlib import PurePosixPath, PureWindowsPath
@@ -30,6 +34,9 @@ from .model import SNIFF_BYTES, ProfileRun, StackTally, frame_language
 _CLOCKS = {"cpu": "cpu", "wall": "wall"}
 #: pprof unit -> the evidence unit.
 _UNITS = {"nanoseconds": "ns", "microseconds": "us", "milliseconds": "ms", "seconds": "s"}
+# perf's software clocks as perf_to_profile names them, modifiers included
+# (``cpu-clock:u_event``). Every other perf event counts something but time.
+_PERF_CLOCK_RE = re.compile(r"(?P<event>(?:cpu|task)-clock(?::\w+)?)_event")
 _GZIP_MAGIC = b"\x1f\x8b"
 # Wire types each Profile field may use (profile.proto): 0 varint, 2 bytes. The
 # repeated int64 ``comment`` may be packed (2) or not (0); proto3 packs by default.
@@ -118,18 +125,32 @@ class _Profile:
                 return i, self._string(unit)
         return None
 
-    def run(self) -> ProfileRun:
-        types = [f"{self._string(t)}/{self._string(u)}" for t, u in self.sample_types]
+    def _timed_values(self) -> tuple[int, str, str, str] | None:
+        """The weight's position, evidence unit and clock, and the count's type name."""
         timed = self._value_index(_CLOCKS)
-        if timed is None or timed[1] not in _UNITS:
+        if timed is not None:
+            value_at, unit = timed
+            if unit not in _UNITS:
+                return None
+            return value_at, _UNITS[unit], _CLOCKS[self._string(self.sample_types[value_at][0])], "samples"
+        for i, (kind, unit) in enumerate(self.sample_types):
+            event = _PERF_CLOCK_RE.fullmatch(self._string(kind))
+            if event and self._string(unit) == "count":
+                return i, "ns", "cpu", f"{event['event']}_sample"
+        return None
+
+    def run(self) -> ProfileRun:
+        timed = self._timed_values()
+        if timed is None:
+            types = [f"{self._string(t)}/{self._string(u)}" for t, u in self.sample_types]
             raise EvidenceFormatError(
                 f"the profile measures {', '.join(types) or 'nothing'}, not CPU or wall time",
-                "pass a CPU profile, e.g. go test -cpuprofile cpu.pprof; memory, block "
-                "and mutex profiles are not read",
+                "pass a CPU profile, e.g. go test -cpuprofile cpu.pprof, or for perf "
+                "record -e cpu-clock; memory, block, mutex and hardware-counter profiles "
+                "are not read",
             )
-        value_at, unit = timed
-        kind = _CLOCKS[self._string(self.sample_types[value_at][0])]
-        counted = self._value_index(("samples",))
+        value_at, unit, kind, count_name = timed
+        counted = self._value_index((count_name,))
         count_at = counted[0] if counted is not None and counted[1] == "count" else None
 
         frames: list[ProfileFrame] = []
@@ -153,7 +174,7 @@ class _Profile:
         return ProfileRun(
             frames=tuple(frames),
             stacks=tally.stacks(),
-            unit=_UNITS[unit],
+            unit=unit,
             value_kind=kind,
         )
 
@@ -177,7 +198,7 @@ class _Profile:
                     ProfileFrame(
                         path=path,
                         line=line,
-                        language=frame_language(path),
+                        language=frame_language(path, name),
                         function=name,
                         start_line=start if start > 0 else None,
                     )

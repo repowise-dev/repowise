@@ -105,6 +105,7 @@ class RepoIndex:
         self._by_file: dict[str, list[IndexedSymbol]] = {}
         self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
+        self._origins: Mapping[str, str] | None = None
 
     @classmethod
     def from_symbols(
@@ -115,6 +116,7 @@ class RepoIndex:
         repo_id: str,
         session: Any = None,
         names: Mapping[str, Sequence[IndexedSymbol]] | None = None,
+        origins: Mapping[str, str] | None = None,
     ) -> RepoIndex:
         """An index over *symbols* the caller already holds, with no database.
 
@@ -122,11 +124,16 @@ class RepoIndex:
         :func:`.test_impact.analyze_workspace_test_impact`); :meth:`close` leaves
         it alone. *names* replaces the name lookup built from *symbols*, for a
         caller that loads only some files but resolves names across the repo.
+        *origins* maps a path to its stored ``code_origin``, for a caller whose
+        *session* cannot read the health rows; contract extraction judges an
+        end's origin by it in place of the session (see :attr:`origins`).
         """
         index = cls(alias, Path(), session, None, repo_id=repo_id)
         index._index(symbols)
         if names is not None:
             index._by_name = names  # type: ignore[assignment]
+        if origins is not None:
+            index._origins = origins
         return index
 
     # -- Loading -----------------------------------------------------------
@@ -211,9 +218,22 @@ class RepoIndex:
         """The connection the index holds; reachability queries run on it too."""
         return self._session
 
+    @property
+    def origins(self) -> Mapping[str, str] | None:
+        """Stored ``code_origin`` by path the caller handed in, or ``None`` (read the session)."""
+        return self._origins
+
+    def files(self) -> Collection[str]:
+        """Every file with parsed symbols (POSIX, repo-relative)."""
+        return self._by_file.keys()
+
     def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
         """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
         return self._by_file.get(rel_path, [])
+
+    def symbols_named(self, name: str) -> Sequence[IndexedSymbol]:
+        """Every symbol whose own (unqualified) name is *name*, across the repo."""
+        return self._by_name.get(name, ())
 
     def symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
         """The innermost symbol whose span contains *line*, or None."""

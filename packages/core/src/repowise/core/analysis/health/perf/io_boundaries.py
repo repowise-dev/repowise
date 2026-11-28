@@ -29,7 +29,7 @@ signal", never a false positive).
 from __future__ import annotations
 
 import re
-from typing import Protocol
+from typing import Any, Protocol
 
 from ....ingestion.external_systems.io_kind import classify_io_kind
 
@@ -313,6 +313,18 @@ def collect_io_names(tree_root: _NodeLike, language: str) -> dict[str, str]:
         for child in node.children:
             stack.append(child)
     return _finish_io_names(names, rebound)
+
+
+def walked_io_names(fcx: Any) -> dict[str, str] | None:
+    """The import map the walker already collected for *fcx*'s file, or None.
+
+    The walker's single descent runs the same visitor as
+    :func:`collect_io_names` whenever its perf pass runs, so a later pass over
+    the same file reads it instead of walking the tree again. A walk that
+    found no functions (the file did not parse, timed out, or holds only
+    module-level code) may carry no map, so the caller collects its own.
+    """
+    return fcx.io_boundary_names if fcx.functions else None
 
 
 def _io_visit(

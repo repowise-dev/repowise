@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -28,6 +27,7 @@ from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._code_rationale import _salient_numbers
 from repowise.server.mcp_server._flow_path import file_adjacency
+from repowise.server.mcp_server._helpers import is_excluded, source_for
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_answer.confidence import _is_value_question
 from repowise.server.mcp_server.tool_answer.hydration import _stem_hit, _text_stems
@@ -43,7 +43,6 @@ _VALUE_WORDS = frozenset(
 # Question words that say a value is wanted, never which one.
 _SHAPE_WORDS = frozenset({"default", "value", "many", "much", "long", "large", "big", "set"})
 _GLOBS = [f"*.{ext}" for ext in sorted(CODE_EXTENSIONS - {"toml", "yaml", "yml", "sql"})]
-_GREP_SECONDS = 5.0
 _MAX_LINES = 4000
 # A line must carry this many of the question's other words, counting its
 # enclosing function's name: one shared word is a coincidence in a large repo.
@@ -67,30 +66,14 @@ def _value_words(question: str) -> list[str]:
 
 def _grep_value_lines(root: Path, words: list[str]) -> list[_Line]:
     """Code lines assigning a number to a name holding one of *words*."""
+    source = source_for(root)
+    if source is None:
+        return []
     alt = "|".join(words)
     # ``name = 5``, ``name=5``, ``"name": 5`` and an annotated ``name: float = 5``.
     pattern = rf"[A-Za-z_]*({alt})[A-Za-z_]*['\"]?[[:space:]]*(:[^=]*)?[:=][[:space:]]*-?[0-9]"
-    try:
-        proc = subprocess.run(
-            ["git", "--no-pager", "grep", "--no-color", "-n", "-I", "-i", "-E", pattern, "--", *_GLOBS],
-            cwd=str(root),
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            # The MCP server's stdin is the protocol stream: never let git read it.
-            stdin=subprocess.DEVNULL,
-            timeout=_GREP_SECONDS,
-            check=False,
-        )
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return []
-    out: list[_Line] = []
-    for raw in proc.stdout.splitlines()[:_MAX_LINES]:
-        path, _, rest = raw.partition(":")
-        num, _, text = rest.partition(":")
-        if num.isdigit() and not is_test_related_path(path):
-            out.append(_Line(path, int(num), text))
-    return out
+    hits = source.grep(pattern, paths=_GLOBS, ignore_case=True, limit=_MAX_LINES)
+    return [_Line(path, num, text) for path, num, text in hits if not is_test_related_path(path)]
 
 
 def _evidence(nouns: list[str], text: str) -> set[str]:
@@ -98,7 +81,9 @@ def _evidence(nouns: list[str], text: str) -> set[str]:
     return {n for n in nouns if _stem_hit(n, stems)}
 
 
-async def _reach(session, repo_id: str, question_ids: set[str]) -> set[str] | None:
+async def _reach(
+    session, repo_id: str, question_ids: set[str], exclude_spec: Any = None
+) -> set[str] | None:
     """Files the question's named code lives in plus their direct neighbours, or None."""
     if not question_ids:
         return None
@@ -109,10 +94,14 @@ async def _reach(session, repo_id: str, question_ids: set[str]) -> set[str] | No
             WikiSymbol.kind.in_(("function", "method", "class")),
         )
     )
-    owners = {p for (p,) in res.all() if p and not is_test_related_path(p)}
+    owners = {
+        p
+        for (p,) in res.all()
+        if p and not is_test_related_path(p) and not is_excluded(p, exclude_spec)
+    }
     if not owners:
         return None
-    adj = await file_adjacency(session, repo_id)
+    adj = await file_adjacency(session, repo_id, exclude_spec)
     return owners | {n for o in owners for n in adj.get(o, ()) if not is_test_related_path(n)}
 
 
@@ -178,7 +167,13 @@ def _scored(nouns: list[str], holders: dict[_Line, Any]) -> list[tuple[int, int,
 
 
 async def value_line_anchor_hits(
-    ctx: Any, session, repo_id: str, question: str, question_ids: set[str], hits: list[dict]
+    ctx: Any,
+    session,
+    repo_id: str,
+    question: str,
+    question_ids: set[str],
+    hits: list[dict],
+    exclude_spec: Any = None,
 ) -> list[dict]:
     """Anchor the symbol that sets the value the question asks for.
 
@@ -190,7 +185,8 @@ async def value_line_anchor_hits(
     if root is None or not words:
         return hits
     lines = await asyncio.to_thread(_grep_value_lines, Path(str(root)), words)
-    reach = await _reach(session, repo_id, question_ids)
+    lines = [ln for ln in lines if not is_excluded(ln.path, exclude_spec)]
+    reach = await _reach(session, repo_id, question_ids, exclude_spec)
     if reach is not None:
         lines = [ln for ln in lines if ln.path in reach]
     if not lines:

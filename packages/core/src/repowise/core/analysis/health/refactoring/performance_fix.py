@@ -33,6 +33,11 @@ _STEPS: dict[str, tuple[str | None, str]] = {
         None,
         "Select one row per key in the query instead of reducing all rows here",
     ),
+    "reduce_measured_self_time": (
+        "Find the work {sink} repeats and cut it: cache the result, move it out "
+        "of the loop that calls it, or call it less; then re-run the workload",
+        "",
+    ),
 }
 # Strategies whose edit is one per loop and variable, however many lines of
 # the loop the markers fired on, with the step that names the variable.
@@ -197,6 +202,9 @@ def _walks(iterates: object) -> str:
 
 
 _EFFORT_BANDS = ((1, "S"), (3, "M"), (8, "L"))
+#: Strategies sized by the work, not by the places that change: finding what a
+#: measured function repeats is reading and profiling before it is one edit.
+_MEASURED_EFFORT = {"reduce_measured_self_time": "M"}
 
 
 def edit_effort(sites: int) -> str:
@@ -289,6 +297,20 @@ def _shared_sink(opportunity: PerformanceOpportunity) -> str | None:
     return sink
 
 
+def _measured_step(
+    steps: list[dict[str, object]], opportunity: PerformanceOpportunity
+) -> list[dict[str, object]]:
+    """A measured hotspot's one step, said as its action row's next step when a
+    rule fired on what the run measured inside the function
+    (``evidence.next_step``); else the generic step stands."""
+    step = (opportunity.measured_row or {}).get("next_step")
+    if not step or not steps:
+        return steps
+    name = str(steps[0].get("symbol") or "").rsplit("::", 1)[-1]
+    action = f"In {name}, {step['next']}" if name else str(step["next"])
+    return [{**steps[0], "action": action}, *steps[1:]]
+
+
 def _suggestion(
     opportunity: PerformanceOpportunity, fix: PerformanceFix, confidence: str
 ) -> RefactoringSuggestion:
@@ -307,6 +329,7 @@ def _suggestion(
         _shared_sink(opportunity),
         fix.api,
     )
+    intro = _measured_step(intro, opportunity)
     edits = _site_steps(
         fix.strategy, fix.safety, locations, fix.api, opportunity.boundary_kind
     )
@@ -353,7 +376,8 @@ def _suggestion(
         # Performance is a separate score dimension and its findings
         # intentionally carry zero defect-health impact.
         impact_delta=0.0,
-        effort_bucket=edit_effort(sites + (len(intro) + per_site > len(locations))),
+        effort_bucket=_MEASURED_EFFORT.get(fix.strategy)
+        or edit_effort(sites + (len(intro) + per_site > len(locations))),
         blast_radius={
             "files": sorted({item["file_path"] for item in opportunity.evidence}),
             "file_count": opportunity.affected_files_total,

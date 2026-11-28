@@ -30,9 +30,18 @@ _STANDARD = {
 
 
 async def _session(
-    tmp_path: Any, monkeypatch: Any, client: str | None, tools: Any, *, workspace: bool = False
+    tmp_path: Any,
+    monkeypatch: Any,
+    client: str | None,
+    tools: Any,
+    *,
+    workspace: bool = False,
+    schemas: dict[str, Any] | None = None,
 ) -> tuple[set[str], str, str]:
-    """What one client session is listed, the boot text, and the text it is sent."""
+    """What one client session is listed, the boot text, and the text it is sent.
+
+    *schemas*, when given, is filled with each listed tool's input schema.
+    """
     from mcp.shared.memory import create_connected_server_and_client_session
 
     from repowise.server.mcp_server import _server, _state, _tool_selection, create_mcp_server, mcp
@@ -51,7 +60,10 @@ async def _session(
         async with create_connected_server_and_client_session(
             server._mcp_server, client_info=info
         ) as session:
-            listed = {tool.name for tool in (await session.list_tools()).tools}
+            listed_tools = (await session.list_tools()).tools
+            listed = {tool.name for tool in listed_tools}
+            if schemas is not None:
+                schemas.update({tool.name: tool.inputSchema for tool in listed_tools})
             # The connect helper drops the initialize reply; asking again repeats it.
             sent = (await session.initialize()).instructions or ""
             instructions = server.instructions
@@ -123,7 +135,30 @@ async def test_a_session_is_told_only_the_tools_it_is_listed(
     # A client acts on a tool it reads about even when it was never listed it.
     listed, _, sent = await _session(tmp_path, monkeypatch, client, tools, workspace=workspace)
     named = set(_TOOL_NAME.findall(sent))
-    assert named and named <= listed, sent
+    assert named <= listed, sent
+    # Codex is sent the brief text, which names no tool.
+    assert named or client == "codex-mcp-client", sent
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [None, "standard"])
+async def test_codex_is_sent_the_brief_text(tmp_path, monkeypatch, tools) -> None:
+    # Codex repeats the instructions under every tool it discovers, so each
+    # line costs once per tool; the tool descriptions say when to call.
+    from repowise.core.registry.instructions import server_instructions
+
+    _, boot, sent = await _session(tmp_path, monkeypatch, "codex-mcp-client", tools)
+    assert sent == server_instructions(None, brief=True)
+    assert sent == boot.splitlines()[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workspace", [False, True], ids=["single", "workspace"])
+async def test_repo_all_is_offered_only_by_a_workspace(tmp_path, monkeypatch, workspace) -> None:
+    schemas: dict[str, Any] = {}
+    await _session(tmp_path, monkeypatch, "claude-code", None, workspace=workspace, schemas=schemas)
+    repo = schemas["search_codebase"]["properties"]["repo"]["description"]
+    assert ('"all"' in repo) is workspace
 
 
 @pytest.mark.asyncio

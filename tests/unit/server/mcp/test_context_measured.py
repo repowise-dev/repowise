@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import text
 
-from repowise.core.persistence.models import SymbolHotness
+from repowise.core.persistence.models import GraphEdge, SymbolHotness
 from repowise.server.mcp_server.tool_context import measured
 from repowise.server.mcp_server.tool_context.measured import file_line, symbol_line
 
@@ -28,8 +28,9 @@ def _row(symbol_id: str = LOGIN, **kw):
         "run_samples": 1000,
         "share_low": 0.10,
         "share_high": 0.14,
-        "total_share": 0.12,
-        "explained_share": 0.4,
+        "total_share": 0.5,
+        "self_share": 0.12,
+        "repo_self_share": 0.4,
         "workload_name": "cli build",
         "workload_class": "entry_point",
         "ordering_only": False,
@@ -43,10 +44,19 @@ def _row(symbol_id: str = LOGIN, **kw):
 # -- wording -----------------------------------------------------------------
 
 
-def test_symbol_line_names_basis_share_interval_explained_and_age():
-    assert symbol_line(_row(), NOW) == (
+def test_symbol_line_names_basis_self_share_interval_repo_self_and_age():
+    # The cost (self) leads; inclusive time is never stated as the function's.
+    line = symbol_line(_row(), NOW)
+    assert line == (
         'rank 3 of repo code in entry_point "cli build" '
-        "(12% of samples, 10-14%; repo code explains 40%), 2d old"
+        "(12% self, 10-14%; repo code itself 40%), 2d old"
+    )
+    assert "50%" not in line and "explains" not in line
+
+
+def test_a_run_stored_without_its_split_leaves_it_out():
+    assert symbol_line(_row(repo_self_share=None), NOW) == (
+        'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%), 2d old'
     )
 
 
@@ -63,16 +73,17 @@ def test_unit_test_run_says_in_tests():
 
 
 def test_tracer_run_is_ordering_only():
-    row = _row(ordering_only=True, share_low=None, share_high=None, total_share=None)
+    row = _row(ordering_only=True, share_low=None, share_high=None, total_share=None,
+               self_share=None)
     assert symbol_line(row, NOW) == (
         'rank 3 of repo code in entry_point "cli build" '
-        "(ordering only; repo code explains 40%), 2d old"
+        "(ordering only; repo code itself 40%), 2d old"
     )
 
 
 def test_without_counted_samples_the_share_has_no_interval():
     row = _row(samples=None, run_samples=None, share_low=None, share_high=None)
-    assert "(12% of the run; repo code explains 40%)" in symbol_line(row, NOW)
+    assert "(12% self; repo code itself 40%)" in symbol_line(row, NOW)
 
 
 def test_measured_tier_is_not_ranked():
@@ -94,12 +105,12 @@ def test_body_unchanged_says_earlier_commit():
 
 
 def test_file_line_caps_named_functions_and_counts_the_rest():
-    rows = [_row(f"{FILE}::f{i}", rank=i + 1, samples=100 - i) for i in range(5)]
+    rows = [_row(f"{FILE}::f{i}", rank=i + 1, self_share=0.10 - i / 1000) for i in range(5)]
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     line = file_line(rows, NOW)
-    assert line.startswith('in entry_point "cli build" (repo code explains 40%), 2d old: ')
+    assert line.startswith('in entry_point "cli build" (repo code itself 40%), 2d old: ')
     assert line.count(" rank ") == measured.MAX_NAMED_IN_FILE
-    assert "f0 rank 1 (10% of samples, 10-14%)" in line
+    assert "f0 rank 1 (10% self, 10-14%)" in line
     assert "f3" not in line and "old rank" not in line
     assert line.endswith("; 2 more measured; 1 stale")
 
@@ -115,7 +126,7 @@ def test_file_line_names_only_the_lead_run():
     rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
     assert file_line(rows, NOW).endswith("; 1 more measured; 1 in other runs; 1 stale")
     # One run, within the cap: no counts at all.
-    assert file_line(rows[:1], NOW).endswith("a rank 1 (12% of samples, 10-14%)")
+    assert file_line(rows[:1], NOW).endswith("a rank 1 (12% self, 10-14%)")
 
 
 def test_file_line_all_stale():
@@ -151,7 +162,7 @@ async def test_symbol_and_file_cards_carry_the_line(setup_mcp, session, populate
     cards = result["targets"]
     assert cards[LOGIN]["type"] == "symbol"
     assert cards[LOGIN]["measured"].startswith('rank 3 of repo code in entry_point "cli build"')
-    assert cards[FILE]["measured"].endswith("login rank 3 (12% of samples, 10-14%)")
+    assert cards[FILE]["measured"].endswith("login rank 3 (12% self, 10-14%)")
     # No evidence for this file: no key at all, never an empty or null one.
     assert "measured" not in cards["src/db/models.py"]
     assert "_measured_target" not in json.dumps(result)
@@ -201,11 +212,11 @@ async def test_store_without_the_table_answers_as_no_evidence(
 
 
 def test_low_share_interval_never_rounds_past_the_estimate():
-    row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
-    assert "(<1% of samples, 0-1%;" in symbol_line(row, NOW)
+    row = _row(self_share=0.004, share_low=0.0016, share_high=0.0102)
+    assert "(<1% self, 0-1%;" in symbol_line(row, NOW)
     # A lower end that is exact in decimal but not in binary keeps its value.
-    row = _row(samples=600, share_low=0.57, share_high=0.63)
-    assert "(60% of samples, 57-63%;" in symbol_line(row, NOW)
+    row = _row(self_share=0.6, share_low=0.57, share_high=0.63)
+    assert "(60% self, 57-63%;" in symbol_line(row, NOW)
 
 
 def test_run_without_a_class_names_only_the_workload():
@@ -233,4 +244,240 @@ async def test_class_target_and_missed_symbol(setup_mcp, session, populated_db):
     assert "measured" not in cards[cls]
     # A missed name degrades to the file's card, which carries the file's line.
     assert cards[miss]["resolved_to"] == FILE
-    assert cards[miss]["measured"].endswith("login rank 3 (12% of samples, 10-14%)")
+    assert cards[miss]["measured"].endswith("login rank 3 (12% self, 10-14%)")
+
+
+# -- why and drivers -----------------------------------------------------------
+
+#: What a run measured inside ``login``: stat calls per entry of a directory walk.
+INSIDE = [
+    {
+        "name": "is_file",
+        "kind": "library",
+        "share": 0.57,
+        "leaf": {"name": "stat", "kind": "native", "share": 0.57},
+    },
+    {"name": "select_recursive", "kind": "library", "share": 0.25},
+    {"name": "stat", "kind": "library", "share": 0.15},
+]
+MIDDLEWARE = "src/auth/middleware.py::require_user"
+TEST_CALLER = "tests/test_service.py::test_login"
+#: Measured callers: one production caller in the graph, one test caller in the
+#: graph, one production name the graph does not list as a caller.
+DRIVERS = [
+    {"name": "require_user", "share": 0.6, "symbol": MIDDLEWARE},
+    {"name": "test_login", "share": 0.3, "symbol": TEST_CALLER},
+    {"name": "ghost", "share": 0.1, "symbol": "src/auth/other.py::ghost"},
+]
+
+
+async def _callers(session, repo_id: str) -> None:
+    for source in (MIDDLEWARE, TEST_CALLER):
+        session.add(
+            GraphEdge(
+                repository_id=repo_id,
+                source_node_id=source,
+                target_node_id=LOGIN,
+                edge_type="calls",
+            )
+        )
+    await session.flush()
+
+
+def test_symbol_line_appends_why_and_drivers_after_the_measurement():
+    line = symbol_line(_row(), NOW, ["why: w", "driven by: d 60%"])
+    assert line == (
+        'rank 3 of repo code in entry_point "cli build" '
+        "(12% self, 10-14%; repo code itself 40%), 2d old; why: w; driven by: d 60%"
+    )
+    assert symbol_line(_row(), NOW, []) == symbol_line(_row(), NOW)
+
+
+@pytest.mark.asyncio
+async def test_a_measured_function_names_why_and_its_production_drivers(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    line = cards[LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "; why: " in line and "directory walk" in line
+    # Only the production caller the graph lists: no test caller, no unlisted name.
+    assert line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+    assert "test_login" not in line and "ghost" not in line
+    # A file's line never takes a function's why or drivers.
+    assert "why:" not in cards[FILE]["measured"]
+    assert "driven by" not in cards[FILE]["measured"]
+
+
+@pytest.mark.asyncio
+async def test_why_and_drivers_only_with_their_data(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    # A unit-test run gets no step; its measured production caller still drives it.
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        workload_class="unit_test",
+        workload_name="pytest",
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert "why:" not in line and line.endswith(f"; driven by: {MIDDLEWARE} 60%")
+
+
+@pytest.mark.asyncio
+async def test_stale_or_bare_rows_keep_the_plain_line(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        freshness="stale",
+        rank=None,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('stale: measured in entry_point "cli build" before the body changed, ')
+    assert line.endswith("d old")
+    # Only a test caller measured, and no rule fires: the plain line.
+    row = await session.get(SymbolHotness, (populated_db, LOGIN))
+    row.freshness, row.rank = "current", 3
+    row.inside_json = json.dumps([{"name": "helper", "kind": "repo", "share": 0.2}])
+    row.drivers_json = json.dumps(DRIVERS[1:2])
+    await session.flush()
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.endswith("d old")
+    assert "why" not in line and "driven" not in line
+
+
+@pytest.mark.asyncio
+async def test_a_failure_behind_why_or_drivers_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _callers(session, populated_db)
+    await _add(
+        session,
+        populated_db,
+        LOGIN,
+        inside_json=json.dumps(INSIDE),
+        drivers_json=json.dumps(DRIVERS),
+    )
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored finding that does not parse")
+
+    monkeypatch.setattr(measured, "step_findings", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in entry_point "cli build"')
+    assert "why" not in line and "driven" not in line
+
+
+# -- production window ---------------------------------------------------------
+
+CLAIM = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19"
+
+
+def test_a_production_row_names_its_window_and_nothing_else_changes():
+    prod = _row(workload_class="production", workload_name="api")
+    assert symbol_line(prod, NOW, (), {"r1": CLAIM}) == (
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self, 10-14%; repo code itself 40%), 2d old"
+    )
+    assert file_line([prod], NOW, {"r1": CLAIM}).startswith(
+        'in production "api" over 2026-10-30 to 2026-11-26, deployed ee257d145f19 ('
+    )
+    # A claim for another run, or a window on a row that is not production, is never read.
+    assert symbol_line(prod, NOW, (), {"r2": CLAIM}) == symbol_line(prod, NOW)
+    assert symbol_line(_row(), NOW, (), {"r1": CLAIM}) == symbol_line(_row(), NOW)
+    assert 'production "api", window unknown, deployed commit unknown' in symbol_line(
+        prod, NOW, (), {"r1": "in production, window unknown, deployed commit unknown"}
+    )
+
+
+async def _production_run(session, repo_id: str, run_id: str = "r1") -> None:
+    from repowise.core.persistence.models import EvidenceRun
+
+    session.add(
+        EvidenceRun(
+            id=run_id, repository_id=repo_id, run_key=run_id, kind="profile",
+            format="repowise-evidence-v1", source="cli", workload_name="api",
+            workload_class="production", value_kind="cpu", unit="samples",
+            commit_sha="ee257d145f19" + "0" * 28,
+            window_start=datetime(2026, 10, 30, tzinfo=UTC),
+            window_end=datetime(2026, 11, 26, tzinfo=UTC),
+        )
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_a_function_measured_in_production_names_the_window(
+    setup_mcp, session, populated_db
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+    cards = (await get_context([LOGIN, FILE]))["targets"]
+    assert cards[LOGIN]["measured"].startswith(
+        'rank 3 of repo code in production "api" over 2026-10-30 to 2026-11-26, '
+        "deployed ee257d145f19 (12% self"
+    )
+    assert cards[FILE]["measured"].startswith(f'in production "api" {CLAIM[14:]} (')
+
+
+@pytest.mark.asyncio
+async def test_non_production_lines_read_no_window(setup_mcp, session, populated_db, monkeypatch):
+    from repowise.server.mcp_server import get_context
+
+    # A stored production run elsewhere: an entry_point row's line is unchanged
+    # and the window read never runs.
+    await _production_run(session, populated_db, "r-prod")
+    await _add(session, populated_db, LOGIN)
+    calls: list = []
+
+    async def _spy(*args, **kwargs):
+        calls.append(args)
+        return {}
+
+    monkeypatch.setattr(measured, "production_window_claims", _spy)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith(
+        'rank 3 of repo code in entry_point "cli build" (12% self, 10-14%; repo code itself 40%), '
+    )
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_window_read_keeps_the_plain_line(
+    setup_mcp, session, populated_db, monkeypatch
+):
+    from repowise.server.mcp_server import get_context
+
+    await _production_run(session, populated_db)
+    await _add(session, populated_db, LOGIN, workload_class="production", workload_name="api")
+
+    async def _broken(*args, **kwargs):
+        raise ValueError("a stored window time that does not parse")
+
+    monkeypatch.setattr(measured, "production_window_claims", _broken)
+    line = (await get_context([LOGIN]))["targets"][LOGIN]["measured"]
+    assert line.startswith('rank 3 of repo code in production "api" (12% self')

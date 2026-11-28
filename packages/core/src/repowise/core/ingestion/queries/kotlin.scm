@@ -23,6 +23,18 @@
   (identifier) @symbol.name
 ) @symbol.def
 
+; Secondary constructor: constructor() : this(1) { ... }
+; It has no name node, so it is named after its class, as a Java constructor is.
+(class_declaration
+  name: (identifier) @symbol.name
+  (class_body
+    (secondary_constructor
+      (modifiers)? @symbol.modifiers
+      (function_value_parameters) @symbol.params
+    ) @symbol.def
+  )
+)
+
 ; typealias Foo = Bar (Q2)
 (type_alias
   (identifier) @symbol.name
@@ -99,6 +111,58 @@
     (value_arguments)
     (annotated_lambda)
   ] @call.arguments
+) @call.site
+
+; Generic call with one type argument and one argument: the grammar reads
+; ``f<T>(x)`` as the comparison ``(f < T) > (x)``, where it reads ``f<T>()``,
+; ``f<A, B>(x)`` and ``f<T>(x, y)`` as a call. A comparison written this way
+; is no Kotlin: ``Boolean > Int`` does not compile, and one with a bracket
+; before the ``>`` (``(a < b) > (c)``) is not this shape. The type argument is
+; a name, or a qualified name (``f<a.B>(x)``). A type argument with its own
+; arguments or a ``?`` (``f<List<Int>>(x)``) is read as a call already. The
+; target and the receiver are the ones the two queries above take.
+(binary_expression
+  (binary_expression
+    .
+    [
+      (identifier) @call.target
+      (unary_expression (identifier) @call.target)
+    ]
+    "<"
+    [
+      (identifier)
+      (navigation_expression)
+    ]
+  )
+  ">"
+  (parenthesized_expression) @call.arguments
+) @call.site
+
+(binary_expression
+  (binary_expression
+    .
+    (navigation_expression
+      [
+        (identifier) @call.receiver
+        (unary_expression (identifier) @call.receiver)
+        (this_expression) @call.receiver
+        (navigation_expression (this_expression) (identifier) @call.receiver)
+        ((navigation_expression) @call.receiver
+          (#not-match? @call.receiver "^this[.][A-Za-z_][A-Za-z0-9_]*$"))
+        (unary_expression (navigation_expression) @call.receiver)
+        (string_literal) @call.receiver
+        (multiline_string_literal) @call.receiver
+      ]
+      (identifier) @call.target
+    )
+    "<"
+    [
+      (identifier)
+      (navigation_expression)
+    ]
+  )
+  ">"
+  (parenthesized_expression) @call.arguments
 ) @call.site
 
 ; Superclass call: super.m(args), and super<I>.m(args) naming the supertype
