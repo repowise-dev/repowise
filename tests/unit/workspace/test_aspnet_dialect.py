@@ -280,3 +280,73 @@ public record BController
 }
 """
     assert set(_extract(content)) == {"http::GET::/api/a/x", "http::GET::/api/b/y"}
+
+
+def test_leading_slash_in_verb_attribute_ignores_prefix():
+    """A verb attribute with a leading slash ignores the controller prefix."""
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet("/health")]
+    public IActionResult Health() => Ok();
+}
+"""
+    contracts = _extract(content)
+    assert set(contracts) == {"http::GET::/health"}
+
+
+def test_tilde_slash_in_verb_attribute_ignores_prefix():
+    """A verb attribute starting with ~/ ignores the controller prefix."""
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet("~/ping")]
+    public IActionResult Ping() => Ok();
+}
+"""
+    contracts = _extract(content)
+    assert set(contracts) == {"http::GET::/ping"}
+
+
+def test_leading_slash_in_action_route_ignores_prefix():
+    """An action-level [Route] with a leading slash ignores the controller prefix."""
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet, Route("/status")]
+    public IActionResult Status() => Ok();
+}
+"""
+    contracts = _extract(content)
+    assert set(contracts) == {"http::GET::/status"}
+
+
+def test_bare_slash_verb_attribute_yields_root():
+    """A bare '/' verb template ignores the controller prefix and yields root."""
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet("/")]
+    public IActionResult Root() => Ok();
+}
+"""
+    contracts = _extract(content)
+    assert set(contracts) == {"http::GET::/"}
+
+
+def test_relative_verb_attribute_combines_with_prefix():
+    """A relative verb template is still combined with the controller prefix."""
+    content = """\
+[Route("api/r")]
+public class RController : ControllerBase
+{
+    [HttpGet("health")]
+    public IActionResult Health() => Ok();
+}
+"""
+    contracts = _extract(content)
+    assert set(contracts) == {"http::GET::/api/r/health"}
