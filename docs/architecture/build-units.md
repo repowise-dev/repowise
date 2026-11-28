@@ -164,7 +164,8 @@ answer:
   branch are read statically. `ALIAS` and `IMPORTED` libraries become units
   of their own, so a dep on an alias points at an empty unit. An include
   directory several targets declare gives its headers several owners, since
-  the build gives them none; private include directories are not read. Below
+  the build gives them none, and headers under another target's root inside
+  that directory stay with that target. Private include directories are not read. Below
   the repo root, `${CMAKE_CURRENT_SOURCE_DIR}/x` paths resolve wrongly (and
   `${PROJECT_SOURCE_DIR}/x` on Windows), so those files are missed. A
   `CMakeLists.txt` is build config, not a package manifest, so the fallback

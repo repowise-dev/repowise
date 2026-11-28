@@ -4,8 +4,9 @@ One unit per ``add_library`` / ``add_executable`` target. Its listed files
 are its sources, the headers it names, and every header under its PUBLIC or
 INTERFACE ``target_include_directories``, wherever that directory sits. A
 directory several targets declare gives its headers several owners: the
-build gives them no single one. A file no target lists falls to the deepest
-unit root above it.
+build gives them no single one. An include directory spanning another
+target's root (``src`` above ``src/lib``) leaves that target's headers to it.
+A file no target lists falls to the deepest unit root above it.
 ``target_link_libraries`` names that match another target become deps; the
 rest (``Threads::Threads``, system libraries) are third-party and dropped.
 
@@ -88,8 +89,14 @@ def _has_cmake(paths: set[str]) -> bool:
     return any(p == _MANIFEST or p.endswith(f"/{_MANIFEST}") for p in paths)
 
 
-def _headers_under(dirs: Iterable[str], headers: list[str]) -> list[str]:
-    """The paths in sorted *headers* below any of *dirs* (repo-relative directories)."""
+def _headers_under(
+    dirs: Iterable[str], headers: list[str], other_roots: Iterable[str] = ()
+) -> list[str]:
+    """The paths in sorted *headers* below any of *dirs* (repo-relative directories).
+
+    A header below one of *other_roots* that lies at or inside the directory
+    is left out: it belongs to the target rooted there.
+    """
     out: list[str] = []
     for d in dirs:
         # Unexpanded ``${...}``, absolute paths (``/x``, ``C:/x``) and the repo
@@ -97,20 +104,22 @@ def _headers_under(dirs: Iterable[str], headers: list[str]) -> list[str]:
         if not d or "${" in d or d.startswith("/") or d[1:2] == ":":
             continue
         prefix = d.rstrip("/") + "/"
+        nested = tuple(f"{r}/" for r in other_roots if f"{r}/".startswith(prefix))
         i = bisect_left(headers, prefix)
         while i < len(headers) and headers[i].startswith(prefix):
-            out.append(headers[i])
+            if not headers[i].startswith(nested):
+                out.append(headers[i])
             i += 1
     return out
 
 
-def _files(target: CppTarget, headers: list[str]) -> list[str]:
+def _files(target: CppTarget, headers: list[str], roots: set[str]) -> list[str]:
     return [
         *target.sources,
         *target.public_headers,
         *target.private_headers,
         *target.conditional_sources,
-        *_headers_under(target.include_dirs, headers),
+        *_headers_under(target.include_dirs, headers, roots - {target.root_dir}),
     ]
 
 
@@ -129,10 +138,11 @@ def units(ctx: ResolverContext) -> Found:
         else:
             declared.append((target_id.partition("@")[2], target))
 
+    roots = {target.root_dir for _, target in declared}
     claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for declared_in, target in declared:
         parts = [target, *stubs.get(target.name, ())]
-        files = [f for part in parts for f in _files(part, headers)]
+        files = [f for part in parts for f in _files(part, headers, roots)]
         deps = {f"cmake:{dep}" for part in parts for dep in part.link_deps}
         unit = BuildUnit(
             id=f"cmake:{target.name}",

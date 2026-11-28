@@ -443,6 +443,8 @@ def _declare_target(cm: CMakeFile, name: str, *, kind: str, cmakelists: str) -> 
     """
     for t in cm.targets:
         if t.name == name:
+            if t.kind == "unknown":  # a stub an earlier ``target_*`` call made
+                t.kind = kind
             return t
     t = CMakeTarget(name=name, kind=kind, cmakelists=cmakelists)
     cm.targets.append(t)

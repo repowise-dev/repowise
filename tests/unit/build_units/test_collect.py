@@ -1055,6 +1055,36 @@ def test_cmake_include_dir_with_a_colon_is_read_and_a_drive_path_is_not():
     assert cmake_adapter._headers_under(["C:/x", "C:"], headers) == []
 
 
+def test_cmake_consumer_include_dir_leaves_a_nested_library_its_headers(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "add_subdirectory(src/lib)\n"
+            "add_executable(app src/main.cpp)\n"
+            "target_include_directories(app PUBLIC src)\n"
+            "target_link_libraries(app PRIVATE lib)\n"
+        ),
+        "src/main.cpp": "",
+        "src/app.h": "",
+        "src/lib/CMakeLists.txt": "add_library(lib lib.cpp)\n",
+        "src/lib/lib.cpp": "",
+        "src/lib/lib.h": "",
+    })
+    assert _owners(index, "src/lib/lib.h") == ["cmake:lib"]
+    assert _owners(index, "src/app.h") == ["cmake:app"]
+
+
+def test_cmake_target_call_before_its_declaration_keeps_the_target(tmp_path):
+    index = _collect(tmp_path, {
+        "CMakeLists.txt": (
+            "if(X)\n  target_include_directories(foo PUBLIC inc)\nendif()\n"
+            "add_library(foo a.cpp)\n"
+        ),
+        "a.cpp": "",
+    })
+    assert list(index.units) == ["cmake:foo"]
+    assert _owners(index, "a.cpp") == ["cmake:foo"]
+
+
 def test_cmake_root_target_keeps_the_root_fallback_unit(tmp_path):
     index = _collect(tmp_path, {
         "CMakeLists.txt": "add_library(core c.cpp)\n",
