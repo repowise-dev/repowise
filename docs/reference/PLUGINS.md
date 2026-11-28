@@ -233,6 +233,13 @@ def register():
 | Plain | `plugins.<plugin>.<name>` | `.repowise/config.yaml`, or `REPOWISE_PLUGIN_<PLUGIN>_<NAME>` when the file is unset |
 | Secret (`secret=True`) | `REPOWISE_PLUGIN_<PLUGIN>_<NAME>` | that environment variable only; listings show it as set, never its value |
 
+The person using the plugin then sets them like any other setting:
+
+```bash
+repowise config set plugins.linear.team ENG
+export REPOWISE_PLUGIN_LINEAR_TOKEN=lin_api_...
+```
+
 A setting with no default (`None`) is required. A key or variable another
 setting already holds raises `ValueError` and marks the plugin `failed`. A
 `plugins.<plugin>.*` key in `config.yaml` for a plugin that is not installed is
@@ -478,14 +485,14 @@ each registered source under `evidence-source`.
 
 #### Syncing a source
 
-A source that sets `settings` to the [plugin settings](#settings-for-a-plugin)
-it reads (an empty tuple when it needs none) is run by repowise itself:
+Give a source a `settings` attribute and repowise runs it for you. List the
+[plugin settings](#settings-for-a-plugin) it reads:
 
 ```python
 class StatementSource:
     name = "postgres-statements"
     kinds = ("statement_stats",)
-    settings = (DATABASE, DSN)  # DSN declared with secret=True
+    settings = (DATABASE, DSN)  # DSN is declared with secret=True
 
     def fetch(self, request: SourceRequest):
         database = request.settings[DATABASE.key]
@@ -493,18 +500,23 @@ class StatementSource:
         ...
 ```
 
-`repowise sources sync` runs every source whose required settings all have a
-value: plain values arrive in `request.settings` and secrets in
-`request.credentials`, both keyed by setting key (`credentials` is `None` when
-the source declares no secret). Batches go through `ingest_batch` and the
-cursor is kept per source in `.repowise/state.json`; secrets are read from the
-environment on each run and never written anywhere. Each source reports
-`stored`, `unavailable` (retry later), `refused` (its message is for the user),
-`failed` or `not_configured`, with the next command to run. `repowise update`
-runs the same sync for configured sources after its own work; a failing
-source prints one line and never fails the update, and with none configured
-the update is unchanged. A source with no `settings` attribute is left to a
-host that passes credentials of its own.
+`repowise sources sync` runs each source once all its required settings have
+a value. Plain values arrive in `request.settings` and secrets in
+`request.credentials`, both keyed by setting key. `credentials` is `None` when
+the source declares no secret.
+
+Batches are stored with `ingest_batch`, and each source's cursor is kept in
+`.repowise/state.json`. Secrets are read from the environment on every run and
+are never written down. A secret that shows up in a failure message is printed
+as `***`.
+
+`repowise update` runs the same sync after its own work. A failing source
+prints one line and the update still succeeds. With no configured source the
+update does exactly what it did before.
+
+A source with `settings = ()` needs nothing, so it runs on every sync and
+every update. A source with no `settings` attribute is never run by repowise:
+it is left to a host that calls `run_fetch` with its own credentials.
 
 ### Authenticator and authorizer
 

@@ -146,18 +146,19 @@ def register_settings(*settings: Setting) -> None:
     """
     from repowise.core.registry.plugins import note_registration
 
+    global _by_key, _by_env
     for setting in settings:
         if setting.area != "plugins":
             raise ValueError(f"{setting.key}: a plugin setting belongs to the plugins area")
     with _lock:
         # Validate against a copy so a clash leaves every table as it was.
-        tables = _load()
-        by_key, by_env = dict(tables), dict(_by_env)
+        # New tables, published whole: a reader iterating the old ones never
+        # sees them change size, and a clash leaves them as they were.
+        by_key, by_env = dict(_load()), dict(_by_env)
         for setting in settings:
             _add(setting, by_key, by_env, own_resolver=False)
         _plugin_settings.extend(settings)
-        tables.update(by_key)
-        _by_env.update(by_env)
+        _by_key, _by_env = by_key, by_env
     for setting in settings:
         note_registration("setting", setting.key)
 

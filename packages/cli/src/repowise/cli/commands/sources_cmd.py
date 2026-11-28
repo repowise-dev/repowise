@@ -51,12 +51,12 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
         async with get_session(factory) as session:
             if await get_repository_by_path(session, str(repo_path)) is None:
                 return None
-        state = load_state(repo_path)
         results = []
         for p in planned:
             if not p.configured:
                 results.append(not_configured(p))
                 continue
+            cursor = ledger_cursor(load_state(repo_path), p.ledger_id)
             try:
                 async with get_session(factory) as session:
                     repo = await get_repository_by_path(session, str(repo_path))
@@ -65,7 +65,7 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
                         session=session,
                         repo=repo,
                         repo_path=repo_path,
-                        cursor=ledger_cursor(state, p.ledger_id),
+                        cursor=cursor,
                     )
             except Exception as exc:  # one source must not cost the others
                 _log.warning("source %s failed: %s", p.ledger_id, type(exc).__name__)
@@ -78,11 +78,12 @@ async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | N
                     "next_command": "repowise plugins",
                     "missing": [],
                 }
-                cursor = ledger_cursor(state, p.ledger_id)
+            # Read again just before the write: a fetch can take a while, and
+            # this keeps whatever else wrote state.json meanwhile.
+            state = load_state(repo_path)
             record_result(state, p.ledger_id, result, cursor)
-            results.append(result)
-        if any(p.configured for p in planned):
             save_state(repo_path, state)
+            results.append(result)
         return results
     finally:
         await engine.dispose()
@@ -182,11 +183,16 @@ def sync_after_update(repo_path: Path) -> None:
     writes nothing. A source that fails prints one line and the update
     carries on.
     """
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
+
     try:
-        from repowise.core.repo_config import load_repo_config
+        config = load_repo_config(repo_path)
+    except RepoConfigError:
+        return  # the update reports a broken config itself
+    try:
         from repowise.core.source_sync import plan_sources
 
-        planned = [p for p in plan_sources(load_repo_config(repo_path)) if p.configured]
+        planned = [p for p in plan_sources(config) if p.configured]
         if not planned:
             return
         results = run_async(_sync(repo_path, planned)) or []

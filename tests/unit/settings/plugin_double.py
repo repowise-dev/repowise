@@ -46,7 +46,7 @@ class SyncSource:
     def __init__(self) -> None:
         self.requests: list[SourceRequest] = []
         self.batches = 2
-        #: ``None``, ``"unavailable"`` or ``"refused"``.
+        #: ``None``, ``"unavailable"``, ``"refused"`` or ``"leaky"`` (an error quoting the token).
         self.fail: str | None = None
 
     def fetch(self, request: SourceRequest) -> Iterator[SourceBatch]:
@@ -55,6 +55,8 @@ class SyncSource:
             raise SourceUnavailable("timed out")
         if self.fail == "refused":
             raise SourceRefused("the database refused the token")
+        if self.fail == "leaky":
+            raise ConnectionError(f"cannot connect with {request.credentials[TOKEN.key]}")
         for i in range(int(request.cursor or 0), self.batches):
             yield SourceBatch(
                 kind="statement_stats",

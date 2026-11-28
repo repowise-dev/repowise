@@ -121,6 +121,17 @@ def test_a_failing_source_says_why_and_what_to_run(
     assert r["message"]
     assert _sync(root, "--source", "synctest")[0] == 1
     assert _state(root)[LEDGER_KEY]["evidence-source:synctest"]["cursor"] is None
+    # It never stored, so it is still a setup step.
+    assert unsynced_sources(root) == ("synctest",)
+
+
+def test_a_failure_message_never_quotes_a_secret(installed, root, monkeypatch) -> None:
+    _configure(root, monkeypatch)
+    installed.fail = "leaky"
+    _code, out = _sync(root)  # _sync asserts SECRET is not in the output
+    (r,) = out["sources"]
+    assert r["state"] == "failed"
+    assert r["message"] == "ConnectionError: cannot connect with ***"
 
 
 def test_an_unknown_source_is_refused(installed, root) -> None:

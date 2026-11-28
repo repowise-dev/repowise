@@ -42,7 +42,8 @@ __all__ = [
     "unsynced_sources",
 ]
 
-#: ``state.json`` key holding ``{"<seam>:<name>": {cursor, last_state, last_run_at}}``.
+#: ``state.json`` key holding ``{"<seam>:<name>": {cursor, last_state, last_run_at,
+#: last_stored_at}}``.
 LEDGER_KEY = "source_sync"
 
 
@@ -227,11 +228,26 @@ async def sync_source(
     result = _result(
         planned,
         state,
-        message=outcome.error,
+        message=_masked(outcome.error, planned.credentials),
         next_command=_next_command(planned, outcome.status),
         batches=len(outcome.stored),
     )
     return result, outcome.cursor
+
+
+def _masked(message: str | None, credentials: Mapping[str, Any] | None) -> str | None:
+    """*message* with each secret value replaced by ``***``.
+
+    A driver's error can quote the connection string it was given, and this
+    message is printed and returned as JSON.
+    """
+    if not message:
+        return message
+    for value in (credentials or {}).values():
+        text = str(value)
+        if text:
+            message = message.replace(text, "***")
+    return message
 
 
 def _ledger(state: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -253,15 +269,16 @@ def record_result(
     ledger = state.get(LEDGER_KEY)
     if not isinstance(ledger, dict):
         ledger = state[LEDGER_KEY] = {}
-    ledger[ledger_id] = {
-        "cursor": cursor,
-        "last_state": result["state"],
-        "last_run_at": datetime.now(UTC).isoformat(timespec="seconds"),
-    }
+    entry = ledger.get(ledger_id) if isinstance(ledger.get(ledger_id), dict) else {}
+    at = datetime.now(UTC).isoformat(timespec="seconds")
+    entry.update(cursor=cursor, last_state=result["state"], last_run_at=at)
+    if result["state"] == "stored":
+        entry["last_stored_at"] = at
+    ledger[ledger_id] = entry
 
 
 def unsynced_sources(root: Path) -> tuple[str, ...]:
-    """Configured sources that have never synced into the index at *root*, by name."""
+    """Configured sources that have never stored a sync into the index at *root*, by name."""
     from repowise.core.repo_config import load_repo_config
     from repowise.core.workspace.state import read_repo_state
 
@@ -269,4 +286,9 @@ def unsynced_sources(root: Path) -> tuple[str, ...]:
     if not planned:
         return ()
     ledger = _ledger(read_repo_state(root))
-    return tuple(p.name for p in planned if p.ledger_id not in ledger)
+
+    def stored_once(p: PlannedSource) -> bool:
+        entry = ledger.get(p.ledger_id)
+        return isinstance(entry, dict) and bool(entry.get("last_stored_at"))
+
+    return tuple(p.name for p in planned if not stored_once(p))
