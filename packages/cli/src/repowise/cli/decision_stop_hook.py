@@ -1,30 +1,36 @@
-"""Stop hook: ask the agent, once a session, to record a decision it reasoned out.
+"""Stop hook: ask the agent to record a decision it reasoned out, after real work.
 
 The commit-time capture prompt reaches only sessions that commit, and most
 durable choices are made in sessions that never do: research, review and
 coordination. This asks at the one moment every session reaches, the stop.
 
 Opt-in per repository, ``decisions.stop_prompt`` (off by default). Claude Code
-shows a Stop hook's text to the model only when the hook blocks the stop, so
-this blocks it once with a short reason, and the agent either records the
-decision or says there is none and stops again.
+fires Stop at the end of every turn, not once at session end, so the ask is
+paced by work: it fires only once the session made enough tool calls since the
+last ask. The text goes out as the Stop event's ``additionalContext``, which
+Claude Code hands to the model and continues the turn on, without the
+"blocking error" label a ``decision: block`` gets.
 
 Gates, cheapest first, every one silent when it fails:
 
 1. A ``Stop`` event with a session id, and ``stop_hook_active`` false: the
-   stop that follows a block carries it, and answering that one would loop.
+   stop that follows an ask carries it, and answering that one would loop.
 2. A ``.repowise/config.yaml`` that names ``stop_prompt`` at all. Read as text,
    before any import past :mod:`repowise.cli._helpers.paths`, so a repository
    with the switch off pays one file read.
 3. The resolved decision policy has it on (mode ``off`` and ``enabled: false``
    silence it).
-4. The session has not been asked yet (the shared hook-session state).
-5. The session did real work: an Edit or Write, or at least
-   :data:`MIN_TOOL_CALLS` tool calls the hooks counted (``hook_runs``).
-6. Nothing recorded a decision since the session started.
+4. Fewer than :data:`MAX_ASKS` asks this session so far.
+5. Enough work since the last ask (or since the session started): the hooks
+   counted (``hook_runs``) at least :data:`MIN_TOOL_CALLS` tool calls, and each
+   later ask needs :data:`SPACING` times the gap before it. A turn that made no
+   tool call never crosses it, so a trivial turn stays silent.
+6. Nothing recorded a decision since the last ask (or since the session
+   started). A record moves the mark instead, so the next ask waits for more
+   work after it.
 
-The ledger row is the atomic once-per-session claim, so two installed copies
-of this hook (the plugin's and ``settings.json``'s) cannot both block.
+The ledger row, one per ask number, is the atomic claim, so two installed
+copies of this hook (the plugin's and ``settings.json``'s) cannot both ask.
 """
 
 from __future__ import annotations
@@ -36,38 +42,47 @@ from typing import TextIO
 #: The setting's leaf name, also the text pre-check in the config file.
 SWITCH = "stop_prompt"
 
-#: Tool calls the hooks counted before a session without an edit counts as
-#: work. A quick lookup or a one-question session stays unasked; the session
-#: that read, searched and reasoned for a while does not. On this repository's
-#: own ledger, 255 of 281 sessions clear it, 244 of them by an edit alone.
+#: Tool calls the hooks counted, since the session started, before the first
+#: ask. A quick lookup or a one-question session stays unasked.
 MIN_TOOL_CALLS = 20
+
+#: Each later ask needs this many times the previous gap, so a long session is
+#: asked after 20, 80 and 260 calls rather than three times close together.
+SPACING = 3
+
+#: Asks a session at most. On this repository's own ledger (292 sessions), the
+#: rule asks 74 sessions never, 94 once, 76 twice and 48 three times.
+MAX_ASKS = 3
 
 #: How far into the transcript to look for the session's first timestamp.
 _HEAD_LINES = 50
 
 REASON = (
-    "[repowise] Before you stop: if this session settled a durable choice a future "
+    "[repowise] If the work since the last check settled a durable choice a future "
     "change should follow, record it now:\n"
     "  repowise decision add --agent <your slug> --decision '<what you chose>' "
     "--rationale '<why, and what you rejected>' --affects <path>\n"
-    'If there is none, reply "No decision to record." and stop. Asked once a session.'
+    'If there is none, reply "No decision to record." and stop.'
 )
 
 
 def run(stdin: TextIO, out: TextIO) -> None:
-    """Read one Stop payload from *stdin*; write a block to *out* when the gates pass."""
+    """Read one Stop payload from *stdin*; write the ask to *out* when the gates pass."""
     try:
         payload = json.loads(stdin.read() or "{}")
     except ValueError:
         return
     reason = block_reason(payload) if isinstance(payload, dict) else None
     if reason:
-        out.write(json.dumps({"decision": "block", "reason": reason}))
+        # additionalContext, not ``decision: block``: Claude Code continues the
+        # turn on either, but labels a block "Stop hook blocking error".
+        response = {"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": reason}}
+        out.write(json.dumps(response))
         out.flush()
 
 
 def block_reason(payload: dict) -> str | None:
-    """The reason to block this stop with, or ``None`` to let it through."""
+    """The text to ask with at this stop, or ``None`` to stay silent."""
     if payload.get("hook_event_name") != "Stop" or payload.get("stop_hook_active"):
         return None
     session_id = payload.get("session_id")
@@ -120,18 +135,24 @@ def _ask(cwd: str, session_id: str, transcript_path: object) -> str | None:
     if repo_path is None or not _policy_on(repo_path):
         return None
 
-    from repowise.cli.commands.augment_cmd.read_state import (
-        _load_shared_state,
-        _save_shared_state,
-    )
+    from repowise.cli.commands.augment_cmd.read_state import _load_shared_state
 
     state = _load_shared_state(repo_path, session_id)
-    if state.get("stop_prompted"):
+    asks = _int(state.get("stop_asks"))
+    if asks >= MAX_ASKS:
         return None
-    if not did_work(repo_path, session_id):
+    calls = tool_calls(repo_path, session_id)
+    if calls - _int(state.get("stop_mark")) < MIN_TOOL_CALLS * SPACING**asks:
         return None
-    started = session_started(transcript_path)
-    if started is None or recorded_since(repo_path, started):
+    since = state.get("stop_mark_at")
+    if not isinstance(since, str) or not since:
+        since = session_started(transcript_path)
+    recorded = None if since is None else recorded_since(repo_path, since)
+    if recorded is None:
+        return None
+    if recorded:
+        # Recorded unasked: start the next gap from here, without spending an ask.
+        _mark(repo_path, state, calls)
         return None
 
     from repowise.cli.commands.augment_cmd._shared import _ledger_key
@@ -140,17 +161,33 @@ def _ask(cwd: str, session_id: str, transcript_path: object) -> str | None:
     claimed, _ = _claim_ledger(
         repo_path,
         session_id,
-        _ledger_key("capture", SWITCH, REASON),
+        # One row per ask number: the key is the claim, so each ask needs its own.
+        _ledger_key("capture", SWITCH, f"{REASON}#{asks + 1}"),
         node_id="",
         surface="capture",
         category=SWITCH,
         chars=len(REASON),
     )
-    if not claimed:
-        return None
-    state["stop_prompted"] = True
+    state["stop_asks"] = asks + 1
+    _mark(repo_path, state, calls)
+    # Unclaimed means this ask already went out, from a concurrent copy or a
+    # run whose state write was lost: advancing the state above heals that.
+    return REASON if claimed else None
+
+
+def _int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _mark(repo_path: Path, state: dict, calls: int) -> None:
+    """Start the next gap at *calls*, and the record check at now."""
+    from datetime import UTC, datetime
+
+    from repowise.cli.commands.augment_cmd.read_state import _save_shared_state
+
+    state["stop_mark"] = calls
+    state["stop_mark_at"] = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
     _save_shared_state(repo_path, state)
-    return REASON
 
 
 def _policy_on(repo_path: Path) -> bool:
@@ -159,32 +196,27 @@ def _policy_on(repo_path: Path) -> bool:
     return load_policy(repo_path).policy.stop_capture
 
 
-def did_work(repo_path: Path, session_id: str) -> bool:
-    """An Edit or Write, or :data:`MIN_TOOL_CALLS` hook-counted tool calls, this session.
+def tool_calls(repo_path: Path, session_id: str) -> int:
+    """Tool calls the hooks counted this session, subagents included.
 
-    Read from the ``hook_runs`` counter every augment hook writes, subagents
-    included, since they share the session id. No ledger reads as no work.
+    Read from the ``hook_runs`` counter every augment hook writes; subagents
+    share the session id. No ledger reads as no work.
     """
     import sqlite3
 
-    from repowise.cli.agent_adapters import adapter_for
     from repowise.cli.hook_ledger import _open_injections
 
     conn = _open_injections(repo_path)
     if conn is None:
-        return False
+        return 0
     try:
-        rows = conn.execute(
-            "SELECT tool, SUM(calls) FROM hook_runs "
-            "WHERE session_id = ? AND event = 'PostToolUse' GROUP BY tool",
+        row = conn.execute(
+            "SELECT SUM(calls) FROM hook_runs WHERE session_id = ? AND event = 'PostToolUse'",
             (session_id,),
-        ).fetchall()
+        ).fetchone()
     except sqlite3.Error:
-        return False
-    edits = adapter_for(None).edit_tool_names
-    if any(tool in edits and calls for tool, calls in rows):
-        return True
-    return sum(calls or 0 for _, calls in rows) >= MIN_TOOL_CALLS
+        return 0
+    return int(row[0] or 0) if row else 0
 
 
 def session_started(transcript_path: object) -> str | None:
@@ -222,11 +254,12 @@ def _as_utc(stamp: str) -> str:
     return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def recorded_since(repo_path: Path, started: str) -> bool:
-    """Whether an agent or a person recorded a decision here since *started*.
+def recorded_since(repo_path: Path, started: str) -> bool | None:
+    """Whether an agent or a person recorded a decision here since *started* (UTC).
 
     Any session's record counts, so a concurrent session's can quiet this one;
-    a missed ask is the cheaper error. Fails closed, into silence.
+    a missed ask is the cheaper error. ``None`` when the store cannot tell,
+    which keeps this quiet without moving the mark.
     """
     import sqlite3
 
@@ -234,7 +267,7 @@ def recorded_since(repo_path: Path, started: str) -> bool:
 
     conn = _open_wiki_ro(repo_path)
     if conn is None:
-        return True
+        return None
     try:
         row = conn.execute(
             "SELECT 1 FROM decision_records "
@@ -242,7 +275,7 @@ def recorded_since(repo_path: Path, started: str) -> bool:
             (started,),
         ).fetchone()
     except sqlite3.Error:
-        return True
+        return None
     finally:
         conn.close()
     return row is not None
