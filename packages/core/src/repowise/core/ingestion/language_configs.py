@@ -418,6 +418,10 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
                 "namespace_block",
             }
         ),
+        # VB.NET spells a construction ``New X()`` (vbnet.scm captures it as
+        # ``new_expression``); without the flag the site binds to a sibling
+        # method named like the type instead of the type itself (#2879 for C#).
+        construction_call_node_types=frozenset({"new_expression"}),
     ),
     # Apex reads Java's node names; there are no imports to extract.
     "apex": LanguageConfig(

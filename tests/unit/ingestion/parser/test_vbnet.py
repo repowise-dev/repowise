@@ -235,3 +235,37 @@ End Class
     assert "Form" not in parents
     assert "INotifyPropertyChanged" not in parents
     assert "IMyOwnContract" in parents
+
+
+def test_new_expressions_are_constructions() -> None:
+    """A VB.NET ``New X()`` must carry the construction flag, like C#'s
+    ``new X()`` (#2879). Without it, a construction can bind to a sibling
+    method named like the type instead of the type itself (#6616)."""
+
+    parser = ASTParser()
+    source = b'''\
+Public Class Wrapper
+    Public Sub M()
+        Dim a = New X()
+        Dim c = New Outer.Inner()
+    End Sub
+End Class
+'''
+    result = parser.parse_file(_vb("Wrapper.vb"), source)
+    assert not result.parse_errors
+    calls = [(call.target_name, call.is_construction) for call in result.calls]
+    assert calls == [("X", True), ("Outer.Inner", True)], calls
+
+
+def test_csharp_construction_flag_is_unchanged() -> None:
+    """The C# flag stays exactly ``object_creation_expression``; the VB.NET
+    addition must not leak into the C# config (#6616)."""
+    from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+
+    assert (
+        LANGUAGE_CONFIGS["csharp"].construction_call_node_types
+        == frozenset({"object_creation_expression"})
+    )
+    assert LANGUAGE_CONFIGS["vbnet"].construction_call_node_types == frozenset(
+        {"new_expression"}
+    )
