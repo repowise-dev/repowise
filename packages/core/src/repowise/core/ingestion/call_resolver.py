@@ -498,6 +498,14 @@ class CallResolver(
             for symbol in self._symbols_by_id.values()
             if symbol.kind in _TYPE_KINDS and symbol.language == "csharp"
         )
+        # The same, spelled as extension keys are (``Box`1``).
+        self._csharp_type_keys = frozenset(
+            f"{symbol.name}`{symbol.type_parameter_count}"
+            if symbol.type_parameter_count
+            else symbol.name
+            for symbol in self._symbols_by_id.values()
+            if symbol.kind in _TYPE_KINDS and symbol.language == "csharp"
+        )
 
         # Symbols in the index above that are data members, not callables
         # Held as an id set rather than a full id->kind map: it is the only
@@ -1588,7 +1596,9 @@ class CallResolver(
         if self._csharp_extensions_by_name is None:
             by_name: dict[str, list[Symbol]] = defaultdict(list)
             for sym in self._symbols_by_id.values():
-                if sym.language == "csharp" and csharp_extension_receiver(sym.signature):
+                # An array extension (``this Foo[] xs``) has no key but still competes.
+                params = (sym.signature or "").partition("(")[2]
+                if sym.language == "csharp" and params.lstrip().startswith("this "):
                     by_name[sym.name].append(sym)
             self._csharp_extensions_by_name = by_name
         return self._csharp_extensions_by_name.get(name, [])

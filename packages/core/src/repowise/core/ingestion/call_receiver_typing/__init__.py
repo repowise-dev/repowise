@@ -1430,7 +1430,7 @@ class ReceiverTypingMixin(
         extension = self._extension_target(file_path, key, call.argument_count)
         if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None
-        library = language == "csharp" and spelled.partition("`")[0] not in self._csharp_type_names
+        library = language == "csharp" and spelled not in self._csharp_type_keys
         if library and not self._takes_library_extension(extension[0], spelled, call):
             return None
         return self._extension_typed_call(caller_id, *extension, call.line)
@@ -1460,10 +1460,12 @@ class ReceiverTypingMixin(
             for taker, s in takers.items()
         ):
             return False
-        if len(takers) == 1:
-            return True
+        if rep not in self._overload_members:
+            return len(takers) == 1
+        # The member the edge will be narrowed to must be one that takes the call.
         filled = self._csharp_receiver_filled(rep, call)
-        return len(self._deciding_overloads(rep, filled.argument_count, filled.argument_types)) == 1
+        picked = self._deciding_overloads(rep, filled.argument_count, filled.argument_types)
+        return len(picked) == 1 and picked[0] in takers
 
     def _means_the_wrapper(
         self,

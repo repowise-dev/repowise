@@ -278,10 +278,10 @@ def builtin_type_spelling(name: str, language: str) -> str | None:
 # hold a parenthesised string. An array receiver is captured so it can be
 # refused: ``this Order[]`` extends the array, not the element. Type arguments
 # nest three deep (``Expression<Func<T, List<X>>>``), so the arity is counted
-# on the whole list.
+# on the whole list; a deeper list matches nothing, never the bare name.
 _CSHARP_EXTENSION_RECEIVER = re.compile(
     r"\s*this\s+(?:(?:ref|in|scoped|readonly)\s+)*"
-    r"(?P<type>[\w.]+(?:<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?(?:\s*\[[,\s]*\])*\??)"
+    r"(?P<type>[\w.]+(?:<(?:[^<>]|<(?:[^<>]|<[^<>]*>)*>)*>)?(?![\w.]|\s*<)(?:\s*\[[,\s]*\])*\??)"
 )
 
 

@@ -81,6 +81,8 @@ class TestExtensionReceiver:
             # Nested arguments count once, at the top level.
             ("Get(this Expression<Func<T, TProperty>> e) -> object", "Expression`1"),
             ("Each(this IRule<T, IEnumerable<List<E>>> r) -> object", "IRule`2"),
+            # Deeper than the reader follows: no extension, not the bare ``Box``.
+            ("Deep(this Box<List<List<List<int>>>> b) -> object", None),
             ("Use(this scoped ref readonly Order o) -> int", "Order"),
             ("Maybe(this Order? o) -> string", "Order"),
             # Not an extension method at all.
@@ -533,3 +535,58 @@ class TestLibraryReceivers:
         }
         found = _resolve(tmp_path, files, "src/Consumer.cs")
         assert not any(name.startswith("Tag") for name in found)
+
+    def test_an_array_extension_competes(self, tmp_path: Path) -> None:
+        """``this Foo[]`` has no key, but its name and arity still make the call ambiguous."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f) { }\n}\n"
+            ),
+            "src/Arr.cs": (
+                "namespace Acme;\npublic static class Arr {\n"
+                "  public static void Tag(this byte[] b) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(); }\n}\n"
+            ),
+        }
+        assert "Tag" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_abstains_when_narrowing_would_pick_a_member_that_cannot_take_it(
+        self, tmp_path: Path
+    ) -> None:
+        """Only the ``params`` overload takes ``f.Tag()``; the edge must not land elsewhere."""
+        files = {
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this IFoo f, int x) { }\n"
+                "  public static void Tag(this IFoo f, params int[] xs) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(IFoo f) { f.Tag(); }\n}\n"
+            ),
+        }
+        found = _resolve(tmp_path, files, "src/Consumer.cs")
+        assert set(found) <= {"Tag#2(IFoo,int[])"}
+
+    def test_a_repo_type_of_another_arity_does_not_skip_the_guard(self, tmp_path: Path) -> None:
+        """A repo ``List`` is not ``List<T>``: the library rule still judges ``List`1``."""
+        files = {
+            "src/List.cs": "namespace Other;\npublic class List { }\n",
+            "src/Ext.cs": (
+                "namespace Acme;\npublic static class Ext {\n"
+                "  public static void Tag(this List<int> l) { }\n}\n"
+            ),
+            "src/Two.cs": (
+                "namespace Acme;\npublic static class Two {\n"
+                "  public static void Tag(this IList<int> l) { }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(List<int> l) { l.Tag(); }\n}\n"
+            ),
+        }
+        assert "Tag" not in _resolve(tmp_path, files, "src/Consumer.cs")
