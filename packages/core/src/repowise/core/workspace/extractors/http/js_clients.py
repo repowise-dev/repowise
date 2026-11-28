@@ -33,7 +33,8 @@ from .angular import environment_mounts
 from .client_calls import ClientCallMatch, consumer_contracts, join_base, method_from_options
 from .commonjs import exports_mounts
 from .js_factories import factory_bases, factory_mounts
-from .node_clients import FieldScope, client_calls, client_mounts
+from .node_clients import FieldScope, _imports, client_calls, client_mounts
+from .url_builders import settle_url_builders, url_builder_mounts
 from .wrappers import GENERIC_ARGS
 
 if TYPE_CHECKING:
@@ -272,6 +273,7 @@ def with_bases(ctx: ScanContext, matches: list[ClientCallMatch]) -> list[ClientC
     if not callees and not any("this." in m.url for m in matches):
         return matches
     strings = FileStrings(content, JS_SYNTAX)
+    settle_url_builders(ctx, _imports(content), strings)
     fields = FieldScope(strings)
     prefixes = wrapper_prefixes(content, callees, strings, fields)
     out: list[ClientCallMatch] = []
@@ -451,7 +453,13 @@ class JsClientsDialect:
     requires = ("fetch", "'/", '"/', "`/", "${", "http", "axios", "import", "require", "export")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
-        return client_mounts(ctx) | environment_mounts(ctx) | exports_mounts(ctx) | factory_mounts(ctx)
+        return (
+            client_mounts(ctx)
+            | environment_mounts(ctx)
+            | exports_mounts(ctx)
+            | factory_mounts(ctx)
+            | url_builder_mounts(ctx)
+        )
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
