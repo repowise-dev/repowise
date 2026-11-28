@@ -748,6 +748,15 @@ class TestCsChainedFieldCalls:
         )
         assert not _edges(tmp_path, {"A.cs": ("csharp", source)})
 
+    def test_a_qualified_head_field_is_not_a_same_named_local_type(self, tmp_path: Path) -> None:
+        source = (
+            "class U {\n  public void Get() {}\n}\n"
+            "class Store {\n  public U Users { get; }\n}\n"
+            "class C {\n  External.Store _s;\n  void Run() {\n    _s.Users.Get();\n  }\n}\n"
+        )
+        edges = _edges(tmp_path, {"A.cs": ("csharp", source)})
+        assert not [e for e in edges if e[0] == "A.cs::C::Run"]
+
     @pytest.mark.parametrize(
         "receiver", ["items[0].Users", "Make().Users", "((S) obj).Users", "store?.Users"]
     )
