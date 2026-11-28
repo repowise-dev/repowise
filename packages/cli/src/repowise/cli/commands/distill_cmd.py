@@ -89,6 +89,8 @@ def distill_command(
     restore it with ``repowise expand <ref>``. On any filter problem the raw
     output is printed unchanged. The command's exit code is preserved.
     """
+    if files and fmt != "json":
+        raise click.UsageError("--file only applies with --format json")
     # Only a command handed over as ONE token carries shell syntax of its
     # own — that is the shape the hook wraps a chain or a pipeline in, and the
     # shape a user quotes deliberately. A multi-token argv is the same command
@@ -147,25 +149,27 @@ def distill_command(
 def _diagnostics_json(output: str, exit_code: int, files: tuple[str, ...]) -> dict:
     """Structured diagnostics, paths repo-relative POSIX, filtered to *files*."""
     from repowise.core.distill.diagnostics import parse_diagnostics
+    from repowise.core.fsutils import repo_relative
+    from repowise.core.git_hooks import git_root
 
     cwd = Path.cwd()
-    root = (find_repowise_repo_root() or cwd).resolve()
+    # The checkout the tool ran in: a parent's .repowise (nested worktree) is the wrong root.
+    root = git_root(cwd) or cwd
 
     def rel(path: str) -> str:
-        try:
-            return (cwd / path).resolve().relative_to(root).as_posix()
-        except ValueError:
-            return path
+        # "" is a diagnostic with no location (clippy summary warnings).
+        return (repo_relative(path, root, resolve=True) or path) if path else path
 
     result = parse_diagnostics(output, exit_code)
     for d in result["diagnostics"]:
         d["file"] = rel(d["file"])
     if files:
-        wanted = {rel(f) for f in files}
+        # A --file path may be cwd-relative or repo-relative; accept either.
+        wanted = {rel(f) for f in files} | {rel(str(root / f)) for f in files}
         result["diagnostics"] = [d for d in result["diagnostics"] if d["file"] in wanted]
         if result["status"] == "errors" and not result["diagnostics"]:
             # The asked-about files are clean even if others are not.
-            result["status"] = "clean"
+            result["status"], result["source"] = "clean", None
     return result
 
 

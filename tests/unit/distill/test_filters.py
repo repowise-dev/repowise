@@ -274,7 +274,7 @@ def test_go_error_heavy_test_strictly_bounded_to_20() -> None:
 def test_go_failure_diagnostic_survives_many_subsequent_logs() -> None:
     lines = [
         "=== RUN   TestPick",
-        '    pick_test.go:10: got "alpha" want "beta"',
+        "    pick_test.go:10: got \"alpha\" want \"beta\"",
     ]
     for i in range(30):
         lines.append(f"    pick_test.go:{20 + i}: debug output line {i}")
@@ -288,7 +288,7 @@ def test_go_failure_diagnostic_survives_many_subsequent_logs() -> None:
     f = filter_registry.get("test_output")
     distilled = f.distill(raw, command="go test -v ./...")
     assert "--- FAIL: TestPick (0.05s)" in distilled
-    assert 'got "alpha" want "beta"' in distilled
+    assert "got \"alpha\" want \"beta\"" in distilled
     assert "debug output line 29" in distilled
     assert "debug output line 15" not in distilled
 
@@ -472,6 +472,10 @@ def test_parse_diagnostics_fixtures(load_fixture, fixture, count, first, source)
             'app.py:4: error: Name "x" is not defined  [name-defined]',
             ("app.py", 4, None, "error", "name-defined", "mypy"),
         ),
+        (
+            "app/(auth)/page.tsx(3,7): error TS2322: Type 'string' is not assignable.",
+            ("app/(auth)/page.tsx", 3, 7, "error", "TS2322", "tsc"),
+        ),
     ],
 )
 def test_parse_diagnostics_single_lines(output, record) -> None:
@@ -500,7 +504,8 @@ def test_parse_diagnostics_gcc_fatal_error_not_lost_beside_errors() -> None:
 def test_parse_diagnostics_dotnet_summary_duplicates_collapse() -> None:
     line = "Program.cs(10,5): error CS1002: ; expected [/src/app.csproj]\n"
     out = line + "\nBuild FAILED.\n\n" + line + "    0 Warning(s)\n    1 Error(s)\n"
-    assert len(parse_diagnostics(out, 1)["diagnostics"]) == 1
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert d["message"] == "; expected"
 
 
 def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
@@ -514,9 +519,14 @@ def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
     [
         ("", 0, "clean"),
         ("bash: tsc: command not found\n", 127, "unavailable"),
+        ("bash: tsc: command not found\nhint: install typescript\n", 1, "unavailable"),
         ("something went sideways\nno idea\n", 1, "unparsed"),
+        ("E   AssertionError: 'command not found' not in output\n", 1, "unparsed"),
+        # severity-less path:line lines that are not diagnostics
+        ("x.py:12: DeprecationWarning: old\n12:30:45: starting\nserver.go:42: listening\n", 0, "clean"),
+        ("x.py:3: note: Revealed type is 'int'\nSuccess: no issues found in 1 source file\n", 0, "clean"),
     ],
-)
+)  # fmt: skip
 def test_parse_diagnostics_status(output, exit_code, status) -> None:
     result = parse_diagnostics(output, exit_code)
     assert result["status"] == status
@@ -524,6 +534,34 @@ def test_parse_diagnostics_status(output, exit_code, status) -> None:
     assert result["diagnostics"] == []
     if status == "unavailable":
         assert result["reason"] == "bash: tsc: command not found"
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (  # npm run check: tsc then eslint
+            "src/a.ts(3,7): error TS2322: Type 'string' is not assignable.\n"
+            "/repo/src/b.ts\n  9:5  error  Bad hook  react-hooks/rules-of-hooks\n",
+            [("/repo/src/b.ts", "eslint"), ("src/a.ts", "tsc")],
+        ),
+        (  # mypy then gcc, including a fatal error
+            "app.py:4: error: Name \"x\" is not defined  [name-defined]\n"
+            "main.c:3:5: error: unknown type name 'foo'\n"
+            "main.c:1:10: fatal error: missing.h: No such file or directory\n",
+            [("app.py", "mypy"), ("main.c", "gnu"), ("main.c", "gnu")],
+        ),
+    ],
+)  # fmt: skip
+def test_parse_diagnostics_mixed_tools_keeps_both(output, expected) -> None:
+    result = parse_diagnostics(output, 1)
+    assert [(d["file"], d["source"]) for d in result["diagnostics"]] == expected
+
+
+def test_parse_diagnostics_records_beat_exit_127() -> None:
+    out = "src/a.ts(3,7): error TS2322: bad.\nsh: 1: missingtool: not found\n"
+    result = parse_diagnostics(out, 127)
+    assert result["status"] == "errors"
+    assert "reason" not in result
 
 
 # -- git family -------------------------------------------------------------------
@@ -762,9 +800,7 @@ def test_a_flood_is_still_sampled() -> None:
 
 def test_ls_long_keeps_every_entry_when_small(load_fixture) -> None:
     raw, distilled = _distill(load_fixture, "ls_la.txt", "file_listing", "ls -la")
-    entries = [
-        ln.split()[-1] for ln in raw.splitlines() if ln[:1] in "-dl" and len(ln.split()) >= 9
-    ]
+    entries = [ln.split()[-1] for ln in raw.splitlines() if ln[:1] in "-dl" and len(ln.split()) >= 9]
     assert entries
     assert "more entries" not in distilled
     for name in entries:

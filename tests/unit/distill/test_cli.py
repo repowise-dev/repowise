@@ -333,7 +333,9 @@ def test_posix_dialect_runs_in_a_posix_shell(repo_cwd: Path) -> None:
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe is only the default on Windows")
-def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(repo_cwd: Path, monkeypatch) -> None:
+def test_posix_dialect_refuses_rather_than_falling_back_to_cmd(
+    repo_cwd: Path, monkeypatch
+) -> None:
     """Breaking what the guard protects: with no POSIX shell it must not run.
 
     Falling back to the host shell is the exact bug this path exists to
@@ -471,3 +473,34 @@ def test_distill_json_filters_by_file_and_keeps_exit_code(repo_cwd: Path) -> Non
     payload = json.loads(result.output)
     assert payload["status"] == "errors"
     assert [d["file"] for d in payload["diagnostics"]] == ["a.py"]
+
+
+def test_distill_json_from_a_subdir_of_a_nested_checkout(repo_cwd: Path, monkeypatch) -> None:
+    """Paths are relative to the checkout the tool ran in, not a parent's .repowise."""
+    sub = repo_cwd / "wt" / "sub"
+    sub.mkdir(parents=True)
+    (repo_cwd / "wt" / ".git").mkdir()
+    monkeypatch.chdir(sub)
+    code = "import sys; print('a.py:1: error: bad  [misc]'); print('b.py:2: error: x  [misc]'); sys.exit(1)"
+    for wanted in ("a.py", "sub/a.py"):  # cwd-relative, then repo-relative
+        result = CliRunner().invoke(
+            distill_command, ["--format", "json", "--file", wanted, "--", *_py(code)]
+        )
+        payload = json.loads(result.output)
+        assert payload["status"] == "errors", wanted
+        assert [d["file"] for d in payload["diagnostics"]] == ["sub/a.py"]
+
+
+def test_distill_json_file_elsewhere_is_clean_without_source(repo_cwd: Path) -> None:
+    code = "import sys; print('b.py:2: error: x  [misc]'); sys.exit(1)"
+    result = CliRunner().invoke(
+        distill_command, ["--format", "json", "--file", "a.py", "--", *_py(code)]
+    )
+    payload = json.loads(result.output)
+    assert (payload["status"], payload["source"], payload["diagnostics"]) == ("clean", None, [])
+
+
+def test_distill_file_without_json_is_a_usage_error(repo_cwd: Path) -> None:
+    result = CliRunner().invoke(distill_command, ["--file", "a.py", "--", *_py("pass")])
+    assert result.exit_code == 2
+    assert "--format json" in result.output

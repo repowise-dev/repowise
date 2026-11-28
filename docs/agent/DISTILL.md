@@ -76,8 +76,12 @@ $ repowise distill --format json --file src/app.ts -- npx tsc --noEmit
 ```
 
 `status` is one of `clean`, `errors`, `unavailable` (the tool was not found,
-`reason` holds its last output line) or `unparsed` (non-zero exit with nothing
-recognized: read the raw output instead).
+`reason` holds the shell's "not found" line, else the last output line) or
+`unparsed` (non-zero exit with nothing recognized: read the raw output instead).
+Paths are relative to the git checkout the command ran in; `--file` accepts a
+path relative to either that checkout or the current directory. Linter formats
+(eslint, ruff, flake8, clippy, golangci-lint) are recognized from the first 400
+output lines, so a run that prints more noise than that before them loses them.
 
 ### 2. `repowise expand <ref>`: the reversal
 
