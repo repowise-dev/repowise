@@ -49,7 +49,6 @@ class _CppAlias(NamedTuple):
     # The target as written, template arguments dropped, whatever the scope.
     written: str | None = None
     line: int = 0
-    # Declared in a class or function body, not at file or namespace level.
     nested: bool = False
 
 
@@ -117,7 +116,7 @@ class CppFieldOwners:
             file_path, name, position = path, target, 0
         return None
 
-    def _cpp_alias_class(self, path: str, name: str, position: int) -> str | None:
+    def _cpp_alias_class(self, path: str, caller_id: str, name: str, position: int) -> str | None:
         """The one repository class a C++ alias *name* stands for, as a bare name.
 
         Read where the receiver was declared (*path*, byte *position*): the
@@ -126,13 +125,21 @@ class CppFieldOwners:
         member alias the class ``Outer`` declares, and template arguments are
         dropped (``basic_string_view<char>`` is ``basic_string_view``). Every hop
         must agree on one target and the chain must end on the repository's
-        only class of that name, declared where *path*'s includes reach;
-        ``std::``, a template parameter or two candidates type nothing.
+        only class of that name, declared where *path*'s includes reach. A
+        namespace qualifier must be one that class's file opens. ``std::``, a
+        template parameter of the caller or of the alias's class, an unknown
+        qualifier or two candidates type nothing.
         """
-        reach = self._cpp_include_closure(path)
+        caller = self._symbols_by_id.get(caller_id)
+        caller_path = self._symbol_paths_by_id.get(caller_id, path)
+        if caller is None or self._cpp_template_parameter(caller, caller_path, name):
+            return None
         target = self._cpp_visible_alias(path, name, position)
+        if target is None:
+            return None
+        reach = self._cpp_include_closure(path)
         for _ in range(16):
-            if target is None:
+            if target is None or target[1] is None:
                 return None
             path, written = target
             head, _, bare = written.rpartition("::")
@@ -145,8 +152,15 @@ class CppFieldOwners:
                 continue
             declared = self._declared_types_named(bare)
             if declared:
-                one = len({identity for _, identity, _ in declared}) == 1
-                return bare if one and any(file in reach for file, _, _ in declared) else None
+                files = {file for file, _, _ in declared} & reach
+                if len({identity for _, identity, _ in declared}) != 1 or not files:
+                    return None
+                # Ceiling: the qualifier is matched against the namespaces the
+                # class's file opens, not the one that encloses the class.
+                opened = re.compile(rf"\bnamespace\s+(?:\w+::)*{re.escape(host)}\b")
+                if head and not any(opened.search(self._text_of(f)) for f in files):
+                    return None
+                return bare
             target = self._cpp_visible_alias(path, bare, 0)
         return None
 
@@ -165,19 +179,34 @@ class CppFieldOwners:
                 if (a.scope[0] if a.scope else -1) == innermost
             }
         else:
-            # Ceiling: past the direct includes only a ``using`` is found (it is
-            # a symbol); a deeper namespace-level ``typedef`` is not looked for.
-            files = set(self._import_targets.get(path, ())) | {
-                self._symbol_paths_by_id.get(sym_id)
-                for sym_id in self._global_symbols.get(name, ())
-                if self._symbols_by_id[sym_id].kind == "type_alias"
-            }
-            sites = {
-                (other, a.written)
-                for other in sorted((files & self._cpp_include_closure(path)) - {path})
-                for a in self._cpp_type_facts(other).aliases
-                if a.name == name and not a.nested
-            }
+            key = (path, name)
+            if key not in self._cpp_included_aliases:
+                self._cpp_included_aliases[key] = self._cpp_included_alias(path, name)
+            return self._cpp_included_aliases[key]
+        if len({written for _, written in sites}) != 1:
+            return None
+        site = min(sites)
+        return None if site[1] is None else site
+
+    def _cpp_included_alias(self, path: str, name: str) -> tuple[str, str] | None:
+        """``(file, written target)`` of the one file- or namespace-level alias
+        *name* in a file *path* includes, directly or not."""
+        # Ceiling: past the direct includes only a ``using`` is found (it is a
+        # symbol); a deeper namespace-level ``typedef`` is not looked for.
+        files = set(self._import_targets.get(path, ())) | {
+            self._symbol_paths_by_id.get(sym_id)
+            for sym_id in self._global_symbols.get(name, ())
+            if self._symbols_by_id[sym_id].kind == "type_alias"
+        }
+        files.discard(path)
+        if not files:
+            return None
+        sites = {
+            (other, a.written)
+            for other in sorted(files & self._cpp_include_closure(path))
+            for a in self._cpp_type_facts(other).aliases
+            if a.name == name and not a.nested
+        }
         if len({written for _, written in sites}) != 1:
             return None
         site = min(sites)
@@ -387,6 +416,15 @@ class CppFieldOwners:
         name = self._cpp_written_return(symbol, path, written)
         if not name.isidentifier():
             return None
+        if self._cpp_template_parameter(symbol, path, name):
+            return None
+        aliases = self._cpp_type_facts(path).aliases
+        if any(alias.name == name and alias.scope is not None for alias in aliases):
+            return None
+        return self._cpp_aliased_type(path, name, 0)
+
+    def _cpp_template_parameter(self, symbol: Symbol, path: str, name: str) -> bool:
+        """Does a ``template <..>`` list of *symbol* or its class declare *name*?"""
         from . import _enclosing_id  # the package imports this module
 
         lines = self._lines_of(path)
@@ -401,11 +439,8 @@ class CppFieldOwners:
                 name in _TEMPLATE_PARAMETER.findall(listed)
                 for listed in _TEMPLATE_LIST.findall(header)
             ):
-                return None
-        aliases = self._cpp_type_facts(path).aliases
-        if any(alias.name == name and alias.scope is not None for alias in aliases):
-            return None
-        return self._cpp_aliased_type(path, name, 0)
+                return True
+        return False
 
     def _typed_callee(self, sym_id: str, caller_id: str) -> str | None:
         """The callee a typed receiver's method *sym_id* stands for, or None.

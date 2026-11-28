@@ -516,3 +516,53 @@ class TestAliasedReceivers:
             "  static int Send(const item& v) { return v.sendMessage(1); }\n};\n"
         )
         assert _callees(_build(tmp_path), "lib/box.h::Box::Send") == set()
+
+
+_PEER_H = "#pragma once\nclass Peer {\n public:\n  int send(int n) { return n; }\n};\n"
+
+
+@pytest.mark.parametrize(
+    ("alias_h", "caller"),
+    [
+        # A member alias of the class template's own parameter, reached as ``W<int>::type``.
+        (
+            "template <class T> struct W {\n  using type = T;\n};\nusing View = W<Peer>::type;\n",
+            "int Run(View* p) { return p->send(1); }\n",
+        ),
+        # A qualifier no repository file opens: a library's ``Peer``, not the repository's.
+        (
+            "namespace net {\nusing View = ext::Peer;\n}\n",
+            "int Run(net::View* p) { return p->send(1); }\n",
+        ),
+        # The caller's own template parameter shadows the alias.
+        ("using View = Peer;\n", "template <class View> int Run(View& p) { return p.send(1); }\n"),
+    ],
+)
+def test_an_alias_the_receiver_does_not_mean_types_nothing(
+    tmp_path: Path, alias_h: str, caller: str
+) -> None:
+    _alias_repo(
+        tmp_path,
+        {
+            "lib/peer.h": _PEER_H,
+            "lib/alias.h": '#pragma once\n#include "peer.h"\n' + alias_h,
+            "lib/mid.h": '#pragma once\n#include "alias.h"\n',
+            "lib/use.cc": '#include "mid.h"\n' + caller,
+        },
+    )
+    assert _callees(_build(tmp_path), "lib/use.cc::Run") == set()
+
+
+def test_a_qualifier_the_class_file_opens_still_binds(tmp_path: Path) -> None:
+    """The control for the qualifier rule: ``lib::Peer`` where ``peer.h`` opens ``lib``."""
+    _alias_repo(
+        tmp_path,
+        {
+            "lib/peer.h": "#pragma once\nnamespace lib {\n"
+            + _PEER_H.removeprefix("#pragma once\n")
+            + "}\n",
+            "lib/alias.h": '#pragma once\n#include "peer.h"\nusing View = lib::Peer;\n',
+            "lib/use.cc": '#include "alias.h"\nint Run(View* p) { return p->send(1); }\n',
+        },
+    )
+    assert _callees(_build(tmp_path), "lib/use.cc::Run") == {"lib/peer.h::Peer::send"}

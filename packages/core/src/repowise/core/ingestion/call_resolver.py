@@ -408,6 +408,7 @@ class CallResolver(
         self._ancestors: dict[str, tuple[str, ...]] = {}
         # C++: {file: files its includes reach}, {class id: template parameter names}.
         self._cpp_include_closures: dict[str, frozenset[str]] = {}
+        self._cpp_included_aliases: dict[tuple[str, str], tuple[str, str] | None] = {}
         self._cpp_template_names: dict[str, frozenset[str]] = {}
         self._cpp_namespace_blocks: dict[str, dict[str, tuple[tuple[int, int], ...]]] = {}
         self._cpp_va_lists: dict[tuple[str, str], frozenset[str]] = {}

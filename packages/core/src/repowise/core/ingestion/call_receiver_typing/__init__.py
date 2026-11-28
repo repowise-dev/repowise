@@ -489,11 +489,7 @@ class ReceiverTypingMixin(
         caller_id: str,
         type_name: str,
     ) -> tuple[str, str] | None:
-        """Read a C++ alias before asking which class declares the member.
-
-        A name no repository class carries, whose file-level reading found
-        nothing, is expanded through any alias in scope (``_cpp_alias_class``).
-        """
+        """Read a C++ alias before asking which class declares the member."""
         if self._language_of(file_path) != "cpp":
             return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
         position = self._cpp_receiver_position(
@@ -506,7 +502,7 @@ class ReceiverTypingMixin(
         if aliased is not None:
             found = self._typed_receiver_class_target(file_path, call, caller_id, aliased)
         if found is None and not self._declared_types_named(type_name):
-            expanded = self._cpp_alias_class(file_path, type_name, position)
+            expanded = self._cpp_alias_class(file_path, caller_id, type_name, position)
             if expanded is not None:
                 found = self._typed_receiver_class_target(file_path, call, caller_id, expanded)
         return found
