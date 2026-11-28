@@ -8,6 +8,7 @@ hand. For what each hook does and when it fires, see [HOOKS.md](../agent/HOOKS.m
 | Client | Hook type | Matcher | Command | Written to |
 |--------|-----------|---------|---------|------------|
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
+| Claude Code | `SubagentStart` | `.*` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PreToolUse` (command rewrite, on by default) | `Bash\|PowerShell` | `repowise-rewrite` (guarded in the plugin) | `~/.claude/settings.json`, or the plugin's `hooks.json` |

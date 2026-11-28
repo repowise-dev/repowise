@@ -121,7 +121,7 @@ from .edit_capture import capture_edit
 from .read_state import _handle_edit_post, _handle_read_post, _record_edit, bind_agent
 from .search import _handle_search_post
 from .served_reads import _handle_mcp_read_post, _log_read_after_served
-from .session_start import _handle_claude_session_start
+from .session_start import _handle_claude_session_start, _handle_claude_subagent_start
 from .wrong_path import _handle_tool_failure
 
 #: One adapter per hook process, resolved from the ``--client`` marker. Every
@@ -238,13 +238,24 @@ def _run_augment(*, client: str | None = None, coverage_only: bool = False) -> N
         return
 
     if event == "SessionStart":
-        # Claude Code lifecycle hook: live index-freshness + trust context,
-        # plus the relevance-ranked standing-decisions block.
         session_id = payload.get("session_id", "")
         session_id = session_id if isinstance(session_id, str) else ""
         result = _handle_claude_session_start(cwd, session_id)
         if result:
             _emit_response(event, result, session_id)
+        _count_run(cwd, session_id, event, "", emitted=bool(result))
+        return
+
+    if event == "SubagentStart":
+        session_id = payload.get("session_id", "")
+        session_id = session_id if isinstance(session_id, str) else ""
+        agent_id = payload.get("agent_id", "")
+        dedup_session_id = (
+            f"{session_id}/{agent_id}" if isinstance(agent_id, str) and agent_id else session_id
+        )
+        result = _handle_claude_subagent_start(cwd)
+        if result:
+            _emit_response(event, result, dedup_session_id)
         _count_run(cwd, session_id, event, "", emitted=bool(result))
         return
 

@@ -264,9 +264,7 @@ def test_save_codex_hooks_config_migration_spares_a_user_hook_on_a_retired_event
     mcp_config.save_codex_hooks_config(tmp_path)
 
     saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
-    remaining = [
-        hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]
-    ]
+    remaining = [hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]]
     assert remaining == ["echo alongside", "echo mine"]
 
 
@@ -551,9 +549,25 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert _session_start_repowise_entries(saved) == [
         ("startup|resume|clear", claude_config._augment_hook_command())
     ]
+    assert _repowise_entries(saved, "SubagentStart") == [
+        (claude_config._SUBAGENT_START_MATCHER, claude_config._augment_hook_command())
+    ]
     assert _repowise_entries(saved, "PostToolUseFailure") == [
         (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
+
+
+def test_install_then_uninstall_removes_subagent_start_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = claude_config.install_claude_code_hooks()
+    installed = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _repowise_entries(installed, "SubagentStart")
+
+    assert claude_config.uninstall_claude_code_augment_hooks() is True
+    uninstalled = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "SubagentStart" not in uninstalled.get("hooks", {})
 
 
 def test_the_failure_matcher_covers_only_tools_that_take_a_path() -> None:
@@ -798,7 +812,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                         },
                         claude_config._capture_entry(),
                     ],
-                    # SessionStart and PostToolUseFailure already present so
+                    # SessionStart, SubagentStart and PostToolUseFailure already present so
                     # their backfills (separate migrations) can't mask the
                     # matcher no-op under test.
                     "SessionStart": [
@@ -812,6 +826,7 @@ def test_migrate_claude_code_hooks_never_widens_user_matcher(
                             ],
                         }
                     ],
+                    "SubagentStart": [claude_config._subagent_start_entry()],
                     "PostToolUseFailure": [claude_config._failure_entry()],
                     "Stop": [claude_config._stop_entry()],
                 }
@@ -874,21 +889,26 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
+                    "hooks": [
+                        {"type": "command", "command": claude_config._augment_hook_command()}
+                    ],
                 },
                 claude_config._capture_entry(),
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
+                    "hooks": [
+                        {"type": "command", "command": claude_config._augment_hook_command()}
+                    ],
                 }
             ],
+            "SubagentStart": [claude_config._subagent_start_entry()],
             "PostToolUseFailure": [claude_config._failure_entry()],
             "Stop": [claude_config._stop_entry()],
         }
     }
-    original =json.dumps(payload, indent=2) + "\n"
+    original = json.dumps(payload, indent=2) + "\n"
     settings_path.write_text(original, encoding="utf-8")
     mtime_before = settings_path.stat().st_mtime_ns
 
@@ -952,8 +972,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                     "PostToolUse": [
                         {
                             "matcher": (
-                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
-                                "|mcp__.*[Rr]epowise.*__.*"
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
                             ),
                             "hooks": [
                                 {
@@ -967,8 +986,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                         # tool the user pointed it at on purpose.
                         {
                             "matcher": (
-                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
-                                "|mcp__.*[Rr]epowise.*__.*"
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
                             ),
                             "hooks": [{"type": "command", "command": "node theirs.js"}],
                         },
@@ -1040,6 +1058,7 @@ def test_migrate_backfills_the_stop_hook_beside_a_user_stop_hook(
     settings_path.parent.mkdir(parents=True)
     mine = {"hooks": [{"type": "command", "command": "notify-send done"}]}
     augment = {"type": "command", "command": claude_config._augment_hook_command()}
+
     settings_path.write_text(
         json.dumps(
             {
@@ -1058,7 +1077,6 @@ def test_migrate_backfills_the_stop_hook_beside_a_user_stop_hook(
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert saved["hooks"]["Stop"][0] == mine
     assert _repowise_entries(saved, "Stop") == [(None, claude_config._stop_hook_command())]
-    # Listed like every other user-settings hook, so doctor and `agents refresh` see it.
     assert (
         claude_config.CLAUDE_SETTINGS_LABEL,
         claude_config._stop_hook_command(),
@@ -1071,6 +1089,45 @@ def test_the_stop_command_is_recognised_pinned_or_bare() -> None:
     want = claude_config._stop_hook_command()
     assert claude_config._current_command(claude_config._STOP_HOOK_COMMAND) == want
     assert claude_config._current_command(want) == want
+
+
+def test_migrate_backfills_the_subagent_start_hook_for_older_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install predating SubagentStart gains it on self-heal."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+
+    settings_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": claude_config._AUGMENT_MATCHER,
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": claude_config._augment_hook_command(),
+                                }
+                            ],
+                        }
+                    ],
+                    "SessionStart": [claude_config._session_start_entry()],
+                    "PostToolUseFailure": [claude_config._failure_entry()],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert claude_config.migrate_claude_code_hooks() is True
+    saved = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _repowise_entries(saved, "SubagentStart") == [
+        (claude_config._SUBAGENT_START_MATCHER, claude_config._augment_hook_command())
+    ]
+    assert claude_config.migrate_claude_code_hooks() is False
 
 
 def test_migrate_preserves_a_user_failure_hook(
@@ -1140,6 +1197,7 @@ def test_migrate_claude_code_hooks_no_session_start_without_augment(
     assert claude_config.migrate_claude_code_hooks() is False
     saved = json.loads(settings_path.read_text(encoding="utf-8"))
     assert "SessionStart" not in saved["hooks"]
+    assert "SubagentStart" not in saved["hooks"]
     assert "PostToolUseFailure" not in saved["hooks"]
 
 

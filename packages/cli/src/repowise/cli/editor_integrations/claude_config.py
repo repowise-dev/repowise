@@ -407,6 +407,7 @@ _LEGACY_AUGMENT_MATCHERS = (
 # is excluded on purpose: the block usually survives compaction in the summary,
 # and re-emitting it there would double it up.
 _SESSION_START_MATCHER = "startup|resume|clear"
+_SUBAGENT_START_MATCHER = ".*"
 
 #: Hook commands run through a shell, so absence of the console script is a
 #: ``command not found`` on *every* matched tool call — non-blocking, but
@@ -468,8 +469,7 @@ _CAPTURE_HOOK_COMMAND = (
 #: augment package, so a stop in a repository without the switch pays one
 #: config read. No matcher: Stop has no tool to match.
 _STOP_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --decision-stop; fi"
+    "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment --decision-stop; fi"
 )
 
 _AUGMENT = "repowise-augment"
@@ -579,7 +579,14 @@ def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
 #: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
 #: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
 CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
-_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop")
+_PLUGIN_EVENTS = (
+    "SessionStart",
+    "SubagentStart",
+    "PreToolUse",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+)
 
 
 def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
@@ -804,6 +811,20 @@ def _session_start_entry() -> dict:
     }
 
 
+def _subagent_start_entry() -> dict:
+    return {
+        "matcher": _SUBAGENT_START_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": _augment_hook_command(),
+                "timeout": 10,
+                "statusMessage": "Loading repowise context...",
+            }
+        ],
+    }
+
+
 def _backfill_event(hooks: dict, event: str, entry_factory) -> bool:
     """Add this event's augment entry if the install predates it.
 
@@ -827,9 +848,7 @@ def _stop_entry() -> dict:
 
 def _plugin_ships_stop_hook() -> bool:
     """Whether an enabled repowise plugin already carries the Stop entry."""
-    return any(
-        _has_repowise_hook(entries) for _, entries in _plugin_hook_entries("Stop")
-    )
+    return any(_has_repowise_hook(entries) for _, entries in _plugin_hook_entries("Stop"))
 
 
 def _failure_entry() -> dict:
@@ -1064,11 +1083,13 @@ def install_claude_code_hooks() -> Path | None:
             post_hooks.append(post_hook_entry)
 
         # SessionStart: live index-freshness context at session start.
+        # SubagentStart: deferred steer context for subagents.
         # PostToolUseFailure: the wrong-path rescue.
-        # Both go through the same helper as the self-heal, which leaves a
+        # All three go through the same helper as the self-heal, which leaves a
         # hand-written non-list value alone instead of iterating it into an
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
+        _backfill_event(hooks, "SubagentStart", _subagent_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
         if not _plugin_ships_stop_hook():
             _backfill_event(hooks, "Stop", _stop_entry)
@@ -1226,7 +1247,6 @@ def uninstall_claude_code_distill_allow_rules() -> bool:
     return _write_settings(settings_path, existing)
 
 
-
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
     """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
     changed = False
@@ -1280,9 +1300,9 @@ def uninstall_claude_code_augment_hooks() -> bool:
     The sibling of :func:`uninstall_claude_code_rewrite_hook`, and deliberately
     a separate function: the rewrite hook is one opt-in entry under one event,
     while the augment hooks are installed across ``SessionStart``,
-    ``PostToolUse`` and ``PostToolUseFailure``. Sweeping every event with the
-    same predicate is what keeps a future fourth event from being missed here
-    while ``install_claude_code_hooks`` grows one.
+    ``SubagentStart``, ``PostToolUse``, ``PostToolUseFailure`` and ``Stop``.
+    Sweeping every event with the same predicate is what keeps a future event
+    from being missed here while ``install_claude_code_hooks`` grows one.
 
     Prunes as it goes, in the same order the file nests: our command out of an
     entry, an entry we emptied out of its event, an event we emptied out of
@@ -1332,7 +1352,9 @@ def uninstall_claude_code_mcp_entry() -> bool:
     from repowise.cli.agent_targets.types import FileAction
 
     try:
-        action = remove_json_object_member(_claude_code_user_config_path(), "mcpServers", "repowise")
+        action = remove_json_object_member(
+            _claude_code_user_config_path(), "mcpServers", "repowise"
+        )
     except (OSError, click.ClickException):
         return False
     return action is FileAction.REMOVED
@@ -1621,9 +1643,7 @@ def _strip_hooks(hook_list: list, predicate) -> bool:
 
 def _has_repowise_hook(hook_list: list) -> bool:
     """Check if a repowise hook is already registered, current or legacy."""
-    return any(
-        any(_is_repowise_hook(hook) for hook in _hooks_of(entry)) for entry in hook_list
-    )
+    return any(any(_is_repowise_hook(hook) for hook in _hooks_of(entry)) for entry in hook_list)
 
 
 def _is_repowise_hook(hook: dict) -> bool:
@@ -1699,6 +1719,8 @@ def migrate_claude_code_hooks() -> bool:
     # purpose.
     if isinstance(post, list) and _has_repowise_hook(post):
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
+            changed = True
+        if _backfill_event(hooks, "SubagentStart", _subagent_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
             changed = True

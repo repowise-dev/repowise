@@ -49,6 +49,7 @@ def _session_decision_block(
         return None
     return _decision_block(repo_path, session_id, checkout)
 
+
 #: The tools this block points a fresh session at. **Entry points only.**
 #:
 #: ``get_symbol`` used to be in this list and is deliberately not. It is a
@@ -63,18 +64,29 @@ def _session_decision_block(
 _CORE_TOOLS = "get_answer, get_context, search_codebase, get_risk"
 
 
-def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
-    """Return the session context block, or None outside indexed repos."""
+def _indexed_repo(cwd: str) -> tuple[Path, str] | None:
+    """Return the repo root and indexed commit, or None without a valid index."""
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
     try:
         state = json.loads((repo_path / ".repowise" / "state.json").read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
+        return None
+    if not isinstance(state, dict):
         return None
     last_sync = state.get("last_sync_commit")
     if not isinstance(last_sync, str) or not last_sync:
         return None
+    return repo_path, last_sync
+
+
+def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
+    """Return the session context block, or None outside indexed repos."""
+    indexed_repo = _indexed_repo(cwd)
+    if indexed_repo is None:
+        return None
+    repo_path, last_sync = indexed_repo
 
     checkout = _checkout_root(Path(cwd), repo_path)
     if checkout != repo_path:
@@ -101,6 +113,19 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
     # which a transcript otherwise cannot recover; the ledger stamps every row
     # for the same reason.
     return f"[repowise {emitting_build()}] " + "\n".join(lines)
+
+
+def _handle_claude_subagent_start(cwd: str) -> str | None:
+    """Return the steer for a subagent, or None outside indexed repos.
+
+    Subagents have no CLAUDE.md block and skip parent instructions that tell
+    them to call repowise first. This hook injects the steer directly into the
+    subagent before its first prompt. Freshness, decisions and setup lines are
+    omitted: the parent already has them, and every line costs subagent tokens.
+    """
+    if _indexed_repo(cwd) is None:
+        return None
+    return f"[repowise {emitting_build()}] {AGENT_STEER_DEFERRED}"
 
 
 def _setup_line(repo_path: Path) -> str | None:
@@ -172,9 +197,7 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
     carries the indexed commit), and a HEAD git cannot read is no fact at all,
     so both stay silent. Only drift is news.
 
-    A sidechain has no SessionStart, so a subagent's emissions are attributable
-    through the ledger's ``build`` column only. That is a real gap, stated
-    rather than papered over.
+    Subagents receive their steer from ``SubagentStart`` instead.
     """
     head = _git_head(repo_path)
     if head is None or head == last_sync:

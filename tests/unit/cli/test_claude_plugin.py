@@ -93,6 +93,7 @@ def test_claude_plugin_hooks_match_installer() -> None:
         (claude_config._CAPTURE_MATCHER, claude_config._CAPTURE_HOOK_COMMAND),
     ]
     assert rows("SessionStart") == [(claude_config._SESSION_START_MATCHER, command)]
+    assert rows("SubagentStart") == [(claude_config._SUBAGENT_START_MATCHER, command)]
     assert rows("PostToolUseFailure") == [(claude_config._FAILURE_MATCHER, command)]
     assert rows("Stop") == [(None, claude_config._STOP_HOOK_COMMAND)]
     # The rewrite hook is on by default for a CLI install, so the plugin
@@ -106,7 +107,12 @@ def test_claude_plugin_hooks_match_installer() -> None:
     # ships only to fresh CLI installs and not to the plugin is the failure
     # this guards, and it is invisible from either side alone.
     assert set(hooks) == {
-        "PostToolUse", "SessionStart", "PostToolUseFailure", "PreToolUse", "Stop"
+        "PostToolUse",
+        "SessionStart",
+        "SubagentStart",
+        "PostToolUseFailure",
+        "PreToolUse",
+        "Stop",
     }
 
     commands = [
