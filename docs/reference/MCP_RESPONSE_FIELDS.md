@@ -230,7 +230,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `decisions` | The three decision lanes |
 | `skeleton` / `skeleton+` | Bodies elided; `skeleton+` keeps all non-function code and elides every body. Both asked renders `skeleton+` |
 | `health`, `doc_drift` | Health scores and biomarkers; documents naming the file |
-| `symbols` | Every symbol of a file |
+| `symbols` | The top 50 symbols of a file, ranked as the default 15 are; the rest behind the `_meta.omitted` ref |
 | `facts` | Symbol card: `facts` and `tests` in `docs`, as `get_symbol` sends them; see [symbol facts](#symbol-facts) |
 | `changes`, `provenance`, `suspects`, `files` | See below |
 
@@ -320,7 +320,7 @@ One top-level block: `window` (`since`, `until`), `candidates` (changes merged i
 
 ### Skeleton
 
-Cut from stored symbol bounds, no parsing at query time: every signature, the imports, and the bodies of top symbols by centrality, hotspot and query match. Elisions carry 1-indexed line ranges, and `fold_hint` gives the `get_symbol('<path>:<start>-<end>')` call that reads one.
+Cut from stored symbol bounds, no parsing at query time: every signature, the imports, and the bodies of top symbols by centrality, hotspot and query match. A leading license header folds to one elision. Elisions carry 1-indexed line ranges, and `fold_hint` gives the `get_symbol('<path>:<start>-<end>')` call that reads one.
 
 A file with no symbol bounds is served whole (`mode: "raw"`). A Markdown or reStructuredText document over the skeleton budget is served as its headings with line numbers (`mode: "outline"`). `_meta.complete` counts only files whose whole source survived the response budget.
 
@@ -640,7 +640,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 - **`next_actions`:** `include=["actions"]` serves both horizons with `done_when` and `by_tier`; `get_health(fix_id="act_...")` opens one. `unavailable` names inputs the list was built without and `unavailable_reasons` gives each one's reason; both are absent when every input was read.
 - **`repo="all"`:** each repo has `summary` (essay's first sentence), `code_files` (its `code_health.code_files`, or graph code files before health runs) and `symbol_count`; `total_code_files` sums them.
 
-Opt-in blocks, computed only when named: `outline` (page tree, two levels), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`, `actions`, `tools` (`tool_surface`), `scope` (whole `_meta.index_scope`).
+Opt-in blocks, computed only when named: `outline` (page tree, two levels; second-level rows leave out a `page_id`, `title` or `section` their path restates, and past 8k chars the last sections keep `descendants` with their children behind the `_meta.omitted` ref), `tour` (`guided_tour`, `reading_order`), `decisions` (`key_decisions`), `graph` (`community_summary`), `ownership` (`knowledge_map`), `components`, `changes`, `actions`, `tools` (`tool_surface`), `scope` (whole `_meta.index_scope`).
 
 **changes:** Change Records in a 90-day `window` (`since`, `until`) ending at the newest merge: `total`, `by_category` (largest first), `by_week` (`{week, changes}`, Monday weeks, zeros included), and `provenance` (`agent_changes`, `human_attested_changes`, `unknown_changes`, `coverage`, `agent_share`, `summary`).
 

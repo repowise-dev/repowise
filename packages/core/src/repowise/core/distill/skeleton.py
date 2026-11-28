@@ -235,9 +235,7 @@ def _signature_text(
     return _render(lines, keep), bodies_kept
 
 
-def _drop_decorations(
-    lines: list[str], focused: list[SkeletonSymbol], keep: list[bool]
-) -> None:
+def _drop_decorations(lines: list[str], focused: list[SkeletonSymbol], keep: list[bool]) -> None:
     """Unmark banner comments: they add bytes, not structure. Focused bodies stay whole."""
     in_focus = [False] * len(lines)
     _keep_focus(focused, in_focus)
@@ -279,16 +277,18 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
     """Mark the pre-symbol region: whole if small, docstring+imports if not."""
     if first_start <= 0:
         return
+    # A license header folds to one marker line; its range stays readable.
+    head = _license_header_end(lines, first_start)
     if first_start <= _PREAMBLE_KEEP_LINES:
-        for i in range(first_start):
+        for i in range(head, first_start):
             keep[i] = True
         return
     # Long preamble: leading docstring/comment block, then import-shaped lines.
-    i = 0
+    i = head
     in_docstring = False
     while i < first_start:
         stripped = lines[i].strip()
-        if i == 0 or in_docstring or stripped.startswith("#") or (not stripped and i < 3):
+        if i == head or in_docstring or stripped.startswith("#") or (not stripped and i < 3):
             keep[i] = True
             opens = sum(stripped.count(d) for d in _DOCSTRING_DELIMS)
             if not in_docstring and any(stripped.startswith(d) for d in _DOCSTRING_DELIMS):
@@ -301,6 +301,86 @@ def _keep_preamble(lines: list[str], first_start: int, keep: list[bool]) -> None
     for j in range(i, first_start):
         if _IMPORT_RE.match(lines[j]):
             keep[j] = True
+
+
+#: Line comment and block comment openers a file header is written in.
+_COMMENT_PREFIXES = ("#", "//", "/*", "*", "--", ";", "%", "(*")
+#: A notice a license header opens with and an explanatory comment does not:
+#: a dated copyright line, an SPDX tag or a license grant.
+_LICENSE_RE = re.compile(
+    r"copyright\s*(?:\(c\)|©)?\s*\d{4}|(?:\(c\)|©)\s*\d{4}|spdx-license-identifier|"
+    r"licensed under|permission is hereby granted|general public license|license, version",
+    re.IGNORECASE,
+)
+#: Boilerplate the paragraphs after the notice carry (terms, warranty
+#: disclaimer). Set phrases, so prose that only mentions a license stays.
+_LICENSE_TAIL_RE = re.compile(
+    r"warrant(?:y|ies)|distributed (?:under|in the hope)|redistribution and use|"
+    r"obtain a copy of the licen[cs]e|you may not use this file|the above copyright notice|"
+    r"licen[cs]e for the specific|see (?:the )?licen[cs]e|licenses?/",
+    re.IGNORECASE,
+)
+#: A paragraph after the first that opens with its own notice line.
+_NOTICE_START_RE = re.compile(
+    r"\W*(?:copyright\s*(?:\(c\)|©)?\s*\d{4}|(?:\(c\)|©)\s*\d{4}|"
+    r"spdx-license-identifier|licensed under|permission is hereby granted)",
+    re.IGNORECASE,
+)
+#: C preprocessor directives, which may be written with a space after the '#'.
+_DIRECTIVES = frozenset(
+    {"include", "define", "undef", "if", "ifdef", "ifndef", "elif", "else", "endif", "pragma"}
+)
+
+
+def _license_header_end(lines: list[str], limit: int) -> int:
+    """0-indexed end of a leading license header, or 0 when there is none.
+
+    The header is the run of leading comment paragraphs (split by blank lines)
+    that opens with a license notice, followed by paragraphs that carry its
+    terms or open with a notice of their own. The first paragraph that is
+    neither ends it, so a comment that explains the module stays in the
+    skeleton even when it mentions a license.
+    """
+    end = 0
+    for start, stop in _comment_paragraphs(lines, limit):
+        if end:
+            text = "\n".join(lines[start:stop])
+            licensed = _LICENSE_TAIL_RE.search(text) or _NOTICE_START_RE.match(lines[start])
+        else:
+            licensed = _LICENSE_RE.search("\n".join(lines[start:stop]))
+        if not licensed:
+            break
+        end = stop
+    return end
+
+
+def _comment_paragraphs(lines: list[str], limit: int) -> list[tuple[int, int]]:
+    """``(start, stop)`` of each leading comment paragraph, up to the first code line."""
+    out: list[tuple[int, int]] = []
+    start = None
+    for i in range(limit):
+        stripped = lines[i].strip()
+        if _is_comment(stripped):
+            start = i if start is None else start
+            continue
+        if start is not None:
+            out.append((start, i))
+            start = None
+        if stripped and not (i == 0 and stripped.startswith("#!")):
+            return out
+    if start is not None:
+        out.append((start, limit))
+    return out
+
+
+def _is_comment(stripped: str) -> bool:
+    """A comment line; ``#!`` and preprocessor directives (``# include`` too) are not."""
+    if stripped.startswith("#"):
+        rest = stripped[1:]
+        word = rest.split(maxsplit=1)[0] if rest.strip() else ""
+        if rest[:1].isalpha() or rest[:1] == "!" or word in _DIRECTIVES:
+            return False
+    return stripped.startswith(_COMMENT_PREFIXES)
 
 
 def _elide_callable_bodies(

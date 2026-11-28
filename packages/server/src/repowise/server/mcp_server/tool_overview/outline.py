@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import case, select
@@ -16,6 +18,13 @@ from repowise.server.mcp_server._budget import OmissionCollector
 # tokens. ``include=["outline"]`` opens the next rung.
 _OUTLINE_TOP_CAP = 40
 _OUTLINE_CHILD_CAP = 10
+#: Serialized size the opened rung (the sections' children) may take. Agents
+#: used about one path in six of a full two-rung outline, so past this the tail
+#: sections keep their ``descendants`` count and their children go to the
+#: omission store. The top rung itself is never cut.
+_OUTLINE_MAX_CHARS = 8_000
+#: Children a section keeps in the first trimming pass, before any loses all.
+_OUTLINE_TRIM_KEEP = 3
 
 
 async def _load_tree_rows(session: Any, repository: Any) -> list[Any]:
@@ -86,18 +95,26 @@ def _omitted_line(row: Any) -> str:
 
 
 def _outline_node(
-    row: Any, children: dict[str, list[Any]], depth: int, collector: OmissionCollector
+    row: Any,
+    children: dict[str, list[Any]],
+    depth: int,
+    collector: OmissionCollector,
+    *,
+    child: bool = False,
 ) -> dict[str, Any]:
+    # The outline's own label ("CLI", not "Cli Overview"); the page keeps its
+    # full title when opened.
+    title = page_nav_title(row.page_type, row.title or "", row.metadata_json)
     node: dict[str, Any] = {
         "section": row.section_number,
         "page_id": row.id,
-        # The outline's own label ("CLI", not "Cli Overview"); the page keeps
-        # its full title when opened.
-        "title": page_nav_title(row.page_type, row.title or "", row.metadata_json),
+        "title": title,
         "page_type": row.page_type,
     }
     if row.target_path:
         node["target_path"] = row.target_path
+    if child:
+        _drop_derivable(node)
     kids = children.get(row.id, [])
     if kids:
         node["descendants"] = _count_descendants(row, children, set())
@@ -108,11 +125,94 @@ def _outline_node(
                 f"outline children of {row.id} beyond cap={cap} ({len(kids) - cap} dropped)",
                 "\n".join(_omitted_line(k) for k in kids[cap:]),
             )
-        node["children"] = [_outline_node(k, children, depth - 1, collector) for k in kids[:cap]]
+        node["children"] = [
+            _outline_node(k, children, depth - 1, collector, child=True) for k in kids[:cap]
+        ]
     return node
 
 
-def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) -> dict[str, Any]:
+def _drop_derivable(node: dict[str, Any]) -> None:
+    """Leave out what a child row restates: most rows are file pages.
+
+    ``page_id`` is ``<page_type>:<target_path>``, a generated title names the
+    path ("File: a/b.py"), and rows below the top rung carry no section number.
+    """
+    path = node.get("target_path")
+    if path and node["page_id"] == f"{node['page_type']}:{path}":
+        del node["page_id"]
+    if path and path in (node["title"] or ""):
+        del node["title"]
+    if node["section"] is None:
+        del node["section"]
+
+
+def _holds_entry_point(node: dict[str, Any], entry_points: Sequence[str]) -> bool:
+    """Whether *node*'s directory holds one of the repo's entry points."""
+    path = (node.get("target_path") or "").rstrip("/")
+    return bool(path) and any(e == path or e.startswith(f"{path}/") for e in entry_points)
+
+
+def _fit_outline(
+    sections: list[dict[str, Any]],
+    collector: OmissionCollector,
+    entry_points: Sequence[str] = (),
+) -> int:
+    """Trim the tail sections' children until the rung fits; returns how many.
+
+    Breadth first: every section is cut to its first ``_OUTLINE_TRIM_KEEP``
+    children before any loses all of them, so each top-level directory still
+    names a few of its paths (``cmd`` keeps ``cmd/argocd-server``). Sections
+    holding an entry point (``cmd`` beside ``cmd/main.go``) are cut last in
+    each pass. Each section keeps its ``descendants`` count, and the cut rows
+    stay recoverable from the omission store, so the cut is a summary, not a
+    loss.
+    """
+    tail = list(reversed(sections))
+    holds = [_holds_entry_point(n, entry_points) for n in tail]
+    order = [n for n, h in zip(tail, holds, strict=True) if not h]
+    order += [n for n, h in zip(tail, holds, strict=True) if h]
+    trimmed: set[int] = set()
+    for keep in (_OUTLINE_TRIM_KEEP, 0):
+        for node in order:
+            if _outline_chars(sections) <= _OUTLINE_MAX_CHARS:
+                return len(trimmed)
+            kids = node.get("children") or []
+            if len(kids) <= keep:
+                continue
+            cut = kids[keep:]
+            if keep:
+                node["children"] = kids[:keep]
+            else:
+                del node["children"]
+            trimmed.add(id(node))
+            collector.add(
+                f"outline children of {node.get('target_path') or node.get('page_id')} "
+                f"beyond the outline size cap ({len(cut)} rows)",
+                "\n".join(_stored_line(k) for k in cut),
+            )
+    return len(trimmed)
+
+
+def _outline_chars(sections: list[dict[str, Any]]) -> int:
+    """Serialized size of the opened rung: the sections' children."""
+    return sum(
+        len(json.dumps(n["children"], separators=(",", ":"))) for n in sections if n.get("children")
+    )
+
+
+def _stored_line(node: dict[str, Any]) -> str:
+    """One trimmed child as text: its path, after its section and own title when it has them."""
+    path = node.get("target_path") or node.get("page_id", "")
+    head = " ".join(str(node[k]) for k in ("section", "title") if node.get(k))
+    return f"{head}: {path}" if head else path
+
+
+def _build_outline(
+    rows: list[Any],
+    depth: int,
+    collector: OmissionCollector,
+    entry_points: Sequence[str] = (),
+) -> dict[str, Any]:
     """The stored page tree, rooted at the repo overview.
 
     This is the same hierarchy the web app and the editor extension render:
@@ -132,13 +232,14 @@ def _build_outline(rows: list[Any], depth: int, collector: OmissionCollector) ->
             f"({len(top) - _OUTLINE_TOP_CAP} dropped)",
             "\n".join(_omitted_line(r) for r in top[_OUTLINE_TOP_CAP:]),
         )
+    sections = [_outline_node(r, children, depth - 1, collector) for r in top[:_OUTLINE_TOP_CAP]]
     outline: dict[str, Any] = {
         "root": {"page_id": root.id, "title": root.title},
         "total_pages": len(rows),
-        "sections": [
-            _outline_node(r, children, depth - 1, collector) for r in top[:_OUTLINE_TOP_CAP]
-        ],
+        "sections": sections,
     }
+    if trimmed := _fit_outline(sections, collector, entry_points):
+        outline["children_omitted_sections"] = trimmed
     if len(top) > _OUTLINE_TOP_CAP:
         # Siblings are ordered by type rank, so what falls off the end is the
         # long tail of cycles and loose files; say so rather than letting the
