@@ -17,8 +17,10 @@ import pytest
 from repowise.core.ingestion.git_indexer import GitIndexer, GitIndexTier
 from repowise.core.ingestion.git_indexer.fix_walk_cache import FixWalkCache
 from repowise.core.ingestion.git_indexer.prior_defects import (
+    FixCommit,
     collect_fix_commits,
     compute_prior_defects,
+    issue_repeats,
 )
 from repowise.core.issues import (
     IssueCommit,
@@ -207,15 +209,31 @@ def test_a_tracker_fix_counts_and_nothing_else_moves(tmp_path: Path) -> None:
     repo = _repo(path)
     plain = compute_prior_defects(repo, {"a.py"}, as_of_ts=None)
     assert plain.counts == {}
-    assert compute_prior_defects(repo, {"a.py"}, as_of_ts=None, tracker_fixes=frozenset()) == plain
+    assert compute_prior_defects(repo, {"a.py"}, as_of_ts=None, tracker_fixes={}) == plain
 
-    walk = collect_fix_commits(repo, {"a.py"}, as_of_ts=None, tracker_fixes=frozenset({linked}))
+    walk = collect_fix_commits(
+        repo, {"a.py"}, as_of_ts=None, tracker_fixes={linked: frozenset({"ENG-42"})}
+    )
     assert [(f.sha, f.subject, f.shape_kind) for f in walk.fixes] == [
         (linked, "Handle empty carts (ENG-42)", "code_fix")
     ]
     assert compute_prior_defects(
-        repo, {"a.py"}, as_of_ts=None, tracker_fixes=frozenset({linked})
+        repo, {"a.py"}, as_of_ts=None, tracker_fixes={linked: frozenset({"ENG-42"})}
     ).counts == {"a.py": 1}
+
+
+def test_one_issue_counts_once_per_file_and_a_rule_fix_always_counts() -> None:
+    def fix(sha: str, paths: list[str], rule: bool) -> FixCommit:
+        return FixCommit(sha=sha, ts=0, paths=paths, issues=frozenset({"ENG-1"}), rule_fix=rule)
+
+    # Walk order, newest first: a later commit of the same pull request, an
+    # older one, and a commit the git rule names a fix, all linked to ENG-1.
+    newer = fix("n", ["b.py"], rule=False)
+    older = fix("o", ["a.py", "b.py"], rule=False)
+    rule = fix("r", ["a.py"], rule=True)
+    assert issue_repeats([newer, older, rule], history=False) == {("o", "a.py"), ("n", "b.py")}
+    # With no tracker-only commit nothing repeats.
+    assert issue_repeats([rule], history=False) == set()
 
 
 def test_the_walk_cache_rereads_when_the_linked_commits_change(tmp_path: Path) -> None:
@@ -226,17 +244,21 @@ def test_the_walk_cache_rereads_when_the_linked_commits_change(tmp_path: Path) -
     assert "issues" not in no_links._key  # the key a cache written before links had
     compute_prior_defects(repo, {"a.py"}, as_of_ts=None, walk_cache=no_links)
 
-    linked_cache = FixWalkCache.load(path / ".repowise", repo, tracker_fixes=frozenset({linked}))
+    linked_cache = FixWalkCache.load(
+        path / ".repowise", repo, tracker_fixes={linked: frozenset({"ENG-42"})}
+    )
     assert linked_cache.records == {}  # a different key: nothing reused
     counts = compute_prior_defects(
         repo,
         {"a.py"},
         as_of_ts=None,
         walk_cache=linked_cache,
-        tracker_fixes=frozenset({linked}),
+        tracker_fixes={linked: frozenset({"ENG-42"})},
     ).counts
     assert counts == {"a.py": 1}
-    again = FixWalkCache.load(path / ".repowise", repo, tracker_fixes=frozenset({linked}))
+    again = FixWalkCache.load(
+        path / ".repowise", repo, tracker_fixes={linked: frozenset({"ENG-42"})}
+    )
     assert again.records  # the same links reuse the records just written
 
 
@@ -244,9 +266,7 @@ def test_the_walk_cache_rereads_when_the_linked_commits_change(tmp_path: Path) -
 async def test_an_indexer_without_links_writes_what_it_always_did(tmp_path: Path) -> None:
     path, _ = _history(tmp_path)
     before = await GitIndexer(path, tier=GitIndexTier.FULL).index_repo("r")
-    after = await GitIndexer(path, tier=GitIndexTier.FULL, tracker_fixes=frozenset()).index_repo(
-        "r"
-    )
+    after = await GitIndexer(path, tier=GitIndexTier.FULL, tracker_fixes={}).index_repo("r")
     assert before[1] == after[1]
     assert before[0].fix_event_rows == after[0].fix_event_rows
 

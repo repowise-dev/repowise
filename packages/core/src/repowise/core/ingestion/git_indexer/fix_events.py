@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from .prior_defects import FixCommit, FixWalk
+from .prior_defects import ISSUE_REPEAT, FixCommit, FixWalk, issue_repeats
 
 logger = structlog.get_logger(__name__)
 
@@ -42,16 +42,19 @@ def build_fix_events(walk: FixWalk) -> list[dict]:
 
     An update passes a walk already narrowed to the fix commits it has never
     seen (:func:`~.prior_defects.collect_fix_commits`'s ``skip_shas``), so
-    nothing is rebuilt.
+    nothing is rebuilt. A commit-file pair that repeats an issue the file
+    already counts is stored as :data:`ISSUE_REPEAT`: the update never skips a
+    commit an issue links to, so the walk holds every commit that decides it.
     """
     if not walk.fixes:
         return []
 
+    repeats = issue_repeats([f for f in walk.fixes if f.shape_kind == "code_fix"], history=False)
     rows = [
         row
         for fix in walk.fixes
         for path in fix.paths
-        if (row := _safe_row(fix, path)) is not None
+        if (row := _safe_row(fix, path, (fix.sha, path) in repeats)) is not None
     ]
 
     # Deterministic order so a replayed capture writes the same rows in the same
@@ -60,10 +63,11 @@ def build_fix_events(walk: FixWalk) -> list[dict]:
     return rows
 
 
-def _safe_row(fix: FixCommit, path: str) -> dict | None:
+def _safe_row(fix: FixCommit, path: str, repeat: bool) -> dict | None:
     """One row, or ``None``: one unlucky file must not cost the whole window."""
     try:
-        return _build_row(fix, path)
+        row = _build_row(fix, path)
+        return {**row, "shape_kind": ISSUE_REPEAT} if repeat else row
     except Exception as exc:
         logger.debug("fix_event_row_failed", fix=fix.sha[:12], path=path, error=str(exc))
         return None

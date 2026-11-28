@@ -17,6 +17,7 @@ from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS, shown_snippe
 from repowise.core.co_change import confidence_ratio, parse_partners
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.git_indexer.co_change import windowed_partners
+from repowise.core.persistence.crud.issue_links import fix_issue_quotes
 from repowise.core.persistence.models import (
     GitMetadata,
     Repository,
@@ -241,7 +242,9 @@ def advisory_call_line(rows: list[Any]) -> str:
     where = f"{site.path}:{site.line}" if site.line else site.path
     line = f"{head} in {top.package}: a production function calls into the package at {where}"
     if len(rows) > 1:
-        key = f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
+        key = (
+            f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
+        )
         line += f'; {len(rows) - 1} more advisory(ies): get_context(targets=["{key}"])'
     return line
 
@@ -679,6 +682,9 @@ async def _assess_one_target(
     result_data.update(history_fields(meta, dep_count, team_size))
     defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
+        quotes = await fix_issue_quotes(session, repo_id, [lookup_path])
+        if quotes.get(lookup_path):
+            defect_profile["linked_issues"] = quotes[lookup_path]
         result_data["defect_profile"] = defect_profile
     result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
     result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)

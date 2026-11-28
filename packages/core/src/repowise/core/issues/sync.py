@@ -11,13 +11,16 @@ import asyncio
 import contextlib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
 from repowise.core.evidence.sources import FetchOutcome
 
 from .sources import IssueCommit, IssueRequest, IssueSource, StoredLink, run_issue_fetch
+
+if TYPE_CHECKING:
+    from repowise.core.ingestion.git_indexer.prior_defects import TrackerFixes
 
 logger = structlog.get_logger(__name__)
 
@@ -135,7 +138,7 @@ def _reachable_any(repo_path: str | Path, head: str, shas: list[str]) -> bool:
             repo.close()
 
 
-async def stored_tracker_fixes(repo_path: str | Path) -> frozenset[str]:
+async def stored_tracker_fixes(repo_path: str | Path) -> TrackerFixes:
     """The tracker fixes stored in *repo_path*'s index, read before a git walk.
 
     Empty when there is no index, no repository row or no ``issue_links``
@@ -151,12 +154,12 @@ async def stored_tracker_fixes(repo_path: str | Path) -> frozenset[str]:
 
     root = Path(repo_path)
     if not has_db_store(root):
-        return frozenset()
+        return {}
     url = resolve_db_url(root)
     # A configured SQLite file that does not exist yet stays that way: opening
     # it would create the store a dry run or a first index has not written.
     if url.startswith("sqlite") and not Path(url.split(":///", 1)[-1]).is_file():
-        return frozenset()
+        return {}
     engine = create_engine(url)
     try:
         from repowise.core.persistence.crud import get_repository_by_path
@@ -166,11 +169,11 @@ async def stored_tracker_fixes(repo_path: str | Path) -> frozenset[str]:
             # The lookup every reader shares, so a moved checkout still finds its row.
             repo = await get_repository_by_path(session, str(root))
             if repo is None:
-                return frozenset()
+                return {}
             return await load_tracker_fixes(session, repo.id)
     except Exception as exc:
         # An index older than the table, or a locked store: count by git alone.
         logger.warning("stored_tracker_fixes_failed", error=type(exc).__name__)
-        return frozenset()
+        return {}
     finally:
         await engine.dispose()

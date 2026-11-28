@@ -3,8 +3,9 @@
 The commit's message names no fix (``Handle empty carts (ENG-42)``), so the git
 rule alone counts nothing. The fake tracker says ENG-42 is a Bug: after a sync
 and an update, the commit is a fix in ``prior_defect_count``, ``fix_events``,
-``git_commits.is_fix`` and the fix history an agent reads, quoting the issue,
-and a fresh index of the same store holds the same rows.
+``git_commits.is_fix``, the health finding, the change category and the fix
+history an agent reads, quoting the issue, and a fresh index of the same store
+holds the same rows.
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
 
 def _index(repo: Path) -> None:
     from repowise.cli.helpers import save_state
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
     from repowise.core.pipeline.full_index import index_repo_full
 
     asyncio.run(index_repo_full(repo))
@@ -65,6 +67,10 @@ def _index(repo: Path) -> None:
             "last_sync_commit": _git(repo, "rev-parse", "HEAD"),
             "docs_enabled": False,
             GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION,
+            # What init stamps: no re-score is due for age or analyzer, so only
+            # the history re-walk can bring the health rows up to date.
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+            "last_full_rescore_at": float(_git(repo, "log", "-1", "--format=%ct")),
         },
     )
 
@@ -98,7 +104,13 @@ def _sync(repo: Path):
 
 def _snapshot(repo: Path) -> dict:
     from repowise.core.persistence.crud.issue_links import fix_issue_quotes
-    from repowise.core.persistence.models import FixEvent, GitCommit, GitMetadata
+    from repowise.core.persistence.models import (
+        Change,
+        FixEvent,
+        GitCommit,
+        GitMetadata,
+        HealthFinding,
+    )
 
     async def read(session, repo_id):
         meta = {
@@ -114,7 +126,22 @@ def _snapshot(repo: Path) -> dict:
             for c in (await session.execute(select(GitCommit))).scalars()
         }
         quotes = await fix_issue_quotes(session, repo_id, ["cart.py"])
-        return {"meta": meta, "events": events, "commits": commits, "quotes": quotes}
+        health = sorted(
+            (f.file_path, f.severity, json.loads(f.details_json or "{}").get("prior_defect_count"))
+            for f in (await session.execute(select(HealthFinding))).scalars()
+            if f.biomarker_type == "prior_defect"
+        )
+        categories = {
+            c.head_sha: c.category for c in (await session.execute(select(Change))).scalars()
+        }
+        return {
+            "meta": meta,
+            "events": events,
+            "commits": commits,
+            "quotes": quotes,
+            "health": health,
+            "categories": categories,
+        }
 
     return asyncio.run(_with_session(repo, read))
 
@@ -164,8 +191,38 @@ def test_a_linked_bug_counts_as_a_fix_after_sync_and_update(tmp_path: Path) -> N
     # ``is_fix`` is reported beside the score, never scored: no score moves.
     assert after["commits"][linked][1] == before["commits"][linked][1]
     assert after["quotes"] == {"cart.py": ["ENG-42 (bug): Checkout fails on an empty cart"]}
+    assert after["health"] == [("cart.py", "low", 1)]
+    assert after["categories"][linked] == "fix"
+    assert before["categories"][linked] != "fix"
 
     # A fresh index of the same store gives the same rows.
+    (repo / ".repowise" / "state.json").unlink()
+    _index(repo)
+    assert _snapshot(repo) == after
+
+
+def test_one_issue_counts_once_per_file_however_many_commits_link_to_it(tmp_path: Path) -> None:
+    repo, linked = _repo(tmp_path)
+    body = "def total(items):\n    return sum(items or ())\n"
+    second = _commit(repo, "cart.py", body, "Use a tuple (ENG-42)")
+    _index(repo)
+    TRACKER["ENG-42"] = ("bug", "Done", "Checkout fails on an empty cart")
+    try:
+        _sync(repo)
+    finally:
+        TRACKER.clear()
+    result = _update(repo)
+    assert result.exit_code == 0, result.output
+
+    after = _snapshot(repo)
+    # Two commits, one bug: one defect on cart.py. Each commit keeps its row,
+    # the newer one marked as repeating the issue the older one counts.
+    assert after["meta"]["cart.py"] == 1
+    assert after["events"] == sorted(
+        [(linked, "cart.py", "code_fix"), (second, "cart.py", "issue_repeat")]
+    )
+    assert after["commits"][linked][0] is True and after["commits"][second][0] is True
+
     (repo / ".repowise" / "state.json").unlink()
     _index(repo)
     assert _snapshot(repo) == after
@@ -193,6 +250,8 @@ def test_a_link_that_stops_being_a_bug_retracts_the_fix(tmp_path: Path) -> None:
     assert after["events"] == []
     assert after["commits"][linked][0] is False
     assert after["quotes"] == {}
+    assert after["health"] == []
+    assert after["categories"][linked] != "fix"
 
 
 def test_a_refused_token_stores_nothing_and_says_why(tmp_path: Path) -> None:
@@ -284,6 +343,10 @@ def test_repowise_plugins_lists_the_issue_source(installed) -> None:
 
     rows = {s["source"]: s for s in plugins_report()["sources"] if s["seam"] == "issue-source"}
     row = rows["fake-tracker"]
-    assert (row["source"], row["plugin"], row["configured"]) == ("fake-tracker", "faketracker", True)
+    assert (row["source"], row["plugin"], row["configured"]) == (
+        "fake-tracker",
+        "faketracker",
+        True,
+    )
     # The built-in forge source is listed beside it, with no plugin.
     assert rows["forge"]["plugin"] is None

@@ -447,3 +447,10 @@ def _render_line(facts, setup) -> str:
     found = [ln.strip("│ ") for ln in console.export_text().splitlines() if "Repo report" in ln]
     assert len(found) == 1
     return found[0]
+
+
+def test_a_configured_source_that_never_synced_gets_one_step():
+    steps = build_contextual_next_steps(unsynced_sources=("forge",))
+    assert [command for command, _ in steps] == ["repowise serve", "repowise sources sync"]
+    assert "repowise update" in steps[1][1]
+    assert build_contextual_next_steps() == [steps[0]]

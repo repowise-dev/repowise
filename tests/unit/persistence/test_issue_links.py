@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.issues import StoredLink
 from repowise.core.persistence.crud.issue_links import (
+    cite_prior_defect_issues,
     fix_issue_quotes,
     load_tracker_fixes,
     store_issue_links,
@@ -58,7 +59,7 @@ async def test_a_partial_fetch_only_adds(async_session):
 
     assert {k for _, k, _, _ in await _stored(async_session)} == {"ENG-1", "ENG-2"}
     assert result["removed"] == 0
-    assert await load_tracker_fixes(async_session, repo.id) == {A, B}
+    assert await load_tracker_fixes(async_session, repo.id) == {A: {"ENG-1"}, B: {"ENG-2"}}
 
 
 @pytest.mark.asyncio
@@ -163,3 +164,32 @@ async def test_with_no_links_left_a_linked_flag_goes_and_the_rule_stays(async_se
     monkeypatch.setattr(crud, "upsert_git_commits_bulk", lambda *a: writes.append(a))
     await reconcile_issue_fix_flags(async_session, repo.id)
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_prior_defect_finding_cites_its_linked_issue(async_session):
+    repo = await insert_repo(async_session)
+    async_session.add(
+        FixEvent(
+            repository_id=repo.id,
+            fix_sha=A,
+            file_path="cart.py",
+            shape_kind="code_fix",
+            old_ranges_json="[]",
+            committed_at=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+    )
+    await async_session.flush()
+    await store_issue_links(async_session, repo.id, [_link(A, "ENG-1", title="Cart")], source="t")
+    rows = [
+        {"biomarker_type": "prior_defect", "file_path": "cart.py", "details": {"n": 1}},
+        {"biomarker_type": "prior_defect", "file_path": "other.py", "details": {"n": 1}},
+        {"biomarker_type": "high_complexity", "file_path": "cart.py", "details": {}},
+    ]
+
+    await cite_prior_defect_issues(async_session, repo.id, rows)
+
+    assert rows[0]["details"] == {"n": 1, "linked_issues": ["ENG-1 (bug): Cart"]}
+    # No link behind the file, or not a defect finding: left as it was.
+    assert rows[1]["details"] == {"n": 1}
+    assert rows[2]["details"] == {}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Collection
 from functools import partial
 from typing import Any
 
@@ -208,7 +209,7 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
 
 
 async def reconcile_issue_fix_flags(
-    session: Any, repo_id: str, tracker_fixes: frozenset[str] | None = None
+    session: Any, repo_id: str, tracker_fixes: Collection[str] | None = None
 ) -> None:
     """Set ``git_commits.is_fix`` where a stored bug or incident issue names the commit.
 
@@ -234,7 +235,7 @@ async def reconcile_issue_fix_flags(
         logger.debug("issue_fix_reconcile_failed", error=str(exc))
 
 
-def _issue_fix_updates(stored: list[dict], tracker_fixes: frozenset[str]) -> list[dict]:
+def _issue_fix_updates(stored: list[dict], tracker_fixes: Collection[str]) -> list[dict]:
     """Rows whose ``is_fix`` moves. The flag is reported, not scored, so no score moves."""
     from repowise.core.ingestion.git_indexer import is_fix_commit
 

@@ -250,3 +250,23 @@ class TestFullRescoreIntervalWarningOnce:
         monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "7")
         assert _full_rescore_interval_days() == 7.0
         assert len(printed) == 1
+
+
+class TestHistoryRewalk:
+    """A re-walk of git history moves every file's prior-defect count."""
+
+    def test_a_linked_issue_rewalk_forces_it(self):
+        from repowise.core.ingestion.git_indexer import (
+            GIT_HISTORY_ISSUE_LINKS_REWALK,
+            GIT_HISTORY_VERSION,
+            GIT_HISTORY_VERSION_KEY,
+        )
+
+        head_ts = 1_000_000.0
+        state = {
+            "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+            "last_full_rescore_at": head_ts,
+            GIT_HISTORY_VERSION_KEY: GIT_HISTORY_ISSUE_LINKS_REWALK,
+        }
+        assert full_rescore_due(state, head_ts) is True
+        assert full_rescore_due({**state, GIT_HISTORY_VERSION_KEY: GIT_HISTORY_VERSION}, head_ts) is False

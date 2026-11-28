@@ -136,7 +136,9 @@ def coverage_found(facts: SetupFacts) -> RuleOutcome:
         done_when="A coverage report is ingested.",
         command=command,
         marks=tuple(r.path for r in reports),
-        details=tuple(ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in named),
+        details=tuple(
+            ActionDetail(r.path, reason=f"modified {_age(r.age_days)} ago") for r in named
+        ),
     )
 
 
@@ -159,9 +161,7 @@ def evidence_found(facts: SetupFacts) -> RuleOutcome:
     return _step(
         rule,
         title=title,
-        impact=(
-            "Performance can then rank slow paths by measured time, not only by code shape."
-        ),
+        impact=("Performance can then rank slow paths by measured time, not only by code shape."),
         why=(WhyFact("found", ", ".join(sorted({f.kind for f in files}))),),
         surface="performance",
         done_when="A profile or benchmark run is ingested.",
@@ -193,8 +193,9 @@ def sources_unsynced(facts: SetupFacts) -> RuleOutcome:
         rule,
         title=title,
         impact=(
-            "Its settings are set, but it has not fetched yet. `repowise update` "
-            "syncs it from then on."
+            "Its settings are set, but it has not fetched yet. Sync it, then run "
+            "`repowise update` so the index uses what it fetched; later updates "
+            "sync it themselves."
         ),
         why=(WhyFact("sources", ", ".join(names)),),
         surface="setup",

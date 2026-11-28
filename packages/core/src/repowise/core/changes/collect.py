@@ -105,9 +105,7 @@ def _manifest(
     from repowise.core.analysis.change_health.sources import GitRevisionSource, filter_changes
 
     pair = GitRevisionSource(repo_root, hunks=False).resolve(revspec)
-    changes = filter_changes(
-        pair.changes, extensions=extensions, exclude_patterns=exclude_patterns
-    )
+    changes = filter_changes(pair.changes, extensions=extensions, exclude_patterns=exclude_patterns)
     return {c.path: c.status for c in changes}
 
 
@@ -808,9 +806,7 @@ def _workspace(
             "provider_file": lk.provider_file,
         }
         for lk in store.contract_links
-        if lk.provider_repo == alias
-        and lk.provider_file in touched
-        and lk.consumer_repo != alias
+        if lk.provider_repo == alias and lk.provider_file in touched and lk.consumer_repo != alias
     ]
     return contracts, consumers
 
@@ -923,6 +919,7 @@ async def _change_outcomes(
     )
     from repowise.core.git_refs import is_shallow
     from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
 
     head, days = key
     stamp = {"as_of": head, "days": days}
@@ -939,8 +936,9 @@ async def _change_outcomes(
     for link in links:
         later = await get_change(session, repo_id, link.sha)
         rows.append({**link.to_dict(), "change_id": later.change_id if later else None})
+    tracker_fixes = await load_tracker_fixes(session, repo_id)
     try:
-        rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days)
+        rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days, tracker_fixes)
         rate_unknown = None
     except OutcomeUnknownError as exc:
         rate, rate_unknown = None, str(exc)

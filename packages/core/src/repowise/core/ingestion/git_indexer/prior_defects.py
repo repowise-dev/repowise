@@ -30,8 +30,10 @@ returned so the delta is inspectable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -53,13 +55,27 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 __all__ = [
+    "ISSUE_REPEAT",
+    "NO_TRACKER_FIXES",
     "FixCommit",
     "FixWalk",
     "PriorDefects",
+    "TrackerFixes",
     "collect_fix_commits",
     "compute_prior_defects",
+    "issue_repeats",
     "window_commits",
 ]
+
+#: ``sha -> keys`` of the bug or incident issues a stored link names on each
+#: commit (``issue_links``): every commit here is a fix, whatever its subject.
+TrackerFixes = Mapping[str, frozenset[str]]
+NO_TRACKER_FIXES: TrackerFixes = MappingProxyType({})
+
+#: The ``fix_events`` shape of a commit-file pair whose issue an earlier fix
+#: of the same file already counts. Stored, so the evidence stays, but not
+#: ``code_fix``, so nothing counts it twice.
+ISSUE_REPEAT = "issue_repeat"
 
 # sha <US> committer-time <US> subject <US> body <STX>, one record per commit
 # (NUL-separated); --name-status then emits the touched paths on the lines that
@@ -119,6 +135,10 @@ class FixCommit:
     subject: str = ""
     body: str = ""
     history_paths: list[str] | None = None
+    #: Keys of the bug or incident issues linked to this commit; empty when none.
+    issues: frozenset[str] = frozenset()
+    #: False for a commit that is a fix only because an issue links to it.
+    rule_fix: bool = True
 
 
 @dataclass(frozen=True)
@@ -156,7 +176,7 @@ def collect_fix_commits(
     skip_shas: set[str] | None = None,
     shape_cache: FixShapeCache | None = None,
     walk_cache: FixWalkCache | None = None,
-    tracker_fixes: frozenset[str] = frozenset(),
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> FixWalk:
     """Walk the trailing window's fix commits and open each one's diff.
 
@@ -223,16 +243,13 @@ def _with_shapes(
             {f.sha: (fresh[f.sha], f.ts) for f in fixes if f.sha in fresh}, oldest_ts=oldest_ts
         )
     return [
-        FixCommit(
-            sha=fix.sha,
-            ts=fix.ts,
-            paths=fix.paths,
+        replace(
+            fix,
             shape_kind=known.get(fix.sha) or fresh.get(fix.sha, "code_fix"),
             files=diffs.get(fix.sha, {}),
             # Cached fix records may predate the cut.
             subject=without_changelist_number(fix.subject),
             body=without_changelist_number(fix.body),
-            history_paths=fix.history_paths,
         )
         for fix in fixes
     ]
@@ -247,7 +264,7 @@ def compute_prior_defects(
     walk: FixWalk | None = None,
     shape_cache: FixShapeCache | None = None,
     walk_cache: FixWalkCache | None = None,
-    tracker_fixes: frozenset[str] = frozenset(),
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> PriorDefects:
     """Return per-file bug-fix counts over the trailing window.
 
@@ -274,18 +291,63 @@ def compute_prior_defects(
     if not walk.fixes:
         return PriorDefects()
 
+    raw_repeats = issue_repeats(walk.fixes, history=True)
+    code_fixes = [fix for fix in walk.fixes if fix.shape_kind == "code_fix"]
+    repeats = issue_repeats(code_fixes, history=True)
     raw_counts: dict[str, int] = {}
     counts: dict[str, int] = {}
     for fix in walk.fixes:
-        paths = fix.paths if fix.history_paths is None else fix.history_paths
-        for path in paths:
-            raw_counts[path] = raw_counts.get(path, 0) + 1
-        if fix.shape_kind != "code_fix":
-            continue
-        for path in paths:
-            counts[path] = counts.get(path, 0) + 1
+        for path in _history_paths(fix):
+            if (fix.sha, path) not in raw_repeats:
+                raw_counts[path] = raw_counts.get(path, 0) + 1
+    for fix in code_fixes:
+        for path in _history_paths(fix):
+            if (fix.sha, path) not in repeats:
+                counts[path] = counts.get(path, 0) + 1
 
     return PriorDefects(counts=counts, raw_counts=raw_counts)
+
+
+def _history_paths(fix: FixCommit) -> list[str]:
+    return fix.paths if fix.history_paths is None else fix.history_paths
+
+
+def issue_repeats(fixes: Iterable[FixCommit], *, history: bool) -> set[tuple[str, str]]:
+    """``(sha, path)`` pairs that only repeat an issue the file already counts.
+
+    A pull request's commits all link to the issue it closes, so without this
+    one bug would count once per commit on every file they share. A commit
+    the git rule names a fix always counts, as it does with no tracker; a
+    commit that is a fix only through its issues counts on a file unless every
+    one of its issues is already counted there, by a rule fix or by an older
+    commit. Oldest first, so a newer commit never takes the count from one an
+    update already stored. *fixes* is in walk order (newest first); *history*
+    keys paths as the counts do, else as the commit wrote them.
+    """
+    ordered = list(fixes)
+    if not any(fix.issues and not fix.rule_fix for fix in ordered):
+        return set()
+
+    def paths_of(fix: FixCommit) -> list[str]:
+        return _history_paths(fix) if history else fix.paths
+
+    counted = {
+        (key, path)
+        for fix in ordered
+        if fix.rule_fix
+        for path in paths_of(fix)
+        for key in fix.issues
+    }
+    repeats: set[tuple[str, str]] = set()
+    for fix in reversed(ordered):
+        if fix.rule_fix or not fix.issues:
+            continue
+        for path in paths_of(fix):
+            if all((key, path) in counted for key in fix.issues):
+                repeats.add((fix.sha, path))
+            else:
+                counted.update((key, path) for key in fix.issues)
+    return repeats
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +388,7 @@ def _walk_fix_commits(
     rev_range: str,
     indexable_files: set[str],
     cache: FixWalkCache | None = None,
-    tracker_fixes: frozenset[str] = frozenset(),
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> list[FixCommit] | None:
     """Subject-matched fix commits in *rev_range*, each with its indexable paths.
 
@@ -357,6 +419,7 @@ def _walk_fix_commits(
             history = [renames.resolve(p) for p, _ in rows]
             history = [p for p in dict.fromkeys(history) if p in indexable_files]
             if history:
+                issues = tracker_fixes.get(sha, frozenset())
                 fixes.append(
                     FixCommit(
                         sha=sha,
@@ -365,6 +428,8 @@ def _walk_fix_commits(
                         subject=record["s"],
                         body=record["b"],
                         history_paths=history,
+                        issues=issues,
+                        rule_fix=not issues or is_typed_fix_commit(record["s"]),
                     )
                 )
         for path, renamed_from in rows:
@@ -374,7 +439,7 @@ def _walk_fix_commits(
 
 
 def _read_commits(
-    repo: Any, *revisions: str, tracker_fixes: frozenset[str] = frozenset()
+    repo: Any, *revisions: str, tracker_fixes: TrackerFixes = NO_TRACKER_FIXES
 ) -> tuple[list[str], dict[str, Any]]:
     """``(order, records)`` of the non-merge commits git logs for *revisions*.
 
@@ -414,7 +479,7 @@ def _read_commits(
 
 
 def _cached_read(
-    repo: Any, rev_range: str, cache: FixWalkCache, tracker_fixes: frozenset[str] = frozenset()
+    repo: Any, rev_range: str, cache: FixWalkCache, tracker_fixes: TrackerFixes = NO_TRACKER_FIXES
 ) -> tuple[list[str], dict[str, Any]] | None:
     """*rev_range*'s order from git and its records from *cache*, reading only what it lacks.
 
@@ -463,7 +528,7 @@ def _walk_runs(
     order: list[str],
     runs: list[tuple[int, int]],
     records: dict[str, Any],
-    tracker_fixes: frozenset[str] = frozenset(),
+    tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
 ) -> bool:
     """Read each run of *order* into *records* with one ranged walk; ``False`` on any mismatch.
 
