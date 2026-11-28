@@ -323,6 +323,83 @@ async def test_an_unaccepted_record_naming_a_target_is_not_an_answer(
     )
 
 
+def test_a_name_and_its_fragment_count_once():
+    """``lancedb`` and the ``lance`` its humps split off are one word.
+
+    A record naming LanceDB carries both, so scoring them apart let the name
+    outweigh every other word of the question.
+    """
+    from repowise.server.mcp_server._why_relevance import relevance, term_groups
+
+    idf = {"lancedb": 6.0, "lance": 6.0, "embedding": 4.7, "postgre": 5.5}
+
+    assert sorted(term_groups(idf)) == [["embedding"], ["lancedb", "lance"], ["postgre"]]
+    # The name alone carries 6 of 16.2, not 12 of 22.2.
+    assert relevance("skip the lancedb directory", idf) == pytest.approx(6.0 / 16.2)
+    # A fragment alone still earns its own weight.
+    assert relevance("a lance of postgre", idf) == pytest.approx(11.5 / 16.2)
+
+
+def test_a_fragment_inside_another_groups_term_is_not_its_own_evidence():
+    """In "why SQLite or LiteDB", ``lite`` sits in ``litedb``'s group, and a
+    record naming only SQLite carries it inside ``sqlite``."""
+    from repowise.server.mcp_server._why_relevance import relevance
+
+    idf = {"sqlite": 4.0, "litedb": 4.0, "lite": 3.0}
+
+    assert relevance("use sqlite here", idf) == pytest.approx(0.5)
+    assert relevance("use litedb here", idf) == pytest.approx(0.5)
+
+
+def test_whole_words_are_not_grouped():
+    """A word set tests whole words, so ``#30`` is not evidence of ``#300``."""
+    from repowise.server.mcp_server._why_relevance import relevance
+
+    idf = {"retry": 1.0, "timeout": 1.0, "#30": 1.0, "#300": 1.0}
+
+    assert relevance(frozenset({"timeout", "#300"}), idf) == pytest.approx(0.5)
+
+
+def test_a_term_only_in_a_records_background_earns_half():
+    from repowise.server.mcp_server._why_relevance import record_relevance
+
+    idf = {"zebrafish": 1.0, "quagga": 1.0}
+
+    assert record_relevance("zebrafish", "zebrafish quagga", idf) == pytest.approx(0.75)
+    assert record_relevance("", "zebrafish quagga", idf) == pytest.approx(0.5)
+
+
+@pytest.mark.asyncio
+async def test_a_question_named_only_in_a_records_background_is_not_answered(
+    session, setup_mcp
+):
+    """A record about something else names the question's words in its rationale.
+
+    Counted as fully as its title, those passing names made it an answer.
+    """
+    for n in range(6):
+        await _seed(session, setup_mcp, id_=f"noise{n}", title=f"Unrelated matter {n}")
+    await _seed(
+        session,
+        setup_mcp,
+        id_="passing",
+        title="Count dead-code lines from the source map",
+        decision="Count physical lines of each symbol span",
+        rationale="zebrafish stores and quagga stores both accept a null count",
+    )
+    await _seed(
+        session,
+        setup_mcp,
+        id_="answer",
+        title="Keep zebrafish stores apart from quagga stores",
+        decision="Zebrafish stores differ from quagga stores and never share rows",
+    )
+
+    result = await get_why_search("why do zebrafish stores differ from quagga stores")
+
+    assert [d["id"] for d in result["decisions"]] == ["answer"]
+
+
 async def get_why_search(query: str, targets: list[str] | None = None) -> dict:
     from repowise.server.mcp_server import get_why
 
