@@ -103,7 +103,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "rust"
   },
   "rust/flat_match.rs": {
     "file_info": {
@@ -205,7 +206,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "rust"
   },
   "rust/nested.rs": {
     "file_info": {
@@ -284,7 +286,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "rust"
   },
   "rust/perf_io_in_loop.rs": {
     "file_info": {
@@ -860,6 +863,7 @@
       }
     ],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "rust"
   }
 }

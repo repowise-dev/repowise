@@ -511,17 +511,28 @@ _PY_IDENTIFIER = re.compile(r"^[A-Za-z_]\w*$")
 # annotation and default do not. Ceiling: a parameter list holding
 # parentheses (a default that calls, a function type) is not read.
 _TS_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
-_TS_BINDINGS = (
+_TS_ASSIGNMENT = (
+    r"(?m)^[ \t]*(?P<name>[A-Za-z_$][\w$]*)\s*"
+    r"(?:[-+*/%|&^]|\*\*|\?\?|\|\||&&|<<|>>>?)?{guard}=(?![=>])"
+)
+_TS_STATEMENTS = (
     re.compile(r"(?<![\w$.])(?:const|let|var)\s+(?P<name>[A-Za-z_$][\w$]*)"),
     re.compile(r"(?<![\w$.])(?:function\*?|class)\s+(?P<name>[A-Za-z_$][\w$]*)"),
     # A lone arrow parameter; ``): Foo =>`` is a return type, not one.
     re.compile(r"(?<![\w$.:])(?<!:\s)(?P<name>[A-Za-z_$][\w$]*)\s*=>"),
-    # An assignment at the start of a statement, plain or compound.
-    re.compile(
-        r"(?m)^[ \t]*(?P<name>[A-Za-z_$][\w$]*)\s*"
-        r"(?:[-+*/%|&^]|\*\*|\?\?|\|\||&&|<<|>>>?)?=(?![=>])"
-    ),
 )
+#: An assignment at the start of a statement, plain or compound. In a file that may hold JSX,
+#: ``cols={cols}`` on a line of its own is an attribute of a JSX element, not an assignment: a
+#: plain ``=`` that follows the name with no space and opens a string, a brace or a template is
+#: the attribute's. Ceiling: there, an assignment written so (``x={}``) is not read as one. The
+#: syntax tree that tells an attribute is gone when the call resolver reads the text, and a
+#: parsed file keeps no place of one, so the text alone is asked. A file the parser read with
+#: the plain TypeScript grammar holds no JSX, and reads every assignment.
+_TS_BINDINGS = (
+    *_TS_STATEMENTS,
+    re.compile(_TS_ASSIGNMENT.format(guard=r"(?!(?<=[\w$])=[\"'{`])")),
+)
+_TS_BINDINGS_NO_JSX = (*_TS_STATEMENTS, re.compile(_TS_ASSIGNMENT.format(guard="")))
 _TS_TARGET_LISTS = (
     # Lazy, so a pattern ends at its own bracket, not at one lines later.
     re.compile(
@@ -713,13 +724,19 @@ _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
 }
 
 
-def scan_bindings(text: str, language: str) -> tuple[tuple[int, str], ...]:
-    """Every ``(line, name)`` *text* binds, in line order."""
-    return tuple(sorted({(line, name) for line, _, name in scan_binding_positions(text, language)}))
+def scan_bindings(text: str, language: str, *, jsx: bool = True) -> tuple[tuple[int, str], ...]:
+    """Every ``(line, name)`` *text* binds, in line order. *jsx*: the parser read the file with a JSX grammar."""
+    found = scan_binding_positions(text, language, jsx=jsx)
+    return tuple(sorted({(line, name) for line, _, name in found}))
 
 
-def scan_binding_positions(text: str, language: str) -> tuple[tuple[int, int, str], ...]:
+def scan_binding_positions(
+    text: str, language: str, *, jsx: bool = True
+) -> tuple[tuple[int, int, str], ...]:
     """Every ``(line, column, name)`` *text* binds, in order.
+
+    *jsx*: the parser read the file with a JSX grammar; where it did not, an attribute-shaped
+    line is an assignment.
 
     Ceiling: a block comment earlier on the same line shifts the column, since
     comments are blanked without keeping their width.
@@ -733,7 +750,7 @@ def scan_binding_positions(text: str, language: str) -> tuple[tuple[int, int, st
     if local is not None:
         found = _named_bindings(local[0], cleaned) | _listed_bindings(local[1], _PY_NAME, cleaned)
     elif language == "typescript":
-        found = _named_bindings(_TS_BINDINGS, cleaned)
+        found = _named_bindings(_TS_BINDINGS if jsx else _TS_BINDINGS_NO_JSX, cleaned)
         found |= _listed_bindings(_TS_TARGET_LISTS, _TS_IDENTIFIER, cleaned)
     else:
         found = _python_target_bindings(cleaned)

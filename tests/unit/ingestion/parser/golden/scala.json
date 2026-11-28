@@ -249,7 +249,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "scala"
   },
   "scala/classes.scala": {
     "file_info": {
@@ -747,7 +748,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "scala"
   },
   "scala/nested.scala": {
     "file_info": {
@@ -943,7 +945,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "scala"
   },
   "scala/perf_io_in_loop.scala": {
     "file_info": {
@@ -1583,6 +1586,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "scala"
   }
 }

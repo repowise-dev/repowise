@@ -79,7 +79,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "dart"
   },
   "dart/classes.dart": {
     "file_info": {
@@ -345,7 +346,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "dart"
   },
   "dart/nested.dart": {
     "file_info": {
@@ -451,7 +453,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "dart"
   },
   "dart/perf_io_in_loop.dart": {
     "file_info": {
@@ -785,6 +788,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "dart"
   }
 }

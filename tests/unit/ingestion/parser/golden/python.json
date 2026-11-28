@@ -247,7 +247,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/classes.py": {
     "file_info": {
@@ -578,7 +579,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/complex.py": {
     "file_info": {
@@ -636,7 +638,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/conditionals.py": {
     "file_info": {
@@ -742,7 +745,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/match.py": {
     "file_info": {
@@ -824,7 +828,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/nested.py": {
     "file_info": {
@@ -906,7 +911,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/perf_io_in_loop.py": {
     "file_info": {
@@ -1746,7 +1752,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   },
   "python/py_overload_init.py": {
     "file_info": {
@@ -2126,6 +2133,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "python"
   }
 }

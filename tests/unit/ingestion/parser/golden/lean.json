@@ -29,7 +29,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": ""
   },
   "lean/Main.lean": {
     "file_info": {
@@ -107,7 +108,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": ""
   },
   "lean/Plain/Local.lean": {
     "file_info": {
@@ -139,7 +141,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": ""
   },
   "lean/Public/Visible.lean": {
     "file_info": {
@@ -171,6 +174,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": ""
   }
 }

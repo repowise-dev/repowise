@@ -461,7 +461,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "kotlin"
   },
   "kotlin/classes.kt": {
     "file_info": {
@@ -842,7 +843,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "kotlin"
   },
   "kotlin/nested.kt": {
     "file_info": {
@@ -948,6 +950,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "kotlin"
   }
 }

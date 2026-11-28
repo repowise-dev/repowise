@@ -585,7 +585,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "csharp"
   },
   "csharp/assertions.cs": {
     "file_info": {
@@ -1069,7 +1070,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "csharp"
   },
   "csharp/classes.cs": {
     "file_info": {
@@ -1465,7 +1467,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "csharp"
   },
   "csharp/nested.cs": {
     "file_info": {
@@ -1590,6 +1593,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "csharp"
   }
 }

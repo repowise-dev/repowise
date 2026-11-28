@@ -103,7 +103,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "go"
   },
   "go/nested.go": {
     "file_info": {
@@ -185,7 +186,8 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "go"
   },
   "go/perf_io_in_loop.go": {
     "file_info": {
@@ -721,6 +723,7 @@
     "registrars": [],
     "references": [],
     "schema_refs": [],
-    "grammar_missing": false
+    "grammar_missing": false,
+    "grammar_tag": "go"
   }
 }
