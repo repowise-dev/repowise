@@ -10,7 +10,7 @@ from tree_sitter import Node, Parser, Query
 from ..languages.receiver_types import Declaration
 from ..models import CallSite, Symbol
 from ..type_names import bare_type_name, strip_type_arguments
-from ._shared import _FUNCTION_KINDS, _store_capped
+from ._shared import _FUNCTION_KINDS, _TYPE_KINDS, _store_capped
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
 _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
@@ -31,6 +31,9 @@ _TEMPLATE_PARAMETER = re.compile(r"\b(?:typename|class)\s*(?:\.\.\.\s*)?(\w+)")
 # file that includes it, so they outlive the four-file source caches.
 _CPP_FACT_FILES = 1024
 
+# An alias target once template arguments are dropped: ``A::B::C`` at most.
+_ALIAS_TARGET = re.compile(r"(?:[A-Za-z_]\w*::)*[A-Za-z_]\w*")
+
 # Matched in C rather than walked node by node in Python.
 _CPP_FACT_PATTERNS = """
 [(alias_declaration) (type_definition)] @alias
@@ -43,6 +46,11 @@ class _CppAlias(NamedTuple):
     name: str
     target: str | None
     scope: tuple[int, int] | None
+    # The target as written, template arguments dropped, whatever the scope.
+    written: str | None = None
+    line: int = 0
+    # Declared in a class or function body, not at file or namespace level.
+    nested: bool = False
 
 
 class _CppBinding(NamedTuple):
@@ -108,6 +116,104 @@ class CppFieldOwners:
             seen.add((path, name))
             file_path, name, position = path, target, 0
         return None
+
+    def _cpp_alias_class(self, path: str, name: str, position: int) -> str | None:
+        """The one repository class a C++ alias *name* stands for, as a bare name.
+
+        Read where the receiver was declared (*path*, byte *position*): the
+        innermost alias in scope there, else a file- or namespace-level alias
+        in a file *path* includes, directly or not. ``Outer::Inner`` follows the
+        member alias the class ``Outer`` declares, and template arguments are
+        dropped (``basic_string_view<char>`` is ``basic_string_view``). Every hop
+        must agree on one target and the chain must end on the repository's
+        only class of that name, declared where *path*'s includes reach;
+        ``std::``, a template parameter or two candidates type nothing.
+        """
+        reach = self._cpp_include_closure(path)
+        target = self._cpp_visible_alias(path, name, position)
+        for _ in range(16):
+            if target is None:
+                return None
+            path, written = target
+            head, _, bare = written.rpartition("::")
+            if head.partition("::")[0] == "std":
+                return None
+            host = head.rpartition("::")[2]
+            members = self._cpp_member_aliases(host, bare, reach) if head else set()
+            if members:
+                target = members.pop() if len(members) == 1 else None
+                continue
+            declared = self._declared_types_named(bare)
+            if declared:
+                one = len({identity for _, identity, _ in declared}) == 1
+                return bare if one and any(file in reach for file, _, _ in declared) else None
+            target = self._cpp_visible_alias(path, bare, 0)
+        return None
+
+    def _cpp_visible_alias(self, path: str, name: str, position: int) -> tuple[str, str] | None:
+        """``(file, written target)`` of the one alias *name* means at *position* in *path*."""
+        in_scope = [
+            a
+            for a in self._cpp_type_facts(path).aliases
+            if a.name == name and (a.scope is None or a.scope[0] <= position < a.scope[1])
+        ]
+        if in_scope:
+            innermost = max(a.scope[0] if a.scope else -1 for a in in_scope)
+            sites = {
+                (path, a.written if self._cpp_expandable(path, a) else None)
+                for a in in_scope
+                if (a.scope[0] if a.scope else -1) == innermost
+            }
+        else:
+            # Ceiling: past the direct includes only a ``using`` is found (it is
+            # a symbol); a deeper namespace-level ``typedef`` is not looked for.
+            files = set(self._import_targets.get(path, ())) | {
+                self._symbol_paths_by_id.get(sym_id)
+                for sym_id in self._global_symbols.get(name, ())
+                if self._symbols_by_id[sym_id].kind == "type_alias"
+            }
+            sites = {
+                (other, a.written)
+                for other in sorted((files & self._cpp_include_closure(path)) - {path})
+                for a in self._cpp_type_facts(other).aliases
+                if a.name == name and not a.nested
+            }
+        if len({written for _, written in sites}) != 1:
+            return None
+        site = min(sites)
+        return None if site[1] is None else site
+
+    def _cpp_member_aliases(
+        self, host: str, name: str, reach: frozenset[str]
+    ) -> set[tuple[str, str | None]]:
+        """``(file, written target)`` for each alias *name* a class *host* in *reach* declares."""
+        found: set[tuple[str, str | None]] = set()
+        for path in sorted({path for path, _, _ in self._declared_types_named(host)} & reach):
+            parsed = self._parsed_files.get(path)
+            spans = [
+                (s.start_line, s.end_line)
+                for s in (parsed.symbols if parsed else ())
+                if s.kind in _TYPE_KINDS and s.name == host
+            ]
+            found.update(
+                (path, a.written if self._cpp_expandable(path, a) else None)
+                for a in self._cpp_type_facts(path).aliases
+                if a.name == name and a.nested and any(lo <= a.line <= hi for lo, hi in spans)
+            )
+        return found
+
+    def _cpp_expandable(self, path: str, alias: _CppAlias) -> bool:
+        """Does *alias* write a target that no class template around it declares as a parameter?"""
+        if alias.written is None or not alias.nested:
+            return alias.written is not None
+        head = alias.written.partition("::")[0]
+        parsed = self._parsed_files.get(path)
+        return not any(
+            s.kind in _TYPE_KINDS
+            and s.start_line <= alias.line <= s.end_line
+            and head in self._cpp_template_parameters(s.id)
+            for s in (parsed.symbols if parsed else ())
+        )
 
     def _cpp_alias_sites(
         self, file_path: str, name: str, position: int
@@ -397,7 +503,15 @@ def _cpp_alias(node: Node) -> _CppAlias | None:
     # Namespaces and local scopes are not preserved in the class index. Do
     # not flatten their aliases or qualified targets into file scope.
     scope = _cpp_alias_scope(node)
-    return _CppAlias(name, written if scope is None and written.isidentifier() else None, scope)
+    full = written.removeprefix("typename ").removeprefix("::")
+    return _CppAlias(
+        name,
+        written if scope is None and written.isidentifier() else None,
+        scope,
+        full if _ALIAS_TARGET.fullmatch(full) else None,
+        node.start_point.row + 1,
+        _cpp_nested(node),
+    )
 
 
 def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:
@@ -412,6 +526,20 @@ def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:
     if parent is None or parent.type == "translation_unit":
         return None
     return node.start_byte, parent.end_byte
+
+
+def _cpp_nested(node: Node) -> bool:
+    """Is *node* inside a class or function body rather than at file or namespace level?"""
+    parent = node.parent
+    while parent is not None and parent.type != "translation_unit":
+        if not (
+            parent.type.startswith("preproc_")
+            or parent.type
+            in ("ERROR", "declaration_list", "namespace_definition", "linkage_specification")
+        ):
+            return True
+        parent = parent.parent
+    return False
 
 
 def _cpp_declarations(node: Node) -> list[_CppBinding]:
