@@ -148,9 +148,7 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
         for run in benchmarks["runs"]:
             if run["run_id"] in shown:
                 runs.setdefault(run["run_id"], _benchmark_run(run))
-    if not any(
-        key in block for key in ("rows", "in_tests", "statements", "routes", "benchmarks")
-    ):
+    if not any(key in block for key in ("rows", "in_tests", "statements", "routes", "benchmarks")):
         # Only windows that joined no function: nothing is ranked, so the
         # status token stays, beside the runs that say where the time went.
         return {

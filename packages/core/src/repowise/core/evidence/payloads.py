@@ -70,6 +70,7 @@ def view_ranks(view: Mapping[str, Any] | None) -> bool:
         view.get("measured")
         or view.get("measured_in_tests")
         or view.get("benchmarks")
+        or view.get("routes")
         or statements.get("total")
     )
 

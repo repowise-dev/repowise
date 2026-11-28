@@ -47,6 +47,10 @@ def test_a_statement_window_that_joined_no_function_ranks_nothing_but_lists_its_
     assert measured_payload({"statements": group}, "measured")["status"] == "not_ranked"
     joined = {**group, "total": 1}
     assert measured_payload({"statements": joined}, "measured")["basis"] == "measured"
+    # A route run is only in the view when it names a handler: it measured something.
+    routes = {"runs": [{"run_id": "q1"}], "rows": [{"run_id": "q1"}], "total": 1}
+    out = measured_payload({"routes": routes}, "measured")
+    assert (out["basis"], out["routes"]) == ("measured", routes)
 
 
 def test_status_and_runs_with_no_runs() -> None:
