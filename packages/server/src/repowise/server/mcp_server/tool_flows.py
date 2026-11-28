@@ -126,22 +126,26 @@ async def get_execution_flows(
             # Trace from a specific symbol
             node = await _entry_node(session, repo_id, entry_point, exclude_spec)
             if node is None:
-                from repowise.server.mcp_server._savings.interaction import note_error_reason
+                from repowise.server.mcp_server._savings.interaction import error_reply
 
-                note_error_reason("not_found")
-                return {
-                    "entry_point": entry_point,
-                    "error": f"Symbol not found: {entry_point!r}",
-                    "_meta": _build_meta(
-                        timing_ms=(time.perf_counter() - t0) * 1000,
-                        repository=repository,
-                        targets=None,
-                    ),
-                }
+                return error_reply(
+                    "not_found",
+                    {
+                        "entry_point": entry_point,
+                        "error": f"Symbol not found: {entry_point!r}",
+                        "_meta": _build_meta(
+                            timing_ms=(time.perf_counter() - t0) * 1000,
+                            repository=repository,
+                            targets=None,
+                        ),
+                    },
+                )
             entry_nodes = [(node, _ep_score(node))]
         else:
             # Top-N scored entry points from DB
-            top_nodes = await get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
+            top_nodes = await get_top_entry_points(
+                session, repo_id, min_score=0.0, limit=top_n, exclude_spec=exclude_spec
+            )
             for n in top_nodes:
                 entry_nodes.append((n, _ep_score(n)))
 
@@ -182,6 +186,7 @@ async def get_execution_flows(
                 node_cache,
                 hop_origins,
                 termination,
+                exclude_spec,
             )
             # Drop excluded files reached downstream so they don't leak via the
             # trace (entry-point filtering above doesn't cover BFS descendants).

@@ -12,6 +12,8 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.analysis.dead_code import DeadCodeAnalyzer, DeadCodeKind
 from tests.unit.dead_code._helpers import _build_graph
 
@@ -155,6 +157,24 @@ def test_a_default_export_by_name_is_recorded_in_a_crlf_file():
     CRLF = chr(13) + chr(10)  # a Windows checkout's line ending
     src = "const cssQuery = 1" + CRLF + CRLF + "export default cssQuery" + CRLF
     assert ts_export_aliases(src) == {"default": "cssQuery"}
+
+
+@pytest.mark.parametrize(
+    ("src", "expected"),
+    [
+        ("export default function markdownMath(md) {}\n", {"default": "markdownMath"}),
+        ("export default async function* walk() {}\n", {"default": "walk"}),
+        ("export default class Editor {}\n", {"default": "Editor"}),
+        ("export default abstract class Base {}\n", {"default": "Base"}),
+        ("export default function () {}\n", {}),
+        ("export default class extends Base {}\n", {}),
+        ("// export default function gone() {}\n", {}),
+    ],
+)
+def test_a_named_default_declaration_is_recorded_as_the_default(src, expected):
+    from repowise.core.ingestion.extractors.visibility import ts_export_aliases
+
+    assert ts_export_aliases(src) == expected
 
 
 def test_bundler_alias_shim_rescued(tmp_path: Path):

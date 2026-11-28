@@ -11,10 +11,11 @@ import { PromptForRowsButton, RowPromptAction } from "../health/row-prompt-actio
 import { AGENT_PROMPT_LABEL } from "../health/ai-prompt-action";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
-import { formatDate, formatDateTime, formatRelativeTimeOrNull } from "../lib/format";
+import { formatDate, formatDateTime, formatNumber } from "../lib/format";
 import { FilePath } from "../shared/file-path";
 import { securityLevel, type SecurityLevel } from "./posture";
 import type { SecurityFinding } from "@repowise-dev/types";
+import { RelativeTime } from "../shared/relative-time";
 
 // One declaration of the wire shape, not a third hand-kept copy: this file's
 // local interface had already drifted behind the endpoint, which is how the
@@ -111,7 +112,7 @@ export function SecurityFindingsTable({
   const options = useMemo(() => {
     const c: Record<SeverityFilter, number> = { all: findings.length, high: 0, med: 0, low: 0 };
     for (const f of findings) c[securityLevel(f.severity)] += 1;
-    return FILTERS.map((o) => ({ ...o, count: c[o.value].toLocaleString() }));
+    return FILTERS.map((o) => ({ ...o, count: formatNumber(c[o.value]) }));
   }, [findings]);
 
   const filtered = useMemo(() => {
@@ -178,7 +179,7 @@ export function SecurityFindingsTable({
             className="text-xs tabular-nums text-[var(--color-text-tertiary)]"
             title={f.commit_at ? formatDateTime(f.commit_at) : undefined}
           >
-            {formatRelativeTimeOrNull(f.commit_at)}
+            <RelativeTime date={f.commit_at} fallback="—" />
           </span>
         ),
       },
@@ -209,9 +210,11 @@ export function SecurityFindingsTable({
   if (findings.length === 0) {
     return (
       <div className="flex flex-col items-center gap-2">
+        {/* A findings list was handed over, so the scan ran: zero is a clean result. */}
         <EmptyState
-          title="No findings"
-          description="The pattern scan has no security findings to show for this repository."
+          tone="positive"
+          title="No security findings at this commit"
+          description="The pattern scan checked this repository and found nothing to flag."
         />
         <CiHint command="repowise security check" checks="what each change adds" />
       </div>

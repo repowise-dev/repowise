@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
+from urllib.parse import unquote
 
 from repowise.core.ingestion.special_handlers import iter_make_targets
 
@@ -29,6 +31,30 @@ _READER_PROJECT_RE = re.compile(
     r"|\byour\b[^.!?]{0,40}'s\b",
     re.I,
 )
+
+# The same kind of phrase for a path in another repository: "run that
+# repository's `tools/validate.py`", "the upstream repo keeps `src/x.py`", "in
+# the acme/scanner repo, `tools/lint.py`". A qualifier is required, so "this
+# repository" and a bare "repository" still read as this one, and so does
+# "the upstream tool calls our `src/x.py`". Words that also describe this
+# repository ("like any other project", "their codebase") are left out.
+_OTHER_REPOSITORY = (
+    r"(?:\b(?:that|another|upstream|external|sibling)\s+(?:repo|repository|project|codebase)"
+    r"|\bthe\s+[\w-]+/[\w.-]+\s+(?:repo|repository))"
+    r"(?:'s|s'|s)?(?!\w)"
+)
+_OTHER_REPOSITORY_RE = re.compile(_OTHER_REPOSITORY, re.I)
+# The same qualifier right after the path, or after a list the path opens:
+# "`tools/validate.py` in that repository", "`a.py` and `b.py` from the
+# upstream repo". Never across a sentence end.
+_OTHER_REPOSITORY_AFTER_RE = re.compile(
+    r"\A`?(?:\s*(?:,|and|or)\s*`[^`]*`)*[`),;:\]]{0,3}\s*(?:in|from|of)\s+"
+    r"(?:the\s+(?=upstream|external|sibling))?" + _OTHER_REPOSITORY,
+    re.I,
+)
+# A code span, blanked before looking for a sentence end: the dot in
+# `tools/validate.py` does not end a sentence.
+_CODE_SPAN_RE = re.compile(r"`[^`]*`")
 
 # Setext headings. ``Title`` over ``=====`` or ``-----`` is a heading, and
 # GitHub gives it an anchor exactly as it does an ATX one; recognising only
@@ -290,8 +316,11 @@ def _under_opaque(idx: RepoIndex, path: str) -> bool:
     return any(path == d or path.startswith(f"{d}/") for d in idx.opaque_dirs)
 
 
-def _is_reader_project_reference(ref: DocReference) -> bool:
-    """Whether *ref*'s own sentence places the path in the reader's project, not this one.
+def _foreign_project(ref: DocReference) -> str:
+    """Which other project *ref*'s own sentence places the path in, or ``""`` for this one.
+
+    ``"reader-project"`` for the reader's own, ``"other-repository"`` for
+    another repository the sentence names or points at.
 
     ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
     is the source line stripped of leading whitespace, while ``column`` indexes
@@ -300,26 +329,57 @@ def _is_reader_project_reference(ref: DocReference) -> bool:
     A plain substring search sidesteps the mismatch, since ``context`` already
     strips consistently from both.
 
-    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``) so
+    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``
+    outside a code span) so
     "This mirrors your project's layout. See ``src/gone.ts`` for details."
-    still reports the real miss in its own, unrelated sentence.
+    still reports the real miss in its own, unrelated sentence. Another
+    repository may also be named right after the path ("``tools/x.py`` in that
+    repository").
     """
     idx = ref.context.find(ref.raw)
     preceding = ref.context[:idx] if idx != -1 else ref.context
-    sentence_start = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?")) + 1
-    return bool(_READER_PROJECT_RE.search(preceding[sentence_start:]))
+    prose = _CODE_SPAN_RE.sub(lambda m: " " * len(m.group()), preceding)
+    sentence_start = max(prose.rfind("."), prose.rfind("!"), prose.rfind("?")) + 1
+    sentence = preceding[sentence_start:]
+    if _READER_PROJECT_RE.search(sentence):
+        return "reader-project"
+    following = ref.context[idx + len(ref.raw) :] if idx != -1 else ""
+    if _OTHER_REPOSITORY_RE.search(sentence) or _OTHER_REPOSITORY_AFTER_RE.match(following):
+        return "other-repository"
+    return ""
+
+
+def readings(doc: str, raw: str, target: str, *, is_link: bool) -> tuple[str, ...]:
+    """The repo paths *target*, written as *raw* in *doc*, may name, in the order tried.
+
+    A link has one reading: the file a renderer opens. A leading ``/`` is the
+    repository root, and a bare ``#fragment`` already names its own document;
+    anything else is relative to the document, with no fallback to the root
+    --- GitHub serves a 404 there, not the root file. Prose names paths from
+    the root (``packages/core/...``), with the document's own directory as the
+    fallback; prose written ``./x`` or ``../x`` tries the document's directory
+    first, then the root ("Run ``./scripts/setup.sh``" in ``docs/``).
+    """
+    if is_link:
+        if raw.startswith("#"):
+            return (target,)
+        with suppress(UnicodeDecodeError):
+            target = unquote(target, errors="strict")
+        return (target if raw.startswith("/") else join_relative(doc, target),)
+    relative = join_relative(doc, target)
+    if relative == target:
+        return (target,)
+    return (relative, target) if raw.startswith(("./", "../")) else (target, relative)
 
 
 def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resolution:
-    target = ref.target
-    if _exists(idx, target):
-        return Resolution(ref, DriftVerdict.RESOLVED, "exact", resolved_target=target)
+    candidates = readings(ref.doc_path, ref.raw, ref.target, is_link=ref.kind is DriftKind.LINK)
+    for path in candidates:
+        if _exists(idx, path):
+            reason = "exact" if path == ref.target else "relative-to-doc"
+            return Resolution(ref, DriftVerdict.RESOLVED, reason, resolved_target=path)
 
-    relative = join_relative(ref.doc_path, target)
-    if relative != target and _exists(idx, relative):
-        return Resolution(ref, DriftVerdict.RESOLVED, "relative-to-doc", resolved_target=relative)
-
-    if _under_opaque(idx, target) or _under_opaque(idx, relative):
+    if any(_under_opaque(idx, path) for path in candidates):
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "inside-submodule")
 
     # A path the prose itself places in the reader's own project ("add this to
@@ -327,8 +387,10 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     # at all, and must not even reach the anchoring rule below: `src`, `config`,
     # `app` and the like are exactly the top-level directories most repos have,
     # so such a path passes anchoring and falls through to a false MISSING.
-    if _is_reader_project_reference(ref):
-        return Resolution(ref, DriftVerdict.UNCHECKABLE, "reader-project")
+    # The same holds for a path in another repository ("run that repository's
+    # `tools/validate.py`").
+    if foreign := _foreign_project(ref):
+        return Resolution(ref, DriftVerdict.UNCHECKABLE, foreign)
 
     # Anchoring. A reference is evidence about THIS repository only when it
     # carries a separator and its first segment names a directory the
@@ -339,16 +401,21 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
     # families; they are 100% false positives, and no amount of resolution
     # effort fixes them, because the target was never supposed to exist here.
     # This single rule took the path class from a 49% flag rate to 1.3%.
+    # A link is anchored where a renderer opens it; prose as written, since
+    # joining `./site.css` to `docs/...` would anchor an illustration.
+    target = candidates[0] if ref.kind is DriftKind.LINK else ref.target
     if "/" not in target or target.split("/")[0] not in idx.top_level_dirs:
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "unanchored")
 
     # A basename match is not a resolution and is not drift either. Phase 1
     # found five of these; reporting them as missing would have been wrong.
-    candidates = idx.by_basename.get(target.rsplit("/", 1)[-1], [])
-    if len(candidates) == 1:
-        return Resolution(ref, DriftVerdict.AMBIGUOUS, f"basename-only:{candidates[0]}")
-    if len(candidates) > 1:
-        return Resolution(ref, DriftVerdict.AMBIGUOUS, f"basename-multi:{len(candidates)}")
+    # A link is exempt: a renderer cannot follow it to that other file.
+    if ref.kind is not DriftKind.LINK:
+        same_name = idx.by_basename.get(target.rsplit("/", 1)[-1], [])
+        if len(same_name) == 1:
+            return Resolution(ref, DriftVerdict.AMBIGUOUS, f"basename-only:{same_name[0]}")
+        if len(same_name) > 1:
+            return Resolution(ref, DriftVerdict.AMBIGUOUS, f"basename-multi:{len(same_name)}")
 
     # The index is not the repository, so its silence is only evidence about
     # kinds of file it actually carries. The traverser drops every extension it
@@ -362,34 +429,27 @@ def _resolve_path(idx: RepoIndex, ref: DocReference, is_guide: bool) -> Resoluti
 
     # Present in the working tree but not the index (a fixture, an ignored
     # file): the index cannot speak to it, and the document is not wrong.
-    if idx.on_disk is not None and (
-        idx.on_disk(target) or (relative != target and idx.on_disk(relative))
-    ):
+    if idx.on_disk is not None and any(idx.on_disk(path) for path in candidates):
         return Resolution(ref, DriftVerdict.UNCHECKABLE, "outside-index")
 
     origin = "path_no_candidate_in_guide" if is_guide else "path_no_candidate"
     return Resolution(ref, DriftVerdict.MISSING, "no-candidate", origin)
 
 
-def anchor_host(idx: RepoIndex, ref: DocReference) -> str:
+def anchor_host(ref: DocReference) -> str:
     """The document an ``ANCHOR`` reference's fragment must be declared in."""
     target = ref.target.partition("#")[0]
-    # Joined relative to the referring document FIRST, because that is what a
-    # markdown link means: every renderer resolves ``[g](guide.md#setup)`` in
-    # ``docs/a.md`` as ``docs/guide.md``. Preferring a verbatim root-relative
-    # hit read the wrong file whenever two documents shared a basename, and
-    # then reported the correct link as a renamed heading at 0.95 --- the
-    # highest confidence this detector issues.
-    if target:
-        relative = join_relative(ref.doc_path, target)
-        if relative in idx.files:
-            return relative
-    return target
+    # The same reading as the LINK verdict: every renderer resolves
+    # ``[g](guide.md#setup)`` in ``docs/a.md`` as ``docs/guide.md``. Preferring
+    # a verbatim root-relative hit read the wrong file whenever two documents
+    # shared a basename, and then reported the correct link as a renamed
+    # heading at 0.95 --- the highest confidence this detector issues.
+    return readings(ref.doc_path, ref.raw, target, is_link=True)[0] if target else target
 
 
 def _resolve_anchor(idx: RepoIndex, ref: DocReference) -> Resolution:
     frag = ref.target.partition("#")[2]
-    target = anchor_host(idx, ref)
+    target = anchor_host(ref)
 
     # Gated on the renderer of the document that DECLARES the anchors, because
     # that is what decides the slug. Never guess an unimplemented renderer's

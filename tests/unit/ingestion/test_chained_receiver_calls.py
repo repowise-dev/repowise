@@ -622,6 +622,54 @@ class TestGoChainedFieldCalls:
         body = "func run() {\n\tconfig.Cmd.DiffFilesCh()\n}\n"
         assert self._edges(tmp_path, body) == []
 
+    def test_a_field_type_declared_in_another_file_of_the_package(self, tmp_path: Path) -> None:
+        """Go's package is its directory: ``GitCmd`` in a sibling file still types the hop."""
+        files = {
+            "cmd/git.go": (
+                "go",
+                "package cmd\n\ntype GitCmd struct{}\n\nfunc (g *GitCmd) DiffFilesCh() {}\n",
+            ),
+            "cmd/command.go": (
+                "go",
+                "package cmd\n\ntype Command struct {\n\tCmd *GitCmd\n}\n\n"
+                "func (c *Command) Run() {\n\tc.Cmd.DiffFilesCh()\n}\n",
+            ),
+        }
+        assert [(e[0], e[1], e[3]) for e in _chained(_edges(tmp_path, files))] == [
+            (
+                "cmd/command.go::Command::Run",
+                "cmd/git.go::GitCmd::DiffFilesCh",
+                "receiver_chain_import",
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "elsewhere",
+        [
+            # Another package's type of the name is not this one's.
+            ["other/git.go"],
+            # Two files of the package declaring it (build tags) refuse it.
+            ["cmd/git_a.go", "cmd/git_b.go"],
+        ],
+    )
+    def test_a_field_type_no_single_package_file_declares_yields_no_edge(
+        self, tmp_path: Path, elsewhere: list[str]
+    ) -> None:
+        files = {
+            path: (
+                "go",
+                f"package {path.split('/')[0]}\n\ntype GitCmd struct{{}}\n\n"
+                "func (g *GitCmd) DiffFilesCh() {}\n",
+            )
+            for path in elsewhere
+        }
+        files["cmd/command.go"] = (
+            "go",
+            "package cmd\n\ntype Command struct {\n\tCmd *GitCmd\n}\n\n"
+            "func (c *Command) Run() {\n\tc.Cmd.DiffFilesCh()\n}\n",
+        )
+        assert _chained(_edges(tmp_path, files)) == []
+
     def test_a_package_qualified_field_type_is_not_the_local_type(self, tmp_path: Path) -> None:
         """``fd *sftp.File`` wraps a foreign ``File``; its ``Write`` is not this file's."""
         source = (

@@ -121,3 +121,34 @@ async def test_incremental_update_leaves_unchanged_files_untouched(async_session
     # SQLite drops tzinfo on read; compare against the naive UTC wall clock.
     assert other.updated_at.replace(tzinfo=None) == old_ts.replace(tzinfo=None)
     assert other.start_line == 10  # untouched by the scoped refresh
+
+
+async def test_unchanged_files_keep_their_measured_complexity(async_session, tmp_path):
+    """An update measures complexity on changed files only; the rest keep the stored value.
+
+    Left at the parser default, a symbol write widened to every file stored the
+    default over every measured value, and the spotlight sweep ranked the parse
+    unlike init did.
+    """
+    from repowise.core.pipeline.persist import restore_stored_complexity
+
+    repo = await insert_repo(async_session)
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return 2\n")
+    measured = _parse(tmp_path)
+    for pf in measured:
+        for sym in pf.symbols:
+            sym.complexity_estimate = 7
+    await persist_incremental_symbols(async_session, repo.id, measured, ["a.py", "b.py"])
+    await async_session.commit()
+
+    # The next update re-parses both (parser defaults) and measures only b.py.
+    fresh = _parse(tmp_path)
+    for sym in next(pf for pf in fresh if pf.file_info.path == "b.py").symbols:
+        sym.complexity_estimate = 3
+    await restore_stored_complexity(async_session, repo.id, fresh, ["b.py"])
+    await persist_incremental_symbols(async_session, repo.id, fresh, ["a.py", "b.py"])
+    await async_session.commit()
+
+    assert (await _symbol_row(async_session, repo.id, "a.py::foo")).complexity_estimate == 7
+    assert (await _symbol_row(async_session, repo.id, "b.py::bar")).complexity_estimate == 3

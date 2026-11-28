@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
+import subprocess
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +30,9 @@ from ..models import (
     _now_utc,
 )
 from ._shared import _VALID_JOB_STATUSES
+from .page_rekey import rekey_repo_level_pages
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Repository CRUD
@@ -73,9 +81,21 @@ async def upsert_repository(
     made the database claim an index at HEAD while ``state.json`` still named
     the last real sync. ``updated_at`` (see :func:`index_synced_at`) moves with
     the commit stamp for the same reason.
+
+    A repo-local store (``<local_path>/.repowise/wiki.db``) holds one
+    repository. When its single row names another directory because the repo
+    was moved or copied with its index, the row is re-pointed at ``local_path``
+    (see :func:`_relocated_row`) instead of a second row being added, and a
+    rename moves the repo-level pages to the ids the new folder name builds
+    (see :func:`rekey_repo_level_pages`, #5366).
     """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
     repo = result.scalar_one_or_none()
+    relocated = False
+    if repo is None:
+        # A write must not split the store when git cannot answer.
+        repo = await _relocated_row(session, local_path, adopt_undecided=True)
+        relocated = repo is not None
 
     stamping = repo is None or stamp_head or head_commit is not None
     resolved_head = (head_commit or _read_head_commit(local_path)) if stamping else None
@@ -97,6 +117,14 @@ async def upsert_repository(
         )
         session.add(repo)
     else:
+        if relocated and repo.name != name:
+            # The re-point changed the folder the repo-level page ids are
+            # built from; move the stored pages with it (#5366) or the
+            # overview is rebuilt from scratch under the new id while the
+            # old page is left behind never to be found again.
+            await rekey_repo_level_pages(
+                session, repository_id=repo.id, old_name=repo.name, new_name=name
+            )
         repo.name = name
         if url is not None:
             repo.url = url
@@ -111,6 +139,8 @@ async def upsert_repository(
         if stamping:
             repo.updated_at = _now_utc()
 
+    if relocated or stamping:
+        await _adopt_savings_ledger(session, local_path)
     await session.flush()
     return repo
 
@@ -202,6 +232,124 @@ def _read_git_remote(local_path: str) -> tuple[str | None, str | None]:
     return (strip_credentials(remote) if remote else None), default_branch(local_path)
 
 
+def _same_dir(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(str(Path(a).resolve())) == os.path.normcase(str(Path(b).resolve()))
+
+
+def _store_dir(session: AsyncSession) -> Path | None:
+    """The directory whose own ``.repowise/wiki.db`` backs *session*, or ``None``.
+
+    A configured database is shared by contract, wherever its file sits.
+    """
+    from ..database import get_configured_db_url
+
+    if get_configured_db_url() is not None:
+        return None
+    bind = session.bind
+    url = getattr(bind, "url", None)
+    database = getattr(url, "database", None)
+    if not database or not str(getattr(url, "drivername", "")).startswith("sqlite"):
+        return None
+    db_file = Path(database)
+    if db_file.name != "wiki.db" or db_file.parent.name != ".repowise":
+        return None
+    return db_file.parent.parent
+
+
+#: ``(store dir, row id, checkout path, checkout HEAD)`` whose row git said is
+#: another repo's, with when git said so. A miss on every path-keyed read does
+#: not rerun the git checks; a new HEAD or a re-indexed store misses the entry,
+#: and an entry older than _REJECTION_TTL_S is checked again, since a fetch can
+#: bring the indexed commit in without moving HEAD.
+_REJECTED_ROWS: dict[tuple[str, str, str, str], float] = {}
+_REJECTION_TTL_S = 60.0
+
+
+async def _relocated_row(
+    session: AsyncSession, local_path: str, *, adopt_undecided: bool = False
+) -> Repository | None:
+    """The single row of ``local_path``'s own store, re-pointed at ``local_path``.
+
+    A repo moved, renamed or copied together with its ``.repowise`` keeps the
+    old ``local_path`` in its row. Adding a second row there split the index:
+    servers resolving "the" repository picked the stale one. Only a store that
+    lives in ``local_path`` and holds exactly one row is re-pointed, and only
+    when that row is this checkout's (see :func:`_same_checkout`). Any other
+    store (a configured or shared database, a server registry) keeps one row
+    per path. When git could not run, ``adopt_undecided`` decides: a write
+    (``upsert_repository``) adopts instead of adding a second row, a read
+    reports the repo unindexed for that call and asks again next time.
+    """
+    store_dir = _store_dir(session)
+    if store_dir is None or not _same_dir(store_dir, local_path):
+        return None
+    rows = (await session.scalars(select(Repository).limit(2))).all()
+    if len(rows) != 1:
+        return None
+    repo = rows[0]
+    # The checkout's HEAD is in the key: a pull or checkout that brings the
+    # indexed commit in moves it, and the row is checked again.
+    key = (str(store_dir), repo.id, local_path, _read_head_commit(local_path) or "")
+    rejected_at = _REJECTED_ROWS.get(key)
+    if rejected_at is not None and time.monotonic() - rejected_at < _REJECTION_TTL_S:
+        return None
+    same = await asyncio.to_thread(_same_checkout, repo, local_path)
+    if same is False:
+        # Only git's own answer is remembered; a failed git call is retried.
+        _REJECTED_ROWS[key] = time.monotonic()
+        return None
+    if same is None and not adopt_undecided:
+        return None
+    _log.info("Index moved from %s to %s; updating its repository row", repo.local_path, local_path)
+    repo.local_path = local_path
+    return repo
+
+
+async def _adopt_savings_ledger(session: AsyncSession, local_path: str) -> None:
+    """File the savings ledger of ``local_path``'s own store under ``local_path``.
+
+    Runs on a re-point and on every sync, so a relocation that failed on a busy
+    sidecar, or happened before the ledger followed the row, is picked up later.
+    """
+    store_dir = _store_dir(session)
+    if store_dir is None or not _same_dir(store_dir, local_path):
+        return
+    from ...savings.recorder import relocate_ledger
+
+    await asyncio.to_thread(relocate_ledger, local_path)
+
+
+def _same_checkout(repo: Repository, local_path: str) -> bool | None:
+    """Whether *repo*'s row describes the checkout at *local_path*, None when git failed.
+
+    Called only for the single row of *local_path*'s own store, so the row is
+    this checkout's unless git says otherwise: when the row names an indexed
+    commit and *local_path* is a git checkout, they must share that commit,
+    the remote url, or history (the indexed commit is reachable here). Where
+    the old directory sits plays no part: an index built on another machine
+    names a path that never exists here, and an unrelated repo's index copied
+    in is still another repo.
+    """
+    head = repo.head_commit
+    current = _read_head_commit(local_path)
+    if not head or not current or head == current:
+        return True
+    remote = read_remote_url(local_path)
+    if repo.url and remote and strip_credentials(remote) == repo.url:
+        return True
+    return _has_commit(local_path, head)
+
+
+def _has_commit(local_path: str, sha: str) -> bool | None:
+    """Whether *sha* is a commit in *local_path*, or None when git could not run."""
+    from ...analysis.git_cli import run_git
+
+    try:
+        return run_git(["cat-file", "-e", f"{sha}^{{commit}}"], cwd=local_path).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 async def set_repo_function_mod_p80(session: AsyncSession, repo_id: str, value: int) -> None:
     """Store the repo-wide function-mod p80 a full index measured.
 
@@ -272,9 +420,102 @@ async def get_repository(session: AsyncSession, repo_id: str) -> Repository | No
 
 
 async def get_repository_by_path(session: AsyncSession, local_path: str) -> Repository | None:
-    """Return a Repository by local_path, or None."""
+    """Return the Repository at *local_path*, or None.
+
+    A row whose ``local_path`` equals *local_path* wins. On a miss, the single
+    row of *local_path*'s own store is adopted when it is this checkout's (see
+    :func:`_relocated_row`): an index built in one directory and moved or
+    copied to another (another machine, a renamed folder) still names the old
+    path, and every reader keyed on the path would call the repo unindexed.
+    The row is re-pointed at *local_path* and its repo-level pages re-keyed to
+    the folder name there (#5366), once, so later lookups hit the exact path.
+    A configured or shared store, a store with two or more rows, or a row from
+    another repo is never adopted.
+    """
     result = await session.execute(select(Repository).where(Repository.local_path == local_path))
-    return result.scalar_one_or_none()
+    repo = result.scalar_one_or_none()
+    if repo is not None:
+        return repo
+    return await _adopt_relocated_row(session, local_path)
+
+
+async def _adopt_relocated_row(session: AsyncSession, local_path: str) -> Repository | None:
+    """Re-point and return the store's only row when it is *local_path*'s, else None.
+
+    Runs inside a savepoint: a read-only caller (the MCP server, status,
+    doctor) that cannot write, say because an update holds the lock, gets
+    ``None`` as before the store was moved, never a storage error or a
+    half-done move. The savings ledger follows only after the row moved.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        async with session.begin_nested():
+            repo = await _relocated_row(session, local_path)
+            if repo is None:
+                return None
+            old_name, new_name = repo.name, Path(local_path).name
+            if old_name != new_name:
+                # The folder the repo-level page ids are built from moved with
+                # the store; re-key now, before the exact-path lookup stops
+                # missing and the name change becomes invisible (#5366).
+                await rekey_repo_level_pages(
+                    session, repository_id=repo.id, old_name=old_name, new_name=new_name
+                )
+                repo.name = new_name
+    except (SQLAlchemyError, OSError) as exc:
+        _log.debug("Could not adopt the moved index's row for %s: %s", local_path, exc)
+        return None
+    await _adopt_savings_ledger(session, local_path)
+    return repo
+
+
+async def adopt_moved_repository(session: AsyncSession, local_path: str) -> Repository | None:
+    """Return the repository row for *local_path*, adopting a moved store's only row.
+
+    Kept for the update path, which adopts before it writes so
+    :func:`upsert_repository` never inserts a second row. The rule lives in
+    :func:`get_repository_by_path`, which every reader shares.
+    """
+    return await get_repository_by_path(session, local_path)
+
+
+async def adopt_moved_repository_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    Run once before an update reads or writes by path: in a moved checkout the
+    exact-path lookups miss, and the update would insert a second row. See
+    :func:`adopt_moved_repository` for the rule.
+
+    Returns True when a row was rewritten. Never raises and never creates a
+    store: a missing store, a locked one or a storage error leaves the update
+    to behave exactly as it did before.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from ..database import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        has_db_store,
+        resolve_db_url,
+    )
+
+    if not has_db_store(root):
+        return False
+    engine = None
+    try:
+        engine = create_engine(resolve_db_url(root))
+        async with get_session(create_session_factory(engine)) as session:
+            exact = select(Repository.id).where(Repository.local_path == str(root))
+            if (await session.execute(exact)).first() is not None:
+                return False
+            return await _adopt_relocated_row(session, str(root)) is not None
+    except (SQLAlchemyError, OSError):
+        return False
+    finally:
+        if engine is not None:
+            await engine.dispose()
 
 
 async def delete_repository(session: AsyncSession, repo_id: str) -> bool:

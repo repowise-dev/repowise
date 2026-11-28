@@ -2,6 +2,7 @@
 frontmatter: |
     description: Triage card for files, modules, or symbols — layer, hotspot, fix history, freshness (relationships, not source bytes).
     allowed-tools: Bash(repowise context:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Context

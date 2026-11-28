@@ -8,40 +8,55 @@
 ; ---------------------------------------------------------------------------
 
 (class_definition
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 ; Annotated class (Q11): @deprecated class Foo
 (class_definition
   (annotation) @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 ; Annotated function (Q11): @tailrec def bar
 (function_definition
-  (annotation) @symbol.modifiers
+  (annotation)+ @symbol.modifiers
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
+  (parameters)? @symbol.params
+) @symbol.def
+
+; Annotated abstract member: @deprecated def all: List[Int]
+(function_declaration
+  (annotation)+ @symbol.modifiers
+  name: (identifier) @symbol.name
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (trait_definition
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (object_definition
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
 ) @symbol.def
 
 (function_definition
+  (modifiers)? @symbol.modifiers
   name: (identifier) @symbol.name
-  (parameters) @symbol.params
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (function_declaration
   name: (identifier) @symbol.name
-  (parameters) @symbol.params
+  (parameters)? @symbol.params
 ) @symbol.def
 
 (val_definition
+  (modifiers)? @symbol.modifiers
   pattern: (identifier) @symbol.name
 ) @symbol.def
 
@@ -57,6 +72,7 @@
 
 ; Scala var definitions (Q5)
 (var_definition
+  (modifiers)? @symbol.modifiers
   pattern: (identifier) @symbol.name
 ) @symbol.def
 

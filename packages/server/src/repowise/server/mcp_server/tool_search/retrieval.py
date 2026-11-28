@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
 from repowise.core.persistence.database import get_session
@@ -18,15 +20,19 @@ from repowise.server.mcp_server._answer_pipeline import (
     _SYMBOL_LEG_RRF_K,
     leg_ranks,
 )
+from repowise.server.mcp_server._answer_pipeline.leg_record import _record_leg, vector_leg_within
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
     _get_repo,
     _resolve_repo_context,
     filter_dicts_by_key,
+    semantic_grace_s,
     vector_search_timeout_s,
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._origin_rank import file_origins
 from repowise.server.mcp_server._page_paths import (
     PAGELESS_FILE,
     file_candidates,
@@ -40,18 +46,21 @@ from repowise.server.mcp_server._query_shape import (
 from repowise.server.mcp_server._retrieval_rank import boost_named_paths
 from repowise.server.mcp_server.tool_search_symbols import file_path_index
 
+from .concept_lift import definition_lifts, lift_named_rows
 from .ordering import _collapse_by_file
 from .ranking import (
     _dedup_decisions,
     _downweight_decisions,
     _downweight_test_pages,
     _filter_by_kind,
+    _minor_spotlights,
     _rescue_all_decision_window,
     _sort_demoting_noise,
 )
 from .serve import (
     _assign_confidence,
     _attach_paths,
+    _drop_internal_ranking_fields,
     _load_page_info,
     _page_language,
     _serve_snippets,
@@ -59,13 +68,6 @@ from .serve import (
 )
 
 _log = logging.getLogger("repowise.mcp.search")
-
-
-async def _wait_for_vector_store(ctx) -> None:
-    """Block (bounded) until the vector store signals readiness, if it tracks it."""
-    if ctx.vector_store_ready is not None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
 
 
 async def _safe_fts(ctx, query: str, limit: int) -> list:
@@ -80,8 +82,8 @@ async def _safe_fts(ctx, query: str, limit: int) -> list:
 async def _safe_vector(ctx, query: str, limit: int) -> list:
     """Vector search, bounded and failure-swallowing (returns [] on error/timeout).
 
-    Readiness is awaited by the caller (``_wait_for_vector_store``) before the
-    fused retrieve runs, so this path does not re-wait.
+    Readiness is awaited by the caller (``_vector_leg``), so this path does
+    not re-wait.
 
     Returns nothing on a keyless index. ``store_has_semantic_vectors`` explains
     why the mock's vectors cannot be ranked on; the reason this is enforced here
@@ -95,8 +97,9 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
             ctx.vector_store.search(query, limit=limit), timeout=vector_search_timeout_s()
         )
     except TimeoutError:
-        # Logged, not silent: a timeout drops the whole semantic leg and the
+        # Logged and recorded: a timeout drops the whole semantic leg and the
         # full-text-only hits that remain look like a normal result set.
+        _record_leg("vector", "timeout")
         _log.warning(
             "Vector search exceeded its %gs budget; returning no semantic hits. "
             "Raise it with %s=<seconds>.",
@@ -104,6 +107,7 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
             _VECTOR_TIMEOUT_ENV,
         )
     except Exception:
+        _record_leg("vector", "error")
         _log.debug("Vector search failed; returning no semantic hits", exc_info=True)
     return []
 
@@ -125,6 +129,24 @@ def _symbol_leg_target(fused: dict[str, dict], page_id: str) -> str:
     return best or page_id
 
 
+def _apply_lifts(fused: dict[str, dict], lifts: dict[str, float], entry_rows: list[dict]) -> None:
+    """Credit each concept lift to its file's best fused page, seeding one no leg made."""
+    for page_id, lift in lifts.items():
+        target = _symbol_leg_target(fused, page_id)
+        if target in fused:
+            fused[target]["_rrf"] += lift / _RRF_SCORE_SCALE
+            fused[target]["_named"] = True
+    for row in entry_rows:
+        target = _symbol_leg_target(fused, row["page_id"])
+        if target not in fused:
+            hit = SimpleNamespace(**row, snippet=(row.get("summary") or "")[:200])
+            fused[target] = _fused_entry(hit)
+            # No leg reached it: the index's curated entry points did.
+            fused[target]["_sources"].add("entry_point")
+        fused[target]["_rrf"] += row["lift"] / _RRF_SCORE_SCALE
+        fused[target]["_named"] = True
+
+
 def _fused_entry(r) -> dict:
     """Seed a fused-result dict from a retriever hit (RRF score added by caller)."""
     entry = {
@@ -141,7 +163,45 @@ def _fused_entry(r) -> dict:
     return entry
 
 
-async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
+async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tuple[list, ...]:
+    """``(vector, fts, symbol, filename)`` hits; the vector leg only when *semantic*.
+
+    The lexical legs run while a store still loading at startup finishes; the
+    grace starts once it is loaded. With no usable lexical hits, wait for
+    the vector leg's existing query timeout rather than return an empty reply.
+    """
+    if not semantic:
+        return ([], *await _lexical_legs(ctx, query, fetch_limit))
+    vector_leg = asyncio.ensure_future(_vector_leg(ctx, query, fetch_limit))
+    try:
+        lexical = await _lexical_legs(ctx, query, fetch_limit)
+        await _pkg._wait_for_vector_store(ctx)
+        if any(hit.score >= _MIN_RELEVANCE_SCORE for hit in lexical[0]) or any(lexical[1:]):
+            vector = await vector_leg_within(vector_leg, semantic_grace_s())
+        else:
+            vector = await vector_leg
+        return (vector, *lexical)
+    except BaseException:
+        await cancel_and_wait([vector_leg])
+        raise
+
+
+async def _vector_leg(ctx, query: str, fetch_limit: int) -> list:
+    await _pkg._wait_for_vector_store(ctx)
+    return await _pkg._safe_vector(ctx, query, fetch_limit)
+
+
+async def _lexical_legs(ctx, query: str, fetch_limit: int) -> Sequence[list]:
+    return await asyncio.gather(
+        _pkg._safe_fts(ctx, query, fetch_limit),
+        _pkg._safe_symbol_search(ctx, query, pageless=True),
+        _pkg._safe_filename_search(ctx, query),
+    )
+
+
+async def _fused_retrieve(
+    ctx, query: str, fetch_limit: int, page_type: str | None, *, semantic: bool = True
+) -> list[dict]:
     """Retrieve by fusing FTS, vector and symbol search via Reciprocal Rank Fusion.
 
     The retrievers run in parallel; a hit's score is the sum of
@@ -163,12 +223,12 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     off-topic query return its nearest-but-unrelated neighbours. Rank position
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
+
+    ``semantic=False`` runs without the vector leg, for a caller whose
+    question an exact identifier hit already answers.
     """
-    fts_results, vec_results, sym_results, name_results = await asyncio.gather(
-        _pkg._safe_fts(ctx, query, fetch_limit),
-        _pkg._safe_vector(ctx, query, fetch_limit),
-        _pkg._safe_symbol_search(ctx, query, pageless=True),
-        _pkg._safe_filename_search(ctx, query),
+    (vec_results, fts_results, sym_results, name_results), entry_rows = await asyncio.gather(
+        _run_legs(ctx, query, fetch_limit, semantic=semantic), _pkg.entry_point_rows(ctx, query)
     )
 
     fused: dict[str, dict] = {}
@@ -190,6 +250,8 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         entry = fused.setdefault(_symbol_leg_target(fused, r.page_id), _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + _SYMBOL_LEG_RRF_K)
         entry["_sources"].add("symbol")
+        # Coverage reranking judges the page on the names that earned it, as in get_answer.
+        entry["_symbol_names"] = getattr(r, "symbol_names", ())
     # Files whose file name the query's words spell, weighted as a name match.
     # It adds files the other legs missed and never reorders a page they found.
     # A name of three or more words the query spells in full weighs like a page hit.
@@ -200,6 +262,7 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
         entry = fused.setdefault(target, _fused_entry(r))
         entry["_rrf"] += 1.0 / (rank + (_RRF_K if full else _FILENAME_LEG_RRF_K))
         entry["_sources"].add("filename")
+    _apply_lifts(fused, definition_lifts(query, sym_results), entry_rows)
 
     output: list[dict] = []
     for entry in fused.values():
@@ -213,7 +276,13 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
 
 
 async def _search_single_repo(
-    ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
+    ctx,
+    query: str,
+    limit: int,
+    page_type: str | None,
+    kind: str | None = None,
+    *,
+    semantic: bool = True,
 ) -> list[dict]:
     """Run search against a single repo context.
 
@@ -224,11 +293,11 @@ async def _search_single_repo(
     The ``kind`` filter runs here, on the over-fetched list and BEFORE the
     limit cut — filtering after per-repo truncation returned fewer than
     ``limit`` results (frequently zero) in the federated path.
-    """
-    await _pkg._wait_for_vector_store(ctx)
 
+    ``semantic=False`` neither waits for the vector store nor searches it.
+    """
     fetch_limit = _fetch_limit_for(limit, kind)
-    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type, semantic=semantic)
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)
@@ -238,22 +307,33 @@ async def _search_single_repo(
     # over-fetched list so the kind filter below has real headroom. Load
     # precedes the sort/demotion so they see the page metadata they key on
     # (test demotion needs target_path to classify a test file page).
+    minor: set[str] = set()
+    origins: dict[str, str] = {}
     if output:
         async with get_session(ctx.session_factory) as session:
             page_info, tombstoned, _ = await _load_page_info(session, output)
-            path_index = await file_path_index(session, (await _get_repo(session)).id)
+            repo_id = (await _get_repo(session)).id
+            path_index = await file_path_index(session, repo_id)
+            minor = await _minor_spotlights(session, output, query, repo_id)
+            origins = await file_origins(session, repo_id, page_info.values())
         output = [item for item in output if item["page_id"] not in tombstoned]
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
         boost_named_paths(
-            output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
+            output,
+            query,
+            path_index.word_counts,
+            len(path_index.paths),
+            score_key="relevance_score",
         )
+        lift_named_rows(output, score_key="relevance_score")
 
-    _downweight_test_pages(output, query)
-    _sort_demoting_noise(output, query)
+    _downweight_test_pages(output, query, origins)
+    _sort_demoting_noise(output, query, minor, origins)
     output = _dedup_decisions(output)
 
     output = _filter_by_kind(output, kind)
+    _drop_internal_ranking_fields(output)
     return _collapse_by_file(output)[:limit]
 
 

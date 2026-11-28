@@ -329,9 +329,9 @@ def test_yes_help_says_everything_it_skips() -> None:
         "cost confirmation is accepted",
         "advanced options keep their defaults",
         "detected agents are connected",
-        "old and new target printed",
-        "post-commit hook is installed",
-        "distill rewrite hook is not",
+        "user-level repowise MCP entry in ~/.claude.json",
+        "never moved off another repo",
+        "post-commit hook and the distill rewrite hook are installed",
     ):
         assert phrase in flat, phrase
 

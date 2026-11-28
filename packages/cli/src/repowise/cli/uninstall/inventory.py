@@ -63,7 +63,9 @@ class Item:
     """
 
     group: Group
-    path: Path
+    #: A filesystem path, or ``str`` for a locator that is not one (a database
+    #: host): ``Path`` would rewrite its ``/`` on Windows.
+    path: Path | str
     #: Short label for the row, e.g. "Claude Code (user)" or "index".
     label: str
     exists: bool
@@ -186,30 +188,12 @@ def _index_blocked(repo_path: Path) -> str | None:
 def _serve_lock_is_live(lock: Path) -> bool:
     """Whether ``serve.lock.json`` names a process that still exists.
 
-    A stale lock is the common case: ``serve`` only removes a lock it owns, so
-    a killed server leaves one behind forever. Treating a stale lock as live
-    would make the index permanently undeletable, which is a worse failure than
-    the one this guard prevents.
+    Treating a stale lock as live would make the index permanently
+    undeletable, which is a worse failure than the one this guard prevents.
     """
-    import json
+    from repowise.cli.commands.serve_cmd._lock import live_serve_lock
 
-    if not lock.exists():
-        return False
-    try:
-        payload = json.loads(lock.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    pid = payload.get("pid")
-    if not isinstance(pid, int):
-        return False
-    try:
-        from repowise.core.procutils import pid_alive
-
-        return bool(pid_alive(pid))
-    except Exception:
-        # Without a liveness probe, assume it is stale rather than blocking the
-        # user out of their own directory on the strength of a leftover file.
-        return False
+    return live_serve_lock(lock) is not None
 
 
 #: Read in chunks rather than whole, with an overlap so the marker cannot be
@@ -237,7 +221,7 @@ def _mentions_repowise(path: Path) -> bool:
     failure this command exists to prevent.
 
     **Directories are searched, not skipped.** Exactly one of the eighteen paths
-    the six targets describe is a directory, ``~/.codex/prompts``, and it is the
+    the six targets describe is a directory, ``$CODEX_HOME/prompts``, and it is the
     only evidence that Codex user scope is wired when the hooks file is JSONC or
     absent. Answering False for it left eighteen prompt files on disk under
     "everything selected is gone".
@@ -245,7 +229,7 @@ def _mentions_repowise(path: Path) -> bool:
     try:
         if path.is_dir():
             # Unsorted, so a directory with more entries than the cap does not
-            # depend on where `repowise-` falls alphabetically. `~/.codex/prompts`
+            # depend on where `repowise-` falls alphabetically. `$CODEX_HOME/prompts`
             # is documented as a flat global directory shared with every other
             # tool the user has installed, so it can be large.
             #
@@ -292,7 +276,7 @@ def _agent_items(repo_path: Path) -> list[Item]:
     Existence alone is far worse. Only three of the eighteen paths the six
     targets describe are repowise-exclusive. The rest are files that exist for
     anyone who has ever run the host at all: ``~/.claude/settings.json``,
-    ``~/.codex/hooks.json``, ``.vscode/extensions.json``, ``AGENTS.md``,
+    ``$CODEX_HOME/hooks.json``, ``.vscode/extensions.json``, ``AGENTS.md``,
     ``.mcp.json``. Keying on existence listed every one of them in a repo where
     repowise had never been installed, pre-ticked the agent group, and had the
     runner call ``uninstall`` for scopes detection never found.
@@ -467,7 +451,7 @@ def _store_item() -> Item | None:
         pass
     return Item(
         group=Group.INDEX,
-        path=Path(locator),
+        path=locator,
         label=f"index in the configured {dialect} database",
         exists=True,
         blocked=(

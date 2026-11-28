@@ -1,6 +1,6 @@
 # Language Support
 
-**28 languages parsed to a full AST, 42 on the five-rung support ladder, and
+**29 languages parsed to a full AST, 43 on the five-rung support ladder, and
 framework-aware edges where an ecosystem handler exists.** Every language lands
 on one rung, and the rung tells you which parts of the pipeline produce real
 output for it. Files in any other language still appear in the wiki and are
@@ -18,7 +18,7 @@ resolution and health markers are all static.
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" /> <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" /> <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" /> <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" /> <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" /> <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" /> <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
-  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" /> <img src="https://img.shields.io/badge/Perl-39457E?style=flat-square&logo=perl&logoColor=white" alt="Perl" />
 </p>
 <p>
   <strong>Partial tier &nbsp;</strong>
@@ -26,24 +26,24 @@ resolution and health markers are all static.
 </p>
 
 **Contents:** [Tiers](#tiers), [What the pipeline gives each tier](#what-the-pipeline-gives-each-tier),
-[How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Accuracy and limits](#accuracy-and-limits),
+[Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Good** (12) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C, Perl | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F#, Objective-C and Perl get the complexity-derived ones; the rest get none yet. Elixir and legacy PHP sit lower: Elixir gets symbols, calls and `alias` / `import` / `require` / `use` edges but no heritage and no Phoenix, OTP or Oban edges, and PHP `include` / `require` resolves only an unparenthesized literal path |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-Tree-sitter parsing covers the first three rungs: those are the **28 languages
+Tree-sitter parsing covers the first three rungs: those are the **29 languages
 parsed to a full AST**. The bottom two rungs come from git history and import
-extraction, and all five together make the **42** on the ladder.
+extraction, and all five together make the **43** on the ladder.
 
 [SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder, because
 neither fits a rung: SQL gets symbols and health markers but no call graph, and
@@ -66,12 +66,15 @@ listed per language and framework in
 | Dead code detection | ✅ | ✅* | ✅ | ✅ | ✅ |
 | Semantic search and wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Every Full and Good language has a dedicated import resolver except Object
-Pascal and Objective-C, which resolve through a generic unit-name or header-stem
-match, and Apex, which has no imports and resolves names case-insensitively
-within each sfdx project's namespace.
+Every Full and Good language has a dedicated import resolver except
+Objective-C, which resolves through a generic header-stem match, and Apex,
+which has no imports and resolves names case-insensitively within each sfdx
+project's namespace. Object Pascal resolves `uses` through the project files
+that compile each unit and matches names case-insensitively; its form files
+(`.dfm`, `.fmx`, `.lfm`) bind the event handlers they name to the unit's form
+class.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
-[Limits](#limits).
+[Accuracy and limits](#accuracy-and-limits).
 
 \* COBOL files and programs get no dead-code claims: schedulers, region
 definitions outside the repo and dynamic program calls are entry paths the
@@ -95,7 +98,7 @@ A DB2 DCLGEN member (`.dcl`) is a copybook when it holds an
 output and OpenVMS DCL procedures share the extension and are not indexed.
 `EXEC CICS LINK` and `XCTL` link to their program when it is a literal or a
 constant moved into the program variable; any other target shows as a
-`cics-dynamic:` reference rather than a guess. A `PERFORM` binds only within
+`cics-dynamic:` reference instead of a guess. A `PERFORM` binds only within
 its program and the copybooks it copies; `CALL`, `LINK` and `XCTL` bind to a
 unique PROGRAM-ID. JCL (`.jcl`, `.prc`, `.proc`) links each job step to the
 program or PROC it runs, which makes that program an entry point, and BMS
@@ -118,70 +121,11 @@ target's name alone.
 Apex dead-code findings are review-only, since the platform also reaches classes
 by name. A third-party library in a static resource counts as vendored.
 
-## How accurate is the graph per language
-
-Precision and recall differ by language, because resolution depends on what the
-grammar and the type system expose. Measured figures per language, with corpus
-and method, are in [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language).
-
-### Every call edge says how it was resolved, and how much to trust it
-
-Every `calls` edge repowise emits carries a **resolution origin** from a closed
-vocabulary, and every origin has exactly one confidence:
-
-| Origin | Confidence | What it means |
-|--------|:---:|---|
-| `same_file` | 0.95 | Defined in the calling file. A certainty |
-| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
-| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
-| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
-| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
-| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
-| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
-| `scoped_name` | 0.93 | The call names its class directly, and that class declares the method |
-| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
-| `receiver_chain_same_file` | 0.93 | Every hop of a chained field receiver resolves within this file |
-| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
-| `same_package` | 0.90 | The target is in a sibling file that needs no import |
-| `import_scoped` | 0.90 | The name was imported from the file that defines it |
-| `receiver_same_package` | 0.90 | The receiver is a class in the same package |
-| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
-| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
-| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
-| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
-| `self_inherited` | 0.90 | `self` / `this` names a method declared by one ancestor |
-| `enclosing_inherited` | 0.90 | A bare call names a method declared by one ancestor |
-| `package_alias` | 0.88 | The call is qualified by a package the repo declares |
-| `module_alias` | 0.88 | The receiver is an imported module |
-| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
-| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
-| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file |
-| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
-| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
-| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
-| `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
-| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file |
-| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
-| `same_target` | 0.85 | The target is a sibling translation unit in the same build target |
-| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
-| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
-| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
-| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
-| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
-| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
-| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
-
-That is the complete vocabulary of 39. You can filter a graph by confidence, and
-both the MCP tools and the web UI surface which origin produced an edge, so an
-agent reading an execution flow can tell a fact from an inference. Receiver
-typing, execution-flow terminations and the edge types are in
-[GRAPH.md](GRAPH.md).
-
 ## Extensions and imports
 
 Each Full and Good language claims its usual file extensions (C++ also claims
 headers such as `.hpp`, `.inl` and `.tpp`) and resolves imports through its own
-build files: tsconfig path aliases and workspaces, Maven and Gradle reactors,
+build files: tsconfig and Vite path aliases and workspaces, Maven and Gradle reactors,
 `go.mod`, `Cargo.toml`, `compile_commands.json`, `.csproj` / `.sln`, PSR-4,
 `pubspec.yaml`, `project.godot` and so on. The table per language is in
 [architecture/language-support.md](../architecture/language-support.md#extensions-and-import-resolution).
@@ -201,7 +145,7 @@ reported as unreachable.
 | Language | Frameworks |
 |----------|-----------|
 | Python | Django, FastAPI, Flask, Celery, pytest fixtures |
-| Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
+| Ruby | Rails (Zeitwerk constant references, routes to controllers with `namespace`, `scope module:` and nested resources, `config/` and initializers, ActionCable, helpers, cron-scheduled jobs, Pundit policies, ActionMailbox routing, `prepend_mod_with` overlays), RSpec mirror edges |
 | Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
@@ -244,6 +188,10 @@ invoked by name.
 - Lightweight languages resolve imports against a declared module-name index.
 - OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform
   and Markdown appear in the file tree and the wiki.
+- A Markdown document gets a `documents` edge to each repository file it links
+  to or names in backticks, when that reference resolves to exactly one file
+  (a bare backticked name never to a root-level file).
+  See [GRAPH.md](GRAPH.md#edge-types).
 - HTML contributes `<script src>` and `<link href>` edges, so `index.html`
   reaches `src/main.ts` in a Vite or webpack app.
 - HTML and QML files are never flagged as dead code, since whether a page or a
@@ -274,13 +222,14 @@ This table is why a language is Full and not Good.
 | Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
-| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
+| Object Pascal | ✅ | ✅ | ✅ | n/a | n/a | ✅ | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
 | F#, Objective-C | ✅ | ✅ | no | no | no | no | no |
 | Apex | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
+| Perl | ✅ | no | no | no | no | no | no |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
 
@@ -297,16 +246,120 @@ Extract Method waits on its grammar:
 [architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
 Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 
-## Limits
+## Runtime evidence
+
+Coverage reports and profiles add measured runtime to the static graph.
+`repowise evidence setup` prints, per build unit, the test command that writes
+coverage and the commands that profile it; `coverage add` and `evidence add`
+read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
+Go cover profile format is read for any language, from any tool. A profile
+joins to code only for Python, Go, JavaScript, Java, Kotlin, Rust and Object
+Pascal frames.
+
+| Language | Coverage command from setup | Profiles and benchmarks read |
+|----------|-----------------------------|------------------------------|
+| Python | pytest with pytest-cov | Speedscope (pyinstrument, py-spy), collapsed stacks (py-spy), pytest-benchmark JSON |
+| JavaScript | Jest, Vitest or Bun; c8 around other runners | Speedscope |
+| TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
+| Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
+| Java / Kotlin | Maven or Gradle with JaCoCo | JDK Flight Recorder (`jfr print` text), async-profiler collapsed stacks |
+| Rust | `cargo llvm-cov` | pprof (pprof-rs) |
+| C# | `dotnet test` with coverlet | no |
+| Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
+| PHP | PHPUnit or Pest | no |
+| Apex | none; the Salesforce CLI test-run JSON is read | no |
+| Object Pascal | DelphiCodeCoverage on a built test program; the report is read | pprof with source lines (Free Pascal built with `-gw3`) |
+| Every other language | none | no |
+
+Formats, the join rules and the workload classes:
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
+[TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
+
+## Accuracy and limits
+
+Precision and recall differ by language, because resolution depends on what the
+grammar and the type system expose. Measured figures per language, with corpus
+and method, are in [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language).
+
+### Every call edge says how it was resolved
+
+Every `calls` edge repowise emits carries a **resolution origin** from a closed
+vocabulary, and every origin has exactly one confidence:
+
+| Origin | Confidence | What it means |
+|--------|:---:|---|
+| `same_file` | 0.95 | Defined in the calling file. A certainty |
+| `self_scope` | 0.95 | `self` / `this`, a method on the caller's own class |
+| `enclosing_class` | 0.95 | A bare call bound to the caller's own class |
+| `receiver_same_file` | 0.93 | The receiver names a class in the calling file |
+| `receiver_typed_same_file` | 0.93 | The receiver's declared type is a class in this file |
+| `receiver_field_same_file` | 0.93 | The receiver is a field whose type is a class in this file |
+| `receiver_framework_same_file` | 0.93 | A framework decorator retyped the receiver to a class in this file |
+| `scoped_name` | 0.93 | C/C++ `Qualifier::name()`: the call names its class directly, and that class declares the method |
+| `receiver_extension_same_file` | 0.93 | An extension method in this file extends the receiver's type |
+| `receiver_chain_same_file` | 0.93 | Every hop of a chained field receiver resolves within this file |
+| `return_type_same_file` | 0.93 | The inner call's declared return type is a class in this file |
+| `same_package` | 0.90 | The target is in a sibling file that needs no import (Go, JVM) |
+| `import_scoped` | 0.90 | The name was imported from the file that defines it |
+| `receiver_same_package` | 0.90 | The receiver is a class in the same package (JVM) |
+| `receiver_typed_same_package` | 0.90 | The receiver's declared type is a class in the same package |
+| `receiver_field_same_package` | 0.90 | The receiver is a field whose type is a class in the same package |
+| `receiver_framework_same_package` | 0.90 | A framework decorator retyped the receiver to a class in the same package |
+| `return_type_same_package` | 0.90 | The inner call's declared return type is a class in the same package |
+| `self_inherited` | 0.90 | `self` / `this` or Python `super()` names a method declared by exactly one ancestor |
+| `enclosing_inherited` | 0.90 | A bare call names a method declared by exactly one ancestor |
+| `package_alias` | 0.88 | Go `pkg.Func`: the call is qualified by a package the repo declares, resolved across the whole package |
+| `module_alias` | 0.88 | The receiver is an imported module, or a Rust module path (`crate::index::open_ro()`, `super::f()`, a `mod` the file declares) walked down the module tree, with no `use` needed |
+| `crate_root` | 0.88 | The reference is scoped to its Rust crate |
+| `receiver_import` | 0.88 | The receiver's class was found in an imported file |
+| `receiver_typed_import` | 0.88 | The receiver's type was read off its declaration, then found in an imported file; or a Python local holds the module object a call returned |
+| `receiver_field_import` | 0.88 | The receiver is a field whose type was found in an imported file |
+| `receiver_framework_import` | 0.88 | A framework decorator retyped the receiver to a class in an imported file |
+| `receiver_extension_import` | 0.88 | An imported file extends the receiver's type with this method |
+| `receiver_chain_import` | 0.88 | A chained field receiver resolves through an imported type at its weakest hop |
+| `return_type_import` | 0.88 | The inner call's declared return type was found in an imported file; or a Python inner call returns an imported module object |
+| `import_merged` | 0.85 | The name is in one of the imported files, but the file is unattributed |
+| `same_target` | 0.85 | C/C++: the target is a sibling translation unit in the same build target |
+| `receiver_global` | 0.75 | The `(class, method)` pair exists *somewhere* in the repo |
+| `receiver_typed_global` | 0.75 | The inferred type and method pair exists somewhere in the repo |
+| `receiver_field_global` | 0.75 | The field's type and method pair exists somewhere in the repo |
+| `receiver_framework_global` | 0.75 | The framework type and method pair exists somewhere in the repo |
+| `receiver_extension_global` | 0.75 | One extension method in the repo extends this type with this name |
+| `return_type_global` | 0.75 | The returned type and method pair exists somewhere in the repo |
+| `global_unique` | 0.50 | The name is unique repo-wide. **A guess, and labelled as one** |
+| `import_elsewhere` | 0.50 | Python: the name is imported only inside another function of the file, and that one import is read here. **A guess** |
+
+That is the complete vocabulary of 40. You can filter a graph by confidence, and
+both the MCP tools and the web UI surface which origin produced an edge, so an
+agent reading an execution flow can tell a fact from an inference. How an
+agent should read each confidence band, receiver typing, execution-flow
+terminations and the edge types are in [GRAPH.md](GRAPH.md#reading-the-results).
+
+### Known gaps
 
 - Template dialects (Django/Jinja, Go templates, ERB, Handlebars, Blade,
   Thymeleaf) parse as HTML and yield nothing.
 - Svelte and Vue binding forms (`{#each}`, `v-for`) are not resolved, and the
   unused-export pass is off for both.
 - Razor has no import edges.
-- Scala import resolution is partial, and the Elixir and F# import resolvers
-  have known gaps.
+- Scala import resolution is partial, and the F# import resolver has known
+  gaps.
+- Elixir reads module references from `alias`, `import`, `require` and `use`
+  only. A routed Phoenix controller or LiveView, an endpoint's `plug`, a
+  supervisor child, an Oban worker, a mix task and a bare module value
+  (`error_handler: App.ErrorHandler`) give no edge or entry point.
+- PHP `include` / `require` resolves an unparenthesized literal path. The
+  `require_once(...)` form and computed paths (`__DIR__ . '/x.php'`,
+  `"$dir/x.php"`, `$GLOBALS[...] . '/x.php'`) give no edge, so a legacy
+  include-based app has fewer edges than a PSR-4 one.
+- Dead code caps an unreachable file at `0.50`, whatever its git age, in
+  every language the registry does not mark as full import support (Scala,
+  Elixir, F#, Perl, Objective-C, Apex, Luau, Razor, and the Lightweight and Structural rungs)
+  and in PHP, Ruby and Swift, where computed
+  includes, autoloaded constants and same-module types reach a file with no
+  edge. See [DEAD_CODE.md](DEAD_CODE.md#confidence).
 - COBOL dynamic `CALL` targets and free-format source produce no edges.
+- Perl method calls are typed only from `$self`-style invocants, package names and constructor assignments (by variable name within the calling sub, so an inner `my $o` shadowing an outer one is not told apart); `use mro 'c3'` is read as the default depth-first order, and `use Foo;` as importing all of Foo's subs, since its `@EXPORT` list is not read. An imported sub is reached only by its bare name (not as `App::helper()` or as a method of the importing package), and a package's own sub wins over an import of the same name wherever the two sit in the file. Perl 5.38 `class` blocks own their methods, but a `:isa(Parent)` attribute is not read as inheritance.
 - C has no performance risk support.
 - Salesforce references are followed when the name is literal: runtime-built
   names and objects with no metadata file in the repository get no edge.
@@ -322,10 +375,9 @@ The full list per language, with the mechanics behind each gap, is in
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
 | Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
-| Object Pascal | A dedicated `uses` resolver |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
-| F#, Objective-C | Health markers beyond complexity |
+| F#, Objective-C, Perl | Health markers beyond complexity |
 | SQL / dbt | Column-level blast radius |
 | Shell | Shebang detection for extensionless executables |
 
@@ -343,7 +395,8 @@ the same architecture page.
 
 ## See also
 
-- [GRAPH.md](GRAPH.md): edge vocabulary, resolution origins, execution flows
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance
+- [GRAPH.md](GRAPH.md): edge vocabulary, receiver typing, execution flows
 - [architecture/language-support.md](../architecture/language-support.md): pipeline internals and per-language mechanics
 - [CODE_HEALTH.md](CODE_HEALTH.md): health markers
 - [BENCHMARKS.md](../BENCHMARKS.md#accuracy-by-language): measured accuracy per language

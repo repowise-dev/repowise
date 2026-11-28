@@ -30,15 +30,18 @@ _MAX_DIRECTIVE_CHARS = 8000
 _STYLES_DIRNAME = "styles"
 
 # ---------------------------------------------------------------------------
-# Built-in styles (see WIKI_STYLES_PLAN.md D1). ``comprehensive`` is inert by
-# design — empty directive and note — so it reproduces the pre-feature output
-# byte-for-byte and never invalidates existing cached pages.
+# Built-in styles (see WIKI_STYLES_PLAN.md D1). ``comprehensive`` carries the
+# default voice and the only word budget; it applies to onboarding pages too,
+# since those are written for the same new engineer.
 # ---------------------------------------------------------------------------
 
 _BUILTIN_STYLES: dict[str, StyleSpec] = {
     "comprehensive": StyleSpec(
         name="comprehensive",
         description="Full, narrative documentation for humans and AI (default).",
+        user_directive=d.COMPREHENSIVE_DIRECTIVE,
+        length_note=d.COMPREHENSIVE_LENGTH,
+        onboarding_condenses=True,
     ),
     "caveman": StyleSpec(
         name="caveman",

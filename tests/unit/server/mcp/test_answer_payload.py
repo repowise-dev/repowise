@@ -148,12 +148,18 @@ class TestSerializeHits:
     def test_snippet_starts_below_the_page_heading(self) -> None:
         hit = dict(
             RAW_HIT,
+            summary="",
             snippet="# pkg/mod.py\n\n## Overview\n\nParses the config.",
-            excerpt="# pkg/mod.py\n\nBody.",
         )
         [entry] = serialize_hits([hit])
         assert entry["snippet"] == "Parses the config."
-        assert entry["excerpt"] == "# pkg/mod.py\n\nBody."
+
+    def test_a_row_carries_one_text(self) -> None:
+        [served] = serialize_hits([dict(RAW_HIT, excerpt="# pkg/mod.py\n\nBody.")])
+        assert served["excerpt"] == "# pkg/mod.py\n\nBody."
+        assert "summary" not in served and "snippet" not in served
+        [plain] = serialize_hits([dict(RAW_HIT)])
+        assert "summary" in plain and "snippet" not in plain
 
     def test_limit(self) -> None:
         hits = [dict(RAW_HIT), dict(RAW_HIT), dict(RAW_HIT)]
@@ -173,7 +179,9 @@ class TestSerializeHits:
         # The cut is a field cut, not a row cut: every path still ships, which is
         # what keeps a withheld excerpt one follow-up call away rather than lost.
         assert [r["path"] for r in rows] == [f"pkg/m{i}.py" for i in range(5)]
-        assert all({"title", "summary", "snippet", "score"} <= set(r) for r in rows)
+        assert all({"title", "score"} <= set(r) for r in rows)
+        # A withheld excerpt falls back to the summary, so no row goes textless.
+        assert ["summary" in r for r in rows] == [False, False, False, True, True]
 
     def test_excerpt_rows_unset_serves_every_excerpt(self) -> None:
         hits = [dict(RAW_HIT, target_path=f"pkg/m{i}.py", excerpt="E" * 1500) for i in range(5)]

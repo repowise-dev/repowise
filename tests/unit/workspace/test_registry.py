@@ -122,6 +122,20 @@ class TestResolveRepoParam:
         assert registry.resolve_repo_param("frontend/") == "frontend"
         assert registry.resolve_repo_param(str((tmp_path / "frontend").resolve())) == "frontend"
 
+    def test_dot_names_the_default_repo(self, tmp_path: Path) -> None:
+        config = _make_workspace(tmp_path, ["backend", "frontend"], default="frontend")
+        registry = RepoRegistry(tmp_path, config)
+
+        assert registry.resolve_repo_param(".") == "frontend"
+        assert registry.resolve_repo_param("./") == "frontend"
+
+    def test_dot_names_a_repo_at_the_workspace_root(self, tmp_path: Path) -> None:
+        config = _make_workspace(tmp_path, ["backend"])
+        config.repos.append(RepoEntry(path=".", alias="root"))
+        registry = RepoRegistry(tmp_path, config)
+
+        assert registry.resolve_repo_param(".") == "root"
+
     def test_mixed_case_alias_keeps_emitted_identity(self, tmp_path: Path) -> None:
         config = _make_workspace(tmp_path, ["backend"])
         config.repos[0].alias = "BackendAPI"

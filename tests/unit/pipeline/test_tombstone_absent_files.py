@@ -170,3 +170,16 @@ async def test_a_repository_with_no_file_pages_does_nothing(session, tmp_path: P
     await session.commit()
 
     assert await tombstone_absent_file_pages(session, repo.id, tmp_path) == []
+
+
+async def test_an_api_contract_page_for_a_deleted_file_is_tombstoned(session, tmp_path: Path):
+    """An api_contract page whose file is gone is tombstoned; one whose file
+    exists is not (#4713)."""
+    repo_id = await _seed(session, tmp_path, "kept.proto", "gone.proto", page_type="api_contract")
+    _write(tmp_path, "kept.proto")
+
+    marked = await tombstone_absent_file_pages(session, repo_id, tmp_path)
+
+    assert marked == ["api_contract:gone.proto"]
+    assert await _status(session, "api_contract:gone.proto") == "tombstone"
+    assert await _status(session, "api_contract:kept.proto") == "fresh"

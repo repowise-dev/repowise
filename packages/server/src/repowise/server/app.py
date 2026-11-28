@@ -70,12 +70,16 @@ from repowise.server.routers import (
     platform,
     providers,
     refactoring,
+    reports,
     repos,
+    runtime_evidence,
     search,
     security,
+    settings,
     setup,
     stats,
     symbols,
+    telemetry,
     webhooks,
     wins,
     workspace,
@@ -112,7 +116,7 @@ def _build_embedder():
         return get_embedder(name, **embedder_kwargs(name))
     logger.warning(
         "embedder.mock_active: set REPOWISE_EMBEDDER=gemini, openai, openrouter, "
-        "ollama, or edenai for real RAG"
+        "ollama, fastembed, or edenai for real RAG"
     )
     return KeylessEmbedder()
 
@@ -337,6 +341,7 @@ _ROUTERS = (
     dead_code,
     doc_drift,
     code_health,
+    runtime_evidence,
     coupling,
     claude_md,
     decisions,
@@ -349,6 +354,7 @@ _ROUTERS = (
     security,
     blast_radius,
     refactoring,
+    reports,
     knowledge_map,
     workspace,
     owners,
@@ -359,8 +365,10 @@ _ROUTERS = (
     files,
     external_systems,
     feedback,
+    telemetry,
     actions,
     platform,
+    settings,
     setup,
 )
 

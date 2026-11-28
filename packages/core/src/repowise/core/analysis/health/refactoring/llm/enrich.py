@@ -127,7 +127,9 @@ def llm_enrichment_enabled(config: dict[str, Any]) -> bool:
     llm = refactoring.get("llm") if isinstance(refactoring, dict) else None
     if not isinstance(llm, dict):
         return False
-    return bool(llm.get("enabled", False))
+    from repowise.core.settings.model import flag
+
+    return flag(llm.get("enabled"), False)
 
 
 # ---------------------------------------------------------------------------

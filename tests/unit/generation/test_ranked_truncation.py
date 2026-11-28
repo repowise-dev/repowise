@@ -150,6 +150,58 @@ def test_the_resolved_subclass_survives_the_heritage_cut() -> None:
     assert entries[0]["child"] == "ResolvedChild"
 
 
+def test_an_in_file_parent_and_child_report_their_edge_once() -> None:
+    """Issue #6026: a same-file edge was listed from both of its ends.
+
+    The child's out-edge and the parent's in-edge are one relationship. The
+    out-edge copy is the one kept, since it carries the parent's file. Edges
+    that cross into another file are still listed from this file's end.
+    """
+    graph = nx.DiGraph()
+    for node, name, path in (
+        ("app/models.py::_Contract", "_Contract", "app/models.py"),
+        ("app/models.py::AssessmentReport", "AssessmentReport", "app/models.py"),
+        ("app/other.py::Draft", "Draft", "app/other.py"),
+        ("app/base.py::Base", "Base", "app/base.py"),
+    ):
+        graph.add_node(node, node_type="symbol", file_path=path, name=name, kind="class")
+    graph.add_edge(
+        "app/models.py::AssessmentReport",
+        "app/models.py::_Contract",
+        edge_type="extends",
+        confidence=0.95,
+    )
+    graph.add_edge(
+        "app/other.py::Draft", "app/models.py::_Contract", edge_type="extends", confidence=0.95
+    )
+    graph.add_edge(
+        "app/models.py::_Contract", "app/base.py::Base", edge_type="extends", confidence=0.95
+    )
+
+    for index in (None, build_symbol_index(graph)):
+        entries = extract_heritage("app/models.py", graph, index)
+        assert sorted(entries, key=lambda e: (e["child"], e["parent"])) == [
+            {
+                "child": "AssessmentReport",
+                "parent": "_Contract",
+                "kind": "extends",
+                "parent_file": "app/models.py",
+            },
+            {
+                "child": "Draft",
+                "parent": "_Contract",
+                "kind": "extends",
+                "child_file": "app/other.py",
+            },
+            {
+                "child": "_Contract",
+                "parent": "Base",
+                "kind": "extends",
+                "parent_file": "app/base.py",
+            },
+        ]
+
+
 def test_heritage_entries_do_not_carry_the_score_they_were_ranked_on() -> None:
     """The rank is internal, and the entry shape is unchanged by this phase.
 

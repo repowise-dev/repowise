@@ -50,8 +50,9 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
-from .models import ParsedFile
-from .symbol_identity import symbol_id_path
+from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
+from .symbol_identity import file_of_symbol
+from .ts_declarations import is_declaration_file
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -84,6 +85,12 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     candidate's symbol-successor set cannot change mid-pass. Falsy symbol
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
+
+    Only containment edges count: they are the only edges into symbols a full
+    build has when this pass runs. A patch build starts from the last graph,
+    which also carries heritage, call and reference edges into symbols; read
+    here, an ``impl Trait for T`` edge made ``T`` a second owner of ``Trait``
+    and the patch lost type-use edges a full build draws.
     """
     sym_name: dict[str, str] = {}
     for node, data in graph.nodes(data=True):
@@ -92,7 +99,9 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
             if name:
                 sym_name[node] = name
     index: dict[str, set[str]] = {}
-    for src, dst in graph.edges():
+    for src, dst, edge_type in graph.edges(data="edge_type"):
+        if edge_type not in CONTAINMENT_EDGE_TYPES:
+            continue
         name = sym_name.get(dst)
         if name is not None:
             index.setdefault(src, set()).add(name)
@@ -163,7 +172,7 @@ def _names_only_own_types(data: dict[str, Any], own: set[str]) -> bool:
 
 # Language families a type name can resolve into by file name. A stem match
 # outside the family is a coincidence of names, never a definition.
-_TS_TYPE_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "vue", "svelte"})
+_TS_TYPE_LANGUAGES: frozenset[str] = TS_JS_LANGUAGES
 _C_TYPE_LANGUAGES: frozenset[str] = frozenset({"c", "cpp"})
 
 
@@ -733,12 +742,12 @@ def _find_unique_ambient_declaration(
     defined_names: dict[str, set[str]],
     ctx: ResolverContext,
 ) -> str | None:
-    """Resolve an unimported type from one ambient ``.d.ts`` owner."""
+    """Resolve an unimported type from one ambient declaration-file owner."""
     owners_by_name = getattr(ctx, "_ts_ambient_type_owners", None)
     if owners_by_name is None:
         owners_by_name: dict[str, list[str]] = {}
         for path, names in defined_names.items():
-            if not path.endswith(".d.ts") or not graph.has_node(path):
+            if not is_declaration_file(path) or not graph.has_node(path):
                 continue
             ambient_names = _ambient_declaration_names(path, names, ctx)
             for name in ambient_names:
@@ -950,7 +959,7 @@ def _resolve_apex_type_refs(
             continue
         skip.add(name.lower())
         type_id = index.top_level_type(from_path, name)
-        target = symbol_id_path(type_id) if type_id else from_path
+        target = file_of_symbol(type_id) if type_id else from_path
         if target == from_path or not graph.has_node(target):
             continue
         _add_or_merge_type_use_edge(
@@ -969,6 +978,63 @@ def _apex_namespaces(ctx: ResolverContext) -> Any:
         index = build_apex_namespaces(ctx.parsed_files)
         ctx._apex_namespaces = index  # type: ignore[attr-defined]
     return index
+
+
+# ---------------------------------------------------------------------------
+# Strategy: Ruby (Rails / Zeitwerk)
+# ---------------------------------------------------------------------------
+
+# References whose target's methods the referencing file's own bare calls can
+# reach: a superclass and a module mixed in. Any other constant mention
+# (``Foo.bar``, ``Foo::Bar.new``) records a use but brings no names into scope.
+_RUBY_SCOPE_ORIGINS = frozenset({"extends", "mixin"})
+
+
+def _resolve_ruby_type_refs(
+    parsed: ParsedFile,
+    ctx: ResolverContext,
+    graph: nx.DiGraph,
+    defined_names: dict[str, set[str]],
+) -> int:
+    """Resolve Ruby constant references through the Zeitwerk index.
+
+    Rails code names its dependencies as constants and lets Zeitwerk load
+    them, so ``ConversationFinder.new`` is the only sign the controller uses
+    ``app/finders/conversation_finder.rb``. ``Foo::BAR`` names ``Foo``: an
+    unresolved path is retried without its last segment. A repo without
+    ``config/application.rb`` has no index and gets no edges.
+    """
+    from .resolvers.ruby_rails import get_or_build_rails_index
+    from .type_names import bare_type_name, type_qualifier
+
+    if not parsed.type_refs:
+        return 0
+    index = get_or_build_rails_index(ctx)
+    if index is None:
+        return 0
+    from_path = parsed.file_info.path
+    emitted = 0
+    for ref in parsed.type_refs:
+        constant, target = ref.type_name, None
+        while target is None:
+            target = index.resolve(constant, from_path)
+            if target is None:
+                constant = type_qualifier(constant)
+                if constant.strip(":") == "":
+                    break
+        if target is None or target == from_path or not graph.has_node(target):
+            continue
+        _add_or_merge_type_use_edge(
+            graph,
+            src=from_path,
+            dst=target,
+            # The class name the target defines, as the unused-export pass reads it.
+            type_name=bare_type_name(constant),
+            origin=ref.origin,
+            widens_scope=ref.origin in _RUBY_SCOPE_ORIGINS,
+        )
+        emitted += 1
+    return emitted
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +1059,7 @@ _STRATEGIES: dict[str, Strategy] = {
     "java": _resolve_jvm_type_refs,
     "kotlin": _resolve_jvm_type_refs,
     "apex": _resolve_apex_type_refs,
+    "ruby": _resolve_ruby_type_refs,
 }
 
 

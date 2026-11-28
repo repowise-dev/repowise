@@ -326,7 +326,7 @@ class _FunctionSlicer:
     ) -> bool:
         """Append *block*'s candidates to *out*; False once the candidate budget is spent."""
         lmap = self.lmap
-        stmts = block.named_children
+        stmts = [c for c in block.named_children if c.type not in lmap.structure_token_kinds]
         # A match/switch body holds arms, not statements; each arm's body is a block of its own.
         if any(stmt.type in lmap.case_kinds for stmt in stmts):
             return True

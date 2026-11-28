@@ -109,6 +109,18 @@ describe("ways in to the model sheet", () => {
     expect(await screen.findByText("Uses your Claude Code sign-in.")).toBeTruthy();
   });
 
+  it("names the plan quota and generate's minutes for a sign-in on a paid plan", async () => {
+    mocks.getProviders.mockResolvedValue({
+      ...PROVIDERS,
+      plan_route: { provider: "claude_cli", cli_name: "Claude Code", minutes: 9 },
+    });
+    renderFresh(<RepoBreadcrumb repoName="orbit-api" docsMode="deterministic" />);
+    fireEvent.click(screen.getByRole("button", { name: /Write with a model/ }));
+    expect(
+      await screen.findByText("Uses your Claude Code sign-in and plan quota, about 9 minutes."),
+    ).toBeTruthy();
+  });
+
   it("the chat no-provider state opens it and keeps the settings link", async () => {
     renderFresh(<ChatHarness message="noProvider" />);
     expect(screen.getByRole("link", { name: "settings" }).getAttribute("href")).toBe("/settings/models");
@@ -116,6 +128,22 @@ describe("ways in to the model sheet", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add a model" }));
 
     expect(await screen.findByText("Write this documentation with a model")).toBeTruthy();
+  });
+
+  it("the chat no-provider state says the agent still works, and names a model found here", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderFresh(
+      <NoProviderReason
+        message="noProvider"
+        onAddModel={vi.fn()}
+        ready={{ source: "Uses Ollama on this machine", prompt: "Write the docs." }}
+      />,
+    );
+    expect(screen.getByText(/Your agent can still ask the index without one/)).toBeTruthy();
+    expect(screen.getByText("A model is ready. Uses Ollama on this machine.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith("Write the docs."));
   });
 });
 

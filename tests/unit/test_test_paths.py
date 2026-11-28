@@ -41,6 +41,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # go
     ("app/user_test.go", None, "test"),
     ("pkg/thing_test.go", None, "test"),
+    # rust test-harness crates
+    ("tests-build/src/lib.rs", None, "test"),
+    ("tests-integration/src/lib.rs", None, "test"),
     # jest / vitest
     ("src/__tests__/x.js", None, "test"),
     ("src/components/Button.test.tsx", None, "test"),
@@ -66,6 +69,33 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("tests/utils.ts", None, "test"),
     ("test/app.router.js", None, "test"),
     ("pkg/src/tests/helpers.py", None, "test"),
+    # under a file-system router root a `test/` folder is a URL segment: the
+    # file the router serves there is production, a test-named file or a
+    # `__tests__/` there is still a test, and a `test/` above the root counts
+    ("frontend/app/api/admin/email/templates/[id]/test/route.ts", None, ""),
+    ("app/test/page.tsx", None, ""),
+    ("src/app/(admin)/tests/[id]/layout.tsx", None, ""),
+    ("app/routes/test/route.tsx", None, ""),
+    ("app/routes/tests/index.tsx", None, ""),
+    ("web/src/routes/test/+page.svelte", None, ""),
+    ("src/routes/test/[slug]/+server.ts", None, ""),
+    ("pages/test/index.vue", None, ""),
+    ("pages/api/test/ping.ts", None, ""),
+    ("src/pages/test/about.astro", None, ""),
+    ("server/api/test/ping.post.ts", None, ""),
+    ("server/routes/tests/health.ts", None, ""),
+    ("pages/test/app/page.tsx", None, ""),
+    ("app/test/page.mdx", None, ""),
+    ("app/api/test/route.test.ts", None, "test"),
+    ("app/api/test/__tests__/route.ts", None, "test"),
+    ("pages/test/index.spec.ts", None, "test"),
+    ("src/routes/test/+page.test.ts", None, "test"),
+    ("app/test/helpers.ts", None, "test"),
+    ("src/routes/test/helper.ts", None, "test"),
+    ("app/tests/models.py", None, "test"),
+    ("tests/app/page.tsx", None, "test"),
+    ("test/next-app/app/test/page.tsx", None, "test"),
+    ("e2e/pages/test/login.ts", None, "test"),
     # maven / gradle / kotlin multiplatform
     ("src/test/java/Foo.java", None, "test"),
     ("src/it/scala/FooSpec.scala", None, "test"),
@@ -100,7 +130,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),
-    ("spec/models/user.rb", None, ""),
+    # ...and a path-only caller reads the language off the extension
+    ("spec/models/user.rb", None, "test"),
+    ("spec/models/user.py", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
     # perl-style t/: `t/` is a test tree for python whatever the filename
@@ -112,9 +144,22 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("t/integration/tasks.py", "python", "test"),
     ("t/smoke/tasks.py", "python", "test"),
     ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
-    # ...so without the language, only a corroborating filename counts
+    # ...without a language the extension names it (path-only callers such
+    # as ``path_origin`` agree with ingestion: celery's smoke-test workers)
     ("t/unit/app/test_app.py", None, "test"),
-    ("t/unit/tasks/task_config.py", None, ""),
+    ("t/unit/tasks/task_config.py", None, "test"),
+    ("t/smoke/workers/dev.py", None, "test"),
+    # ...and for another language only a corroborating filename counts
+    ("t/basic.rb", None, ""),
+    ("t/unit/helper.go", None, ""),
+    # ...except Perl, whose prove convention makes t/ test material whatever
+    # the name, helpers in t/lib included
+    ("t/basic.t", None, "test"),
+    ("t/basic.pl", None, "test"),
+    ("t/lib/Helper.pm", None, "test"),
+    # ...and a `.t` file is a prove test wherever it sits
+    ("xt/author.t", None, "test"),
+    ("basic.t", "perl", "test"),
     # ...a non-source file under t/ stays as it is without corroboration
     ("t/data/expected.json", None, ""),
     ("t/assets/image.png", None, ""),
@@ -159,6 +204,20 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("testdata/golden.json", None, "support"),
     ("pkg/parser/testdata/valid/input.go", None, "support"),
     ("src/__fixtures__/x.ts", None, "support"),
+    # jscodeshift stores codemod input/expected output beside the source tree.
+    ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", None, "support"),
+    ("__testfixtures__/default-import.output.tsx", None, "support"),
+    ("src/transforms/__testfixtures__/nested/input.js", None, "support"),
+    ("src\\transforms\\__testfixtures__\\input.js", None, "support"),
+    ("src/transforms/__testfixtures__/transform.test.ts", None, "test"),
+    ("src/testfixtures/transform.ts", None, ""),
+    ("src/__testfixtures__extra/transform.ts", None, ""),
+    ("src/transforms/__testfixtures__.ts", None, ""),
+    # Semgrep reads a repository's rules from .semgrep/; source files there are
+    # the targets `semgrep --test` checks each rule against.
+    (".semgrep/authz.py", None, "support"),
+    ("tools/.semgrep/rules/no-eval.ts", None, "support"),
+    ("semgrep/authz.py", None, ""),
     # a test-shaped filename still wins over the directory
     ("testdata/build_test.go", None, "test"),
     # and the same finding's third path stays production code on purpose: bare
@@ -379,6 +438,16 @@ def test_a_test_helper_directory_that_is_a_package_root_stays_production() -> No
     assert is_test_support_path("testdata/mod/x.go", package_root=lambda _d: True)
 
 
+def test_a_published_tests_crate_stays_production() -> None:
+    """A published crate whose name starts with tests stays production."""
+    published_roots = {"tests-published"}.__contains__
+    assert not is_test_related_path("tests-published/src/lib.rs", package_root=published_roots)
+    assert not is_test_path("tests-published/src/lib.rs", package_root=published_roots)
+    assert is_test_path("tests-published/tests/macros.rs", package_root=published_roots)
+    assert is_test_path("tests-build/src/lib.rs")
+    assert is_test_path("tests-integration/src/lib.rs")
+
+
 @pytest.mark.parametrize("path", ["", ".", "/"])
 def test_degenerate_paths_are_not_tests(path: str) -> None:
     assert not is_test_related_path(path)
@@ -391,6 +460,8 @@ def test_degenerate_paths_are_not_tests(path: str) -> None:
         ("src/__mocks__/api.ts", True),
         ("packages/web/src/components/tests/tests-view.tsx", False),
         ("pkg/src/tests/helpers.py", True),
+        ("app/api/email/[id]/test/route.ts", False),
+        ("app/test/helpers.ts", True),
         ("pkg/tests/helpers/db.py", True),
         ("packages/core/src/pkg/core/test_selection.py", False),
         ("src/bot.test-harness.ts", False),
@@ -623,3 +694,24 @@ def test_dotnet_test_project_classifies_csharp_files(
     got_without = "support" if is_test_support_path(path) else got_without
     assert got_without == expected_without
 
+
+
+@pytest.mark.parametrize(
+    ("path", "language"),
+    [
+        ("tests/test_app.py", "python"),
+        ("src/conftest.py", "python"),
+        ("src/app/__tests__/view.test.tsx", "typescript"),
+        ("src/Foo.Tests/BarTests.cs", "csharp"),
+        ("lib/app.rb", None),
+    ],
+)
+def test_the_memoized_answer_is_the_classification(path: str, language: str | None) -> None:
+    from repowise.core import test_paths
+
+    expected = test_paths._classify_with_context(path, language)
+    test_paths._classify_without_context.cache_clear()
+    assert test_paths._classify(path, language) == expected
+    # A second ask is served from the cache and still agrees.
+    assert test_paths._classify(path, language) == expected
+    assert test_paths._classify_without_context.cache_info().hits >= 1

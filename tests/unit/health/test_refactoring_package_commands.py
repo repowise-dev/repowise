@@ -16,6 +16,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 from repowise.core.analysis.health.refactoring.serving import validation_from_profile
 from repowise.core.analysis.test_reachability import ReachedBy
 from repowise.core.ingestion.package_roots import scan_package_manifests
+from repowise.core.test_runners import packages
 from tests.unit.health.test_recommendations import _plan
 
 
@@ -228,7 +229,7 @@ def test_args_sharing_a_flag_merge_their_values(monkeypatch, tmp_path: Path) -> 
         # A runner sees the whole id, so it can name the single test.
         return "dotnet test t.csproj", f"--filter={test.rsplit('::', 1)[-1]}"
 
-    monkeypatch.setattr(commands, "_RUNNERS", (((".cs",), per_test),))
+    monkeypatch.setattr(packages, "_RUNNERS", (((".cs",), per_test),))
     tests = ["t/CartTests.cs::Shop.CartTests.Total", "t/CartTests.cs::Shop.CartTests.Empty"]
     runs = commands.runs_for_tests(tmp_path, {}, tests)
     assert commands_for_tests(tests, runs=runs) == [

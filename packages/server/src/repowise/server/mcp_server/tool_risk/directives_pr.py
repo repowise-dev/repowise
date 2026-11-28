@@ -18,6 +18,8 @@ from repowise.server.mcp_server._test_selection import APART_KEYS, apart_sentenc
 
 #: :data:`APART_KEYS` as the directive names them.
 APART_FIELDS = tuple(f"tests_{key}" for key in APART_KEYS)
+#: Selected tests that run with every subset, counted apart from ``tests_to_run``.
+ALWAYS_RUN_FIELD = "tests_always_run_total"
 
 _WORKSPACE_FAMILIES = (
     "will_break_consumers",
@@ -135,6 +137,8 @@ def tests_summary(
     """Summary sentences for the run list and, on request, the typed recommendations."""
     suffix = f" {run_total} test(s) to run, {basis}." if run_total else ""
     suffix += apart_sentence(*(tests_fields.get(k, 0) for k in APART_FIELDS), APART_FIELDS)
+    if always := tests_fields.get(ALWAYS_RUN_FIELD):
+        suffix += f" {always} more run with every subset, not listed ({ALWAYS_RUN_FIELD})."
     if tests_fields.get("tests_run_all"):
         suffix += " Every test must run (tests_run_all_reasons)."
     recommendations_total = len(test_impact.get("recommendations") or [])
@@ -198,7 +202,15 @@ def missing_tests(
             if path and not (exclude_spec and is_excluded(path, exclude_spec))
         }
         population = [path for path in changed_files if path in gap_paths]
-        summary = f"Showing {len(population[:3])} of {len(population)} changed-file test gap(s)."
+        # Measured coverage first: "0 gaps" beside files without measured tests
+        # read as a contradiction when the gap count led.
+        measured = coverage.get("changed_files_with_measured_tests", 0)
+        changed = coverage.get("changed_files_total", len(changed_files))
+        shown = ", showing 3" if len(population) > 3 else ""
+        summary = (
+            f"Measured coverage: {measured} of {changed} changed file(s), "
+            f"{len(population)} test gap(s){shown}."
+        )
     elif coverage.get("reason") == "no_per_test_map_aggregate_available":
         summary = (
             "No per-test coverage map; aggregate line coverage is available, but it "

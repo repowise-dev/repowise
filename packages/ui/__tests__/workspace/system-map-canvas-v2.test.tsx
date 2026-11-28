@@ -214,8 +214,9 @@ describe("aggregate facts", () => {
   });
 
   it("marks health exceptions and keeps healthy quiet", () => {
-    expect(healthSummaryText(healthCounts([9.5, 9.1]))).toBe("All healthy");
-    expect(healthSummaryText(healthCounts([9.5, 2, 5, 6]))).toBe("1 Alert, 2 Warning");
+    expect(healthSummaryText(healthCounts([9.5, 7.7]))).toBe("All Good or better");
+    expect(healthSummaryText(healthCounts([9.5, 2, 5, 6]))).toBe("1 At risk, 1 Needs work, 1 Fair");
+    expect(healthSummaryText(healthCounts([7.7, null]))).toBe("1 Good or better, 1 unscored");
     expect(healthSummaryText(healthCounts([null]))).toBe("No health scores");
   });
 
@@ -249,7 +250,7 @@ describe("cards and rail", () => {
     expect(screen.getByText("Storefront")).toBeInTheDocument();
     expect(screen.getByText("tag: storefront")).toBeInTheDocument();
     expect(screen.getByText(/2 services · 2 repos/)).toBeInTheDocument();
-    expect(screen.getByText("Alert")).toBeInTheDocument();
+    expect(screen.getByText("At risk")).toBeInTheDocument();
     expect(screen.getByText(/in 0 · out 3/)).toBeInTheDocument();
     expect(screen.getByText("Open ›")).toBeInTheDocument();
     // The band joining the two groups carries the count the card states.

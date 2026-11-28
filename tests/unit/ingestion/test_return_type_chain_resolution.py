@@ -216,7 +216,9 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
     assert (
-        frozenset({"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"})
+        frozenset(
+            {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "typescript"}
+        )
         == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
     )
 
@@ -240,6 +242,53 @@ def test_module_level_chain_keeps_structural_receiver(tmp_path: Path) -> None:
 
     assert result[0].caller_id == "example.ts::__module__"
     assert result[0].callee_id.endswith("::Product::run")
+
+
+def _python_chain_edges(tmp_path: Path, use_source: str) -> set[tuple[int, str]]:
+    (tmp_path / "tools").mkdir()
+    (tmp_path / "app").mkdir()
+    parsed = {}
+    parsed.update(
+        _parse(
+            tmp_path,
+            "tools/confirm.py",
+            "python",
+            "def resolve(key):\n    return key\n\n\nclass Job:\n    def start(self):\n        pass\n",
+        )
+    )
+    parsed.update(_parse(tmp_path, "app/run.py", "python", use_source))
+    imports = {"tools/confirm.py": set(), "app/run.py": {"tools/confirm.py"}}
+    resolver = CallResolver(parsed, imports, repo_path=str(tmp_path))
+    calls = parsed["app/run.py"].calls
+    return {(e.line, e.callee_id) for e in resolver.resolve_file("app/run.py", calls)}
+
+
+def test_python_chain_on_a_call_result_never_binds_a_module_function(tmp_path: Path) -> None:
+    edges = _python_chain_edges(
+        tmp_path,
+        "import json\nfrom pathlib import Path\n"
+        "root = Path(__file__).resolve()\n"
+        "data = json.loads('1').resolve()\n"
+        "name = str(root).resolve()\n",
+    )
+
+    assert edges == set()
+
+
+def test_python_chain_keeps_a_bare_name_method(tmp_path: Path) -> None:
+    edges = _python_chain_edges(tmp_path, "def make(x):\n    return x\n\nmake(1).start()\n")
+
+    assert edges == {(4, "app/run.py::make"), (4, "tools/confirm.py::Job::start")}
+
+
+def test_python_chain_on_a_repo_function_may_reach_a_module_function(tmp_path: Path) -> None:
+    # A lazy module accessor hands back a module, whose functions are its attributes.
+    edges = _python_chain_edges(
+        tmp_path,
+        "def _lazy():\n    from tools import confirm\n    return confirm\n\n_lazy().resolve(1)\n",
+    )
+
+    assert (5, "tools/confirm.py::resolve") in edges
 
 
 def _java_chain_call(parsed: dict[str, ParsedFile], path: str, outer: str):
@@ -415,8 +464,61 @@ def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Pat
         "cmd/run.go", [call]
     )
 
+    # Without the lane only the inner call is known: a repo function, which may
+    # hand back a package, so the bare name stays.
     assert [edge.callee_id for edge in before] == ["logging/log.go::Err"]
     assert after == []
+
+
+_GO_ENGINE = (
+    'package web\n\nimport "net/http"\n\ntype Engine struct{}\n\n'
+    "func (e *Engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {}\n"
+)
+
+
+def _go_web_chain(tmp_path: Path, caller: str, outer: str) -> list[str]:
+    """Callee ids of the chained call *outer* in ``web/use.go``, one package with ``Engine``."""
+    (tmp_path / "web").mkdir(exist_ok=True)
+    parsed = {}
+    parsed.update(_parse(tmp_path, "web/engine.go", "go", _GO_ENGINE))
+    parsed.update(_parse(tmp_path, "web/use.go", "go", caller))
+    call = next(c for c in parsed["web/use.go"].calls if c.target_name == outer and c.receiver_call)
+    resolver = CallResolver(parsed, {}, repo_path=str(tmp_path))
+    return [edge.callee_id for edge in resolver.resolve_file("web/use.go", [call])]
+
+
+def test_go_chain_on_a_library_call_is_not_a_repo_method(tmp_path: Path) -> None:
+    """``http.FileServer(fs).ServeHTTP(w, r)`` is the library handler's method, not the
+    package's one ``ServeHTTP``: a chain on a library call keeps no bare-name edge."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "func serve(fs http.FileSystem, w http.ResponseWriter, r *http.Request) {\n"
+        "\thttp.FileServer(fs).ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
+
+
+def test_go_chain_on_a_repo_function_value_keeps_the_bare_name(tmp_path: Path) -> None:
+    """``engine()`` calls a function value the package declares, so its result may be the
+    package's ``Engine`` and the bare name stays (the lane cannot type a variable)."""
+    caller = (
+        'package web\n\nimport (\n\t"net/http"\n\t"sync"\n)\n\n'
+        "var engine = sync.OnceValue(func() *Engine { return &Engine{} })\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\tengine().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == ["web/engine.go::Engine::ServeHTTP"]
+
+
+def test_go_chain_on_a_variable_holding_a_library_function_is_not_a_repo_method(
+    tmp_path: Path,
+) -> None:
+    """``var h = http.NotFoundHandler``: ``h()`` returns the library's handler."""
+    caller = (
+        'package web\n\nimport "net/http"\n\n'
+        "var h = http.NotFoundHandler\n\n"
+        "func serve(w http.ResponseWriter, r *http.Request) {\n\th().ServeHTTP(w, r)\n}\n"
+    )
+    assert _go_web_chain(tmp_path, caller, "ServeHTTP") == []
 
 
 def test_go_chain_on_a_repository_return_type_binds_its_method(tmp_path: Path) -> None:
@@ -1293,3 +1395,109 @@ def test_dart_unprefixed_named_constructor_and_prefixed_plain_one_still_bind(
     edges = _dart_field_edges(tmp_path, "Repo.fromJson(1);\np.Repo();", _DART_PREFIXED)
 
     assert (2, "repo.dart::Repo", "module_alias") in edges
+
+
+def _ts_js_edges(tmp_path: Path, path: str, language: str, source: str) -> set[tuple[str, str]]:
+    parsed = _parse(tmp_path, path, language, source)
+    resolver = CallResolver(parsed, {path: set()})
+    return {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id.rpartition("::")[2])
+        for rc in resolver.resolve_file(path, parsed[path].calls)
+    }
+
+
+@pytest.mark.parametrize(("path", "language"), [("q.ts", "typescript"), ("q.js", "javascript")])
+def test_ts_js_chained_call_on_an_untyped_result_binds_no_repo_method(
+    tmp_path: Path, path: str, language: str
+) -> None:
+    """``db.selectFrom(t).execute()`` on a library builder is not the repo's one ``execute``."""
+    source = (
+        "class Runner {\n  execute(job) { return job; }\n}\n"
+        "function load(db) {\n  return db.selectFrom('t').where('a', '=', 1).execute();\n}\n"
+        "function direct(r) {\n  return run(r);\n}\n"
+        "function run(x) { return x; }\n"
+    )
+    calls = _parse(tmp_path, path, language, source)[path].calls
+    assert next(c for c in calls if c.target_name == "execute").receiver_call is not None
+
+    edges = _ts_js_edges(tmp_path, path, language, source)
+
+    assert ("load", "execute") not in edges
+    assert ("direct", "run") in edges
+
+
+def test_ts_chained_call_on_a_typed_result_still_binds(tmp_path: Path) -> None:
+    source = (
+        "class Runner {\n  execute(job: string) { return job; }\n}\n"
+        "function make(): Runner { return new Runner(); }\n"
+        "function load() {\n  return make().execute('x');\n}\n"
+    )
+    assert ("load", "execute") in _ts_js_edges(tmp_path, "q.ts", "typescript", source)
+
+
+def test_repeated_method_in_call_chain_resolves_correctly(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } void close() {} }\n"
+        "class C { B tag(int a) { return null; } void close() {} }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1, 2).tag(1).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_pairs = [(e.caller_id, e.callee_id) for e in edges]
+    assert ("Z.java::Z::go", "Z.java::C::tag") in resolved_pairs
+    assert ("Z.java::Z::go", "Z.java::B::close") in resolved_pairs
+
+
+def test_two_chains_on_one_line_resolve_independently(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } void close() {} }\n"
+        "class C { B tag(int a) { return null; } void close() {} }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1, 2).close(); head().tag(1, 2).tag(1).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_pairs = [(e.caller_id, e.callee_id) for e in edges]
+    assert ("Z.java::Z::go", "Z.java::C::close") in resolved_pairs
+    assert ("Z.java::Z::go", "Z.java::B::close") in resolved_pairs
+
+
+def test_later_chain_on_same_line_does_not_pollute_earlier_chain(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } void close() {} }\n"
+        "class C { B tag(int a) { return null; } void close() {} }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1, 2).tag(1).close(); head().tag(1, 2).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_pairs = [(e.caller_id, e.callee_id) for e in edges]
+    assert ("Z.java::Z::go", "Z.java::C::close") in resolved_pairs
+    assert ("Z.java::Z::go", "Z.java::B::close") in resolved_pairs
+
+
+def test_single_candidate_with_different_argument_count_is_not_matched(tmp_path: Path) -> None:
+    src = (
+        "class B { C tag(int a, int b) { return null; } }\n"
+        "class Z {\n"
+        "    B head() { return null; }\n"
+        "    void go() { head().tag(1).close(); }\n"
+        "}\n"
+    )
+    pf = _parse(tmp_path, "Z.java", "java", src)
+    resolver = CallResolver(pf, {})
+    edges = resolver.resolve_file("Z.java", pf["Z.java"].calls)
+    resolved_callees = [e.callee_id for e in edges]
+    assert "Z.java::B::tag" not in resolved_callees
+
+

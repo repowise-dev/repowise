@@ -15,6 +15,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from repowise.core.agent_prompts import Flavor
 from repowise.core.workspace import reads
 from repowise.core.workspace.registry import repo_db_path
 from repowise.core.workspace.repo_stats import member_stats, query_repo_stats
@@ -53,6 +54,8 @@ from repowise.server.schemas.actions import (
     WorkspaceActionsResponse,
     WorkspaceCrossRepoAction,
     WorkspaceRepoActions,
+    WorkspaceSetupRepo,
+    WorkspaceSetupResponse,
 )
 from repowise.server.schemas.workspace import WorkspaceLinksBetweenResponse
 
@@ -700,6 +703,88 @@ async def get_workspace_actions(
                 )
             )
     return WorkspaceActionsResponse(repos=repos, cross_repo=cross_repo)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/workspace/setup
+# ---------------------------------------------------------------------------
+
+
+@router.get("/setup", response_model=WorkspaceSetupResponse)
+async def get_workspace_setup(
+    request: Request,
+    flavor: Flavor = Query("generic"),
+    ws_config=Depends(get_workspace_config),
+) -> WorkspaceSetupResponse:
+    """Setup across the workspace: one row per member, from the same steps its
+    own Setup page and Do next read, plus the workspace form of the agent pass."""
+    from repowise.core.agent_prompts import render_finish_setup_workspace
+
+    _require_workspace(ws_config)
+    ws_root = getattr(request.app.state, "workspace_root", None)
+    ws_root_path = Path(ws_root) if ws_root else None
+    all_stats = (
+        await asyncio.to_thread(_member_stats, ws_config, ws_root_path) if ws_root_path else {}
+    )
+    repos = [
+        await _member_setup(request, r, all_stats.get(r.alias, {}).get("repo_id"))
+        for r in ws_config.repos
+    ]
+    waiting = [r.path for r in repos if r.open > 0]
+    return WorkspaceSetupResponse(
+        repos=repos,
+        essentials_done=sum(r.essentials_done for r in repos),
+        open=sum(r.open for r in repos),
+        offer="finish_setup" if any(r.offer for r in repos) else None,
+        prompt=render_finish_setup_workspace(waiting, flavor) if waiting else None,
+    )
+
+
+async def _member_setup(request: Request, member, repo_id: str | None) -> WorkspaceSetupRepo:
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.core.persistence.database import get_session
+    from repowise.server.services import setup_status
+
+    base = {"alias": member.alias, "path": member.path, "repo_id": repo_id}
+    if not repo_id:
+        return WorkspaceSetupRepo(**base, status="not_indexed", reason="Not indexed yet.")
+    try:
+        async with get_session(resolve_session_factory(request.app.state, repo_id)) as session:
+            repo = await crud.get_repository(session, repo_id)
+            facts = await setup_status.setup_facts(session, repo) if repo is not None else None
+            if facts is None:
+                return WorkspaceSetupRepo(
+                    **base, status="unavailable", reason="Its checkout is not on this machine."
+                )
+            index = await setup_status.index_section(session, repo)
+            view = await load_actions_view(session, repo_id, setup=facts)
+    except Exception as exc:  # one member must not cost the page
+        _log.warning("workspace setup: %s unavailable: %s", member.alias, exc)
+        return WorkspaceSetupRepo(
+            **base, status="unavailable", reason="Could not read this repository's index."
+        )
+    block = view.get("setup") or {}
+    calls = facts.agent_calls
+    return WorkspaceSetupRepo(
+        **base,
+        status="available",
+        index_state=index["state"],
+        agent_calls=calls,
+        first_call_at=facts.first_call_at,
+        sync=facts.sync_hook,
+        coverage=_evidence_state(facts.coverage_ingested, facts.coverage_reports),
+        evidence=_evidence_state(facts.runtime_stored, facts.evidence_files),
+        open=int(block.get("open") or 0),
+        offer=block.get("offer"),
+        essentials_done=index["state"] == "up_to_date" and bool(calls) and facts.sync_hook is True,
+    )
+
+
+def _evidence_state(stored: bool | None, found: tuple) -> str | None:
+    if stored is None:
+        return None
+    return "on" if stored else "found" if found else "none"
 
 
 # ---------------------------------------------------------------------------

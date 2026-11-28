@@ -20,7 +20,7 @@ def _print_repo_result(result: Any) -> None:
     copies of this is what let the deferral line drift into saying only that
     something else was running, without saying for how long.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     if result.error:
         console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
@@ -31,11 +31,7 @@ def _print_repo_result(result: Any) -> None:
         # a normal overlap apart from an update that has stopped progressing.
         age = result.lock_age_seconds
         held = format_lock_age(age)
-        note = (
-            ""
-            if age is None or age <= UPDATE_LOCK_SUSPECT_AFTER_SECONDS
-            else " That is long enough to be worth checking on."
-        )
+        note = " That is long enough to be worth checking on." if lock_is_suspect(age) else ""
         console.print(
             f"    [yellow]↻ {result.alias}: another update has held the lock "
             f"{held}; this commit was queued for it to pick up.{note}[/yellow]"
@@ -267,17 +263,28 @@ def _repo_staleness(
         indexed and not is_stale and include_working_tree and has_working_tree_changes(abs_path)
     )
     is_stale = is_stale or dirty
-    if not indexed:
-        status = "[dim]not indexed[/dim]"
-    elif config_stale and not behind:
-        status = "[yellow]config changed[/yellow]"
-    elif dirty:
-        status = "[yellow]uncommitted changes[/yellow]"
-    elif is_stale:
-        status = f"[yellow]{behind} new commit(s)[/yellow]"
-    else:
-        status = "[green]up to date[/green]"
+    status = _staleness_label(
+        indexed=indexed, config_stale=config_stale, dirty=dirty, behind=behind, is_stale=is_stale
+    )
     return _RepoStaleness(indexed, is_stale, head, status, repo_state)
+
+
+def _staleness_label(
+    *, indexed: bool, config_stale: bool, dirty: bool, behind: int, is_stale: bool
+) -> str:
+    """The scan line's status for one repo, most specific reason first."""
+    if not indexed:
+        return "[dim]not indexed[/dim]"
+    if config_stale and not behind:
+        return "[yellow]config changed[/yellow]"
+    if dirty:
+        return "[yellow]uncommitted changes[/yellow]"
+    if behind:
+        return f"[yellow]{behind} new commit(s)[/yellow]"
+    if is_stale:
+        # HEAD unmoved: a moved version stamp or a stale page owes the work.
+        return "[yellow]stale[/yellow]"
+    return "[green]up to date[/green]"
 
 
 def _wants_docs_update(
@@ -701,11 +708,11 @@ def _deferred_tail(core_results: list[Any]) -> str:
     The oldest lock is the run most likely to have stopped progressing; "still
     running" with no age is what leaves a wedged update looking healthy.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
     oldest = max(ages) if ages else None
-    if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+    if lock_is_suspect(oldest):
         return (
             f"An update has held the lock {format_lock_age(oldest)}, which is "
             "longer than an update normally takes. Check "

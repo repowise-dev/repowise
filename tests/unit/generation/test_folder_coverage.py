@@ -42,11 +42,18 @@ class _FakeSymbol:
     kind: str = "function"
     visibility: str = "public"
     signature: str = "()"
-    docstring: str | None = None
+    # A docstring past its first sentence, so the symbol has something to add
+    # beyond its file page even with no resolved caller.
+    docstring: str | None = "Do one thing. Then another."
     decorators: list[str] = field(default_factory=list)
     is_async: bool = False
     complexity_estimate: int = 1
     parent_name: str | None = None
+    # A symbol id, language and a non-trivial span, so spotlight floors pass.
+    id: str = ""
+    language: str = "python"
+    start_line: int = 1
+    end_line: int = 10
 
     def __post_init__(self) -> None:
         if not self.qualified_name:

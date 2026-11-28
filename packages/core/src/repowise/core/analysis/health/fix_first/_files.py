@@ -102,8 +102,9 @@ class _Files:
     def gain(self, finding: Any) -> float:
         """What fixing *finding* recovers: its file rescored without it.
 
-        Over the file's shown findings, so a hidden or triaged marker sharing
-        its category is not counted; the error is that marker's slice.
+        Over every finding the file's score counted, hidden types included:
+        a hidden marker sharing the fix's category saturates it, so leaving
+        it out would overstate the gain.
         """
         path = field(finding, "file_path")
         return removal_gain(self.findings.get(path, [finding]), [(finding, 1.0)])
@@ -327,6 +328,7 @@ def _finish(
     may_lead: bool = True,
     low: str | None = None,
     cold_value: int | None = None,
+    measured_share: float | None = None,
 ) -> _Unit:
     confidence = _one_of(confidence, LEVEL_RANK, "low")
     effort = _one_of(effort, FIX_EFFORTS, "M")
@@ -352,7 +354,17 @@ def _finish(
         )
 
     return _Unit(
-        item_id, kind, unit_tier, value, worth, confidence, effort, improves, write, may_lead
+        item_id,
+        kind,
+        unit_tier,
+        value,
+        worth,
+        confidence,
+        effort,
+        improves,
+        write,
+        may_lead,
+        measured_share,
     )
 
 

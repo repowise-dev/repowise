@@ -44,11 +44,11 @@ async def test_get_dead_code_summary_says_what_it_counts(setup_mcp):
 
     # A filter that keeps nothing: the totals still count every open finding,
     # and the summary names the filters that emptied the tiers.
-    result = await get_dead_code(directory="nowhere", min_confidence="high")
+    result = await get_dead_code(directory="src/db", min_confidence="high")
     summary = result["summary"]
     assert summary["total_findings"] == 3
     assert summary["filtered_findings"] == 0
-    assert summary["filters"] == {"directory": "nowhere", "min_confidence": 0.7}
+    assert summary["filters"] == {"directory": "src/db", "min_confidence": 0.7}
     assert summary["scope"] == plain["scope"]
 
 
@@ -178,3 +178,147 @@ async def test_the_default_floor_reads_the_cut_confidence(setup_mcp, monkeypatch
     assert result["summary"]["total_findings"] == 3
     low = await get_dead_code(min_confidence="low")
     assert [f["confidence"] for f in low["tiers"]["low"]["findings"]] == [0.27, 0.21, 0.15]
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_names_a_directory_it_does_not_know(setup_mcp):
+    """A directory with no indexed file is an error, never an empty clean list."""
+    from repowise.server.mcp_server import get_dead_code
+
+    missing = await get_dead_code(directory="packages/does-not-exist")
+    assert "summary" not in missing
+    assert "packages/does-not-exist" in missing["error"]
+
+    # An indexed directory with nothing dead, and an unreachable file's
+    # directory that has no graph node, both still answer.
+    assert (await get_dead_code(directory="tests"))["summary"]["filtered_findings"] == 0
+    assert (await get_dead_code(directory="src/legacy"))["summary"]["filtered_findings"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_headline_counts_shown_and_withheld(setup_mcp):
+    """The first line says how many findings are shown and how many were held back."""
+    from repowise.server.mcp_server import get_dead_code
+
+    result = await get_dead_code()
+    assert next(iter(result)) == "headline"
+    assert result["headline"].startswith("3 shown")
+
+    one = await get_dead_code(limit=1, tier="high")
+    assert one["headline"].startswith("1 shown of 2 matching")
+
+
+def test_dead_code_headline_names_withheld_kinds():
+    from repowise.server.mcp_server.tool_dead_code import _headline
+
+    summary = {
+        "withheld_types": {"unused_internal": {"count": 2, "status": "hidden"}},
+    }
+    tiers = {name: {"count": 0, "findings": []} for name in ("high", "medium", "low")}
+    assert _headline(summary, tiers) == (
+        "0 shown, 2 withheld (unused_internal; see summary.withheld_types)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_dead_code_lists_no_private_symbols_by_default(setup_mcp):
+    """``unused_internal`` measured almost all false: never listed unless asked."""
+    from repowise.server.mcp_server import get_dead_code
+
+    result = await get_dead_code()
+    kinds = {f["kind"] for t in result["tiers"].values() for f in t["findings"]}
+    assert "unused_internal" not in kinds
+
+
+def test_shared_basis_note_is_said_once():
+    from repowise.server.mcp_server.tool_dead_code import _attach_resolution_basis
+
+    note = "Call sites the resolver could not bind are not counted."
+    summary: dict = {}
+    _attach_resolution_basis(
+        summary,
+        [{"language": "python", "note": note}, {"language": "typescript", "note": note}],
+    )
+    assert summary["call_resolution_note"] == note
+    assert summary["call_resolution_basis"] == [{"language": "python"}, {"language": "typescript"}]
+
+
+@pytest.mark.asyncio
+async def test_list_rows_leave_detail_to_the_lookup_by_id(setup_mcp):
+    from repowise.core.analysis.dead_code.serving import DETAIL_FIELDS
+    from repowise.server.mcp_server import get_dead_code
+
+    listed = await get_dead_code()
+    rows = [f for t in listed["tiers"].values() for f in t["findings"]]
+    assert rows
+    for row in rows:
+        assert not set(DETAIL_FIELDS) & set(row), row
+        assert {"id", "kind", "file_path", "confidence", "lines", "safe_to_delete"} <= set(row)
+
+    export = next(r for r in rows if r["symbol_name"] == "deprecated_login")
+    found = await get_dead_code(finding_id=export["id"])
+    assert found["resolved"] is True
+    detail = found["finding"]
+    assert detail["status"] == "open"
+    assert detail["symbol_kind"] == "function"
+    assert detail["age_days"] == 120
+    assert detail["repository"]
+
+
+@pytest.mark.asyncio
+async def test_default_page_is_ten_per_tier(setup_mcp, session):
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DeadCodeFinding, Repository
+    from repowise.server.mcp_server import get_dead_code
+    from tests.unit.server.mcp.conftest import _NOW
+
+    rid = (await session.execute(select(Repository.id))).scalars().first()
+    for n in range(12):
+        session.add(
+            DeadCodeFinding(
+                id=f"many{n}",
+                repository_id=rid,
+                kind="unused_export",
+                file_path="src/db/models.py",
+                symbol_name=f"Unused{n}",
+                symbol_kind="class",
+                confidence=0.5,
+                reason="Exported but no external callers found",
+                lines=5,
+                safe_to_delete=False,
+                status="open",
+                analyzed_at=_NOW,
+            )
+        )
+    await session.commit()
+
+    medium = (await get_dead_code())["tiers"]["medium"]
+    assert medium["count"] == 13
+    assert len(medium["findings"]) == 10
+    assert len((await get_dead_code(limit=20))["tiers"]["medium"]["findings"]) == 13
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["resolved", "false_positive", "acknowledged"])
+async def test_a_triaged_finding_still_resolves_by_id(setup_mcp, session, status):
+    from repowise.core.persistence.crud.analysis.dead_code import update_dead_code_status
+    from repowise.server.mcp_server import get_dead_code
+
+    listed = await get_dead_code()
+    row = next(
+        f for t in listed["tiers"].values() for f in t["findings"] if f["symbol_name"] == "OldModel"
+    )
+    await update_dead_code_status(session, "dc3", status, note="kept for the migration")
+    await session.commit()
+
+    assert "OldModel" not in {
+        f.get("symbol_name")
+        for t in (await get_dead_code())["tiers"].values()
+        for f in t["findings"]
+    }
+    for asked in (row["id"], "dc3"):
+        found = await get_dead_code(finding_id=asked)
+        assert found["resolved"] is True, asked
+        assert found["finding"]["status"] == status
+        assert found["finding"]["note"] == "kept for the migration"

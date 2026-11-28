@@ -20,6 +20,7 @@ import type { ReaderPersona } from "@repowise-dev/ui/docs/reader-persona";
 import type { DocPage, DocPageSummary } from "@repowise-dev/types/docs";
 import type { PageResponse, PageSummary } from "@/lib/api/types";
 import { useTranslations } from "next-intl";
+import { useDocsReaderCopy } from "./use-docs-copy";
 
 function PercentileBar({ value, label }: { value: number; label: string }) {
   const t = useTranslations("docs");
@@ -334,6 +335,7 @@ export function DocsViewer({
   missingPageId,
 }: DocsViewerProps) {
   const t = useTranslations("docs");
+  const readerCopy = useDocsReaderCopy();
   const buildPageHref = useCallback(
     (pageId: string) => docsPagePath(`/repos/${repoId}`, pageId),
     [repoId],
@@ -380,6 +382,7 @@ export function DocsViewer({
       buildFileHref={buildFileHref}
       missingPageId={missingPageId}
       LinkComponent={Link}
+      copy={readerCopy}
       // The page's own model action sits in its metadata row, on the page
       // types a model writes. Not passed as `upgradeSlot` as well: one action
       // per page, not a second copy at the foot.

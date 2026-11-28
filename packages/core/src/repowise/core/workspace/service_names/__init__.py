@@ -47,6 +47,7 @@ from . import (
     spring,
     spring_base_path,
     spring_gateway,
+    terraform,
     yarp,
     yarp_forwarder,
 )
@@ -65,6 +66,7 @@ SOURCES: tuple[ServiceNameSource, ...] = (
     spring.SOURCE,
     spring_base_path.SOURCE,
     spring_gateway.SOURCE,
+    terraform.SOURCE,
     yarp.SOURCE,
     yarp_forwarder.SOURCE,
 )
@@ -93,7 +95,7 @@ _PRUNE = PRUNED_DIRS | {
 # compose file under ``docs/``, ``demo/`` or ``e2e-tests/`` describes a stack
 # that is not the deployed one. ``_PRUNE`` stays as the walk's prune; it also
 # skips nested ``samples/`` that this first-segment rule does not see.
-_NOT_DEPLOYED: frozenset[CodeOrigin] = frozenset({"test", "docs_example", "vendored", "generated"})
+_NOT_DEPLOYED: frozenset[CodeOrigin] = frozenset({"test", "docs_example", "vendored", "generated", "data"})
 _MAX_BYTES = 512_000
 
 

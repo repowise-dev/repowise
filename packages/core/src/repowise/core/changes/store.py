@@ -11,8 +11,9 @@ from typing import Any
 
 import structlog
 
+from .category import classify_change
 from .reconstruct import ReconstructedChange, reconstruct_changes
-from .source import ChangeMetadata, resolve_source
+from .source import ChangeMetadata, change_metadata_sources, resolve_source
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,14 @@ def change_provenance(
     else:
         label = UNKNOWN
     return label, agent, known
+
+
+def stored_files(files_json: str | None) -> list[tuple[str, int, int]]:
+    """A row's ``files_json`` as ``(path, added, deleted)``."""
+    return [
+        (f.get("path", ""), f.get("added") or 0, f.get("deleted") or 0)
+        for f in json.loads(files_json or "[]")
+    ]
 
 
 def change_row(
@@ -73,7 +82,11 @@ def change_row(
         "files_changed": len(change.files),
         "lines_added": change.lines_added,
         "lines_deleted": change.lines_deleted,
-        "category": change.category,
+        # Labels arrive with the metadata, after reconstruction chose a category.
+        # Read from the files the row keeps, as reconcile_categories reads them.
+        "category": classify_change(
+            change.title, change.files[:MAX_STORED_FILES], meta.labels
+        ).category,
         "provenance": provenance[0] if provenance else None,
         "provenance_agent": provenance[1] if provenance else None,
         "provenance_known": provenance[2] if provenance else None,
@@ -105,32 +118,71 @@ def _read_changes(
             repo.close()
 
 
+async def _read_metadata(
+    repo_path: Path, changes: list[ReconstructedChange]
+) -> tuple[str, Mapping[str, ChangeMetadata]]:
+    """``(source name, metadata)`` from the selected source.
+
+    A failing plugin source falls back to the built-in ``git`` source with a
+    warning, so the changes are still stored and their rows say ``git``.
+    """
+    # A source that cannot be resolved (a misspelt REPOWISE_SEAM_CHANGE_METADATA)
+    # raises here on purpose: SeamRegistry.get never falls back silently.
+    name, source = resolve_source()
+    if not changes:
+        return name, {}
+    try:
+        return name, await asyncio.to_thread(source.metadata, repo_path, changes)
+    except Exception as exc:
+        if name == "git":
+            raise
+        logger.warning(
+            "change_metadata_failed",
+            source=name,
+            fallback="git",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        git = change_metadata_sources.get("git")
+        return "git", await asyncio.to_thread(git.metadata, repo_path, changes)
+
+
 async def refresh_changes(
-    session: Any, repo_id: str, repo_path: Path | str, *, rebuild: bool
+    session: Any,
+    repo_id: str,
+    repo_path: Path | str,
+    *,
+    rebuild: bool,
+    commit_limit: int | None = None,
 ) -> int:
     """Rebuild (full index) or extend (update) the repository's changes.
 
-    The window is the repo's ``commit_limit`` first-parent commits, like the
-    commit table. An update reads only changes after the newest stored one and
+    The window is *commit_limit* first-parent commits, the limit the run's own
+    commit walk used, so it matches the commit table; without one, the repo's
+    configured ``commit_limit``. An update reads only changes after the newest stored one and
     rebuilds when that one is no longer on HEAD's history. Provenance is read
     from the stored commit labels, so it runs after those are written, and is
     left out while attribution is off. Returns how many rows were written;
     failures are logged and leave the table as it was.
     """
     from repowise.core.attribution import attribution_enabled
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
     from repowise.core.persistence.crud import (
         delete_changes,
         get_change_heads,
         get_commit_labels,
         get_newest_change_head,
+        link_unlinked_changes,
         upsert_changes,
     )
     from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
     try:
-        limit = int(load_repo_config(repo_path).get("commit_limit") or _DEFAULT_COMMIT_LIMIT)
+        limit = clamp_commit_limit(
+            commit_limit
+            if commit_limit is not None
+            else load_repo_config(repo_path).get("commit_limit")
+        )
         since = None if rebuild else await get_newest_change_head(session, repo_id)
         taken = {} if since is None else await get_change_heads(session, repo_id)
         changes = await asyncio.to_thread(_read_changes, repo_path, limit, since, taken)
@@ -146,8 +198,7 @@ async def refresh_changes(
             labels = await get_commit_labels(
                 session, repo_id, [s for c in changes for s in c.commit_shas]
             )
-        source_name, source = resolve_source()
-        metadata = await asyncio.to_thread(source.metadata, repo_path, changes) if changes else {}
+        source_name, metadata = await _read_metadata(repo_path, changes)
         rows = [
             change_row(
                 c,
@@ -161,6 +212,7 @@ async def refresh_changes(
             await delete_changes(session, repo_id)
         if rows:
             await upsert_changes(session, repo_id, rows)
+        await session.run_sync(lambda s: link_unlinked_changes(s.connection(), repo_id))
         return len(rows)
     except Exception as exc:
         logger.warning("changes_refresh_failed", repo_id=repo_id, error=str(exc))
@@ -168,10 +220,10 @@ async def refresh_changes(
 
 
 async def reconcile_categories(session: Any, repo_id: str) -> int:
-    """Re-label commits and changes the current classifier reads differently.
+    """Re-label commits and changes the current classifiers read differently.
 
-    Pure regex over stored subjects and titles, so an update keeps both
-    columns in step with the classifier without a re-index.
+    Pure regex over stored subjects, and over change titles, files and labels,
+    so an update keeps both columns in step without a re-index.
     """
     from sqlalchemy import update
 
@@ -188,8 +240,10 @@ async def reconcile_categories(session: Any, repo_id: str) -> int:
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
     moved = 0
-    for change_id, title, category in changes:
-        label = classify_commit_category(title or "")
+    for change_id, title, category, files_json, labels_json in changes:
+        label = classify_change(
+            title or "", stored_files(files_json), json.loads(labels_json or "null")
+        ).category
         if label != category:
             moved += 1
             await session.execute(
@@ -206,4 +260,5 @@ __all__ = [
     "change_row",
     "reconcile_categories",
     "refresh_changes",
+    "stored_files",
 ]

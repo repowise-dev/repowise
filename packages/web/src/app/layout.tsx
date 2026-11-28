@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 import { NextIntlClientProvider } from "next-intl";
-import { getLocale, getTranslations } from "next-intl/server";
+import { getLocale, getTimeZone, getTranslations } from "next-intl/server";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { Lora } from "next/font/google";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { TooltipProvider } from "@repowise-dev/ui/ui/tooltip";
+import { DisplayTimeZone } from "@repowise-dev/ui/shared/display-time-zone";
 import { ThemeProvider } from "@/components/layout/theme-provider";
 import { ThemedToaster } from "@/components/layout/themed-toaster";
 import { Sidebar } from "@/components/layout/sidebar";
@@ -18,6 +19,8 @@ import { SWRProvider } from "@/components/layout/swr-provider";
 import { PreviewBadgeStrings } from "@/components/layout/preview-badge-strings";
 import { UpgradeBanner } from "@/components/layout/upgrade-banner";
 import { ReleaseMoment } from "@/components/layout/release-moment";
+import { ViewTelemetry } from "@/components/layout/view-telemetry";
+import { TimeZoneSync } from "@/components/layout/time-zone-sync";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -52,6 +55,8 @@ export default async function RootLayout({
   // The locale the request resolved to (cookie `NEXT_LOCALE`, else English).
   // Read here so `<html lang>` and every server-rendered string agree.
   const locale = await getLocale();
+  // The viewer's zone, from the same request config (cookie, else UTC).
+  const timeZone = await getTimeZone();
   const t = await getTranslations("shell");
   // Fetch repos + workspace info server-side for the sidebar.
   //
@@ -97,6 +102,11 @@ export default async function RootLayout({
         <SWRProvider>
         <TooltipProvider delayDuration={300}>
         <PreviewBadgeStrings>
+        {/* Inside the data and theme providers on purpose: a zone change
+            remounts this subtree to redraw every date, and the SWR cache,
+            theme and URL state above it survive. */}
+        <DisplayTimeZone zone={timeZone}>
+          <TimeZoneSync zone={timeZone} />
           <Suspense fallback={<AppShellSkeleton />}>
             <ContextDrawerShell>
               {/* Printed, the shell unclips so a long page (a chat
@@ -132,8 +142,10 @@ export default async function RootLayout({
                 </div>
               </div>
               <CommandPalette repos={repos} workspace={workspace} />
+              <ViewTelemetry />
             </ContextDrawerShell>
           </Suspense>
+        </DisplayTimeZone>
         </PreviewBadgeStrings>
         </TooltipProvider>
         </SWRProvider>

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.graph_view import can_carry_dependency
 from repowise.core.co_change import parse_partners
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GitMetadata, GraphEdge, GraphNode
 
@@ -162,6 +163,8 @@ async def _read_pairs(
                 GraphEdge.repository_id == repo_id,
                 GraphEdge.source_node_id.in_(chunk),
                 GraphEdge.target_node_id.not_like(f"{_EXTERNAL_PREFIX}%"),
+                # A doc naming a file does not tie the two changes together.
+                GraphEdge.edge_type.not_in(DOCUMENTATION_EDGE_TYPES),
             )
         )
         for source, target in result.all():
@@ -194,6 +197,7 @@ async def _read_inbound_links(
                 GraphEdge.repository_id == repo_id,
                 GraphEdge.target_node_id.in_(chunk),
                 GraphEdge.source_node_id.not_like(f"{_EXTERNAL_PREFIX}%"),
+                GraphEdge.edge_type.not_in(DOCUMENTATION_EDGE_TYPES),
                 *not_ours,
             )
         )

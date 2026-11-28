@@ -27,6 +27,7 @@ import {
   planPresentation,
 } from "./presentation";
 import { OpportunityTags } from "./tags";
+import { formatNumber } from "../../lib/format";
 
 /**
  * Action-first rows: what to change, what it buys and what it costs, then the
@@ -172,7 +173,7 @@ const OpportunityRow = memo(function OpportunityRow({
     >
       <div className="flex min-w-0 flex-1 gap-3">
         <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {(opportunity.rank_position + 1).toLocaleString()}
+          {formatNumber(opportunity.rank_position + 1)}
         </span>
         <div className="min-w-0 flex-1">
           <ActionabilityMark state={opportunity.actionability_state} />

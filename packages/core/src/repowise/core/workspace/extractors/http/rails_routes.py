@@ -7,6 +7,7 @@ direct verb helpers (``get``, ``post``, etc.), and ``match ... via:``.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -49,6 +50,18 @@ _MATCH_RE = re.compile(
     r"\bmatch\s+[\"']([^\"']+)[\"'][^\n]*?(?:via:\s*|:via\s*=>\s*)(?:\[([^\]]*)\]|%i\[([^\]]*)\]|:(\w+))"
 )
 _DO_BLOCK_RE = re.compile(r"\bdo(?:\s*\|[^|]*\|)?\s*$")
+_CONCERN_DEF_RE = re.compile(
+    r"\bconcern\s+(?::(\w+)|[\"']([^\"']+)[\"'])\s+do(?:\s*\|[^|]*\|)?\s*$"
+)
+_CONCERNS_CALL_RE = re.compile(
+    r"^\s*concerns?\s+(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|(.+))$"
+)
+_CONCERNS_OPT_RE = re.compile(
+    r"concerns?:\s*(?:%[iw]\[([^\]]*)\]|\[([^\]]*)\]|:(\w+)|[\"']([^\"']+)[\"'])"
+)
+_DRAW_CALL_RE = re.compile(
+    r"^\s*draw\s*(?:\(\s*(?::(\w+)|['\"]([^'\"]+)['\"])\s*\)|(?::(\w+)|['\"]([^'\"]+)['\"]))"
+)
 
 
 @dataclass
@@ -202,12 +215,39 @@ def _expand_actions(
     return out
 
 
+def _parse_concerns(text: str) -> list[str]:
+    m = _CONCERNS_OPT_RE.search(text)
+    if not m:
+        return []
+    raw = next(g for g in m.groups() if g is not None)
+    return re.findall(r"\w+", raw)
+
+
+def _apply_resource_concerns(
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+    res_concerns: list[str],
+    res_names: list[str],
+    stack: list[_Scope],
+    is_singular: bool,
+    ctx: ScanContext,
+) -> list[Contract]:
+    out: list[Contract] = []
+    for name in res_names:
+        c_stack = [*stack, _Scope(kind="resource", resource=name, singular=is_singular)]
+        for c_name in res_concerns:
+            if c_name in concerns:
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, c_stack, c_ctx, concerns))
+    return out
+
+
 def _handle_resources(
     line: str,
     line_no: int,
     push_block: bool,
     stack: list[_Scope],
     ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
 ) -> list[Contract] | None:
     m = _RESOURCES_RE.search(line)
     if not m:
@@ -224,6 +264,9 @@ def _handle_resources(
 
     base = _current_base(stack)
     out = _expand_actions(actions, res_names, base, filter_opts, line_no, ctx)
+    res_concerns = _parse_concerns(rest)
+    if res_concerns:
+        out.extend(_apply_resource_concerns(concerns, res_concerns, res_names, stack, is_singular, ctx))
     if push_block:
         for name in res_names:
             stack.append(_Scope(kind="resource", resource=name, singular=is_singular))
@@ -327,11 +370,12 @@ def _process_statement(
     push_block: bool,
     stack: list[_Scope],
     ctx: ScanContext,
+    concerns: dict[str, list[tuple[int, str]]],
 ) -> list[Contract] | None:
     if _handle_scope(line, push_block, stack):
         return []
 
-    res_contracts = _handle_resources(line, line_no, push_block, stack, ctx)
+    res_contracts = _handle_resources(line, line_no, push_block, stack, ctx, concerns)
     if res_contracts is not None:
         return res_contracts
 
@@ -345,6 +389,165 @@ def _process_statement(
     return _handle_direct_verb(line, line_no, push_block, stack, ctx)
 
 
+def _handle_draw(
+    name: str,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract]:
+    if ctx.repo_root is None:
+        return []
+    norm_name = posixpath.normpath(name)
+    if norm_name.startswith("..") or norm_name.startswith("/"):
+        return []
+    child_rel = posixpath.normpath(f"config/routes/{norm_name}.rb")
+    if not child_rel.startswith("config/routes/"):
+        return []
+    child_file = ctx.repo_root / child_rel
+    if not child_file.is_file():
+        alt_rel = posixpath.normpath(
+            posixpath.join(posixpath.dirname(ctx.rel_path), "routes", f"{norm_name}.rb")
+        )
+        if not alt_rel.startswith("config/routes/"):
+            return []
+        child_file = ctx.repo_root / alt_rel
+        if not child_file.is_file():
+            return []
+        child_rel = alt_rel
+    child_content = child_file.read_text(encoding="utf-8")
+    from ..base import ScanContext as ScanCtx
+
+    child_ctx = ScanCtx(
+        ctx.repo_alias,
+        child_rel,
+        ".rb",
+        child_content,
+        ctx.mounts,
+        ctx.index,
+        ctx.repo_root,
+    )
+    mask = child_ctx._mask()
+    lines = (mask if mask is not None else child_content).splitlines()
+    statements = _read_statements(lines, child_ctx)
+    return _extract_statements(statements, list(stack), child_ctx, concerns)
+
+
+def _collect_concern_body(
+    statements: list[tuple[int, str]],
+    start_idx: int,
+) -> tuple[list[tuple[int, str]], int]:
+    depth = 1
+    body: list[tuple[int, str]] = []
+    idx = start_idx
+    while idx < len(statements):
+        line_no, raw = statements[idx]
+        idx += 1
+        if raw.startswith("end"):
+            depth -= 1
+            if depth == 0:
+                break
+            body.append((line_no, raw))
+            continue
+        line, has_inline_end = _strip_inline_end(raw)
+        had_do = bool(_DO_BLOCK_RE.search(line))
+        if had_do and not has_inline_end:
+            depth += 1
+        elif has_inline_end and not had_do:
+            depth -= 1
+            if depth == 0:
+                break
+        body.append((line_no, raw))
+    return body, idx
+
+
+def _collect_concerns(
+    statements: list[tuple[int, str]],
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+    ctx: ScanContext,
+) -> list[tuple[int, str]]:
+    remaining: list[tuple[int, str]] = []
+    i = 0
+    while i < len(statements):
+        line_no, raw = statements[i]
+        concern_def = _CONCERN_DEF_RE.search(raw)
+        if concern_def:
+            name = next(g for g in concern_def.groups() if g is not None)
+            body, i = _collect_concern_body(statements, i + 1)
+            concerns[name] = (ctx, body)
+        else:
+            remaining.append((line_no, raw))
+            i += 1
+    return remaining
+
+
+def _handle_draw_or_concerns(
+    line: str,
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract] | None:
+    draw_match = _DRAW_CALL_RE.search(line)
+    if draw_match:
+        d_name = next(g for g in draw_match.groups() if g is not None)
+        return _handle_draw(d_name, stack, ctx, concerns)
+    concerns_call = _CONCERNS_CALL_RE.search(line)
+    if concerns_call:
+        raw_c = next(g for g in concerns_call.groups() if g is not None)
+        out: list[Contract] = []
+        for c_name in re.findall(r"\w+", raw_c):
+            if c_name in concerns:
+                c_ctx, c_stmts = concerns[c_name]
+                out.extend(_extract_statements(c_stmts, list(stack), c_ctx, concerns))
+        return out
+    return None
+
+
+def _handle_statement_end(raw: str, stack: list[_Scope]) -> bool:
+    if raw.startswith("end"):
+        if stack:
+            stack.pop()
+        return True
+    return False
+
+
+def _extract_statements(
+    statements: list[tuple[int, str]],
+    stack: list[_Scope],
+    ctx: ScanContext,
+    concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]],
+) -> list[Contract]:
+    out: list[Contract] = []
+    remaining = _collect_concerns(statements, concerns, ctx)
+
+    for line_no, raw in remaining:
+        if _handle_statement_end(raw, stack):
+            continue
+
+        line, has_inline_end = _strip_inline_end(raw)
+        if not line:
+            _pop_if_enclosing(has_inline_end, False, stack)
+            continue
+
+        had_do = bool(_DO_BLOCK_RE.search(line))
+        push_block = had_do and not has_inline_end
+
+        special = _handle_draw_or_concerns(line, stack, ctx, concerns)
+        if special is not None:
+            out.extend(special)
+            _pop_if_enclosing(has_inline_end, had_do, stack)
+            continue
+
+        contracts = _process_statement(line, line_no, push_block, stack, ctx, concerns)
+        if contracts is not None:
+            out.extend(contracts)
+        elif push_block:
+            stack.append(_Scope(kind="other"))
+
+        _pop_if_enclosing(has_inline_end, had_do, stack)
+
+    return out
+
+
 class RailsRoutesDialect:
     name = "rails"
     extensions = RUBY
@@ -356,29 +559,6 @@ class RailsRoutesDialect:
         lines = code.splitlines()
 
         stack: list[_Scope] = []
-        out: list[Contract] = []
         statements = _read_statements(lines, ctx)
-
-        for line_no, raw in statements:
-            if raw == "end" or raw.startswith("end "):
-                if stack:
-                    stack.pop()
-                continue
-
-            line, has_inline_end = _strip_inline_end(raw)
-            if not line:
-                _pop_if_enclosing(has_inline_end, False, stack)
-                continue
-
-            had_do = bool(_DO_BLOCK_RE.search(line))
-            push_block = had_do and not has_inline_end
-
-            contracts = _process_statement(line, line_no, push_block, stack, ctx)
-            if contracts is not None:
-                out.extend(contracts)
-            elif push_block:
-                stack.append(_Scope(kind="other"))
-
-            _pop_if_enclosing(has_inline_end, had_do, stack)
-
-        return out
+        concerns: dict[str, tuple[ScanContext, list[tuple[int, str]]]] = {}
+        return _extract_statements(statements, stack, ctx, concerns)

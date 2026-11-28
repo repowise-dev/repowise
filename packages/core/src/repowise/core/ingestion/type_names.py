@@ -58,10 +58,14 @@ def strip_type_arguments(raw: str) -> str:
     for opener, closer in _TYPE_ARGUMENT_BRACKETS:
         out: list[str] = []
         depth = 0
+        previous = ""
         for char in text:
+            # The ``>`` of ``->`` and of ``=>`` is an arrow, and closes no ``<``.
+            arrow = char == ">" and previous in ("-", "=")
+            previous = char
             if char == opener:
                 depth += 1
-            elif char == closer:
+            elif char == closer and not arrow:
                 # An unbalanced closer means the text was already truncated
                 # upstream; dropping it is better than keeping a stray bracket.
                 depth = max(0, depth - 1)
@@ -157,6 +161,14 @@ def type_qualifier(raw: str) -> str:
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
 
 
+def scoped_type_segments(raw: str) -> list[str]:
+    """``::Billing::Invoice`` -> ``["Billing", "Invoice"]``: a ``::`` path, segment by segment.
+
+    A leading ``::`` (Ruby's top-level scope, C++'s global namespace) is dropped.
+    """
+    return [s.strip() for s in strip_type_arguments(raw.strip()).removeprefix("::").split("::")]
+
+
 def dotted_type_segments(raw: str) -> list[str]:
     """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
     return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
@@ -235,9 +247,28 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
     starters = "_$" if language in _DOLLAR_START_LANGUAGES else "_"
     if not name[0].isalpha() and name[0] not in starters:
         return False
-    if name in get_builtin_types(language):
+    if builtin_type_spelling(name, language) is not None:
         return False
     return not (len(name) == 1 and name.isupper())
+
+
+# Languages whose type names are case-insensitive, so ``string`` is ``String``.
+_CASE_INSENSITIVE_TYPE_LANGUAGES = frozenset({"pascal"})
+_FOLDED_BUILTINS: dict[str, dict[str, str]] = {}
+
+
+def builtin_type_spelling(name: str, language: str) -> str | None:
+    """The builtin type *name* spells, as the language's table writes it, or None."""
+    builtins = get_builtin_types(language)
+    if name in builtins:
+        return name
+    if language not in _CASE_INSENSITIVE_TYPE_LANGUAGES:
+        return None
+    folded = _FOLDED_BUILTINS.get(language)
+    if folded is None:
+        folded = {builtin.lower(): builtin for builtin in builtins}
+        _FOLDED_BUILTINS[language] = folded
+    return folded.get(name.lower())
 
 
 # The receiver of a C# extension method, as the parameter list spells it.

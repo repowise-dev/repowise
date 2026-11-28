@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import shutil
 import subprocess
+import time
 from datetime import UTC, datetime
 
 import pytest
@@ -128,13 +129,13 @@ async def test_literal_number_is_scanned_with_definition_first(tree):
     out = await search_codebase("47821")
 
     # Word-bounded: 147821 is not a match. deploy/config.yaml is committed but
-    # never indexed, and is read all the same.
+    # never indexed, and is read all the same. A data file's key is no definition.
     assert _rows(out) == [
-        ("deploy/config.yaml", 2, "definition"),
         ("pkg/catalog.py", 1, "definition"),
         ("app/widget.py", 4, "match"),
+        ("deploy/config.yaml", 2, "match"),
     ]
-    assert out["lines"][1]["text"] == "PORT = 47821"
+    assert out["lines"][0]["text"] == "PORT = 47821"
     assert out["complete"] is True
 
 
@@ -229,13 +230,18 @@ def test_fuzzy_results_beside_literal_lines_keep_a_short_label():
 async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
     out = await search_codebase("disconnect", mode="symbol")
 
-    assert "lines" not in out or out["lines"] == []
-    assert "grep_hint" in out
+    assert out["lines"] == [] and out["complete"] is True
+    # The miss is still named; the scan listed every literal match (none), so
+    # there is nothing left to sweep with Grep.
+    assert "'disconnect'" in out["note"]
+    assert "grep_hint" not in out
+    assert "Grep" not in out["note"]
 
 
 @pytest.mark.asyncio
 async def test_cap_hit_marks_lines_incomplete(tree, monkeypatch):
     monkeypatch.setattr(_line_hits, "MAX_LINES_PER_FILE", 0)
+    monkeypatch.setattr(_line_hits, "SMALL_SET_LINES", 0)
 
     out = await search_codebase("47821")
 
@@ -318,7 +324,7 @@ async def test_explicit_excludes_make_the_scan_incomplete(tree):
 
 
 @pytest.mark.asyncio
-async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
+async def test_too_many_exact_symbols_list_the_definitions(tree, session):
     rid = (await session.get(GraphNode, "lh_sym")).repository_id
     session.add_all(
         GraphNode(
@@ -338,11 +344,21 @@ async def test_too_many_exact_symbols_ask_to_narrow(tree, session):
     )
     await session.commit()
 
-    out = await search_codebase("backend_of", mode="symbol")
+    for i in range(3):
+        (tree / "pkg" / f"m{i}.py").write_text("def backend_of(name):\n    return name\n")
 
-    assert out["lines"] == []
+    out = await search_codebase("backend_of", mode="symbol", limit=2)
+
+    # Between them results and lines name each of the 4 definitions once.
+    in_results = {(r["path"], r["start_line"]) for r in out["results"] if r.get("type") == "symbol"}
+    in_lines = {(r["path"], r["line"]) for r in out["lines"]}
+    assert {r["kind"] for r in out["lines"]} == {"definition"}
+    assert not in_results & in_lines
+    assert in_results | in_lines == {
+        ("pkg/catalog.py", 4), ("pkg/m0.py", 1), ("pkg/m1.py", 1), ("pkg/m2.py", 1)
+    }
     assert out["complete"] is False
-    assert out["reasons"] == ["4 symbols match; narrow the query"]
+    assert out["reasons"][0].startswith("4 symbols share this name: definitions only")
 
 
 def test_budget_dropping_lines_is_never_complete():
@@ -464,12 +480,30 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
         ("app/widget.py", 1, "import"),
         ("app/widget.py", 6, "call"),
         ("tests/test_widget.py", 1, "import"),
-        *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
+        *(("tests/test_widget.py", n, "string") for n in range(2, 2 + cap)),
     ]
-    assert out["lines_omitted_by_file"] == {"tests/test_widget.py": 20 - cap}
+    assert out["lines_omitted"] == 20 - cap
+    assert "lines_omitted_by_file" not in out
     assert out["complete"] is False
-    assert any("lines_omitted_by_file" in r for r in out["reasons"])
+    assert any("lines_omitted counts them" in r for r in out["reasons"])
     assert out["_meta"]["omitted"]["refs"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_reference_set_is_served_whole(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n" + "mock(backend_of)\n" * 6, encoding="utf-8"
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    refs = [r for r in _rows(out) if r[0] == "tests/test_widget.py" and r[2] == "reference"]
+    assert len(refs) == 6
+    assert out["complete"] is True
+    assert "lines_omitted_by_file" not in out
 
 
 @pytest.mark.asyncio
@@ -507,9 +541,7 @@ async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, sessio
     assert ("web/b.ts", 2, "reference") in _rows(out)
     assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
     assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
-    assert out["lines_omitted_by_file"] == {
-        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
-    }
+    assert out["lines_omitted"] == 30 - _edit_sites.MAX_REFERENCES_PER_FILE
     assert out["complete"] is False
 
 
@@ -574,21 +606,19 @@ def _recording_collector(monkeypatch):
 
 
 def _assert_mixed_bound(out, hidden, n_files):
-    cap, top = _line_hits.MAX_LINES_MIXED, _line_hits.MAX_OMITTED_FILES
-    assert len(out["lines"]) == cap
+    assert len(out["lines"]) == _line_hits.MAX_LINES_MIXED
     assert out["complete"] is False
     assert _line_hits.OVER_LINES_MIXED in out["reasons"]
     assert out["_meta"]["omitted"]["refs"]
-    by_file = out["lines_omitted_by_file"]
-    assert len(by_file) == top
     ranks = [_line_hits._MIXED_KIND_ORDER[r["kind"]] for r in out["lines"]]
     assert ranks == sorted(ranks)
-    assert out["lines_omitted_by_file_total"] == n_files
-    assert list(by_file.values()) == sorted(by_file.values(), reverse=True)
+    # A count, not a per-file map; the rows themselves are in the omission chunk.
+    assert out["lines_omitted"] == len(hidden)
+    assert "lines_omitted_by_file" not in out
+    assert len({r["path"] for r in hidden}) == n_files
     # Everything not shown is in the omission chunk, nothing twice.
     shown = {(r["path"], r["line"]) for r in out["lines"]}
     assert not shown & {(r["path"], r["line"]) for r in hidden}
-    assert all(by_file[p] == sum(r["path"] == p for r in hidden) for p in by_file)
 
 
 @pytest.mark.asyncio
@@ -642,15 +672,14 @@ async def test_mixed_typescript_query_bounds_lines_and_omitted_files(
 
 
 @pytest.mark.asyncio
-async def test_single_name_keeps_the_full_cap_and_every_omitted_file(tree, session, setup_mcp):
+async def test_single_name_keeps_the_full_cap_and_counts_the_omitted(tree, session, setup_mcp):
     await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
 
     out = await search_codebase("backend_of", mode="symbol")
 
     cap = _edit_sites.MAX_REFERENCES_PER_FILE
     assert len(out["lines"]) == 3 + 8 * (1 + cap)
-    assert len(out["lines_omitted_by_file"]) == 8
-    assert "lines_omitted_by_file_total" not in out
+    assert out["lines_omitted"] == 8 * (6 - cap)
     assert not any(r == _line_hits.OVER_LINES_MIXED for r in out["reasons"])
 
 
@@ -727,7 +756,10 @@ def test_byte_budget_reads_source_before_tests_and_docs(scan_repo, monkeypatch):
     rows, reasons = _line_hits._scan_listed(scan_repo, "retryLimit", True)
 
     assert {r["path"].split("/")[0] for r in rows} == {"src"}
-    assert reasons == [f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first"]
+    assert reasons == [
+        f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first;"
+        " not scanned: docs/ 2, tests/ 1, README.md 1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -753,6 +785,45 @@ def test_git_failure_falls_back_to_the_python_scan(scan_repo, monkeypatch, failu
 def test_token_nowhere_in_the_repo_is_complete_and_empty(scan_repo):
     assert _line_hits._files_holding(scan_repo, "noSuchTokenAnywhere") == []
     assert _line_hits._scan_listed(scan_repo, "noSuchTokenAnywhere", True) == ([], [])
+
+
+def test_untracked_files_match_by_word_and_glob_as_git_grep_would(scan_repo):
+    (scan_repo / "notes.txt").write_text("retryLimitOld\n", encoding="utf-8")
+
+    assert "README.md" in _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+    # Untracked, and holding the needle only inside a longer name.
+    assert "notes.txt" in _line_hits._files_holding(scan_repo, "retryLimit")
+    assert "notes.txt" not in _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+    docs = _line_hits._files_holding(scan_repo, "retryLimit", word=True, globs=("*.md",))
+    assert sorted(docs) == ["README.md", "docs/api/retry.md", "docs/guide.md"]
+
+
+def test_untracked_pruned_dirs_are_never_read(scan_repo):
+    # An unignored index directory: gigabytes on a real checkout.
+    (scan_repo / ".repowise").mkdir()
+    (scan_repo / ".repowise" / "wiki.db").write_text("retryLimit\n", encoding="utf-8")
+
+    held = _line_hits._files_holding(scan_repo, "retryLimit")
+    assert held and not any(f.startswith(".repowise/") for f in held)
+
+
+def test_one_call_lists_the_untracked_files_once(scan_repo, monkeypatch):
+    real_run = subprocess.run
+    listings: list[list[str]] = []
+
+    def counting(cmd, *args, **kwargs):
+        if "ls-files" in cmd:
+            listings.append(cmd)
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(_line_hits.subprocess, "run", counting)
+    with _line_hits.line_read_memo():
+        first = _line_hits._files_holding(scan_repo, "retryLimit")
+        _line_hits._files_holding(scan_repo, "retryLimit", word=True)
+        assert _line_hits._files_holding(scan_repo, "retryLimit") is first
+    assert len(listings) == 1
+    _line_hits._files_holding(scan_repo, "retryLimit")
+    assert len(listings) == 2
 
 
 @pytest.mark.parametrize("needle", ["a\nb", "a\0b", "-e", "café"])
@@ -798,3 +869,443 @@ async def test_punctuated_literals_return_their_lines(tree):
     # An identifier inside the literal (``backend_of``) does not turn it into a symbol query.
     call = await search_codebase("backend_of('m')")
     assert [(r["path"], r["line"]) for r in call["lines"]] == [("app/widget.py", 6)]
+
+
+def _scan(tmp_path, counts: dict[str, int]):
+    for rel, n in counts.items():
+        (tmp_path / rel).write_text("".join(f"limit_{i} = max_hops\n" for i in range(n)), "utf-8")
+    return _line_hits.scan_literal(tmp_path, list(counts), "max_hops", True)
+
+
+def test_a_small_set_comes_back_whole_in_file_order(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 2})
+
+    assert reasons == []
+    assert [(r["path"], r["line"]) for r in rows] == [
+        *(("a.py", n) for n in range(1, 11)),
+        ("b.py", 1),
+        ("b.py", 2),
+    ]
+
+
+def test_a_large_set_keeps_the_per_file_cut(tmp_path):
+    rows, reasons = _scan(tmp_path, {"a.py": 10, "b.py": 15})
+
+    cap = _line_hits.MAX_LINES_PER_FILE
+    assert len(rows) == 2 * cap
+    assert reasons == [f"over {cap} lines in 2 files"]
+
+
+def test_the_small_set_bound_is_inclusive(tmp_path):
+    size = _line_hits.SMALL_SET_LINES
+    rows, reasons = _scan(tmp_path, {"a.py": size})
+    assert (len(rows), reasons) == (size, [])
+    rows, reasons = _scan(tmp_path, {"a.py": size + 1})
+    assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons
+
+
+def test_oversized_text_is_streamed_for_its_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", 30.0)
+    lines = [f"let row{i} = {i}" for i in range(200_000)]
+    lines[150_000] = 'let banner = "section1234"'
+    (tmp_path / "Big.swift").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert (tmp_path / "Big.swift").stat().st_size > _edit_sites._MAX_FILE_BYTES
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["Big.swift"], "section1234", True)
+    assert rows == [
+        {"path": "Big.swift", "line": 150_001, "kind": "definition", "text": 'let banner = "section1234"'}
+    ]
+    assert reasons == []
+
+
+def test_text_past_the_stream_cap_is_reported_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 200)
+    (tmp_path / "big.txt").write_text("x\n" * 150 + "token47\n", encoding="utf-8")
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["big.txt"], "token47", True)
+    assert rows == [] and reasons == ["skipped as too large: big.txt"]
+    _, complete, unread = _line_hits.word_scan(tmp_path, "token47")
+    assert not complete and unread == ["skipped as too large: big.txt"]
+
+
+def test_a_stream_past_the_deadline_stops(tmp_path):
+    import re
+
+    path = tmp_path / "big.txt"
+    path.write_bytes(b"x\n" * 20_000 + b"token47\n")
+    pattern = re.compile("token47")
+    with open(path, "rb") as fh:
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, 0.0) is None
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, float("inf")) == [
+            (20_001, "token47")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_serves_each_part_as_its_own_group(tree):
+    out = await search_codebase("backend_of|GREETING")
+
+    assert out["matched_as"] == "alternation"
+    # Query order, each group definitions first: the edit set, then the scan.
+    assert _rows(out) == [
+        ("pkg/catalog.py", 4, "definition"),
+        ("app/widget.py", 1, "import"),
+        ("app/widget.py", 6, "call"),
+        ("pkg/catalog.py", 2, "definition"),
+    ]
+    assert out["complete"] is True
+    assert "unmatched" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_names_the_parts_that_match_nowhere(tree):
+    out = await search_codebase(r"\b(backend_of|nowhere_at_all)\b")
+
+    assert [r[0] for r in _rows(out)] == ["pkg/catalog.py", "app/widget.py", "app/widget.py"]
+    assert out["unmatched"] == ["nowhere_at_all"]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_of_indexed_names_is_not_reported_missing(tree):
+    out = await search_codebase("AuthService|User", mode="hybrid")
+
+    assert out["exact_match"] is True
+    assert "No indexed symbol" not in out.get("note", "")
+    assert {r.get("name") for r in out["results"] if r.get("type") == "symbol"} >= {
+        "AuthService",
+        "User",
+    }
+
+
+def test_the_line_cap_is_shared_evenly_and_unused_share_passes_on():
+    assert _line_hits._fair_caps([3, 100], 50) == [3, 47]
+    assert _line_hits._fair_caps([100, 100], 50) == [25, 25]
+    assert _line_hits._fair_caps([0, 0], 50) == [0, 0]
+    assert sum(_line_hits._fair_caps([30, 30, 30], 50)) == 50
+
+
+@pytest.mark.asyncio
+async def test_a_regex_serves_the_lines_it_matches(tree):
+    out = await search_codebase(r"connect\(\d+\)")
+
+    assert out["matched_as"] == "regex"
+    assert _rows(out) == [("app/widget.py", 4, "match")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_regex_lists_declarations_first(tree):
+    out = await search_codebase(r"^def \w+\(")
+
+    assert _rows(out) == [
+        ("app/widget.py", 3, "definition"),
+        ("pkg/catalog.py", 4, "definition"),
+    ]
+
+
+def test_a_scan_out_of_time_names_what_it_did_not_read(scan_repo, monkeypatch):
+    import re
+
+    _python_only(monkeypatch)
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", -1.0)
+    rows, reasons = _line_hits._scan_listed_regex(scan_repo, re.compile(r"retry\w+"))
+
+    assert rows == []
+    assert reasons == [
+        f"time budget: scanned 0 of {len(_SCAN_TREE)} files;"
+        " not scanned: src/ 3, docs/ 2, tests/ 1, README.md 1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_alternatives_past_the_cap_are_named_and_leave_lines_incomplete(tree):
+    parts = ["backend_of"] + [f"absent_{i}" for i in range(_line_hits._MAX_ALTERNATIVES)]
+    out = await search_codebase("|".join(parts))
+
+    cap = _line_hits._MAX_ALTERNATIVES
+    assert out["complete"] is False
+    assert f"only the first {cap} of {len(parts)} alternatives searched" in out["reasons"]
+
+
+def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
+    import re
+
+    # A form feed and a line separator are not line breaks to grep.
+    (tmp_path / "a.py").write_text("x = 1\f y = 2 z\ndef target():\n", encoding="utf-8")
+    pattern = re.compile(r"def \w+\(")
+    rows, reasons = _line_hits._scan(
+        tmp_path, ["a.py"], pattern, _line_hits._declares(pattern), None, per_line=True
+    )
+
+    assert [(r["line"], r["kind"]) for r in rows] == [(2, "definition")]
+    assert reasons == []
+
+
+@pytest.mark.parametrize(
+    ("line", "query", "kind"),
+    [
+        # A call on a declaring line uses the name; the declared name is another.
+        ("    let c = open_ro(&p)?;", r"open_ro\(", "match"),
+        ("const x = make(1);", r"make\(", "match"),
+        ("let mut x = make(1);", r"make\(", "match"),
+        ("class Foo(Base):", r"Base\b", "match"),
+        ("def run(): return helper()", r"helper\(", "match"),
+        # The declaration of the matched name, in any declaring language.
+        ("pub fn open_ro(p: &Path) -> Conn {", r"open_ro\(", "definition"),
+        ("    let c = open_ro(&p)?;", r"let c\b", "definition"),
+        ("let mut x = make(1);", r"\bx =", "definition"),
+        ("export async function load(id) {", r"load\(", "definition"),
+        ("func (s *Store) Load(id int) error {", r"Load\(", "definition"),
+        ("type Store struct {", r"Store struct", "definition"),
+        ("class Foo(Base):", r"^class ", "definition"),
+        ("pub const fn foo() -> u8 {", r"foo\(", "definition"),
+        ("export const enum Color { Red }", r"Color\b", "definition"),
+        ("var x, y int", r"\by\b", "definition"),
+        ("const { a, b } = load();", r"\bb\b", "definition"),
+        ("const { a, b } = load();", r"load\(", "match"),
+        ("let Point { x, y } = p;", r"\bx\b", "definition"),
+        ("let (a, b) = pair();", r"\bb\b", "definition"),
+        ("const { a = load() } = opts;", r"load\(", "match"),
+        ("const [a = load()] = opts;", r"load\(", "match"),
+        ("def run(x): return helper()", r"\brun\(", "definition"),
+        # A Go receiver names a type the method does not declare.
+        ("func (s *Store) Save() error {", r"Store\b", "match"),
+        ("func (g *Getter) GetX() {", r"Get\w*", "definition"),
+        ("function* gen() {", r"gen\(", "definition"),
+        # A keyword glued to a parenthesis is a call.
+        ("kind = type(self.load(cfg))", r"load\(", "match"),
+        ("type(self.load(cfg))", r"load\(", "match"),
+        # C, Java and Kotlin heads: the declared name, never the type or a call.
+        ("static int parse_args(int argc, char **argv) {", r"parse_args\(", "definition"),
+        ("char *strdup_safe(const char *s);", r"strdup_safe", "definition"),
+        ("    public static List<String> loadAll(Path p) throws IOException {", r"loadAll\(", "definition"),
+        ("    public static List<String> loadAll(Path p) {", r"List<", "match"),
+        ("    private final Map<String, Foo> cache = new HashMap<>();", r"\bcache\b", "definition"),
+        ("    private final Map<String, Foo> cache = new HashMap<>();", r"HashMap", "match"),
+        ("public class Store {", r"Store\b", "definition"),
+        ("    @Override public void run() {", r"run\(", "definition"),
+        ("    return parse_args(argc, argv);", r"parse_args\(", "match"),
+        ("    int rc = parse_args(argc, argv);", r"parse_args\(", "match"),
+        ("fun loadAll(path: Path): List<String> {", r"loadAll\(", "definition"),
+        ("    private suspend fun fetch(id: Int) = api.get(id)", r"fetch\(", "definition"),
+        ("    private suspend fun fetch(id: Int) = api.get(id)", r"get\(", "match"),
+        ("fun <T> List<T>.second(): T = this[1]", r"second\(", "definition"),
+        ("fun <T> List<T>.second(): T = this[1]", r"List<", "match"),
+        ("    val cache = mutableMapOf<String, Int>()", r"\bcache\b", "definition"),
+        ("object Registry {", r"Registry\b", "definition"),
+        ("data class Point(val x: Int)", r"Point\(", "definition"),
+        # Lines that declare nothing.
+        ("x = make(1)", r"make\(", "match"),
+        ("    go run(ctx)", r"run\(", "match"),
+        ("    assert check(x)", r"check\(", "match"),
+        ("if foo(x):", r"foo", "match"),
+        ("    if foo(x): return 1", r"foo", "match"),
+        ("elif foo(x):", r"foo", "match"),
+        ("while foo(x):", r"foo", "match"),
+        ("with foo(x) as f:", r"foo", "match"),
+        ("using foo;", r"foo", "match"),
+        ("namespace foo;", r"foo", "match"),
+        ("cd foo;", r"foo", "match"),
+        ("my foo(", r"foo", "match"),
+        ("x.bar foo(1)", r"foo", "match"),
+        ("SELECT foo(x)", r"foo", "match"),
+        ("rescue foo(x)", r"foo", "match"),
+        ("unless foo(x)", r"foo", "match"),
+        ("size_t foo = 0;", r"foo", "definition"),
+        ("Store foo(int x) {", r"foo", "definition"),
+        ("fun <T : Comparable<T>> sortAll(items: List<T>) {", r"sortAll", "definition"),
+        ("    Returns foo(x) when the cache is warm.", r"foo", "match"),
+        ("obj. foo(1);", r"foo", "match"),
+        ("    width*scale(x),", r"scale", "match"),
+        ("const char *get_name(void) {", r"get_name", "definition"),
+        ("lo < hi and hi > check(x)", r"check", "match"),
+        ("data frame load(path) reads it", r"load", "match"),
+        ("    public <T extends Comparable<T>> void sort(List<T> xs) {", r"sort", "definition"),
+        ("    width * compute(x) +", r"compute", "match"),
+        ("ready && validate(input);", r"validate", "match"),
+        ("int& ref_to(int x);", r"ref_to", "definition"),
+        ("char* dup(const char *s);", r"dup", "definition"),
+        ("x := make(1)", r"make\(", "match"),
+    ],
+)
+def test_a_regex_hit_is_a_definition_only_where_its_line_declares_it(line, query, kind):
+    import re
+
+    hits = _line_hits._hit_kinds("src/a.rs", [(1, line)], _line_hits._declares(re.compile(query)))
+
+    assert hits == [(1, line, kind)]
+
+def test_pages_beside_definition_lines_are_dropped():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    response = {
+        "results": [named, {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+        "note": f"No indexed symbol is named 'go'. Any page here is {NOT_THE_NAMED_SYMBOL}.",
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    assert response["note"] == "No indexed symbol is named 'go'."
+
+
+def test_an_identifier_query_drops_every_page_beside_definition_lines():
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    page = {"type": "page", "page_type": "file_page", "path": "pkg/b.py"}
+    response = {
+        "results": [named, page],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    # A multi-word question keeps the pages that rank its files.
+    response = {"results": [named, page], "lines": response["lines"]}
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named, page]
+
+
+def test_pages_stay_when_lines_hold_no_definition():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    page = {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}
+    response = {
+        "results": [page],
+        "lines": [{"path": "pkg/a.py", "line": 9, "kind": "call", "text": "run()"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [page]
+    assert "pages_omitted" not in response
+
+
+def test_a_group_drops_its_tests_only_beside_shipped_code():
+    shipped = {"path": "pkg/a.py", "line": 1, "kind": "definition", "text": "def run():"}
+    test_row = {"path": "tests/test_a.py", "line": 4, "kind": "call", "text": "run()"}
+    only_tests = [{"path": "tests/test_b.py", "line": 2, "kind": "call", "text": "go()"}]
+    reasons: list[str] = []
+
+    groups = _line_hits._without_tests_beside_shipped([[shipped, test_row], only_tests], reasons)
+
+    assert groups == [[shipped], only_tests]
+    assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]
+
+
+@pytest.mark.parametrize("query", ["backend_of", "pkg.catalog.backend_of"])
+async def test_an_incomplete_edit_set_says_which_search_lists_every_line(
+    tree, session, monkeypatch, query
+):
+    # An uncommitted file the index never read names the symbol: the edit set
+    # cannot vouch for it, and the hint names the scan that reads it. A
+    # qualified query's edit set scans the bare name, and the hint names it.
+    (await session.get(GraphNode, "lh_sym")).qualified_name = "pkg.catalog.backend_of"
+    await session.commit()
+    (tree / "app" / "late.py").write_text(
+        "import pkg.catalog as c\nc.backend_of('n')\n", encoding="utf-8"
+    )
+    _dirty(monkeypatch, frozenset({"app/late.py"}))
+
+    out = await search_codebase(query, mode="symbol")
+
+    assert out["complete"] is False
+    assert out["hint"] == _edit_sites.incomplete_hint("backend_of")
+    follow = await search_codebase(r"\bbackend_of\b")
+    assert ("app/late.py", 2) in {(r["path"], r["line"]) for r in follow["lines"]}
+
+
+async def test_a_cut_naming_where_the_rest_are_gets_no_hint(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["complete"] is False
+    assert "hint" not in out
+
+
+async def test_a_cut_to_the_line_cap_gets_no_hint(tree, monkeypatch):
+    # The edit set is whole; the lines past the cap are under _meta.omitted,
+    # and the text search would stop at the same cap.
+    monkeypatch.setattr(_line_hits, "MAX_LINES", 1)
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["reasons"] == [_line_hits.OVER_LINES]
+    assert "hint" not in out
+
+
+@pytest.mark.parametrize(
+    ("name", "ok"),
+    [("backend_of", True), ("$el", True), ("été", True), ("_x1", True), ("1x", False), ("a b", False)],
+)
+def test_the_hint_takes_a_name_any_letter_opens(name, ok):
+    assert bool(_line_hits._IDENTIFIER.fullmatch(name)) is ok
+
+
+@pytest.mark.asyncio
+async def test_prefetched_greps_serve_the_scans_of_one_call(scan_repo, monkeypatch):
+    real = _line_hits._git_files_holding
+    greps: list[str] = []
+
+    def counting(root, needle, **kwargs):
+        greps.append(needle)
+        return real(root, needle, **kwargs)
+
+    monkeypatch.setattr(_line_hits, "_git_files_holding", counting)
+    await _line_hits.prefetch_word_scans(scan_repo, ["retryLimit"])
+    assert greps == []  # nothing would keep the answer
+    with _line_hits.line_read_memo():
+        await _line_hits.prefetch_word_scans(scan_repo, ["retryLimit", "noSuchToken"])
+        rows, complete, _unread = _line_hits.word_scan(scan_repo, "retryLimit")
+    assert sorted(greps) == ["noSuchToken", "retryLimit"]
+    assert complete and rows
+
+
+def test_an_untracked_symlink_is_not_followed(scan_repo, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("outside") / "secret.txt"
+    outside.write_text("retryLimit\n", encoding="utf-8")
+    try:
+        (scan_repo / "link.txt").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks need privileges here")
+
+    assert "link.txt" not in _line_hits._files_holding(scan_repo, "retryLimit")
+
+
+def test_a_slow_untracked_read_falls_back_as_a_slow_grep(scan_repo, monkeypatch):
+    real = _line_hits._holds
+    reads: list[str] = []
+
+    def slow(path, needle):
+        reads.append(path.name)
+        time.sleep(1.2)
+        return real(path, needle)
+
+    for name in ("a.txt", "b.txt"):
+        (scan_repo / name).write_text("x\n", encoding="utf-8")
+    # The tracked grep of this tiny repo finishes well inside the budget.
+    monkeypatch.setattr(_line_hits, "_GIT_GREP_SECONDS", 2.0)
+    monkeypatch.setattr(_line_hits, "_holds", slow)
+
+    assert _line_hits._files_holding(scan_repo, "retryLimit") is None
+    assert 0 < len(reads) < 4  # four untracked files; the budget stops the pass
+
+
+def test_an_untracked_file_the_pass_cannot_read_whole_falls_back(scan_repo, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 4)
+
+    # README.md is untracked and past the cap: the fallback scan reports it.
+    assert _line_hits._files_holding(scan_repo, "retryLimit") is None
+
+
+def test_untracked_passes_lock_per_repo(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    assert _line_hits._untracked_lock(a) is _line_hits._untracked_lock(a)
+    # Another repo's listing never waits on this one's.
+    assert _line_hits._untracked_lock(a) is not _line_hits._untracked_lock(b)

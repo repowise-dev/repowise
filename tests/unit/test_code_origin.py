@@ -1,4 +1,4 @@
-"""One origin per file: production, test, vendored, docs_example, generated, tooling, build."""
+"""One origin per file: production, test, vendored, docs_example, generated, tooling, build, data."""
 
 from __future__ import annotations
 
@@ -47,6 +47,27 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("tests-build/src/lib.rs", "test"),
+        ("tests-integration/src/lib.rs", "test"),
+        ("tests-integration/tests/macros.rs", "test"),
+        ("app/tests_results/service.py", "production"),
+        ("lab/tests_catalog/models.py", "production"),
+        ("src/tests-ui/app.ts", "production"),
+        ("internal/tests_api/handler.go", "production"),
+        (
+            "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
+            "test",
+        ),
+        ("__testfixtures__/default-import.output.tsx", "test"),
+        ("src/transforms/__testfixtures__/nested/input.js", "test"),
+        ("src\\transforms\\__testfixtures__\\input.js", "test"),
+        ("src/testfixtures/transform.ts", "production"),
+        ("src/__testfixtures__extra/transform.ts", "production"),
+        ("src/transforms/__testfixtures__.ts", "production"),
+        ("src/__fixtures__/input.ts", "test"),
+        ("src/__mocks__/api.ts", "test"),
+        ("src/__snapshots__/component.snap", "test"),
+        ("src/fixtures/transform.ts", "production"),
         # a `tests/` folder inside a JS-family `src` tree is a product feature
         ("packages/web/src/app/repos/[id]/tests/page.tsx", "production"),
         ("packages/web/src/components/tests/tests-view.tsx", "production"),
@@ -57,6 +78,11 @@ _OWN_HEADER = (
         ("third_party/zlib/inflate.c", "vendored"),
         ("src/thirdparty/docopt.py", "vendored"),
         ("external/abseil/str.cc", "vendored"),
+        # cloned reference checkouts in a root .repos/ are someone else's code
+        (".repos/foo/src/index.ts", "vendored"),
+        (".repos/foo/packages/a/src/x.ts", "vendored"),
+        ("src/repos/a.ts", "production"),
+        ("packages/external/a.ts", "production"),
         ("static/js/app.min.js", "vendored"),
         ("assets/site.min.css", "vendored"),
         ("docs_src/tutorial/first_steps.py", "docs_example"),
@@ -76,6 +102,11 @@ _OWN_HEADER = (
         ("samples/hello/Program.cs", "docs_example"),
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/demo/App.tsx", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         # Browser scripts a served static tree ships are product code.
@@ -88,6 +119,25 @@ _OWN_HEADER = (
         ("ci/tools/lint.py", "tooling"),
         ("Tools/Gen/Program.cs", "tooling"),
         ("build/tools/gen.py", "tooling"),
+        # ``build/`` and ``devtools/`` are tooling outside a ``src/`` tree only.
+        ("build/build.ts", "tooling"),
+        ("tools/build/release.py", "tooling"),
+        ("scripts/build/bundle.js", "tooling"),
+        ("packages/build/index.ts", "tooling"),
+        ("build/cucumber-test-runner/src/com/x/Main.java", "tooling"),
+        ("buildSrc/src/main/java/org/x/build/Conventions.java", "tooling"),
+        ("devtools/cypress/support.js", "tooling"),
+        ("packages/next/src/build/x.ts", "production"),
+        ("src/node/build/build.ts", "production"),
+        ("crates/turbopack-cli/src/build/mod.rs", "production"),
+        ("lib/src/backends/build/analyzer.dart", "production"),
+        ("src/main/java/org/apache/commons/io/build/AbstractOrigin.java", "production"),
+        ("packages/react-devtools-shared/src/devtools/ContextMenu.js", "production"),
+        ("drift/lib/src/runtime/devtools/devtools.dart", "production"),
+        ("Src/Build/Compiler.cs", "production"),
+        ("src/build/scripts/bundle.py", "tooling"),
+        ("src/build/generated/x.ts", "generated"),
+        ("src/build/__tests__/a.ts", "test"),
         # A ``tools/`` folder inside the product is its own code.
         ("lib/ai/tools/get-weather.ts", "production"),
         ("src/tools/search.py", "production"),
@@ -104,6 +154,8 @@ _OWN_HEADER = (
         ("src/cmd/go/internal/tool/tool.go", "production"),
         ("tool/release.py", "production"),
         ("benchmarks/bench_app.py", "tooling"),
+        ("benchmark/run.py", "tooling"),
+        ("include/benchmark/benchmark.h", "production"),
         ("app/migrations/0001_initial.py", "tooling"),
         ("db/alembic/versions/abc_add.py", "tooling"),
         ("setup.py", "build"),
@@ -113,6 +165,14 @@ _OWN_HEADER = (
         ("db/migrate/20240101_add_users.rb", "tooling"),
         ("db/data_migrations/20240101_backfill.rb", "tooling"),
         ("src/django_test_migrations/logic.py", "production"),
+        # A singular migration/ directory counts when its entries are numbered.
+        ("packages/database/migration/20240101_add_x/migration.ts", "tooling"),
+        ("src/migration/1700000000000-Init.ts", "tooling"),
+        ("src/main/resources/db/migration/V2__backfill.java", "tooling"),
+        ("modules/migration/comment.go", "production"),
+        # Semgrep rule targets are written to break the rule they test.
+        (".semgrep/authz.py", "test"),
+        ("semgrep/authz.py", "production"),
         ("src/__generated__/schema.ts", "generated"),
         ("api/user_pb2.py", "generated"),
         ("api/user_grpc.pb.go", "generated"),
@@ -182,7 +242,7 @@ def test_path_rules(path: str, expected: str) -> None:
     assert code_origin(path) == expected
 
 
-def test_every_answer_is_one_of_the_seven() -> None:
+def test_every_answer_is_one_of_the_eight() -> None:
     assert set(CODE_ORIGINS) == {
         "production",
         "test",
@@ -191,6 +251,7 @@ def test_every_answer_is_one_of_the_seven() -> None:
         "generated",
         "tooling",
         "build",
+        "data",
     }
 
 
@@ -215,11 +276,61 @@ def test_generated_banner_in_the_header() -> None:
     assert code_origin("pkg/x.py", '"""Auto-generated by the build."""\n') == "generated"
 
 
+@pytest.mark.parametrize(
+    ("path", "text"),
+    [
+        ("pkg/ttypes.py", "#\n# Autogenerated by Thrift Compiler (0.13.0)\n#\nimport x\n"),
+        (
+            "src/q.ts",
+            "/**\n * Copyright (c) Meta\n *\n * @generated SignedSource<<abc>>\n */\n"
+            "export const q = 1;\n",
+        ),
+        ("pkg/x.py", "# Copyright 2024 X\n# License: MIT\n# AUTO-GENERATED FILE. DO NOT EDIT.\nx = 1\n"),
+        (
+            "src/api.ts",
+            "/* eslint-disable */\n/**\n * Petstore API\n"
+            " * NOTE: This class is auto generated by OpenAPI Generator.\n */\nexport const a = 1;\n",
+        ),
+        (
+            "src/swagger.ts",
+            "/* eslint-disable */\n/**\n * Swagger Petstore\n *\n"
+            " * Do not edit the class manually.\n */\nexport const a = 1;\n",
+        ),
+    ],
+)
+def test_generated_banner_below_a_license(path: str, text: str) -> None:
+    assert code_origin(path, text) == "generated"
+    # Classification only: ingestion's skip rule still reads the first two lines.
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "# Reads files tagged @generated by tools.",
+        "# @generated tags are read by the linter.",
+        "# Do not edit the class manually unless the schema changed.",
+        "# Auto-generated file list for the registry lives below.",
+        "# Autogenerated by a hand-rolled script, then edited.",
+    ],
+)
+def test_generated_tag_must_be_the_banner_line(line: str) -> None:
+    text = f"# Copyright 2024 X\n# License: MIT\n{line}\nx = 1\n"
+    assert code_origin("pkg/x.py", text) == "production"
+
+
 def test_generated_banner_negatives() -> None:
     # A string literal mentioning codegen is not a banner.
     assert code_origin("pkg/x.py", 'MSG = "auto-generated client"\n') == "production"
     # A banner below the second line is not a header.
     assert not is_generated_header("a = 1\nb = 2\n# DO NOT EDIT\n")
+
+
+def test_binary_content_falls_back_to_the_path() -> None:
+    # A zipped Office file has no newlines in its head, like a minified bundle.
+    pptx = b"PK\x03\x04\x14\x00\x00\x00\x00\x00ppt/slides/slide1.xml<p:sld>" + b"a" * 5000
+    assert code_origin("design/deck.pptx", pptx) == "production"
+    assert code_origin("docs/deck.pptx", pptx) == "docs_example"
 
 
 @pytest.mark.parametrize("period", [".", ""])
@@ -278,6 +389,33 @@ def test_generated_sentence_in_the_class_doc_comment() -> None:
     assert code_origin(path, _ES_EVALUATOR) == "generated"
     # Ingestion's skip rule still reads the first two lines only.
     assert not is_generated_header(_ES_EVALUATOR)
+
+
+_GO_LICENSE = "".join(f"// license line {i}\n" for i in range(14))
+_GO_PROTO_REST = (
+    '// versions:\n// \tprotoc-gen-go v1.28.1\n\npackage demo\n\nimport (\n\t"fmt"\n)\n'
+)
+
+
+def test_go_generated_banner_below_a_license_header() -> None:
+    # Online Boutique's genproto/demo.pb.go: the banner sits on line 15.
+    text = _GO_LICENSE + "// Code generated by protoc-gen-go. DO NOT EDIT.\n" + _GO_PROTO_REST
+    assert code_origin("src/frontend/genproto/demo.pb.go", text) == "generated"
+    # Ingestion's skip rule still reads the first two lines only.
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "// Note: code generated by protoc-gen-go. DO NOT EDIT. See the README.",
+        "// Code generated by protoc-gen-go. DO NOT EDIT. unless the schema changed",
+        "// The code generated here must not drift; DO NOT EDIT the checked-in copy.",
+    ],
+)
+def test_go_generated_phrase_inside_prose_is_not_a_banner(line: str) -> None:
+    text = _GO_LICENSE + line + "\n" + _GO_PROTO_REST
+    assert code_origin("src/frontend/genproto/demo.pb.go", text) == "production"
 
 
 def test_generated_sentence_must_sit_in_a_comment() -> None:
@@ -346,6 +484,46 @@ def test_third_party_header_under_asset_dirs_is_vendored(header: str, folder: st
 def test_third_party_header_outside_asset_dirs_stays() -> None:
     assert code_origin("src/lib.js", _JQUERY) == "production"
     assert code_origin("src/lib.js", _JQUERY, project="app") == "production"
+
+
+_SORTTABLE = (
+    "/*\n"
+    "  SortTable\n"
+    "  version 2\n"
+    "  7th April 2007\n"
+    "  Stuart Langridge, http://www.kryogenix.org/code/browser/sorttable/\n"
+    "\n"
+    "  Thanks to many, many people for contributions and suggestions.\n"
+    "  Licenced as X11: http://www.kryogenix.org/code/browser/licence.html\n"
+    "  This basically means: do anything you want with it.\n"
+    "*/\n"
+    "var stIsIE = /*@cc_on!@*/false;\n"
+)
+
+
+def test_third_party_js_under_resources_dir_is_vendored() -> None:
+    path = "jvm/core/src/main/resources/org/scalatest/sorttable.js"
+    assert code_origin(path, _SORTTABLE) == "vendored"
+    assert code_origin(path, _SORTTABLE, project="scalatest") == "vendored"
+    assert code_origin("src/main/resources/org/example/lib.js", _JQUERY) == "vendored"
+
+    own = (
+        "// Copyright (c) 2024 Example Contributors.\n"
+        "// Licensed under the Apache License, Version 2.0.\n"
+        "function initTable() {}\n"
+    )
+    assert code_origin(path, own) == "production"
+    assert (
+        code_origin("src/main/resources/org/example/helper.js", own, project="example")
+        == "production"
+    )
+    versioned_first_party = (
+        "// Copyright (c) 2024 Example. Generated by tool v1.2\nfunction initTable() {}\n"
+    )
+    assert (
+        code_origin("src/main/resources/org/example/helper.js", versioned_first_party)
+        == "production"
+    )
 
 
 _JSON_HPP = (
@@ -493,6 +671,50 @@ def test_parser_generator_output_is_generated(path: str, text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
+        '\n// line 1 "ext/puma_http11/http11_parser.java.rl"\npackage org.jruby.puma;\n',
+        '// line 42 "parser.rl"\nclass Parser {}\n',
+        '\t//\tline\t2\t"parser.rl"\r\nclass Parser {}\r\n',
+        "\n" * 9 + '// line 1 "parser.rl"\n',
+    ],
+)
+def test_ragel_java_output_is_generated(text: str) -> None:
+    assert code_origin("ext/puma_http11/org/jruby/puma/Http11Parser.java", text) == "generated"
+    assert not is_generated_header(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "package app;\nclass Parser {}\n",
+        '// line 1 "Foo.java"\nclass Parser {}\n',
+        '// line 1 "parser.y"\nclass Parser {}\n',
+        '// line 1 "parser.l"\nclass Parser {}\n',
+        '// line 1 "parser.rl.bak"\nclass Parser {}\n',
+        '// See line 1 "parser.rl"\nclass Parser {}\n',
+        r'String marker = "// line 1 \"parser.rl\"";',
+        '#line 1 "parser.rl"\nclass Parser {}\n',
+        "\n" * 10 + '// line 1 "parser.rl"\n',
+        "// filler\n" * 410 + '// line 1 "parser.rl"\n',
+    ],
+)
+def test_java_without_ragel_header_stays_production(text: str) -> None:
+    assert code_origin("src/Parser.java", text) == "production"
+
+
+@pytest.mark.parametrize("path", ["src/parser.c", "src/parser.kt", "src/parser.py"])
+def test_ragel_line_comment_is_java_only(path: str) -> None:
+    assert code_origin(path, '// line 1 "parser.rl"\n') == "production"
+
+
+@pytest.mark.parametrize("path", ["src/parser.c", "src/parser.cc"])
+@pytest.mark.parametrize("suffix", ["rl", "y", "yy", "l", "ll"])
+def test_c_and_cpp_grammar_directives_stay_generated(path: str, suffix: str) -> None:
+    assert code_origin(path, f'#line 1 "parser.{suffix}"\n') == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         '#line 1 "src/parser.c"\nint parse(void) { return 0; }\n',
         '#line 40 "util.h"\nint helper(void);\n',
         "int a;\n" * 12 + '#line 1 "late.rl"\n',
@@ -504,6 +726,51 @@ def test_line_directive_to_c_source_is_not_generated(text: str) -> None:
 
 def test_line_directive_rule_is_c_and_cpp_only() -> None:
     assert code_origin("src/parser.py", '#line 1 "x.rl"\nx = 1\n') == "production"
+
+
+_LLPARSE_C = (
+    "/* Additional changes for SwiftNIO:\n"
+    "    - prefixed all symbols by 'c_nio_'\n"
+    "*/\n"
+    "#include <stdlib.h>\n"
+    "#include <stdint.h>\n"
+    "#include <string.h>\n"
+    "\n"
+    "typedef int (*llhttp__internal__span_cb)(void);\n"
+    "\n"
+    "static const unsigned char llparse_blob0[] = {\n"
+    "  'o', 'n'\n"
+    "};\n"
+)
+
+
+@pytest.mark.parametrize("path", ["Sources/CNIOLLHTTP/c_nio_llhttp.c", "deps/llhttp/llhttp.cc"])
+def test_llparse_output_is_generated(path: str) -> None:
+    assert code_origin(path, _LLPARSE_C) == "generated"
+    assert not is_generated_header(_LLPARSE_C)
+
+
+def test_aligned_llparse_blob_is_generated() -> None:
+    text = "#include <stdint.h>\nstatic const unsigned char ALIGN(16) llparse_blob1[] = {\n"
+    assert code_origin("src/llhttp.c", text) == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/* Tables follow llparse's llparse_blob0 layout. */\nint parse(void);\n",
+        "// static const unsigned char llparse_blob0[] = {\nint parse(void);\n",
+        'const char *s = "static const unsigned char llparse_blob0[]";\n',
+        "static const unsigned char my_blob0[] = { 0 };\n",
+    ],
+)
+def test_llparse_mention_stays_production(text: str) -> None:
+    assert code_origin("src/http_parser.c", text) == "production"
+
+
+def test_llparse_rule_is_c_and_cpp_only() -> None:
+    text = "static const unsigned char llparse_blob0[] = {\n"
+    assert code_origin("src/parser.py", text) == "production"
 
 
 def test_own_license_header_is_not_vendored() -> None:
@@ -677,7 +944,7 @@ def test_build_files_by_type(path: str) -> None:
         # Near misses: code named like a build step, which ships.
         ("src/build.rs", "production"),  # a ``mod build;``, not a Cargo build script
         ("homeassistant/setup.py", "production"),  # a nested setup.py is a module
-        ("src/build/compiler.ts", "tooling"),  # the build/ directory rule, not the type
+        ("src/build/compiler.ts", "production"),  # a build/ module of the source tree
         ("src/builder.py", "production"),
         ("src/gradle/GradlePlugin.java", "production"),
         ("lib/webpack.js", "production"),
@@ -709,6 +976,17 @@ def test_migration_paths() -> None:
     assert is_migration_path("alembic/versions/abc.py")
     assert not is_migration_path("api/versions/v1.py")
     assert not is_migration_path("src/migrate.py")
+
+
+def test_singular_migration_dir_needs_numbered_entries() -> None:
+    assert is_migration_path("packages/database/migration/20240101_add_x/migration.ts")
+    assert is_migration_path("src/migration/1700000000000-Init.ts")
+    assert is_migration_path("db/migration/V1__init.java")
+    # An importer that migrates a user's data from another service ships.
+    assert not is_migration_path("modules/migration/comment.go")
+    assert not is_migration_path("src/migration/index.ts")
+    assert not is_migration_path("src/migration.ts")
+    assert not is_migration_path("src/migration/1password.ts")
 
 
 def test_prefixed_migration_dirs_under_db() -> None:
@@ -960,3 +1238,61 @@ def test_a_nested_docs_root_counts_only_beside_its_site_config(tmp_path) -> None
     assert code_origin("website/docs/examples/a.ts", repo_root=tmp_path) == "docs_example"
     assert code_origin("app/docs/page.tsx", repo_root=tmp_path) == "production"
     assert code_origin("docs/guide/a.py", repo_root=tmp_path) == "docs_example"
+
+
+def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
+    # celery's pytest smoke-test workers: ingestion (with the language) stores
+    # them as tests, and a caller holding only the path now agrees.
+    assert code_origin("t/smoke/workers/dev.py") == "test"
+    assert code_origin("t/smoke/tasks.py") == "test"
+    assert code_origin("t/basic.rb") == "production"
+
+
+def _bank(root, problems: int = 4) -> None:
+    """``backend/data``: per-problem JSON plus a solution in three languages."""
+    for i in range(problems):
+        item = root / "backend" / "data" / "problems" / f"p{i}"
+        (item / "solutions").mkdir(parents=True)
+        for n in range(12):
+            (item / f"case{n}.json").write_text("{}")
+        for name in ("python.py", "Solution.java", "go.go"):
+            (item / "solutions" / name).write_text("")
+
+
+def test_code_in_a_data_folder_of_mostly_data_in_several_languages_is_data(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/problems/p1/solutions/go.go", repo_root=tmp_path) == "data"
+
+
+def test_data_needs_the_folder_on_disk(tmp_path) -> None:
+    _bank(tmp_path)
+    assert code_origin("backend/data/problems/p0/solutions/python.py") == "production"
+
+
+def test_a_data_folder_of_one_language_stays_production(tmp_path) -> None:
+    # ``lib/data/*.ts`` beside JSON is an app's own data modules, imported as code.
+    data = tmp_path / "frontend" / "lib" / "data"
+    data.mkdir(parents=True)
+    for i in range(12):
+        (data / f"set{i}.json").write_text("{}")
+    for name in ("index.ts", "loader.ts"):
+        (data / name).write_text("")
+    assert code_origin("frontend/lib/data/index.ts", repo_root=tmp_path) == "production"
+
+
+def test_a_data_folder_mostly_of_code_stays_production(tmp_path) -> None:
+    data = tmp_path / "app" / "data"
+    data.mkdir(parents=True)
+    for name in ("repo.py", "models.ts", "Store.java", "seed.json"):
+        (data / name).write_text("")
+    assert code_origin("app/data/repo.py", repo_root=tmp_path) == "production"
+
+
+def test_a_test_under_a_data_folder_stays_a_test(tmp_path) -> None:
+    _bank(tmp_path)
+    for n in range(10):  # keep the folder a bank with the test file in it
+        (tmp_path / "backend" / "data" / f"extra{n}.json").write_text("{}")
+    (tmp_path / "backend" / "data" / "test_bank.py").write_text("")
+    assert code_origin("backend/data/problems/p0/solutions/go.go", repo_root=tmp_path) == "data"
+    assert code_origin("backend/data/test_bank.py", repo_root=tmp_path) == "test"

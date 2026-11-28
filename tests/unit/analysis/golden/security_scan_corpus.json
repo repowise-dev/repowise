@@ -8,12 +8,6 @@
           "severity": "high",
           "snippet": "x = eval(user_input)",
           "line": 1
-        },
-        {
-          "kind": "eval_call",
-          "severity": "high",
-          "snippet": "obj.eval(y)",
-          "line": 2
         }
       ]
     },
@@ -460,12 +454,6 @@
       "findings": [
         {
           "kind": "stripe_key",
-          "severity": "high",
-          "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
-          "line": 1
-        },
-        {
-          "kind": "public_env_secret",
           "severity": "high",
           "snippet": "NEXT_PUBLIC_STRIPE_SECRET=sk_l****",
           "line": 1

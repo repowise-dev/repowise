@@ -264,6 +264,35 @@ def test_exact_excerpt_preserves_selected_line_content() -> None:
     assert selection.included[0].end_line == 2
 
 
+def test_exact_excerpt_prefers_an_implementation_with_the_same_id() -> None:
+    declaration_text = "function encode(value: string): string;\n"
+    implementation_text = "function encode(value) { return value; }\n"
+    source = (declaration_text + implementation_text).encode()
+    reference = "client.ts::encode"
+    declaration = SimpleNamespace(id=reference, start_line=1, end_line=1, is_declaration=True)
+    implementation = SimpleNamespace(id=reference, start_line=2, end_line=2, is_declaration=False)
+    legacy = SimpleNamespace(id=reference, start_line=1, end_line=1)
+    cases = (
+        ([declaration, implementation], 2, implementation_text),
+        ([implementation, declaration], 2, implementation_text),
+        ([declaration], 1, declaration_text),
+        ([legacy, implementation], 1, declaration_text),
+        ([legacy], 1, declaration_text),
+    )
+    for symbols, expected_line, expected_text in cases:
+        parsed = SimpleNamespace(file_info=SimpleNamespace(path="client.ts"), symbols=symbols)
+        selection = select_prompt_evidence(
+            {"client.ts": source},
+            (),
+            token_budget=600,
+            parsed_files=[parsed],
+            references=(reference,),
+        )
+        [excerpt] = selection.included
+        assert excerpt.text == expected_text
+        assert (excerpt.start_line, excerpt.end_line) == (expected_line, expected_line)
+
+
 def test_prompt_evidence_keeps_configured_and_exact_halves_stable() -> None:
     source_map = {
         "docs/ARCHITECTURE.md": (b"configured architecture evidence\n" * 500),

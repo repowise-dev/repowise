@@ -30,7 +30,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from repowise.core.forges import ForgeKind, change_number, get_forge
-from repowise.core.ingestion.git_indexer._constants import classify_commit_category
+
+from .category import classify_change
 
 SHAPE_MERGE = "merge"
 SHAPE_SQUASH = "squash"
@@ -443,7 +444,7 @@ class _Builder:
                 author_email=author_email,
                 commit_shas=commits,
                 files=files,
-                category=classify_commit_category(title),
+                category=classify_change(title, files).category,
                 body=head.body,
             )
         )

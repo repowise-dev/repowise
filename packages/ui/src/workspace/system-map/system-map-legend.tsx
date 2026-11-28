@@ -4,13 +4,14 @@
  * Key for the Live System Map, as one caption row between the controls and
  * the canvas: bands when any are drawn, the line styles actually drawn
  * (structural ink, co-change dotted, candidate dashed), the health mark's
- * three bands, and how to get more. Reads the same constants the map renders
+ * five bands, and how to get more. Reads the same constants the map renders
  * from, so the two cannot drift, and lists only what is drawn.
  */
 
 import type { SystemEdge, SystemEdgeMatchType } from "@repowise-dev/types";
 import type { DrawnEdge } from "./level-types";
-import { HEALTH_MARK_BANDS } from "../../health/tokens";
+import { HEALTH_BAND_LABEL, HEALTH_BAND_ORDER, HEALTH_BAND_RANGE_LABEL } from "@repowise-dev/types/health";
+import { healthBandColor } from "../../health/tokens";
 import { isGatewayRouted, matchTypeDash } from "./edge-kinds";
 import { BAND_STROKE, bandWidth } from "./system-map-band";
 
@@ -42,14 +43,8 @@ const LINE_LABEL: Record<SystemEdgeMatchType, string> = {
   inferred: "Co-change from git history",
 };
 
-/** "8+", "4 to 8", "below 4": each band's range, read off the shared edges. */
-function markRange(i: number): string {
-  const b = HEALTH_MARK_BANDS[i]!;
-  if (i === 0) return `${b.min}+`;
-  const above = HEALTH_MARK_BANDS[i - 1]!.min;
-  if (i === HEALTH_MARK_BANDS.length - 1) return `below ${above}`;
-  return `${b.min} to ${above}`;
-}
+/** Best first, as a key reads top down. */
+const BANDS_BEST_FIRST = [...HEALTH_BAND_ORDER].reverse();
 
 export interface SystemMapLegendProps {
   /** Match types present on the drawn edges; only these get a key. */
@@ -121,8 +116,12 @@ export function SystemMapLegend({ matchTypes, gatewayRouted = 0, bands = false }
       )}
       <span className="inline-flex items-center gap-2.5">
         <span className="text-xs text-[var(--color-text-tertiary)]">Repository health</span>
-        {HEALTH_MARK_BANDS.map((b, i) => (
-          <Item key={b.band} swatch={<Dot color={b.color} />} label={`${b.label} ${markRange(i)}`} />
+        {BANDS_BEST_FIRST.map((b) => (
+          <Item
+            key={b}
+            swatch={<Dot color={healthBandColor(b)} />}
+            label={`${HEALTH_BAND_LABEL[b]} ${HEALTH_BAND_RANGE_LABEL[b]}`}
+          />
         ))}
       </span>
       <span className="text-xs text-[var(--color-text-tertiary)]">

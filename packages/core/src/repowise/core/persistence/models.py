@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -271,6 +272,9 @@ class PageVersion(Base):
     """Historical snapshot of a wiki page, created each time the page is re-generated."""
 
     __tablename__ = "wiki_page_versions"
+    # Each update asks whether any of a repository's pages is over the
+    # version cap; this answers it from the index alone.
+    __table_args__ = (Index("ix_wiki_page_versions_repo_page", "repository_id", "page_id"),)
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     # Indexed so deleting a page does not scan every version for the FK check.
@@ -291,6 +295,46 @@ class PageVersion(Base):
     archived_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
+
+
+class PageArchive(Base):
+    """A complete retired page record, excluded from live retrieval.
+
+    A structural page id can be reused after retirement. Each retirement has
+    its own identity, so the next incarnation never claims the old history.
+    The JSON snapshot preserves every column without a second page schema.
+    """
+
+    __tablename__ = "page_archive"
+    __table_args__ = (
+        Index("ix_page_archive_repo_page", "repository_id", "page_id"),
+        Index("ix_page_archive_repo_retired", "repository_id", "retired_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    page_id: Mapped[str] = mapped_column(Text, nullable=False)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    superseded_by: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PageVersionArchive(Base):
+    """A retired version, owned by one specific page retirement."""
+
+    __tablename__ = "page_version_archive"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    archive_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("page_archive.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    record_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class GraphNode(Base):
@@ -364,6 +408,10 @@ class GraphNode(Base):
         # seeking. Additive, so ``_reconcile_schema`` creates it on existing
         # databases at the next ``init_db``.
         Index("ix_graph_nodes_repo_file", "repository_id", "file_path"),
+        # Exact symbol lookups by name (e.g. resolution.py, call_graph.py,
+        # callers.py) filter on ``name``, which previously scanned every row
+        # for the repository.
+        Index("ix_graph_nodes_repo_name", "repository_id", "name"),
     )
 
 
@@ -442,6 +490,19 @@ class GraphEdge(Base):
     # import), so it runs on first call, not at module load. Skipped by cycle
     # detection and persisted for the same reason as ``type_only``.
     deferred: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # True when no import along the edge runs at load unguarded and at least
+    # one sits in a ``try`` body with an ``except ImportError`` fallback.
+    # Skipped by cycle detection and persisted for the same reason.
+    guarded: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # True when every load-time import along the edge is a Python module-form
+    # import (``import b``) whose name no module-level code mentions. A cycle
+    # made only of these is static only, unlikely to fail at import; it stays
+    # a cycle. Persisted for the same reason as ``type_only``.
+    module_form: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -601,6 +662,10 @@ class WikiSymbol(Base):
         # order the chosen index walks. ``augment_cmd``'s symbol rescue had two
         # such queries and now orders explicitly — see ``symbols_named``.
         Index("ix_wiki_symbols_repo_path", "repository_id", "file_path"),
+        # Name lookups on hot MCP paths (resolution, symbols, pointers, flows)
+        # filter on ``name``, which previously scanned the entire repository's
+        # symbols.
+        Index("ix_wiki_symbols_repo_name", "repository_id", "name"),
     )
 
 
@@ -896,6 +961,44 @@ class Change(Base):
     )
 
 
+class ChangeCommit(Base):
+    """One commit a change landed: ``changes.commit_shas_json`` as rows.
+
+    Lets the health filters join a change to its commits' stored deltas in SQL
+    instead of binding every matching change id. Written with the change.
+    """
+
+    __tablename__ = "change_commits"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "sha", name="uq_change_commit"),
+        Index("ix_change_commits_repo_sha", "repository_id", "sha"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ChangeFile(Base):
+    """One path a change stores: ``changes.files_json`` as rows (the same capped list)."""
+
+    __tablename__ = "change_files"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "file_path", name="uq_change_file"),
+        Index("ix_change_files_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GitCommitFile(Base):
     """One file a commit touched, and the lines it changed there.
 
@@ -1041,6 +1144,38 @@ class GitCommitHealthFinding(Base):
     )
 
 
+class GitCommitHealthScan(Base):
+    """A commit the scan reached that has no :class:`GitCommitHealthDelta` row.
+
+    Most commits that store nothing (only lockfiles or docs changed, too many
+    files) store nothing every time, so without this marker each scan would
+    pay to find that out again. Readers never use it: a commit with no delta
+    row still reads as "not analysed".
+
+    ``outcome`` is the delta status that was not stored, ``too_large``, or
+    ``deferred``. A ``deferred`` commit was too big for an
+    update's inline budget and still waits for a scan with a full budget.
+    The version columns work as on the delta row: a marker from another
+    analyzer counts as absent.
+    """
+
+    __tablename__ = "git_commit_health_scans"
+    __table_args__ = (UniqueConstraint("repository_id", "sha", name="uq_git_commit_health_scan"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(24), nullable=False)
+    analyzer_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rules_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    performance_model_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
+    )
+
+
 class FixEvent(Base):
     """One bug-fix commit's effect on one file, with its bug-introducing candidates.
 
@@ -1173,6 +1308,13 @@ class GitFunctionBlame(Base):
     # ``function_blame_rollup.COMMIT_SET_LIMIT``. Split File's co-change edge
     # reads it when a re-score has no blame index. NULL on rows written before.
     commit_shas_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Blamed for the function's owner and last change only: a file under the
+    # commit floor, or a production file over the biomarkers' size cap. The
+    # health readers (function mod percentile, Split File sets, Fix first,
+    # plan annotations) skip these rows, so they read what the biomarkers saw.
+    history_only: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
@@ -1183,8 +1325,11 @@ class GitFunctionBlame(Base):
 
 
 class DecisionRecord(Base):
-    """An architectural decision record captured from inline markers, git
-    archaeology, README mining, or manual CLI entry."""
+    """A decision record: recorded by an agent or a person, read from an ADR,
+    or mined from inline markers, commits, pull request bodies and comments.
+
+    Mined records are background until someone puts them in force; authority
+    lives in :class:`DecisionAcceptance`, never in ``status``."""
 
     __tablename__ = "decision_records"
     __table_args__ = (
@@ -1274,6 +1419,13 @@ class DecisionRecord(Base):
     staleness_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     # Every file and path the record names is absent at HEAD, renames followed.
     artifacts_gone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    # Whether the rule itself still holds once the files moved, from
+    # ``analysis.decisions.rule_check``: holds | drifted | unknown, NULL until
+    # checked. ``holds`` clears a churn-only ``needs_review``; ``drifted`` sets it.
+    rule_check: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    rule_check_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # HEAD the verdict was read at; a later change to the scope rechecks it.
+    rule_checked_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
     superseded_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -1345,10 +1497,9 @@ class DecisionEdge(Base):
     - ``conflicts_with`` — two *active* decisions that contradict; neither
       clearly supersedes the other (a governance smell surfaced in health).
 
-    Edges accrete (propose-don't-clobber): a detected supersession always
-    records the edge; the older decision's status is only auto-flipped to
-    ``superseded`` above a high confidence threshold, leaving everything else a
-    reviewable proposal.
+    An edge exists because someone named it, as ``decision deprecate
+    --superseded-by`` does. Nothing infers one from text similarity
+    (``SEMANTIC_SUPERSESSION_ENABLED`` is off).
     """
 
     __tablename__ = "decision_edges"
@@ -1568,14 +1719,26 @@ class DecisionCandidateMeta(Base):
     )
 
 
+#: ``DecisionAlias.reason`` values. ``merged``: the id's record was folded into
+#: another. ``rekeyed``: the same record moved to its derived id.
+MERGED_REASON = "merged"
+REKEYED_REASON = "rekeyed"
+#: A pre-fix ``supersede_decision`` pointer at the successor. Nothing writes it
+#: now and readers skip it.
+SUPERSEDED_REASON = "superseded"
+
+
 class DecisionAlias(Base):
     """A retired decision id that still resolves to a live record.
 
-    Merging a candidate into a decision, and superseding one decision with
-    another, both leave an id in circulation: in a manifest someone committed,
-    in an agent's notes, in a link. The alias keeps it resolving instead of
-    failing to find anything, which is what makes merge and supersede safe to
-    perform.
+    Merging a candidate into a decision, and moving a record onto its derived
+    id, both leave an id in circulation: in a manifest someone committed, in an
+    agent's notes, in a link. The alias keeps it resolving instead of failing to
+    find anything, which is what makes merge and the move safe to perform.
+
+    Superseding writes none: the superseded record keeps its id, and the
+    successor lives in ``DecisionRecord.superseded_by`` and a ``supersedes``
+    edge. Rows with reason ``superseded`` predate that; readers skip them.
     """
 
     __tablename__ = "decision_aliases"
@@ -1593,7 +1756,7 @@ class DecisionAlias(Base):
         nullable=False,
         index=True,
     )
-    reason: Mapped[str] = mapped_column(String(32), nullable=False, default="merged")
+    reason: Mapped[str] = mapped_column(String(32), nullable=False, default=MERGED_REASON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -1786,7 +1949,7 @@ class DocDriftReference(Base):
     drifted reference resolves to nothing, so it can never appear here, and no
     surface may read one as evidence against the other.
 
-    A table, not a graph edge, for :class:`TestCoverageEntry`'s reason - the
+    A table, not a graph edge, for :class:`TestCoverageSource`'s reason - the
     consumer is a straight lookup keyed by file path. It is stored at all
     because the process answering "which documents mention this file" holds no
     ``source_map``: 0.7 ms to serve, 243 ms to re-run the pass, 1,562 ms on a
@@ -1937,6 +2100,9 @@ class HealthFinding(QueueVerdict, Base):
     # makes "the evidence for this opportunity" an indexed seek.
     opportunity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    # Why a person gave the current status (an ack or false positive needs
+    # one); ``None`` when no person gave a reason.
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
@@ -2015,6 +2181,9 @@ class RefactoringSuggestion(Base):
     # writer resolved it, "user" when a person did. Distinguishing them is what
     # lets a re-detected plan reopen without overriding a human decision.
     status_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Why a person gave the current status (an ack or false positive needs
+    # one); ``None`` when no person gave a reason.
+    status_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     status_changed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -2112,12 +2281,18 @@ class PerformanceOpportunity(QueueVerdict, Base):
     # ``available`` | ``no_safe_plan`` | ``not_persisted``, decided once by the
     # writer that also decides whether a plan row exists.
     plan_state: Mapped[str] = mapped_column(String(16), nullable=False, default="no_safe_plan")
-    # ``proven`` | ``unproven`` (``worth.cost_proof``): whether anything measured
-    # that the cost grows. A store written before the column reads ``proven``
+    # ``eligibility.QUEUE_PROOFS`` (``proven`` | ``unproven`` |
+    # ``background_unproven``): whether the code or a run shows the cost, as
+    # the queue judges it. Still written for readers that predate
+    # ``static_cost``. A store written before the column reads ``proven``
     # until its next analysis, as it was served then.
     cost_proof: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="proven", server_default="proven"
+        String(32), nullable=False, default="proven", server_default="proven"
     )
+    # ``worth.STATIC_COSTS``: what the code alone shows about the cost, never
+    # what a run measured (that stays in the details' facets). NULL only
+    # between the column's addition and ``fill_static_costs``.
+    static_cost: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # ``execution_roles.ExecutionRole`` of the hottest member's loop owner, so
     # the queue can leave out startup, CLI, tooling and test loops in SQL.
     execution_role: Mapped[str] = mapped_column(
@@ -2255,12 +2430,58 @@ class FunctionFact(Base):
     nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     params: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The normalized body's digest (32 hex) and token count
+    # (``analysis.symbol_body``): how a later run recognizes this body under a
+    # new name or path. NULL where the walk produced no token rows.
+    body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    body_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The function's identity across renames and moves (16 hex,
+    # ``analysis.lineage``). NULL on rows written before it existed.
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The nearest test functions (``analysis.function_test_map``), as
     # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
     # NULL when no run has mapped it. Restamped every run, like the role.
     tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Values the body builds as an eager ``setdefault`` default, built on every
+    # call (``analysis.health.perf.eager_defaults``), as ``[[callee, line], ...]``;
+    # NULL when there are none or the walk did not look (only Python is read).
+    eager_defaults_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class SymbolLineageEvent(Base):
+    """One lineage decision a run made when it rewrote ``function_facts``.
+
+    A function that moved, was renamed or had its file renamed carries its
+    ``lineage_id`` to the new symbol id; a ``broken`` row says why a candidate
+    was not taken (``analysis.lineage``). Append-only, newest
+    ``crud.analysis.function_facts.LINEAGE_EVENT_CAP`` per repository kept.
+    """
+
+    __tablename__ = "symbol_lineage_events"
+    __table_args__ = (
+        Index("ix_symbol_lineage_events_repo_from", "repository_id", "from_symbol_id"),
+    )
+
+    # Insertion order, which the prune keeps the newest of.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # The surviving lineage, or the one that ended for ``broken``.
+    lineage_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_symbol_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for ``broken``.
+    to_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The commit the run analysed; NULL when it could not be read.
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ``file_rename``, ``verbatim_move``, ``body_rename``, ``edited_move``, ``broken``.
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
 
 
 class RefactoringPayoff(Base):
@@ -2712,6 +2933,8 @@ class ActionState(Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False)
     fingerprint: Mapped[str] = mapped_column(String(32), nullable=False, default="")
     until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Why the person answered so; ``None`` when they gave no reason.
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc, onupdate=_now_utc
     )
@@ -2750,56 +2973,745 @@ class ReadSnapshot(Base):
     )
 
 
-class TestCoverageEntry(Base):
-    """One ``(test, source file)`` coverage fact - the test-to-code map.
+class StoredReport(Base):
+    """A report document as written, one row per kind and commit.
 
-    Where :class:`CoverageFile` stores per-file aggregate coverage (a file is
-    covered, merged across every test), this keeps the test dimension: a row
-    says test ``test_id`` covered ``covered_lines_json`` of ``source_file``.
-    It backs the reverse index "given changed lines, which tests hit them"
-    that run-only-affected-tests and coverage-backed missing-test signals
-    lean on.
-
-    Design: a table, not a graph edge. The first consumer is a CI lookup
-    keyed by changed source file + lines, which is a straight table query; a
-    projected graph edge (composing with blast-radius) is deferred until a
-    consumer needs graph composition.
-
-    Point-in-time only: rows are overwritten per ingest run (delete-then
-    -insert by ``repository_id``), no history - mirroring ``CoverageFile``.
-    Populated only from context-carrying reports; ``covered_lines_json`` is a
-    JSON int list (ceiling: fine at current scale, swap to a bitmap/RLE
-    encoding if O(tests x files) row size becomes a problem).
+    Unlike a read snapshot it is a record, not a cache: an index write leaves
+    it, and a rewrite at a new commit adds a row beside the old one. The
+    newest ``created_at`` per kind is the current report.
     """
 
-    __tablename__ = "test_coverage"
+    __tablename__ = "reports"
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32),
+        ForeignKey("repositories.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    #: The commit the report describes; ``""`` when the index held none.
+    commit_sha: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+
+class TestCoverageTest(Base):
+    """One test of the per-test coverage map, numbered within its repository.
+
+    :class:`TestCoverageSource` rows name tests by ``test_no``, so a long test
+    id is stored once rather than once per file it covers.
+    """
+
+    __tablename__ = "test_coverage_tests"
     # Not a pytest test class despite the ``Test`` prefix.
     __test__ = False
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     repository_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
     )
-    # Raw test identifier from the report (coverage.py context
-    # ``module::qualname|phase`` or an lcov ``TN:`` name).
+    test_no: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    # The test's id from the report: a pytest nodeid (phases merged) or an
+    # lcov ``TN:`` name.
     test_id: Mapped[str] = mapped_column(Text, nullable=False)
     # Canonical repo key of the test's own source file, when resolvable.
     test_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_test_coverage_tests_repo_test", "repository_id", "test_id"),)
+
+
+class TestCoverageSource(Base):
+    """The per-test coverage of one source file - the test-to-code map.
+
+    Where :class:`CoverageFile` stores per-file aggregate coverage (a file is
+    covered, merged across every test), this keeps the test dimension:
+    ``tests_json`` lists ``[test_no, "1-4,9"]`` for each test that ran a line
+    of ``source_file``, lines as inclusive ranges. It backs the reverse index
+    "given changed lines, which tests hit them" that run-only-affected-tests
+    and coverage-backed missing-test signals lean on, which reads one row per
+    changed file.
+
+    One row per file rather than per ``(test, file)`` pair: a large suite has
+    a million pairs, and a row per pair repeated the test id and source path
+    in every row and two indexes (about 1 KB a pair).
+
+    Point-in-time only: rows are overwritten per ingest run (delete-then
+    -insert by ``repository_id``), no history - mirroring ``CoverageFile``.
+    Populated only from context-carrying reports.
+    """
+
+    __tablename__ = "test_coverage_sources"
+    # Not a pytest test class despite the ``Test`` prefix.
+    __test__ = False
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
+    )
     # Canonical repo key of the covered source file.
-    source_file: Mapped[str] = mapped_column(Text, nullable=False)
-    covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_file: Mapped[str] = mapped_column(Text, primary_key=True)
+    tests_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # How many tests ``tests_json`` lists, so the map's size reads without decoding it.
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     source_format: Mapped[str] = mapped_column(String(32), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
     ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
+
+# ---------------------------------------------------------------------------
+# Runtime evidence: what a real run showed, joined to the code.
+#
+# One ``evidence_runs`` row per ingested evidence file, and the rows of one
+# kind under it (per-symbol costs, benchmark results, test timings, query
+# counts). Raw stacks and samples are never stored, only per-symbol
+# aggregates. No row means unknown: a symbol, test or benchmark a run did not
+# report has no row, never a zero. Local stores never run Alembic and the
+# reconciler never changes a key or constraint, so these keys are final.
+# ``lineage_id`` columns stay NULL until function lineage fills them.
+# ---------------------------------------------------------------------------
+
+
+class EvidenceRun(Base):
+    """One ingested evidence file: where it came from and how much of it mapped.
+
+    ``run_key`` digests the content and the workload, so the same file
+    ingested again at the same commit restamps this row instead of adding a
+    second measurement (``crud.analysis.evidence``). The unit counts cover the
+    file's own entries: ``units_matched`` became rows, ``units_skipped`` did
+    not (reasons in ``skipped_json``), ``units_outside_repo`` named a path
+    outside ``checkout_root``, ``units_truncated`` were dropped by a cap.
+    NULL counts and values mean the writer did not know them.
+    """
+
+    __tablename__ = "evidence_runs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    run_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    # The evidence kind (``profile``, ``benchmark``, ``test_timing``,
+    # ``query_count``): which table holds the run's rows.
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    # The file format the rows came from, e.g. ``repowise-evidence-v1``.
+    format: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Who stored it (``cli``). ``production`` workloads come only from a
+    # verified source, never from a flag.
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    workload_name: Mapped[str] = mapped_column(Text, nullable=False)
+    # ``unit_test``, ``benchmark``, ``entry_point``, ``load_test``, ``production``.
+    workload_class: Mapped[str] = mapped_column(String(16), nullable=False)
+    # ``cpu`` or ``wall`` for time; NULL where the kind has none (counts).
+    value_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Where it ran (``local``, ``ci``, ...); ``unknown`` when not said. Part of
+    # the test-stats key, so it is never NULL.
+    environment: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="unknown", server_default="unknown"
+    )
+    tool_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tool_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The commit measured. Evidence from another commit than the indexed one
+    # keeps its own commit and reads as stale; it is never re-mapped.
+    commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Uncommitted changes at measurement; NULL: unknown.
+    dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    checkout_root: Mapped[str | None] = mapped_column(Text, nullable=True)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    units_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_matched: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_skipped: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_outside_repo: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    units_truncated: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``{reason: count}`` for the skipped units.
+    skipped_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A capped sample of the entries that did not map, for the diagnostic.
+    unmatched_sample_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The run's whole value (samples or time), and the part with a resolved
+    # production frame anywhere on the stack (kept for older readers; it says
+    # nothing about cost).
+    total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    explained_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Where a profile run's time went (``evidence.profile_convert``): production
+    # repo code itself, blocked in waits, in libraries. NULL: not recorded.
+    repo_self_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # How many samples the whole run holds, whatever its unit: the ``n`` of a
+    # share's interval. NULL when the profiler counted none (a traced or an
+    # evented profile).
+    total_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Joined profile rows outside production code (``code_origin``), counted
+    # before the per-run cap drops any; NULL for other kinds or older runs.
+    unlisted_symbols: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Fewer than half the units mapped: stored, but not a basis for ranking.
+    mapping_partial: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
+    # Tests that failed in a profiled test suite (the run is still a full
+    # workload); NULL when the profile does not say.
+    tests_failed: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # A test-timing run's every test folded before the row cap: seconds and
+    # tests per test file and a duration histogram (``evidence.suite_cost.
+    # timing_summary``). NULL for other kinds and for runs stored before it.
+    timing_summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The window a production run covers, when its source said (counters run
+    # across deploys), and the oldest commit deployed in it: ``commit_sha`` is
+    # then the newest, or NULL when the deployed commit is unknown.
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    base_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     __table_args__ = (
-        UniqueConstraint("repository_id", "test_id", "source_file", name="uq_test_coverage"),
-        # Reverse index (changed source file -> covering tests) is the hot path.
-        Index("ix_test_coverage_repo_source", "repository_id", "source_file"),
-        # Forward index (test -> files it covers).
-        Index("ix_test_coverage_repo_test", "repository_id", "test_id"),
+        Index("ix_evidence_runs_repo_ingested", "repository_id", "ingested_at"),
+        Index("ix_evidence_runs_repo_key", "repository_id", "run_key", "commit_sha"),
+    )
+
+
+def _evidence_run_fk() -> Any:
+    return ForeignKey("evidence_runs.id", ondelete="CASCADE")
+
+
+def _repository_fk() -> Any:
+    return ForeignKey("repositories.id", ondelete="CASCADE")
+
+
+class EvidenceSymbolCost(Base):
+    """One symbol's cost in one profile run, in the run's ``unit``.
+
+    ``symbol_id`` is the id at the evidence commit. ``self`` is what the
+    symbol costs: its own body and the built-ins and libraries it called,
+    waits excluded; ``total`` includes its callees. Sample counts are kept
+    beside the values because a time unit hides how many samples it rests on.
+    ``call_count`` comes only from deterministic tracers, never inferred.
+    """
+
+    __tablename__ = "evidence_symbol_costs"
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The line the evidence named, at the evidence commit.
+    line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    self_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    self_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    call_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How the entry was joined to the symbol (``declared``: the file named it).
+    resolution: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # ``function_facts.body_digest`` of the symbol when the run was joined at
+    # the commit it measured; NULL otherwise. A later index compares it to
+    # tell an unchanged body from an edited one.
+    body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # What the symbol's time went to and what drove it, as shares of ``total``
+    # (``evidence.profile_convert``): JSON lists of up to three ``{name, kind,
+    # share}`` callees and ``{name, share, symbol | path}`` callers; NULL when
+    # the run did not say.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class EvidenceBenchmarkResult(Base):
+    """One benchmark's result in one run; a series is one key across runs.
+
+    ``benchmark_key`` is the benchmark's full name as the tool reports it,
+    parameters included. One run holds each benchmark once: a writer folds
+    repeated reports (``-count=N``) into one row with ``rounds``. Only the
+    statistics the tool gave are set. ``allocs_per_op`` and ``bytes_per_op``
+    are exact where a tool reports them; time is not.
+    """
+
+    __tablename__ = "evidence_benchmark_results"
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    benchmark_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    # The benchmark function itself, when it resolved to an indexed symbol.
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    unit: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    lower_is_better: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stddev: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rounds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    allocs_per_op: Mapped[float | None] = mapped_column(Float, nullable=True)
+    bytes_per_op: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        Index("ix_evidence_benchmark_results_repo_key", "repository_id", "benchmark_key"),
+        {"sqlite_with_rowid": False},
+    )
+
+
+class EvidenceTestTiming(Base):
+    """One test's duration and outcome in one run.
+
+    ``test_id`` is in the ``test_coverage.test_id`` namespace
+    (``path::qualname``), so timings and the test-to-code map join. A test
+    run more than once in one run (reruns) is folded to one row by the writer.
+    """
+
+    __tablename__ = "evidence_test_timings"
+    # Not a pytest test class despite the ``Test`` in the name.
+    __test__ = False
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    test_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    test_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The test function, when it resolved to an indexed symbol.
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # NULL when the test reported no duration (a skip, a collection error).
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ``passed``, ``failed``, ``skipped``, ``error``; NULL: not reported.
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The first test the run reports for its class: its time may include
+    # fixtures the whole class or module shares. NULL: not said.
+    first_in_class: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class EvidenceTestStats(Base):
+    """A test's rolling duration series in one environment, across runs.
+
+    Derived from ``evidence_test_timings`` as runs arrive, and kept when the
+    runs themselves are pruned. Only ``unit_test`` workloads feed it, so a
+    load test never mixes into a test's own series. ``durations_json`` is the newest durations,
+    ``[[commit_sha, seconds], ...]``, oldest first.
+    """
+
+    __tablename__ = "evidence_test_stats"
+    __test__ = False
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    environment: Mapped[str] = mapped_column(String(32), primary_key=True)
+    test_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    durations_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    median_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class EvidenceQueryCount(Base):
+    """Statements one call site issued within one scope of one run.
+
+    The scope is a test or a request (``scope_kind``, ``scope_id``), the site
+    the function that issued the statements. ``statement_fp`` is a digest of
+    the normalised statement; the statement text is never stored. Counts are
+    exact, which is why they may confirm a finding where timing may not.
+    """
+
+    __tablename__ = "evidence_query_counts"
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    scope_kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    site_symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    statement_fp: Mapped[str] = mapped_column(String(32), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The line the evidence named, at the evidence commit.
+    site_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # How many items the scope ran over (its input size), when the run said.
+    scope_items: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    query_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The most identical statements from this site in the scope.
+    identical_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class EvidenceRouteLatency(Base):
+    """One route's requests in one production run (``route_latency``).
+
+    ``route`` is the template the framework routes by (``/users/:id``),
+    never a requested URL. ``handler_symbol_id`` is the route's handler once
+    the route table links it; NULL until then.
+    """
+
+    __tablename__ = "evidence_route_latency"
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    method: Mapped[str] = mapped_column(String(16), primary_key=True)
+    route: Mapped[str] = mapped_column(Text, primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    handler_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    request_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    p50_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    error_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class EvidenceStatementStats(Base):
+    """One normalized statement's totals in one production run (``statement_stats``).
+
+    ``statement_fp`` is the source's statement id as hex (``pg_stat_statements``
+    ``queryid``) or a digest of the text. ``query_text`` is normalized, cut
+    short and has every value masked (``evidence.format_v1.statement_text``).
+    ``symbol_id`` is the function that issues it, when the statement-site
+    join (``evidence.statement_join``) finds exactly one. ``issuer`` says
+    what the join found: ``function``, ``ambiguous`` (several could),
+    ``database_schedule`` (only a ``cron.schedule`` job runs it), NULL when
+    nothing matched.
+    """
+
+    __tablename__ = "evidence_statement_stats"
+
+    run_id: Mapped[str] = mapped_column(String(32), _evidence_run_fk(), primary_key=True)
+    statement_fp: Mapped[str] = mapped_column(String(32), primary_key=True)
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), nullable=False)
+    query_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issuer: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    calls: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    total_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mean_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    row_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class SymbolHotness(Base):
+    """The read model over runtime evidence: one row per measured symbol.
+
+    Derived from the evidence tables and rebuilt whole, so losing it costs
+    one rebuild. No row means no evidence, which readers show as unknown,
+    never as cold. ``symbol_id`` is the current id. Only production code
+    (``code_origin``) has rows; the numbers come from one basis run
+    (``run_id``), chosen by ``evidence.hotness`` (rules and tiers there).
+    """
+
+    __tablename__ = "symbol_hotness"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # ``measured``, ``ranked`` or ``lead_candidate`` (``evidence.hotness.TIERS``).
+    tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    total_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    workload_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workload_class: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    run_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    evidence_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    measured_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    built_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+    # The basis run (``evidence_runs.id``) the numbers below come from.
+    run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 1-based place among the run's production functions by self time (the
+    # cost, waits excluded); NULL when the evidence is stale or the function
+    # cost nothing itself.
+    rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Self samples on the function and samples in the whole run; NULL when not counted.
+    samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The interval of the function's self share of all samples; NULL without counts.
+    share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The share of the run with a production frame anywhere on the stack (kept
+    # for older readers; ``repo_self_share`` is the one surfaces state).
+    explained_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The basis run's split (``evidence.status.time_split``).
+    repo_self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Functions the run measured outside production code: counted, not listed.
+    run_unlisted: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``cpu`` or ``wall``.
+    value_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # A deterministic tracer ran: the rank orders, and no share is given.
+    ordering_only: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # ``current``, ``body_unchanged`` (older commit, same body) or ``stale``.
+    freshness: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The basis run's ``evidence_symbol_costs.inside_json`` and ``drivers_json``.
+    inside_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    drivers_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class WorkloadHotness(Base):
+    """The read model per workload: the ranked functions of each workload's newest run.
+
+    One row per (run, function), so a function two workloads both rank is
+    listed under each. Derived with ``symbol_hotness`` by
+    ``evidence.hotness`` and rebuilt whole; the run's own facts (workload,
+    commit, age, time split) are read from ``evidence_runs``.
+    """
+
+    __tablename__ = "workload_hotness"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    # ``evidence_runs.id``: the workload's newest run.
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # 1-based place among the run's production functions by self time.
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``ranked`` or ``lead_candidate``.
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    total_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The interval of the self share; NULL without sample counts.
+    share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Self samples on the function; NULL when not counted.
+    samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``current`` or ``body_unchanged``: a stale row is never ranked.
+    freshness: Mapped[str] = mapped_column(String(16), nullable=False)
+    # A deterministic tracer ran: the rank orders, and no share is given.
+    ordering_only: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class BuildUnitRow(Base):
+    """One build unit of a repository (``repowise.core.build_units.BuildUnit``).
+
+    Replaced whole, with ``build_unit_deps`` and ``build_unit_files``, by every
+    run whose graph build collected units (``crud.build_units``).
+    """
+
+    __tablename__ = "build_units"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    # Ecosystem-prefixed and stable across runs: ``npm:<package>``, ``cargo:<crate>``.
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Repo-relative POSIX directory, ``""`` at the repo root.
+    root: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest: Mapped[str] = mapped_column(Text, nullable=False)
+    # The reader that produced the unit (``npm-workspace``, ``manifest-root``).
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoute(Base):
+    """One HTTP route the repository registers (``workspace.repo_routes.Route``).
+
+    Replaced whole by every read (``crud.http_routes``). ``path`` is the
+    normalized template (``/users/{param}``); ``handler_symbol_id`` is the
+    ``wiki_symbols`` id of the function serving the route, NULL for an inline
+    handler or one the read could not resolve without guessing.
+    """
+
+    __tablename__ = "http_routes"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    method: Mapped[str] = mapped_column(String(16), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)
+    framework: Mapped[str] = mapped_column(String(32), nullable=False)
+    handler_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The handler expression as the registration writes it (``user.list``).
+    handler: Mapped[str | None] = mapped_column(Text, nullable=True)
+    service: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class HttpRoutesStamp(Base):
+    """Which read last wrote a repository's ``http_routes``.
+
+    ``repo_routes.routes_fingerprint()`` of that read. An update re-reads the
+    routes when a changed path can hold one or this differs, so an index
+    written before the table, or by other extractors, fills on its next
+    update. No row (or NULL) means read again.
+    """
+
+    __tablename__ = "http_routes_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class StatementSiteRow(Base):
+    """One place that issues a database statement (``evidence.statement_join.StatementSite``).
+
+    Replaced whole by every read (``crud.statement_sites``). ``ordinal`` is
+    the row's place in that read. ``name`` is the table or database function,
+    NULL when only known at run time; ``symbol_id`` the function holding the
+    site, NULL at module level or for a database schedule. ``columns_json``
+    and ``filters_json`` hold ``Columns`` as JSON, NULL when the code does not
+    say.
+    """
+
+    __tablename__ = "statement_sites"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    line: Mapped[int] = mapped_column(Integer, nullable=False)
+    channel: Mapped[str] = mapped_column(String(16), nullable=False)
+    target: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    verb: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    via: Mapped[str] = mapped_column(String(16), nullable=False)
+    symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    columns_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    filters_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class StatementSitesStamp(Base):
+    """Which read last wrote a repository's ``statement_sites``.
+
+    ``statement_sites.sites_fingerprint()`` of that read, and ``inputs_json``
+    what it used (``{"files": [...], "names": [...]}``); an update re-reads
+    when a changed path touches those or this differs. No row (or NULL)
+    means read again.
+    """
+
+    __tablename__ = "statement_sites_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inputs_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class PackageAdvisory(Base):
+    """One advisory on one package from the last imported advisory document.
+
+    Replaced whole by every ``repowise packages import`` (``crud.package_advisories``),
+    each row stamped with that document's format, file hash and import time. A
+    package the document names with no advisory has one row with an empty
+    ``advisory_id``, so "scanned, nothing found" differs from "never scanned".
+    ``ecosystem`` is empty when the document gave none. The list columns are
+    JSON: ``affected_json`` ``[{path, symbols}]``, ``ranges_json`` OSV ranges as
+    ``[[[kind, version], ...], ...]``, ``versions_affected_json`` the record's
+    explicit affected versions. ``direct`` comes from the document's dependency
+    graph (CycloneDX); NULL when it has none.
+    """
+
+    __tablename__ = "package_advisories"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, primary_key=True)
+    advisory_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    versions_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    # True direct, False transitive, NULL when the document does not say.
+    direct: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    aliases_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    affected_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    fixed_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    ranges_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="[]")
+    versions_affected_json: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="[]"
+    )
+    source_format: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class ExternalCallSiteRow(Base):
+    """One call into a package (``ingestion.external_calls.ExternalCallSite``).
+
+    Kept beside ``graph_edges``, never in it: the callee is no repo symbol, and
+    no graph metric may move. A full graph build replaces the repository's rows;
+    a scoped patch replaces the re-resolved files' rows (``crud.external_call_sites``).
+    Complete only when ``external_call_sites_stamp`` carries the current version.
+    """
+
+    __tablename__ = "external_call_sites"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    file_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    line: Mapped[int] = mapped_column(Integer, primary_key=True)
+    caller_symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    local_name: Mapped[str] = mapped_column(Text, primary_key=True)
+    symbol_path: Mapped[str] = mapped_column(Text, primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(16), nullable=False)
+    module: Mapped[str] = mapped_column(Text, nullable=False)
+    package: Mapped[str] = mapped_column(Text, nullable=False)
+    external_node: Mapped[str] = mapped_column(Text, nullable=False)
+    binding: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    __table_args__ = (
+        Index("ix_external_call_sites_repo_package", "repository_id", "package"),
+        {"sqlite_with_rowid": False},
+    )
+
+
+class ExternalCallSitesStamp(Base):
+    """The ``EXTERNAL_CALL_SITES_VERSION`` a repository's ``external_call_sites`` hold.
+
+    No row, NULL or another version: the table is incomplete, readers answer
+    "unknown", and the next update rebuilds the graph in full to refill it.
+    """
+
+    __tablename__ = "external_call_sites_stamp"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class BuildUnitDep(Base):
+    """One in-repo dependency of a build unit on another."""
+
+    __tablename__ = "build_unit_deps"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    dep_unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class BuildUnitFile(Base):
+    """One indexed file owned by one build unit; a file may have several owners."""
+
+    __tablename__ = "build_unit_files"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    __table_args__ = (
+        Index("ix_build_unit_files_repo_unit", "repository_id", "unit_id"),
+        {"sqlite_with_rowid": False},
     )
 
 

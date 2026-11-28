@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -65,6 +67,7 @@
       "process",
       "trivial"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -74,6 +77,7 @@
         "line": 16,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 378,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -90,6 +94,7 @@
         "line": 27,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 555,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -106,6 +111,7 @@
         "line": 28,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 578,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -138,7 +144,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -217,6 +225,7 @@
       "deploy",
       "build_step"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -226,6 +235,7 @@
         "line": 10,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 152,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -242,6 +252,7 @@
         "line": 11,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 170,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -274,7 +285,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -312,7 +325,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": ". ./helpers.sh",
@@ -324,7 +340,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "source \"${BASH_SOURCE%/*}/lib/log.sh\"",
@@ -336,12 +355,16 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
       "main"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -351,6 +374,7 @@
         "line": 4,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 105,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -367,6 +391,7 @@
         "line": 11,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 221,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -383,6 +408,7 @@
         "line": 12,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 235,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -399,6 +425,7 @@
         "line": 15,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 249,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -431,11 +458,14 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -445,6 +475,7 @@
         "line": 6,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 121,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -477,7 +508,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -508,6 +541,7 @@
     "exports": [
       "setup"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -517,6 +551,7 @@
         "line": 6,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 215,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

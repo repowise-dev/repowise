@@ -21,7 +21,7 @@ def runner():
 
 def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
     state = {"last_sync_commit": "known-good-commit"}
-    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0, generated_pages=[])
     provider = SimpleNamespace(provider_name="mock", model_name="mock")
 
     with (
@@ -157,6 +157,7 @@ class TestErrorCases:
         the test below covers.
         """
         self._clear_provider_env_impl(monkeypatch)
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "No model configured" in result.output
@@ -183,6 +184,7 @@ class TestErrorCases:
         """
         self._clear_provider_env_impl(monkeypatch)
         monkeypatch.setenv("REPOWISE_PROVIDER", "")
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
         result = runner.invoke(cli, ["init", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert "Unknown provider" not in result.output
@@ -479,7 +481,7 @@ class TestBuildRepoGraph:
         (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            "repowise.core.generation.editor_files.tech_stack.detect_tech_stack",
+            "repowise.core.ingestion.tech_stack.detect_tech_stack",
             lambda _p: [],
         )
 

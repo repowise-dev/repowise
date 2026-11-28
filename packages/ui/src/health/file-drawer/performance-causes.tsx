@@ -2,8 +2,9 @@
 
 import type { PerformanceOpportunity } from "@repowise-dev/types/health";
 import { biomarkerLabel } from "../biomarker-glossary";
-import { ACTIONABILITY_LABEL } from "../performance/presentation";
+import { ACTIONABILITY_LABEL, observationsText } from "../performance/presentation";
 import { MICRO_LABEL } from "./shared";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The file's open performance causes, when the reader arrived from that lens.
@@ -46,7 +47,7 @@ export function PerformanceCauses({
       ) : (
         <>
           <p className="text-xs text-[var(--color-text-secondary)]">
-            <span className="tabular-nums">{page.total.toLocaleString()}</span> open cause
+            <span className="tabular-nums">{formatNumber(page.total)}</span> open cause
             {page.total === 1 ? "" : "s"} name this file as the place to intervene
             {items.length < page.total ? (
               <>
@@ -102,7 +103,7 @@ function CauseRow({
         </span>
       ) : null}
       <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-        {o.observations_total} observation{o.observations_total === 1 ? "" : "s"} ·{" "}
+        {observationsText(o)} ·{" "}
         {o.affected_files_total} file{o.affected_files_total === 1 ? "" : "s"} ·{" "}
         {o.plan_id ? "stored plan" : o.plan_reason}
       </span>

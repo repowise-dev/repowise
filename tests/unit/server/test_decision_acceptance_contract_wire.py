@@ -45,7 +45,8 @@ async def test_reason_falls_back_to_context_and_never_to_decision(
         repo["id"],
         title="Only the what is stated",
         context="",
-        decision="use an LRU",
+        # Not the first record's text: the same decision and files fold onto it.
+        decision="use an LFU",
         rationale="",
         affected_files=["src/cache.py"],
     )

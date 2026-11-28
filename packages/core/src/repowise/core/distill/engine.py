@@ -50,18 +50,14 @@ MIN_SAVED_TOKENS = 40
 #: Applied to every source here, which is the *smallest* known host cap and
 #: so an undersell for the others rather than an overclaim: a human at a real
 #: terminal has no cap at all, and Codex's own measured cap is 40,000
-#: characters. This path cannot do better, deliberately -- it records
-#: ``agent: "unknown"`` because knowing the rewrite hook's shell is not
-#: knowing which agent ran it, and the contract says an unknown field stays
-#: unknown rather than being filled with the likeliest answer. Choosing a cap
-#: per agent here would be exactly that guess.
+#: characters. A hook-sourced run knows its agent from the hook's
+#: ``--source`` label, but a direct ``repowise distill`` does not, so the one
+#: cap stays the smallest host's for every source.
 #:
-#: The transcript backfill *does* know the harness, having read that
-#: harness's own file, so it applies a per-agent cap
+#: The transcript backfill applies a per-agent cap
 #: (``savings/transcript.py:_HARNESS_OUTPUT_CAP_TOKENS``). The two therefore
 #: disagree by at most 2,500 tokens for one Codex result distilled live
-#: versus recovered from a transcript. Recorded rather than hidden; closing
-#: it needs an agent identity this path has decided not to invent.
+#: versus recovered from a transcript.
 HOST_OUTPUT_CAP_CHARS = 30_000
 
 
@@ -110,11 +106,13 @@ def _record_event(
     ``<root>/.repowise/omissions/omissions.db`` records nothing. An event
     attributed to the wrong repository is worse than one not recorded.
 
-    Attribution stays ``unknown``. The source distinguishes the CLI from the
-    rewrite hook's shell, which is not the same thing as knowing which agent ran
-    it, and the contract says an unknown field stays unknown rather than being
-    filled with the likeliest answer.
+    The agent comes from the rewrite hook's ``--source`` label, which names
+    the adapter that rewrote the command; a direct run names none and stays
+    ``unknown``. No subagent id reaches this path: the hook could only pass one
+    as a new ``repowise distill`` flag, which an older install on PATH would run
+    as the program (see ``cli.commands.distill_cmd``).
     """
+    from repowise.core.agents.identity import slug_for_hook_source
     from repowise.core.savings import recorder
     from repowise.core.savings.correlation import new_event_id, scoped_idempotency_key
     from repowise.core.savings.pricing import resolve_pricing_snapshot
@@ -125,13 +123,14 @@ def _record_event(
             return
         event_id = new_event_id()
         surface = "hook" if source.startswith("hook") else "distill"
+        agent = slug_for_hook_source(source)
         # A hook-sourced run is not a CLI command a human typed: the rewrite
         # hook turns the agent's own Bash call into `repowise distill`, so this
         # runs synchronously inside that tool call. Detecting the model scans
         # the local transcripts -- seconds, on a repository with no Codex
         # history -- so the hook reads the cache and never fills it, exactly as
         # the PostToolUse hook does. A direct `repowise distill` may scan.
-        pricing = resolve_pricing_snapshot(repo_root, allow_scan=surface != "hook")
+        pricing = resolve_pricing_snapshot(repo_root, allow_scan=surface != "hook", agent=agent)
         recorder.record_event_in(
             store,
             repo_root,
@@ -141,8 +140,8 @@ def _record_event(
                 "occurred_at": datetime.now(UTC),
                 # The rewrite hook tags its shell; everything else is the CLI.
                 "surface": surface,
-                "integration": "unknown",
-                "agent": "unknown",
+                "integration": agent,
+                "agent": agent,
                 "operation": filter_name,
                 "evidence_kind": "measured",
                 "estimator": "chars_per_token_floor_v1",

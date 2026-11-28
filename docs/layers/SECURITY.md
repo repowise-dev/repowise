@@ -47,7 +47,12 @@ material, or under a directory named `test`, `tests`, `__tests__`, `__test__`,
 `fixtures`, `__fixtures__`, `spec`, `specs`, `mock`, `mocks`, `__mocks__`,
 `example` or `examples`, is recorded at `low`. A non-secret finding in a
 script, tool, benchmark, migration or docs example is `low` too; a secret there
-keeps its severity. Nothing is scored or ranked. `security_sensitive_symbol` is
+keeps its severity, except a `hardcoded_password` in a docs example or sample,
+which is a demo login and is `low` (an API secret or a vendor key shape there
+stays high). A Gradle signing block's password is `low` when its `storeFile`
+is a keystore committed to the repository (on disk and not gitignored): the
+keystore is public, so the password guards nothing. Test material is decided by the file's code origin,
+so an Apex `@IsTest` class counts wherever it sits. Nothing is scored or ranked. `security_sensitive_symbol` is
 informational: it marks where security code lives, not a problem.
 
 | Kind | Severity | Matches |
@@ -125,8 +130,11 @@ re-checked against the live file using its stored snippet:
 name recurs throughout a file. When the file cannot be read, the stored line is
 returned unverified.
 
-Snippets are trimmed to 120 characters with every credential value masked to
-its first four characters and `****`. The raw value is never stored.
+Snippets are stored trimmed to 120 characters with every credential value
+masked to its first four characters and `****`; the raw value is never stored.
+No surface shows a credential's snippet, or any snippet with a masked value on
+it: the REST route, `get_risk` and every `check` format give its kind and
+location only.
 
 ### A suggested reading order
 
@@ -138,41 +146,6 @@ its first four characters and `****`. The raw value is never stored.
 
 A low finding count means the registry did not match. On most repos, in most
 languages, that is all it means.
-
-## In CI: `repowise security check`
-
-The PR surface. It needs git only: no index, no database, no API key, and it
-stores nothing.
-
-```bash
-repowise security check origin/main...HEAD
-repowise security check --fail-on med --format github
-repowise security check --format sarif > security.sarif
-```
-
-It judges what the change adds:
-
-- At the head, every touched file is scanned, and a finding counts only
-  when a line it spans was added or edited. In documentation files only the
-  secret kinds count.
-- Inside the change, every non-merge commit in the range is scanned for the
-  secret kinds. A key added in one commit and deleted in the next is reported
-  with the commit that added it.
-
-`--fail-on` sets the lowest failing severity (`high` by default, then `med`,
-`low`). Findings in test paths are `low`, so under the default they warn
-without failing. Exit codes: `0` passed, `1` failed, `2` could not evaluate
-(not a git repo, unknown revision, missing merge-base or commits in a shallow
-clone, unreadable baseline). A git error is never read as a clean change.
-
-Every format carries masked snippets only: `table`, `json`, `markdown`,
-`github` (annotations plus job summary), `sarif` and `gitlab` (Code Quality).
-In the Code Quality report a failing finding is `critical` when high and
-`major` otherwise; one below `--fail-on` is `minor`.
-
-Without a revspec, the base comes from the CI's pull-request variables, else
-the remote's default branch. The GitHub Action, GitLab template and SARIF
-upload are in [Repowise in CI](../start/CI.md).
 
 ## Tuning and suppressing
 
@@ -230,6 +203,42 @@ blocks a commit on a finding at or above `high`. Skip it once with
 `git commit --no-verify`. See
 [`repowise hook install`](../reference/CLI_REFERENCE.md#repowise-hook-install).
 
+## In CI: `repowise security check`
+
+The PR surface. It needs git only: no index, no database, no API key, and it
+stores nothing.
+
+```bash
+repowise security check origin/main...HEAD
+repowise security check --fail-on med --format github
+repowise security check --format sarif > security.sarif
+```
+
+It judges what the change adds:
+
+- At the head, every touched file is scanned, and a finding counts only
+  when a line it spans was added or edited. In documentation files only the
+  secret kinds count.
+- Inside the change, every non-merge commit in the range is scanned for the
+  secret kinds. A key added in one commit and deleted in the next is reported
+  with the commit that added it.
+
+`--fail-on` sets the lowest failing severity (`high` by default, then `med`,
+`low`). Findings in test paths are `low`, so under the default they warn
+without failing. Exit codes: `0` passed, `1` failed, `2` could not evaluate
+(not a git repo, unknown revision, missing merge-base or commits in a shallow
+clone, unreadable baseline). A git error is never read as a clean change.
+
+Every format shows a secret by kind and location only, never a snippet:
+`table`, `json`, `markdown`, `github` (annotations plus job summary), `sarif`,
+`gitlab` (Code Quality) and the baseline file.
+In the Code Quality report a failing finding is `critical` when high and
+`major` otherwise; one below `--fail-on` is `minor`.
+
+Without a revspec, the base comes from the CI's pull-request variables, else
+the remote's default branch. The GitHub Action, GitLab template and SARIF
+upload are in [Repowise in CI](../start/CI.md).
+
 ## Accuracy and limits
 
 Each result is a regular-expression match with a little parsing. Read every
@@ -246,7 +255,9 @@ result as a place to look.
 - Secret detection matches shapes, with no entropy scoring. Providers outside
   the eight vendor shapes are caught only through custom patterns. Use gitleaks
   or trufflehog for full secret scanning.
-- No dependency or CVE scanning.
+- No advisory feed. Package advisories come from a file you import
+  (`repowise packages import`, see
+  [package advisories](../reference/PACKAGE_USAGE.md#advisories-and-tiers)).
 - `weak_hash` fires on an MD5 checksum unless the call passes
   `usedforsecurity=False`. `unsafe_inner_html` ships at `med` because it cannot
   tell a name pointing at a pinned constant from a dynamic value.
@@ -259,8 +270,8 @@ result as a place to look.
 
 | Surface | Where |
 |---|---|
-| CLI | `repowise security scan --history`, `repowise security check`, `repowise hook install --security` |
-| MCP | The `security_signals` block on `get_risk` |
+| CLI | `repowise security scan --history`, `repowise security check`, `repowise hook install --security`; package advisories: `repowise packages import`, `vulns`, `check` |
+| MCP | The `security_signals` block on `get_risk`; `advisory_call` on `get_risk` and `advisories` on `package:` cards once an advisory document is imported |
 | Dashboard | The Security tab of the Code Health page |
 | REST | `GET /api/repos/{repo_id}/security` |
 | CI | The GitHub Action's `security` gate (annotations, SARIF) and the GitLab template (Code Quality) |
@@ -295,6 +306,9 @@ MCP schema: [`get_risk`](../agent/MCP_TOOLS.md#get_risk).
 
 ## See also
 
+- [INTELLIGENCE_LAYERS.md](INTELLIGENCE_LAYERS.md): every layer at a glance.
+- [architecture/security.md](../architecture/security.md): matching rules per
+  kind, baseline keys and the precision checks.
 - [CHANGE_RISK.md](CHANGE_RISK.md): the other CI gate on a change.
 - [CODE_HEALTH.md](CODE_HEALTH.md): the Code Health page that hosts the
   Security tab.

@@ -29,7 +29,7 @@ from repowise.core.analysis.dead_code.serving import (
 from repowise.core.analysis.finding_registry import excluded_types, served_previews
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GitMetadata
+from repowise.core.persistence.models import GitMetadata, GraphNode
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._basis import call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
@@ -46,6 +46,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 
 async def _get_dead_code_all_repos(
@@ -66,11 +67,9 @@ async def _get_dead_code_all_repos(
             )
             repo_findings, withheld = filters.split_withheld(repo_findings)
             repo_findings, gated = filters.split_gated(repo_findings)
-            git_meta_map = await _load_git_meta_map(session, repository.id, repo_findings)
         served = serve_findings(repo_findings, **_cross_repo_cut(ctx.alias))
         serialized = [
-            serialize_finding(f, git_meta_map, repository=ctx.alias)
-            for f in apply_filters(served, filters)
+            serialize_finding(f, repository=ctx.alias) for f in apply_filters(served, filters)
         ]
         return serialized, summary_counts(served), withheld, gated
 
@@ -93,8 +92,10 @@ async def _get_dead_code_all_repos(
         merged_gated,
     )
     tiers = build_tiers(merged_findings, limit, tier)
+    _drop_empty_tier_descriptions(tiers)
 
     result_ws: dict[str, Any] = {
+        "headline": _headline(summary, tiers),
         "workspace": True,
         "summary": summary,
         "tiers": tiers,
@@ -153,7 +154,7 @@ async def get_dead_code(
     kind: str | None = None,
     min_confidence: float | str = RISK_CAP_CONFIDENCE,
     safe_only: bool = False,
-    limit: int = 20,
+    limit: int = 10,
     tier: str | None = None,
     directory: str | None = None,
     owner: str | None = None,
@@ -167,30 +168,21 @@ async def get_dead_code(
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
-    Run before a cleanup sprint, not a targeted fix. Findings tier
-    high/medium/low with per-directory and per-owner rollups; workspace
-    mode withdraws safety on findings other repos may use.
+    For a cleanup sweep, not a targeted fix.
 
     Args:
-        repo: usually omitted.
         kind: unreachable_file | unused_export | unused_internal | zombie_package.
-            An unrecognised value is dropped and named in ignored_arguments,
-            never applied as a filter that matches nothing.
-        min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
-            accepts a tier name: "high" | "medium" | "low".
-        safe_only: deletion-ready findings only (no runtime-load risk).
-        limit: max findings per tier (clamped to 25).
-        tier: "high" | "medium" | "low", banded as min_confidence.
-        directory: path-prefix filter.
-        owner: primary-owner filter.
-        group_by: "directory" | "owner" rollup.
-        include_internals: also scan private symbols (more false positives).
-        include_zombie_packages: monorepo package findings (default true).
-        no_unreachable: skip file-level reachability findings.
-        no_unused_exports: skip public-export findings.
-        include_unverified: also show provisional kinds and languages held
-            back pending verification (``summary.gated`` counts them).
-        finding_id: stable ``id`` emitted by a dead-code finding.
+        min_confidence: default 0.4 (0.7 = cleanup-ready), or a tier name.
+        tier: "high" | "medium" | "low".
+        safe_only: deletion-ready findings only.
+        limit: max findings per tier (up to 25).
+        directory, owner: path-prefix or primary-owner filter.
+        group_by: "directory" | "owner".
+        include_internals: also scan private symbols.
+        include_zombie_packages, no_unreachable, no_unused_exports,
+            include_unverified: switch finding kinds on or off.
+        finding_id: one finding by its ``id``, any status, every field.
+        repo: usually omitted.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget
@@ -269,6 +261,8 @@ async def get_dead_code(
 
     # --- Single repo path ---
     ctx = await _resolve_repo_context(repo)
+    if finding_id:
+        return await _finding_by_id(ctx, finding_id, filters)
     # Findings beyond the per-tier limit are persisted, not silently dropped —
     # the response carries an expandable [repowise#<ref>] marker for them.
     collector = OmissionCollector("get_dead_code", repo_root=ctx.path)
@@ -277,58 +271,26 @@ async def get_dead_code(
 
         # Fetch all open findings for summary computation. Withheld kinds are
         # read too, so the summary can count what it leaves out.
-        every_shown_kind, withheld = filters.split_withheld(
-            await get_dead_code_findings(session, repository.id, include_withheld=True)
-        )
-        # A lookup by id still answers for a gated finding; lists do not show it.
-        all_findings, gated = filters.split_gated(every_shown_kind)
-
-        # Phase 4: load git metadata for "last meaningful change" enrichment,
-        # over the gated rows too so a lookup by id is enriched the same way.
-        git_meta_map = await _load_git_meta_map(session, repository.id, every_shown_kind)
-        resolution_basis = (
-            []
-            if finding_id
-            else await call_resolution_bases(
-                session, repository.id, cache_key=index_state_key(repository)
+        every_finding = await get_dead_code_findings(session, repository.id, include_withheld=True)
+        if directory and not await _knows_directory(session, repository.id, directory, every_finding):
+            # Without this, a mistyped directory reads as a clean one.
+            return error_reply(
+                "not_found",
+                {
+                    "error": f"No indexed file is under directory {directory!r}.",
+                    "hint": "Pass a repository-relative directory, such as 'packages/core'.",
+                },
             )
+        every_shown_kind, withheld = filters.split_withheld(every_finding)
+        all_findings, gated = filters.split_gated(every_shown_kind)
+        resolution_basis = await call_resolution_bases(
+            session, repository.id, cache_key=index_state_key(repository)
         )
 
-    reference_repository = ctx.alias or repository.name
-    cut = _cross_repo_cut(ctx.alias)
-    if finding_id:
-        match = next(
-            (
-                row
-                for row in serve_findings(every_shown_kind, **cut)
-                if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
-            ),
-            None,
-        )
-        return {
-            "mode": "finding",
-            "finding_id": finding_id,
-            "finding": (
-                serialize_finding(
-                    match,
-                    git_meta_map,
-                    repository=reference_repository,
-                )
-                if match
-                else None
-            ),
-            "resolved": match is not None,
-            "_meta": _build_meta(
-                repository=repository,
-                targets=[match.file_path] if match else None,
-            ),
-        }
-
-    served = serve_findings(all_findings, **cut)
+    served = serve_findings(all_findings, **_cross_repo_cut(ctx.alias))
     filtered = apply_filters(served, filters)
-    serialized = [
-        serialize_finding(f, git_meta_map, repository=reference_repository) for f in filtered
-    ]
+    reference_repository = ctx.alias or repository.name
+    serialized = [serialize_finding(f, repository=reference_repository) for f in filtered]
 
     def _keep_overflow(name: str, beyond: list[dict]) -> None:
         collector.add(
@@ -351,13 +313,107 @@ async def get_dead_code(
 
     # How much of the call graph these findings rest on, per language. A
     # reachability finding is only as strong as the edges that reached.
-    summary["call_resolution_basis"] = resolution_basis
+    _attach_resolution_basis(summary, resolution_basis)
+    _drop_empty_tier_descriptions(tiers)
+    result = {"headline": _headline(summary, tiers), **result}
 
     result["_meta"] = _build_meta(repository=repository)
     _attach_preview(result)
     attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
+
+
+async def _finding_by_id(ctx: Any, finding_id: str, filters: FindingFilters) -> dict:
+    """One finding by its ``id``, whatever its triage status, with every field.
+
+    A finding resolved, dismissed or acknowledged since it was listed still
+    answers, and says its ``status``. A gated finding answers too; a kind the
+    registry withholds does not, as lists never showed it.
+    """
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        rows = await get_dead_code_findings(
+            session, repository.id, status=None, include_withheld=True
+        )
+        rows, _withheld = filters.split_withheld(rows)
+        reference_repository = ctx.alias or repository.name
+        match = next(
+            (
+                row
+                for row in serve_findings(rows, **_cross_repo_cut(ctx.alias))
+                if finding_id in {row.id, dead_code_finding_id(row, reference_repository)}
+            ),
+            None,
+        )
+        git_meta_map = await _load_git_meta_map(session, repository.id, [match] if match else [])
+    finding = None
+    if match is not None:
+        finding = serialize_finding(
+            match, git_meta_map, repository=reference_repository, detail=True
+        )
+        finding["status"] = match.status
+        if match.note:
+            finding["note"] = match.note
+    return {
+        "mode": "finding",
+        "finding_id": finding_id,
+        "finding": finding,
+        "resolved": match is not None,
+        "_meta": _build_meta(
+            repository=repository,
+            targets=[match.file_path] if match else None,
+        ),
+    }
+
+
+async def _knows_directory(
+    session: Any, repository_id: Any, directory: str, findings: list[Any]
+) -> bool:
+    """Whether a finding or an indexed file sits under *directory*, as the filter
+    matches it. An unreachable file can be a finding with no graph node."""
+    prefix = directory.rstrip("/") + "/"
+    if any(f.file_path.startswith(prefix) for f in findings):
+        return True
+    row = await session.execute(
+        select(GraphNode.node_id)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.startswith(prefix, autoescape=True),
+        )
+        .limit(1)
+    )
+    return row.first() is not None
+
+
+def _headline(summary: dict[str, Any], tiers: dict[str, Any]) -> str:
+    """One line on what the call shows and what it left out, so an empty list
+    beside withheld findings never reads as "no dead code"."""
+    shown = sum(len(t["findings"]) for t in tiers.values())
+    matching = sum(t["count"] for t in tiers.values())
+    line = f"{shown} shown" + (f" of {matching} matching" if matching > shown else "")
+    withheld = summary.get("withheld_types") or {}
+    held = sum(int(entry.get("count") or 0) for entry in withheld.values())
+    if held:
+        line += f", {held} withheld ({', '.join(sorted(withheld))}; see summary.withheld_types)"
+    return line + "."
+
+
+def _attach_resolution_basis(summary: dict[str, Any], bases: list[dict[str, Any]]) -> None:
+    """Per-language call-graph basis, with a note every language shares said once."""
+    notes = {entry.get("note") for entry in bases}
+    if len(notes) == 1 and None not in notes:
+        summary["call_resolution_note"] = notes.pop()
+        bases = [{k: v for k, v in entry.items() if k != "note"} for entry in bases]
+    summary["call_resolution_basis"] = bases
+
+
+def _drop_empty_tier_descriptions(tiers: dict[str, Any]) -> None:
+    """An empty tier keeps its counts; its description only explains findings it has none of."""
+    for block in tiers.values():
+        if isinstance(block, dict) and not block.get("count"):
+            block.pop("description", None)
 
 
 def _attach_preview(result: dict[str, Any]) -> None:

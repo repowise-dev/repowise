@@ -290,6 +290,34 @@ class TestCppFileReachable:
         pkgs = build_cpp_package_files(graph)
         assert is_cpp_file_reachable("lib/dead.cc", graph, pkgs) is False
 
+    def test_a_large_directory_reads_each_sibling_once(self, monkeypatch) -> None:
+        # Every importer-less file asks about the same siblings; reading them
+        # per file made a 1,000-file directory cost a million in-edge scans.
+        from repowise.core.analysis.dead_code import file_reachability
+
+        n = 300
+        graph = _build_graph(
+            {f"src/Functions/f{i}.cpp": _cpp_file() for i in range(n)}
+            | {"src/Functions/keyed_a.cpp": _cpp_file(), "src/Functions/keyed_b.cpp": _cpp_file()},
+            edges=[("src/Functions/f0.cpp", "src/Functions/keyed_a.cpp", {"edge_type": "imports"})],
+        )
+        pkgs = build_cpp_package_files(graph)
+        calls = 0
+        real = file_reachability.has_dependency_importer
+
+        def counting(g, path):
+            nonlocal calls
+            calls += 1
+            return real(g, path)
+
+        monkeypatch.setattr(file_reachability, "has_dependency_importer", counting)
+        answers = {f: is_cpp_file_reachable(f, graph, pkgs) for f in pkgs["src/Functions"]}
+        assert calls <= 2 * (n + 2)
+        # Same answers as a plain map, which reads the directory per call.
+        assert answers == {f: is_cpp_file_reachable(f, graph, dict(pkgs)) for f in answers}
+        assert answers["src/Functions/keyed_b.cpp"] is True  # conditional pair of keyed_a
+        assert answers["src/Functions/f1.cpp"] is False
+
 
 # ---------------------------------------------------------------------------
 # Never-flag patterns

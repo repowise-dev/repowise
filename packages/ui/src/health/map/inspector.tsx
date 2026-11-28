@@ -12,6 +12,7 @@ import { cn } from "../../lib/cn";
 import { formatScore } from "@repowise-dev/types/health";
 import { performanceBurden, performanceSentence } from "./lens";
 import type { CodeHealthMapFile, CodeHealthOverlay, MapScope } from "./types";
+import { formatNumber } from "../../lib/format";
 
 /** Rows the ranked list draws. Past this it is an inventory, not a lead. */
 export const FIELD_LIST_CAP = 50;
@@ -29,7 +30,7 @@ function causesOutside(scope: MapScope | undefined): string {
     return ". Whether more carry causes outside the drawn field is not reported here.";
   }
   if (omitted === 0) return ". Every file with a cause worth fixing now is drawn.";
-  return `. ${omitted.toLocaleString()} more carry causes worth fixing now outside the drawn field.`;
+  return `. ${formatNumber(omitted)} more carry causes worth fixing now outside the drawn field.`;
 }
 
 /** Worst-first for the active lens, so the list ranks what the field marks. */
@@ -152,7 +153,7 @@ export function MapFieldList({
       </ul>
       <p className="text-xs text-[var(--color-text-tertiary)]">
         <span className="tabular-nums">{rows.length}</span> of{" "}
-        <span className="tabular-nums">{ranked.length.toLocaleString()}</span>{" "}
+        <span className="tabular-nums">{formatNumber(ranked.length)}</span>{" "}
         {overlay === "performance" ? "files with a cause worth fixing now" : "drawn files"} listed
         {overlay === "performance" ? causesOutside(scope) : "."}
       </p>

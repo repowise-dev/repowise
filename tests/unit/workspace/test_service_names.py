@@ -528,3 +528,105 @@ def test_a_backslash_path_with_other_case_finds_its_repo(tmp_path: Path) -> None
     )
     m = build_service_name_map(_repos(tmp_path, "eshop.apphost", "catalog.api"))
     assert _mapped(m) == {"catalog-api": ("catalog.api", "aspire_apphost")}
+
+
+# Terraform deploy config provides the same ENV and HOST evidence as Compose/K8s.
+def test_terraform_literal_addresses_and_services_link_without_host_guessing(
+    tmp_path: Path,
+) -> None:
+    import shutil
+
+    for name in ("deploy", "orders", "stock", "cart", "web"):
+        (tmp_path / name).mkdir()
+    shutil.copyfile(FIXTURES / "terraform/deploy/services.tf", tmp_path / "deploy/services.tf")
+    spring = tmp_path / "orders/src/main/resources"
+    spring.mkdir(parents=True)
+    (spring / "application.yml").write_text("spring:\n  application:\n    name: orders.internal\n")
+    names = build_service_name_map(_repos(tmp_path, "deploy", "orders", "stock", "cart", "web"))
+    env = _mapped(names, ENV)
+    assert env == {
+        "orders_url": ("orders", "terraform"),
+        "stock_host": ("stock", "terraform"),
+        "cart_endpoint": ("cart", "terraform"),
+    }
+    assert _mapped(names)["orders-api"] == ("orders", "terraform")
+    contracts = [
+        _http("orders", "provider", "/items"),
+        _http("stock", "provider", "/items"),
+        _http("web", "consumer", "/items", base_stripped=True, base_token="ORDERS_URL"),
+    ]
+    annotate_consumer_targets(contracts, {}, names)
+    [link] = run_matching(contracts).links
+    assert link.provider_repo == "orders"
+    assert link.strategy == LinkStrategy.SERVICE_MAPPED
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        '"${var.endpoint}"',
+        '"%{if true}http://orders%{endif}"',
+        "var.endpoint",
+        'local.urls["ORDERS_URL"]',
+        '"http://orders" + var.suffix',
+    ],
+)
+def test_terraform_does_not_evaluate_environment_expressions(tmp_path: Path, value: str) -> None:
+    from repowise.core.workspace.service_names.base import SourceFile
+    from repowise.core.workspace.service_names.terraform import read
+
+    text = (
+        'resource "aws_lambda_function" "a" {\n environment {\n variables = {\n ORDERS_URL = '
+        + value
+        + "\n }\n }\n }"
+    )
+    assert list(read(SourceFile(tmp_path / "main.tf", text))) == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '# resource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } }',
+        '/* resource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } } */',
+        'locals { value = "resource \\"google_cloud_run_service\\" \\"x\\" {}" }',
+        'locals { text = <<EOF\nresource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } }\nEOF\n}',
+        'locals { text = <<EOF\nresource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } }',
+        'resource "unrelated_resource" "x" { env { name = "URL", value = "http://orders" } }',
+        'resource "aws_lambda_function" "x" { environment { variables = { URL = "http://orders" }',
+    ],
+)
+def test_terraform_ignores_noncode_unsupported_and_unbalanced_input(
+    tmp_path: Path, text: str
+) -> None:
+    from repowise.core.workspace.service_names.base import SourceFile
+    from repowise.core.workspace.service_names.terraform import read
+
+    assert list(read(SourceFile(tmp_path / "main.tf", text))) == []
+
+
+def test_terraform_external_services_and_ambiguous_ownership_are_not_guessed(
+    tmp_path: Path,
+) -> None:
+    from repowise.core.workspace.service_names.base import SourceFile
+    from repowise.core.workspace.service_names.terraform import read
+
+    text = 'resource "kubernetes_service" "x" {\n metadata { name = "external" }\n spec { type = "ExternalName" }\n}'
+    assert list(read(SourceFile(tmp_path / "main.tf", text))) == []
+    repo = tmp_path / "deploy"
+    repo.mkdir()
+    (repo / "main.tf").write_text(
+        'resource "kubernetes_service" "x" {\n metadata { name = "one" }\n}\nresource "kubernetes_service" "y" {\n metadata { name = "two" }\n}'
+    )
+    assert not _mapped(build_service_name_map({"deploy": repo}))
+
+@pytest.mark.parametrize("text", [
+    '/* resource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } }',
+    'locals { text = "unfinished\nresource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders" } }',
+    'resource "google_cloud_run_service" "x" { env { name = "URL", value = "http://orders", value = var.url } }',
+    'resource "aws_ecs_task_definition" "x" { container_definitions = jsonencode([{ environment = [{ name = "URL", value = "http://orders" }] }]) + var.extra }',
+])
+def test_terraform_refuses_unfinished_literals_and_nonliteral_containers(tmp_path: Path, text: str) -> None:
+    from repowise.core.workspace.service_names.base import SourceFile
+    from repowise.core.workspace.service_names.terraform import read
+
+    assert list(read(SourceFile(tmp_path / "main.tf", text))) == []

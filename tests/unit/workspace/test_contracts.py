@@ -63,6 +63,16 @@ class TestNormalizeHttpPath:
         assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
         assert normalize_http_path("/users/{id}?page={page}") == "/users/{param}"
 
+    def test_gin_echo_named_catch_all_is_a_param(self) -> None:
+        assert normalize_http_path("/swagger/*any") == "/swagger/{param}"
+        assert normalize_http_path("/static/*filepath") == "/static/{param}"
+        assert normalize_http_path("/v1/*path/sub") == "/v1/{param}/sub"
+
+    def test_star_inside_a_segment_and_double_star_stay_literal(self) -> None:
+        assert normalize_http_path("/a*b") == "/a*b"
+        assert normalize_http_path("/files/*") == "/files/{param}"
+        assert normalize_http_path("/**") == "/**"
+
 
 # ---------------------------------------------------------------------------
 # HttpExtractor
@@ -223,6 +233,122 @@ class TestHttpExtractor:
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/api/items/{param}" in ids
 
+    def test_fastapi_mount_prefix_stays_on_the_mounted_module(self, tmp_path: Path) -> None:
+        # Both modules name their router `router`; only study_plan's mount has a
+        # prefix, so only its routes carry it.
+        self._write_file(tmp_path, "backend/app.py", """
+from fastapi import FastAPI
+from routers import roadmap
+app = FastAPI()
+app.include_router(roadmap.router)
+try:
+    from routers import study_plan
+    app.include_router(study_plan.router, prefix="/api/v1/study-plan")
+except ImportError:
+    pass
+""")
+        self._write_file(tmp_path, "backend/routers/__init__.py", "")
+        self._write_file(tmp_path, "backend/routers/study_plan.py", """
+router = APIRouter()
+
+@router.get("/plans")
+async def plans(): ...
+""")
+        self._write_file(tmp_path, "backend/routers/roadmap.py", """
+router = APIRouter(prefix="/api/roadmap")
+
+@router.post("/purchase")
+async def purchase(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/v1/study-plan/plans" in ids
+        assert "http::POST::/api/roadmap/purchase" in ids
+        assert "http::POST::/api/v1/study-plan/api/roadmap/purchase" not in ids
+
+    def test_fastapi_nested_router_prefixes_compose(self, tmp_path: Path) -> None:
+        # main mounts api_router at /api/v1; api_router (own prefix /x) mounts
+        # users.router at /users through a relative import.
+        self._write_file(tmp_path, "app/main.py", """
+from fastapi import FastAPI
+from app.api.api import api_router
+app = FastAPI()
+app.include_router(api_router, prefix="/api/v1")
+""")
+        self._write_file(tmp_path, "app/api/api.py", """
+from fastapi import APIRouter
+from .endpoints import users
+api_router = APIRouter(prefix="/x")
+api_router.include_router(users.router, prefix="/users")
+""")
+        self._write_file(tmp_path, "app/api/endpoints/users.py", """
+router = APIRouter()
+
+@router.get("/{user_id}")
+async def get_user(user_id: int): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/api/v1/x/users/{param}" in ids
+
+    def test_fastapi_mount_follows_a_package_reexport(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "app/main.py", """
+from fastapi import FastAPI
+from app.users import router as users_router
+app = FastAPI()
+app.include_router(users_router, prefix="/users")
+""")
+        self._write_file(tmp_path, "app/users/__init__.py", "from .routes import router\n")
+        self._write_file(tmp_path, "app/users/routes.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
+    def test_fastapi_router_mounted_at_two_prefixes_keeps_its_path(self, tmp_path: Path) -> None:
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+import items
+app = FastAPI()
+app.include_router(items.router, prefix="/v1")
+app.include_router(items.router, prefix="/v2")
+""")
+        self._write_file(tmp_path, "items.py", """
+router = APIRouter()
+
+@router.get("/items")
+async def items(): ...
+""")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/items" in ids
+
+    def test_fastapi_a_nested_import_does_not_override_the_module_one(self, tmp_path: Path) -> None:
+        # The helper's local `users` is another module; the mount at module
+        # level is still users.py's router.
+        self._write_file(tmp_path, "main.py", """
+from fastapi import FastAPI
+try:
+    import users
+except ImportError:
+    from legacy import users
+app = FastAPI()
+app.include_router(users.router, prefix="/users")
+
+def legacy():
+    from legacy import users
+    return users
+""")
+        self._write_file(tmp_path, "users.py", """
+router = APIRouter()
+
+@router.get("/me")
+async def me(): ...
+""")
+        self._write_file(tmp_path, "legacy/users.py", "router = APIRouter()\\n")
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert "http::GET::/users/me" in ids
+
     def test_express_cross_file_app_use_prefix(self, tmp_path: Path) -> None:
         # app.use('/api/users', userRouter) mounts a uniquely-named router.
         self._write_file(tmp_path, "src/app.js", """
@@ -236,6 +362,108 @@ class TestHttpExtractor:
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
         assert "http::GET::/api/users/{param}" in ids
 
+    def test_express_mount_follows_the_import_not_the_name(self, tmp_path: Path) -> None:
+        # Each module names its router `router`, and the mounting file names it
+        # something else: the prefix is the module's, found through the import.
+        self._write_file(tmp_path, "src/server.js", """
+            const express = require('express');
+            const app = express();
+            const usersRouter = require('./routes/users');
+            const ordersRouter = require('./routes/orders');
+            app.use('/api/users', usersRouter);
+            app.use('/api/orders', ordersRouter);
+        """)
+        for name, route in (("users", "/:id"), ("orders", "/")):
+            self._write_file(tmp_path, f"src/routes/{name}.js", f"""
+                const router = require('express').Router();
+                router.get('{route}', handler);
+                module.exports = router;
+            """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users/{param}", "http::GET::/api/orders"}
+
+    def test_express_mount_reaches_only_the_module_it_mounts(self, tmp_path: Path) -> None:
+        # `router` mounted in one file is not every module's `router`.
+        self._write_file(tmp_path, "src/server.ts", """
+            import express from 'express';
+            import router from './routes/users';
+            const app = express();
+            app.use('/api', router);
+        """)
+        self._write_file(tmp_path, "src/routes/users.ts", """
+            import { Router } from 'express';
+            const router = Router();
+            router.get('/users', handler);
+            export default router;
+        """)
+        self._write_file(tmp_path, "src/admin.ts", """
+            import { Router } from 'express';
+            const router = Router();
+            router.get('/admin/stats', handler);
+            export default router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users", "http::GET::/admin/stats"}
+
+    def test_express_mount_through_a_namespace_or_named_import(self, tmp_path: Path) -> None:
+        # `import * as` reads a member of the whole module; a named import finds
+        # a router the module also exports as its default.
+        self._write_file(tmp_path, "src/server.ts", """
+            import * as users from './users';
+            import { router as orders } from './orders';
+            const app = express();
+            app.use('/api/users', users.router);
+            app.use('/api/orders', orders);
+        """)
+        self._write_file(tmp_path, "src/users.ts", """
+            export const router = Router();
+            router.get('/me', handler);
+        """)
+        self._write_file(tmp_path, "src/orders.ts", """
+            export const router = Router();
+            router.get('/recent', handler);
+            export default router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {"http::GET::/api/users/me", "http::GET::/api/orders/recent"}
+
+    def test_express_nested_module_mounts_compose(self, tmp_path: Path) -> None:
+        # A router module mounting another, a named export read as a member, an
+        # in-file child router, and an inline require.
+        self._write_file(tmp_path, "src/server.js", """
+            const app = require('express')();
+            const routes = require('./routes');
+            app.use('/api', routes);
+            app.use('/health', require('./health'));
+        """)
+        self._write_file(tmp_path, "src/routes/index.js", """
+            const { Router } = require('express');
+            const router = Router();
+            const users = require('./users');
+            const v2 = Router();
+            v2.get('/ping', handler);
+            router.use('/v2', v2);
+            router.use('/users', users.router);
+            module.exports = router;
+        """)
+        self._write_file(tmp_path, "src/routes/users.js", """
+            const { Router } = require('express');
+            const router = Router();
+            router.get('/:id', handler);
+            module.exports = { router };
+        """)
+        self._write_file(tmp_path, "src/health.js", """
+            const router = require('express').Router();
+            router.get('/', handler);
+            module.exports = router;
+        """)
+        ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "backend") if c.role == "provider"}
+        assert ids == {
+            "http::GET::/api/users/{param}",
+            "http::GET::/api/v2/ping",
+            "http::GET::/health",
+        }
+
     def test_go_route_group_nested(self, tmp_path: Path) -> None:
         # Nested groups compose: v1 := api.Group("/v1") under api := r.Group("/api").
         self._write_file(tmp_path, "main.go", """
@@ -246,6 +474,24 @@ class TestHttpExtractor:
         """)
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"}
         assert "http::GET::/api/v1/users" in ids
+
+    def test_go_routes_in_a_raw_string_fixture_are_not_providers(self, tmp_path: Path) -> None:
+        # A test writing another program's main.go: only the file's own route counts.
+        self._write_file(tmp_path, "internal/watch/watch_test.go", """
+            const mainGo = `package main
+            func main() {
+                r := gin.Default()
+                r.GET("/users/{id}", getUser)
+                r.POST("/orders", createOrder)
+            }
+            `
+
+            func TestWatch(t *testing.T) {
+                r.GET("/health", healthHandler)
+            }
+        """)
+        providers = [c for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"]
+        assert [(c.contract_id, c.line) for c in providers] == [("http::GET::/health", 11)]
 
     def test_fetch_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
@@ -1324,3 +1570,141 @@ class TestContractStorePersistence:
         assert loaded is not None
         assert loaded.contracts == []
         assert loaded.contract_links == []
+
+
+# ---------------------------------------------------------------------------
+# Param-segment matching (a concrete value where the route declares a parameter)
+# ---------------------------------------------------------------------------
+
+
+class TestParamSegmentMatching:
+    def _c(self, **kwargs) -> Contract:
+        defaults = {
+            "repo": "a",
+            "contract_id": "http::GET::/api",
+            "contract_type": "http",
+            "role": "provider",
+            "file_path": "f.py",
+            "symbol_name": "handler",
+            "confidence": 0.85,
+            "service": None,
+            "meta": {},
+        }
+        defaults.update(kwargs)
+        return Contract(**defaults)
+
+    def _provider(self, path: str, repo: str = "render") -> Contract:
+        return self._c(repo=repo, role="provider", contract_id=f"http::GET::{path}")
+
+    def _consumer(self, path: str, **meta) -> Contract:
+        return self._c(
+            repo="web",
+            role="consumer",
+            contract_id=f"http::GET::{path}",
+            file_path="client.py",
+            confidence=0.75,
+            meta=meta,
+        )
+
+    def test_concrete_segment_links_to_param_route(self) -> None:
+        [link] = match_contracts(
+            [self._provider("/api/render/{param}"), self._consumer("/api/render/1")]
+        )
+        assert link.strategy == LinkStrategy.PARAM_SEGMENT
+        assert link.match_type == "candidate"
+        assert link.provider_repo == "render"
+        assert link.contract_id == "http::GET::/api/render/{param}"
+        assert link.consumer_contract_id == "http::GET::/api/render/1"
+        assert link.confidence < 0.75
+
+    def test_a_declared_literal_route_wins_over_the_param_route(self) -> None:
+        links = match_contracts(
+            [
+                self._provider("/api/users/{param}"),
+                self._provider("/api/users/me", repo="render"),
+                self._consumer("/api/users/me"),
+            ]
+        )
+        assert [(lk.strategy, lk.contract_id) for lk in links] == [
+            (LinkStrategy.EXACT_ID, "http::GET::/api/users/me")
+        ]
+
+    def test_the_most_literal_param_route_stands(self) -> None:
+        links = match_contracts(
+            [
+                self._provider("/api/orders/{param}/items"),
+                self._provider("/api/orders/{param}/{param}"),
+                self._consumer("/api/orders/7/items"),
+            ]
+        )
+        assert [lk.contract_id for lk in links] == ["http::GET::/api/orders/{param}/items"]
+
+    def test_different_segment_counts_do_not_link(self) -> None:
+        assert (
+            match_contracts(
+                [self._provider("/api/render/{param}"), self._consumer("/api/render/1/extra")]
+            )
+            == []
+        )
+        assert (
+            match_contracts([self._provider("/api/render/{param}"), self._consumer("/api/render")])
+            == []
+        )
+
+    def test_a_differing_literal_segment_does_not_link(self) -> None:
+        assert (
+            match_contracts([self._provider("/api/render/{param}"), self._consumer("/api/other/1")])
+            == []
+        )
+
+    def test_two_repos_serving_the_route_refuse(self) -> None:
+        consumer = self._consumer("/api/render/1")
+        links = match_contracts(
+            [
+                self._provider("/api/render/{param}", repo="render"),
+                self._provider("/api/render/{param}", repo="render2"),
+                consumer,
+            ]
+        )
+        assert links == []
+        assert consumer.meta.get(AMBIGUOUS_PROVIDER) is True
+
+    def test_a_catch_all_route_is_never_a_target(self) -> None:
+        for path in ("/{param}", "/api/{param}", "/api/v1/{param}", "/{param}/status"):
+            assert (
+                match_contracts(
+                    [self._provider(path), self._consumer(path.replace("{param}", "x"))]
+                )
+                == []
+            ), path
+
+    def test_a_generic_call_path_is_still_held_back(self) -> None:
+        assert (
+            match_contracts([self._provider("/health/{param}"), self._consumer("/health/1")]) == []
+        )
+
+    def test_static_assets_do_not_link(self) -> None:
+        assert (
+            match_contracts([self._provider("/static/{param}"), self._consumer("/static/app.js")])
+            == []
+        )
+
+    def test_method_must_fit(self) -> None:
+        post = self._c(
+            repo="render", role="provider", contract_id="http::POST::/api/render/{param}"
+        )
+        assert match_contracts([post, self._consumer("/api/render/1")]) == []
+
+    def test_a_param_in_the_call_does_not_meet_a_literal_in_the_route(self) -> None:
+        assert (
+            match_contracts(
+                [self._provider("/api/render/latest"), self._consumer("/api/render/{param}")]
+            )
+            == []
+        )
+
+    def test_same_repo_is_not_linked(self) -> None:
+        consumer = self._c(
+            repo="render", role="consumer", contract_id="http::GET::/api/render/1", file_path="c.py"
+        )
+        assert match_contracts([self._provider("/api/render/{param}"), consumer]) == []

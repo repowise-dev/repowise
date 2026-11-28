@@ -37,6 +37,9 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
+# The held sets live in an import-light module so the portable folds can count
+# hotspots without this one's imports; re-exported here for every existing caller.
+from repowise.core.analysis.held_origins import HELD_ORIGINS, MAP_HELD_ORIGINS, stored_origin
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
 
 FindingStatus = Literal["validated", "provisional", "hidden"]
@@ -62,23 +65,18 @@ class FindingTypeStatus:
 
 _VALIDATED = FindingTypeStatus("validated")
 
-_LABELLED = "hand-labelled findings from one TS/Python monorepo"
-
 REGISTRY: dict[str, FindingTypeStatus] = {
+    # No type below has a recorded precision figure, so their measurement
+    # fields stay unset; each stays hidden until a re-measure clears the floor.
     "unused_internal": FindingTypeStatus(
         "hidden",
-        precision=0.005,
-        corpus=f"{_LABELLED}, 1,511 in all",
-        measured_on="2026-09-29",
         reason=(
-            "Measured on TS/Python code: private-symbol findings were almost all "
-            "false, because same-file uses leave no 'reads' edge there."
+            "Measured on TS/Python code: precision is below the publishing bar; "
+            "some same-file uses leave no edge."
         ),
     ),
     "duplicated_assertion_block": FindingTypeStatus(
         "hidden",
-        corpus=f"{_LABELLED}, 1,168 in all",
-        measured_on="2026-09-29",
         reason="Clones are matched on token shape only, so unrelated assertions pair up.",
     ),
     # The failing subset is clones over import blocks and data literals. A
@@ -88,8 +86,6 @@ REGISTRY: dict[str, FindingTypeStatus] = {
     # re-measure and flip this back).
     "dry_violation": FindingTypeStatus(
         "hidden",
-        corpus=_LABELLED,
-        measured_on="2026-09-29",
         reason="Flags duplicated import blocks and data literals as design duplication.",
     ),
 }
@@ -140,8 +136,6 @@ _FEW_PLANS = "Most judged plans were not acceptable as written."
 _NONE_SERVED = "No opportunity was served to judge."
 _IN_MEMORY = "In-memory lookups are read as database calls."
 _ONE_PLAN = "One judged plan was not acceptable as written."
-_NOT_WRONG = "not wrong"
-_VENDORED_HEADER = "A vendored single-header library is not classed vendored."
 
 # Each row covers a whole layer on one language (``kinds=None``). Precision is
 # the share of true positives in a judged sample (debatable counted as a miss)
@@ -157,8 +151,8 @@ _GateRow = (
 )
 _GATE_ROWS: tuple[_GateRow, ...] = (
     # Health ships on a not-wrong bar (debatable counts as not wrong): Java,
-    # C# and C cleared 0.90 on every corpus on 2026-10-15 and are ungated.
-    ("health", "cpp", 0.825, "the lower of 2 C++ repos, 40 judged each", _VENDORED_HEADER, _PREVIEW, _REAUDIT_DATE, _NOT_WRONG),
+    # C# and C cleared 0.90 on every corpus on 2026-10-15, C++ on 4 corpora
+    # on 2026-10-27, and all four are ungated.
     ("refactoring", "java", 0.22, "55 judged plans from 2 Java repos", _FEW_PLANS, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "csharp", 0.83, "6 judged plans from 1 C# repo", _ONE_PLAN, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "c", 0.0, "1 judged plan from 1 C repo", _NO_PLAN, _PREVIEW, _REAUDIT_DATE),
@@ -236,22 +230,6 @@ def is_estimated(kind: Any, details: Any) -> bool:
         except ValueError:
             return False
     return isinstance(details, Mapping) and details.get(COVERAGE_BASIS_KEY) == "estimated"
-
-#: The stored ``code_origin`` values a health finding is never served on.
-HELD_ORIGINS: tuple[str, ...] = ("vendored", "generated")
-
-#: The stored ``code_origin`` values the area map leaves out until the reader
-#: brings them back: tests, docs examples and build files, plus everything no
-#: health finding is served on. Prose docs have no health row, so never appear.
-MAP_HELD_ORIGINS: tuple[str, ...] = ("test", "docs_example", "build", *HELD_ORIGINS)
-
-
-def stored_origin(code_origin: Any, is_test: Any) -> str:
-    """A row's origin, reading a row stamped before ``code_origin`` off ``is_test``."""
-    if isinstance(code_origin, str) and code_origin:
-        return code_origin
-    return "test" if is_test is True else "production"
-
 
 def map_held(include: Iterable[str]) -> frozenset[str]:
     """The origins the map holds out when the reader has brought back *include*."""

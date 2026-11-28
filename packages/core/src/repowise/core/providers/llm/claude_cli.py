@@ -83,6 +83,11 @@ _PARENT_SESSION_VARS = frozenset(
     }
 )
 
+_NOT_SIGNED_IN = (
+    "claude -p is not signed in. Run `claude auth login` as this user, or set "
+    "CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`."
+)
+
 _SUPPORTED_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "auto",
     "low",
@@ -111,10 +116,19 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     status_code = (
         raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
     )
-    detail = raw_status or payload.get("subtype") or "unknown error"
     result_text = payload.get("result")
-    if isinstance(result_text, str) and result_text.strip():
-        detail = f"{detail}: {tail(result_text, max_chars=500)}"
+    text = result_text.strip() if isinstance(result_text, str) else ""
+    # The CLI's "Please run /login" names an interactive command, and a server
+    # has no session to type it into. With an API status (a rejected key or
+    # token), the status and the CLI's own text say more, so they stay.
+    if raw_status is None and "Please run /login" in text:
+        return _NOT_SIGNED_IN, None
+    # A failed call can still carry subtype "success", which reads as a
+    # contradiction when quoted.
+    subtype = payload.get("subtype")
+    detail = raw_status or (subtype if subtype != "success" else None) or "error"
+    if text:
+        detail = f"{detail}: {tail(text, max_chars=500)}"
     return f"claude -p reported failure ({detail}).", status_code
 
 

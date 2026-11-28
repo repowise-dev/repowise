@@ -3,15 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-import json as _json
 import logging
-import subprocess
 from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any
 
+from ...analysis.git_cli import run_git
 from ..config import WorkspaceConfig
+
+# Re-exported from the pipeline-free ``repowise.core.workspace.state`` so
+# every existing ``from repowise.core.workspace.update import ...`` import
+# keeps working.
+from ..state import (  # noqa: F401
+    _ANCESTRY_CACHE_MAX,
+    IndexedCommit,
+    _ancestry_cache,
+    _older_commit,
+    read_repo_state,
+    read_state_commit,
+    resolve_indexed_commit,
+)
 
 _log = logging.getLogger("repowise.workspace.update")
 
@@ -19,13 +31,7 @@ _log = logging.getLogger("repowise.workspace.update")
 def get_head_commit(repo_path: Path) -> str | None:
     """Return the current HEAD commit SHA via git, or ``None``."""
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-parse", "HEAD"], repo_path, timeout=10)
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception:
@@ -36,13 +42,7 @@ def get_head_commit(repo_path: Path) -> str | None:
 def count_commits_between(repo_path: Path, base: str, head: str) -> int:
     """Return the number of commits between *base* and *head*, or 0 on error."""
     try:
-        result = subprocess.run(
-            ["git", "rev-list", "--count", f"{base}..{head}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+        result = run_git(["rev-list", "--count", f"{base}..{head}"], repo_path, timeout=10)
         if result.returncode == 0:
             return int(result.stdout.strip())
     except Exception:
@@ -59,12 +59,7 @@ def commit_exists(repo_path: Path, sha: str) -> bool:
     were never indexed (e.g. after a rebase or an aggressive ``git gc``).
     """
     try:
-        result = subprocess.run(
-            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
-            cwd=str(repo_path),
-            capture_output=True,
-            timeout=10,
-        )
+        result = run_git(["cat-file", "-e", f"{sha}^{{commit}}"], repo_path, timeout=10)
         return result.returncode == 0
     except Exception:
         return False
@@ -87,11 +82,8 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
         try:
             # indexed_head is an ancestor of pending_head => strictly ahead,
             # keep it. Non-zero (incl. unresolvable pending) => safe to clear.
-            ahead = subprocess.run(
-                ["git", "merge-base", "--is-ancestor", indexed_head, pending_head],
-                cwd=str(repo_path),
-                capture_output=True,
-                timeout=10,
+            ahead = run_git(
+                ["merge-base", "--is-ancestor", indexed_head, pending_head], repo_path, timeout=10
             )
             if ahead.returncode == 0:
                 return
@@ -99,24 +91,6 @@ def clear_stale_update_pending(repo_path: Path, indexed_head: str | None) -> Non
             pass
     with suppress(OSError):
         pending_path.unlink(missing_ok=True)
-
-
-def read_repo_state(repo_path: Path) -> dict[str, Any]:
-    """Return the parsed ``<repo>/.repowise/state.json``, or ``{}``."""
-    state_path = repo_path / ".repowise" / "state.json"
-    if not state_path.is_file():
-        return {}
-    try:
-        data = _json.loads(state_path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
-
-
-def read_state_commit(repo_path: Path) -> str | None:
-    """Return ``last_sync_commit`` from ``<repo>/.repowise/state.json`` or None."""
-    sha = read_repo_state(repo_path).get("last_sync_commit")
-    return str(sha) if sha else None
 
 
 def read_index_synced_at(repo_path: Path) -> str | None:
@@ -179,66 +153,6 @@ def stamp_workspace_entry(entry: Any, repo_path: Path, head: str | None) -> None
     entry.last_commit_at_index = head
 
 
-class IndexedCommit(NamedTuple):
-    """The commit an index describes, or why it cannot be named."""
-
-    sha: str | None
-    problem: str | None = None
-
-
-def resolve_indexed_commit(repo_path: Path | None, row_commit: str | None) -> IndexedCommit:
-    """The commit the index describes, from ``state.json`` and the repository row.
-
-    Every update writes both from one captured head, so they normally agree.
-    When one is an ancestor of the other (an update interrupted between the
-    two writes, or a row an older build left behind), the index describes the
-    older: the files between them then count as changed since the index was
-    built, which over-selects rather than misses. Two commits neither of which
-    contains the other (a rebase, a restored backup), or a sha git cannot
-    read, leave the commit unknown.
-    """
-    state = read_state_commit(repo_path) if repo_path is not None else None
-    if not state or not row_commit or state == row_commit:
-        return IndexedCommit(state or row_commit)
-    older = _older_commit(str(repo_path), state, row_commit)
-    if older is not None:
-        return IndexedCommit(older)
-    return IndexedCommit(
-        None,
-        f"The index records two commits ({state[:7]} in state.json, {row_commit[:7]} "
-        "in its database) and neither contains the other, so what it describes is "
-        "unknown; run `repowise update`.",
-    )
-
-
-# (repo_path, a, b) -> the older commit, or None when neither contains the
-# other. Only definite answers: a timeout or an unknown sha is asked again.
-_ancestry_cache: dict[tuple[str, str, str], str | None] = {}
-_ANCESTRY_CACHE_MAX = 32
-
-
-def _older_commit(repo_path: str, a: str, b: str) -> str | None:
-    """The one of *a*, *b* that is an ancestor of the other, else ``None``.
-
-    Cached because the freshness envelope asks on every response while the two
-    stamps disagree. Ancestry between two known shas never changes, and the
-    next update makes the stamps equal, which ends the asking.
-    """
-    from ...git_refs import is_ancestor
-
-    key = (repo_path, a, b)
-    if key in _ancestry_cache:
-        return _ancestry_cache[key]
-    a_first = is_ancestor(repo_path, a, b)
-    b_first = None if a_first else is_ancestor(repo_path, b, a)
-    older = a if a_first else b if b_first else None
-    if older is not None or (a_first is False and b_first is False):
-        if len(_ancestry_cache) >= _ANCESTRY_CACHE_MAX:
-            _ancestry_cache.clear()
-        _ancestry_cache[key] = older
-    return older
-
-
 def sync_workspace_state_from_disk(
     workspace_root: Path,
     ws_config: WorkspaceConfig,
@@ -290,7 +204,11 @@ def check_repo_staleness(
     repo_path: Path,
     last_commit: str | None,
 ) -> tuple[bool, str | None, int]:
-    """Check if a repo has new commits since *last_commit*.
+    """Check if a repo has new commits since *last_commit*, or owes work without one.
+
+    With HEAD unmoved, an index is still stale when a version stamp moved
+    (:func:`stamps_moved`) or a page is stale, as the single-repo update
+    treats them.
 
     Returns ``(is_stale, current_head, commits_behind)``.
     """
@@ -303,6 +221,8 @@ def check_repo_staleness(
         return True, current_head, 0
 
     if current_head == last_commit:
+        if stamps_moved(repo_path):
+            return True, current_head, 0
         # Same reconciliation as the single-repo update: a page can be stale
         # with HEAD unmoved, and only an update clears it.
         try:
@@ -316,6 +236,33 @@ def check_repo_staleness(
 
     behind = count_commits_between(repo_path, last_commit, current_head)
     return True, current_head, behind
+
+
+def stamps_moved(repo_path: Path) -> bool:
+    """Whether an indexed repo's health, security or git history stamp is behind this build.
+
+    Work no commit explains: rows scored by an older health analyzer, findings
+    an older security scanner wrote, or git rows written under older history
+    rules. A repo with no recorded sync, or
+    no local store and no configured database, has no rows for either stamp
+    to describe. Under a configured database the repository row is not looked
+    up: this check stays offline, and a member with a moved stamp but no rows
+    there is reported stale on purpose, since the full index that update falls
+    back to writes the rows it is missing.
+    """
+    from ...analysis.health import health_analyzer_changed
+    from ...analysis.security.patterns import security_scanner_changed
+    from ...ingestion.git_indexer import git_history_stale
+    from ...persistence.database import has_db_store
+
+    state = read_repo_state(repo_path)
+    if not state.get("last_sync_commit") or not has_db_store(repo_path):
+        return False
+    return (
+        health_analyzer_changed(state)
+        or security_scanner_changed(state)
+        or git_history_stale(state)
+    )
 
 
 def restamp_changed_sync_commit(repo_path: Path, previous: str | None, current: str | None) -> None:
@@ -352,8 +299,11 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
     The "up to date" skip and the no-relevant-changes incremental path bump
     ``last_sync_commit`` without re-running the persistence that stamps the
     ``repositories`` row, which the server reads for the indexed commit and
-    the "indexed at" time. Stamps ``head_commit`` only on drift but always
-    advances ``updated_at``. Creates a missing row in an existing store (a
+    the "indexed at" time. Stamps ``head_commit`` only on drift, and advances
+    ``updated_at`` on drift or once per UTC day, so a repeat check the same
+    day leaves the store untouched. The index age and the editor-file stamp
+    read it in days; a surface showing the full time shows the first check
+    of the day. Creates a missing row in an existing store (a
     configured database counts as existing); a no-op when no store exists.
     The single head-commit stamper for the CLI and workspace update paths.
     """
@@ -369,7 +319,7 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
         init_db,
         upsert_repository,
     )
-    from ...persistence.crud import get_repository_by_path
+    from ...persistence.crud import get_repository_by_path, index_synced_at
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -386,10 +336,12 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
                     head_commit=head,
                 )
             else:
-                if repo.head_commit != head:
+                now = datetime.now(UTC)
+                synced = index_synced_at(repo)
+                if repo.head_commit != head or synced is None or synced.date() < now.date():
                     repo.head_commit = head
-                repo.updated_at = datetime.now(UTC)
-                await session.flush()
+                    repo.updated_at = now
+                    await session.flush()
     finally:
         await engine.dispose()
 

@@ -18,13 +18,19 @@ import click
 
 from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
-from repowise.cli.helpers import resolve_repo_path
+from repowise.cli.helpers import console, get_head_commit, get_repowise_dir, resolve_repo_path
+from repowise.cli.ui import WARN
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
-from repowise.core.update_lock import init_in_progress
+from repowise.core.update_lock import (
+    init_in_progress,
+    release_update_lock,
+    try_acquire_update_lock,
+)
 
 from ._agent_summary import init_output
 from ._exit import exit_interrupted
@@ -55,6 +61,7 @@ from ._prepare import (
 )
 from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
+from ._sibling_hint import suggest_workspace
 from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
@@ -87,7 +94,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
-        follow_renames=opts.follow_renames,
+        follow_renames=bool(opts.follow_renames),
         no_claude_md=opts.no_claude_md,
         agents_md=opts.agents_md,
         codex_setup=opts.codex_setup,
@@ -149,9 +156,9 @@ def _check_folder_coverage(
     "--embedder",
     "embedder_name",
     default=None,
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]),
+    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]),
     help=(
-        "Embedder for RAG: gemini | openai | openrouter | ollama | edenai | mock "
+        "Embedder for RAG: gemini | openai | openrouter | ollama | fastembed | edenai | mock "
         "(default: auto-detect)."
     ),
 )
@@ -178,10 +185,12 @@ def _check_folder_coverage(
         "or OpenCode is used only with --provider; the cost confirmation is "
         "accepted; advanced options keep their defaults (standard run mode at "
         "any size, comprehensive style); the detected agents "
-        "are connected; the global repowise MCP entry is pointed here, with the "
-        "old and new target printed; the post-commit hook is installed and the "
-        "distill rewrite hook is not; and with --no-prose, documentation a "
-        "model wrote is replaced without asking."
+        "are connected; Claude Code gets a user-level repowise MCP entry in "
+        "~/.claude.json that names no repo and serves the repo Claude Code "
+        "starts in, added when absent and never moved off another repo it "
+        "serves; the post-commit hook and the distill rewrite hook are "
+        "installed; and with --no-prose, documentation a model wrote is "
+        "replaced without asking."
     ),
 )
 @click.option(
@@ -264,14 +273,13 @@ def _check_folder_coverage(
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
+    help="Newest commits to analyze for file history and co-change (default: 5000). Set it above the repo's commit count to read the full history. Saved to config.",
 )
 @click.option(
-    "--follow-renames",
-    is_flag=True,
-    default=False,
+    "--follow-renames/--no-follow-renames",
+    default=None,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
 @click.option(
@@ -305,7 +313,9 @@ def _check_folder_coverage(
         "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
         "back as a pointer to the earlier read (`hooks.read_reread`). One "
         "consent, and this flag decides all four without a prompt. Default: "
-        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "on. Interactive runs ask; --yes and non-interactive runs install it "
+        "and print how to turn it off. A repo that opted out stays off, and "
+        "--no-editor-setup installs nothing. In workspace mode the verdict "
         "applies to every selected repo."
     ),
 )
@@ -330,10 +340,11 @@ def _check_folder_coverage(
         "Wire repowise into your editors. Covers both halves: the machine-wide "
         "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
         "hooks, the distill rewrite-hook offer) and the project-local files "
-        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        "(.claude/CLAUDE.md, .vscode/mcp.json, .mcp.json when no user-scope "
+        "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
-        ".repowise/ is touched, and 'repowise mcp .' still prints the config "
+        ".repowise/ is touched, and 'repowise agents print-config <agent>' prints the config "
         "to connect a client by hand. REPOWISE_SKIP_EDITOR_SETUP=1 does the "
         "same thing for CI and sandboxes, and wins: with it set, --editor-setup "
         "does not turn setup back on."
@@ -397,8 +408,7 @@ def _check_folder_coverage(
     default=True,
     help=(
         "Generate the curated Onboarding collection (Project Overview, "
-        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
-        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Getting Started, How It Works, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
     ),
 )
@@ -504,9 +514,17 @@ def _check_folder_coverage(
         "Progress output. 'rich' (default) draws a live checklist in a terminal "
         "and one short line per step anywhere else. 'json' writes one JSON event "
         "per line to stdout (stages, steps, warnings) and ends with a summary "
-        "line: status, mode, restart_required, spend, warnings, files_written "
-        "and next commands. Human text goes to stderr."
+        "line: status, mode, restart_required, restart_hosts, spend, warnings, "
+        "files_written, next commands, long_running, first_prompt, mcp_tools "
+        "and connect. Human text goes "
+        "to stderr."
     ),
+)
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
 )
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
@@ -526,9 +544,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
@@ -554,9 +589,25 @@ def _run_init(opts: InitOptions) -> None:
     # redirect to it so the user doesn't have to specify the exact path.
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
+    if not opts.no_workspace:
+        suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
-        _run_single_repo(opts, repo_path, start)
+        # HOLD BOTH LOCKS (#5512): the init marker alone is not mutual exclusion,
+        # because `update` learns of it only in `_acquire_update_lock` — a run
+        # that already holds the update lock keeps writing the same store. Taking
+        # the update lock too is what makes the marker mean something.
+        if try_acquire_update_lock(repo_path, None) is not None:
+            raise click.ClickException(
+                "Another `repowise update` is already running on this repo. "
+                "Run `repowise init` again when it finishes."
+            )
+        try:
+            if not opts.dry_run:
+                sweep_orphan_temps(get_repowise_dir(repo_path))
+            _run_single_repo(opts, repo_path, start)
+        finally:
+            release_update_lock(repo_path)
 
 
 def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
@@ -564,9 +615,24 @@ def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     if run is None:
         return
     index_repository(run)
+    # Before anything is written for an agent: an index of nothing helps no one.
+    if not opts.resume and not getattr(run.result, "file_count", 0):
+        raise reasoned_error(
+            f"No source files to index in {repo_path} (.gitignore and excludes applied). "
+            "Run init in a code repository: repowise init <path>",
+            reason="no_source_files",
+        )
     # Each one is an analysis step the pipeline skipped on an error.
     if run.run_warnings:
         run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
+    if get_head_commit(repo_path) is None:
+        # Said, not a gap: the code index is complete, only history is missing.
+        note = (
+            "No git commits here, so hotspots, ownership and decisions are empty. "
+            "Commit this folder to git, then run repowise update."
+        )
+        console.print(f"[{WARN}]{note}[/]")
+        run.run_warnings.append(note)
 
     if _generate(run):
         return

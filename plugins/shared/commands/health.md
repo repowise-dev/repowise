@@ -2,6 +2,7 @@
 frontmatter: |
     description: Show Repowise code-health — KPIs, lowest-scoring files, refactoring targets, trends, or per-file markers.
     allowed-tools: Bash(repowise health:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Health
@@ -32,9 +33,10 @@ Handle `$ARGUMENTS`:
 - "refactoring" / "targets" → `repowise health --refactoring-targets` (ranked by impact/effort)
 - "trend" / "trends" → `repowise health --trend` (last snapshots + declining / predicted-decline alerts)
 - "module <name>" → `repowise health --module <name>`
-- "production" / "app code" → `repowise health --scope production` (tests score
-  higher than production code, so narrowing lowers every figure without a defect
-  having been found; the default stays `all`)
+- "production" / "app code" → `repowise health --scope production` (leaves out
+  tests, tooling, build, vendored, generated and docs example files, which tend
+  to score higher, so narrowing lowers every figure without a defect having been
+  found; the default stays `all`)
 - "code shape" / "ignore churn" → `repowise health --counts code_shape` (leaves
   out the git-derived half: churn, co-change, ownership, prior fixes)
 - a coverage file (e.g. `cov.lcov`, `coverage.xml`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health --recompute`; a `.coverage` builds the per-test map only
@@ -52,5 +54,5 @@ pipeline debug logs, `--repo <alias>` / `--no-workspace` in workspace mode.
   `history_drag`, say so: the code shape did not get worse, and no edit to those
   files settles it.
 - A file that is both low-health **and** a churn hotspot is the highest-priority
-  cleanup — cross-reference with `{{cmd:risk}}` or `get_risk`.
+  cleanup — cross-reference with `{{cmd:risk}}` or `repowise risk --target <path>`.
 - If everything scores high, say so plainly rather than inventing concerns.

@@ -5,15 +5,10 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X, FileText, GitCommit } from "lucide-react";
 import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
-import type { DecisionEvidence } from "@repowise-dev/types/decisions";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Inline marker",
-  git_archaeology: "Git archaeology",
-  readme_mining: "Docs mining",
-  cli: "Manual",
-  conventions: "Convention",
-};
+import {
+  decisionSourceLabel,
+  type DecisionEvidence,
+} from "@repowise-dev/types/decisions";
 
 export interface DecisionEvidenceDrawerProps {
   /** Resolved evidence rows. Caller fetches; the drawer renders. */
@@ -23,6 +18,8 @@ export interface DecisionEvidenceDrawerProps {
   open: boolean;
   onClose: () => void;
   decisionTitle?: string;
+  /** Where an evidence row's file reference leads. Without it the location is plain text. */
+  fileHref?: ((path: string, line?: number | null) => string) | undefined;
 }
 
 /**
@@ -37,6 +34,7 @@ export function DecisionEvidenceDrawer({
   open,
   onClose,
   decisionTitle,
+  fileHref,
 }: DecisionEvidenceDrawerProps) {
   // Defensive sort: API returns source_rank desc, but don't rely on it.
   const sorted = React.useMemo(
@@ -93,7 +91,7 @@ export function DecisionEvidenceDrawer({
             {!isLoading && !error && sorted && sorted.length > 0 && (
               <ul className="space-y-3">
                 {sorted.map((row, i) => (
-                  <EvidenceRow key={row.id} row={row} isPrimary={i === 0} />
+                  <EvidenceRow key={row.id} row={row} isPrimary={i === 0} fileHref={fileHref} />
                 ))}
               </ul>
             )}
@@ -104,13 +102,21 @@ export function DecisionEvidenceDrawer({
   );
 }
 
-function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: boolean }) {
+function EvidenceRow({
+  row,
+  isPrimary,
+  fileHref,
+}: {
+  row: DecisionEvidence;
+  isPrimary?: boolean;
+  fileHref?: DecisionEvidenceDrawerProps["fileHref"];
+}) {
   return (
     <li className="rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)]/40 p-3">
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <VerificationBadge verification={row.verification} />
         <span className="text-xs text-[var(--color-text-secondary)]">
-          {SOURCE_LABEL[row.source] ?? row.source}
+          {decisionSourceLabel(row.source)}
         </span>
         {isPrimary ? (
           <span
@@ -138,13 +144,23 @@ function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: bo
 
       {(row.evidence_file || row.evidence_commit) && (
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
-          {row.evidence_file && (
-            <span className="inline-flex items-center gap-1 font-mono">
-              <FileText className="h-3 w-3" aria-hidden />
-              {row.evidence_file}
-              {row.evidence_line != null && `:${row.evidence_line}`}
-            </span>
-          )}
+          {row.evidence_file &&
+            (fileHref ? (
+              <a
+                href={fileHref(row.evidence_file, row.evidence_line)}
+                className="inline-flex items-center gap-1 font-mono hover:text-[var(--color-accent-primary)] hover:underline"
+              >
+                <FileText className="h-3 w-3" aria-hidden />
+                {row.evidence_file}
+                {row.evidence_line != null && `:${row.evidence_line}`}
+              </a>
+            ) : (
+              <span className="inline-flex items-center gap-1 font-mono">
+                <FileText className="h-3 w-3" aria-hidden />
+                {row.evidence_file}
+                {row.evidence_line != null && `:${row.evidence_line}`}
+              </span>
+            ))}
           {row.evidence_commit && (
             <span className="inline-flex items-center gap-1 font-mono">
               <GitCommit className="h-3 w-3" aria-hidden />

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ....entry_candidacy import is_reachability_root
+from ....ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ..apex_reachability import is_apex_entry_member
 from ..constants import (
     _CONTAINER_USE_LANGUAGES,
@@ -23,6 +25,7 @@ from ..decorator_rules import (
 from ..finding_helpers import _is_synthetic_node, _symbol_span
 from ..jvm_reachability import defines_main
 from ..models import DeadCodeFindingData, DeadCodeKind
+from ..name_occurrences import file_identifiers, searchable_token
 from ..risk_factors import (
     RISK_CAP_CONFIDENCE,
     SAFE_CONFIDENCE_THRESHOLD,
@@ -59,7 +62,20 @@ class _ExportFile:
     # unqualified: no importer would name either.
     extension_containers: frozenset[str]
     imported_as_namespace: bool
+    # Python: identifiers the namespace importers write, where ``from pkg
+    # import mod`` then ``mod.attr`` names every attribute it uses. ``None``
+    # elsewhere, or when an importer is unread or reads attributes by a
+    # computed name: then every public symbol counts as reachable.
+    namespace_tokens: frozenset[bytes] | None
     enclosing_ranges: list[tuple[int, int]]
+
+
+# A module's attributes read by a computed name (``getattr(mod, "cmd_" + k)``,
+# ``vars(mod)``, ``mod.__dict__``): the importer never writes the names it uses.
+_COMPUTED_ATTRIBUTE_RE = re.compile(rb"\b(?:getattr|vars|dir|getmembers)\s*\(|__dict__")
+
+# Module-level bindings (``const``/``let``), whose same-file reads are references.
+_MODULE_BINDING_KINDS = frozenset({"variable", "constant"})
 
 
 class UnusedExportPass:
@@ -93,6 +109,26 @@ class UnusedExportPass:
 
         return findings
 
+    def _used_beyond_own_reads(self, sym_id: str, sym: dict) -> bool:
+        """Whether a use edge rescues this export, not counting its own file's reads of a binding.
+
+        An exported ``const`` read only in its own file is used, and only its
+        export is unneeded: that finding is kept and marked export-only by
+        ``demote_used_in_own_file``, so a same-file ``references`` edge onto a
+        module binding does not rescue it here.
+        """
+        if sym.get("kind") not in _MODULE_BINDING_KINDS or not self.graph.has_node(sym_id):
+            return self.ctx._has_inbound_use(sym_id)
+        own_file = sym.get("file_path")
+        return any(
+            data.get("edge_type") in REACHABILITY_USE_EDGE_TYPES
+            and not (
+                data.get("edge_type") == "references"
+                and self.graph.nodes[pred].get("file_path") == own_file
+            )
+            for pred, _, data in self.graph.in_edges(sym_id, data=True)
+        )
+
     def _member_is_used(self, sym_id: str, language: str | None) -> bool:
         """True when this container declares a method something else uses.
 
@@ -122,12 +158,16 @@ class UnusedExportPass:
             return None
 
         node_data = self.graph.nodes[node]
+        # A symbol is the target of a ``defines`` edge, never its source, so it
+        # has no symbols of its own to judge.
+        if node_data.get("node_type") == "symbol":
+            return None
         if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return None
         # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        # A JVM ``main`` launches its file the same way.
+        # A JVM or C# ``main`` launches its file the same way.
         if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
@@ -149,13 +189,17 @@ class UnusedExportPass:
             return None
 
         symbols = [sym for _, sym in symbol_pairs]
+        namespace_importers = self._namespace_importers(node, node_data)
         return _ExportFile(
             node=node,
             node_data=node_data,
             symbol_pairs=symbol_pairs,
             importers_name_symbols=self._importers_name_symbols(node, symbols),
             extension_containers=self._extension_containers(node, node_data, symbol_pairs),
-            imported_as_namespace=self._imported_as_namespace(node, node_data),
+            imported_as_namespace=bool(namespace_importers),
+            namespace_tokens=self._identifiers_of(namespace_importers)
+            if node_data.get("language") == "python"
+            else None,
             # Function bodies, so nested defs (closures) can be skipped.
             enclosing_ranges=[
                 (sym.get("start_line", 0), sym.get("end_line", 0))
@@ -203,8 +247,8 @@ class UnusedExportPass:
             if self._declares_extension_method(sym_id)
         )
 
-    def _imported_as_namespace(self, node: Any, node_data: dict) -> bool:
-        """Whether an importer pulled this file by its module name.
+    def _namespace_importers(self, node: Any, node_data: dict) -> list[str]:
+        """The files that import this one by its module name.
 
         Then any public symbol may be reached as ``mod.<attr>``. Not for Go,
         where every import names a package and package calls resolve precisely.
@@ -215,8 +259,23 @@ class UnusedExportPass:
             or file_stem in ("__init__", "index")
             or node_data.get("language") == "go"
         ):
-            return False
-        return any(file_stem in imported for imported in self.ctx._imported_names_by_edge(node))
+            return []
+        importers = []
+        for pred in self.graph.predecessors(node):
+            edge = self.graph.get_edge_data(pred, node, {})
+            if edge.get("edge_type") == "imports" and file_stem in edge.get("imported_names", []):
+                importers.append(str(pred))
+        return importers
+
+    def _identifiers_of(self, paths: list[str]) -> frozenset[bytes] | None:
+        """Every identifier *paths* write, or ``None`` when one is unread or reads names it never writes."""
+        tokens: set[bytes] = set()
+        for path in paths:
+            blob = self.ctx._source_map.get(path)
+            if blob is None or _COMPUTED_ATTRIBUTE_RE.search(blob):
+                return None
+            tokens |= file_identifiers(blob, path)
+        return frozenset(tokens)
 
     def _is_export_candidate(
         self, file_ctx: _ExportFile, sym: dict, dynamic_patterns: tuple[str, ...]
@@ -224,7 +283,7 @@ class UnusedExportPass:
         """Whether a public symbol is the kind of thing the pass may report."""
         if not self._is_importable_by_name(file_ctx, sym):
             return False
-        return not self._used_without_an_edge(file_ctx.node_data, sym, dynamic_patterns)
+        return not self._used_without_an_edge(file_ctx, sym, dynamic_patterns)
 
     def _is_importable_by_name(self, file_ctx: _ExportFile, sym: dict) -> bool:
         """False for symbols no importer can name: members, intrinsics, declarations."""
@@ -265,9 +324,10 @@ class UnusedExportPass:
         )
 
     def _used_without_an_edge(
-        self, node_data: dict, sym: dict, dynamic_patterns: tuple[str, ...]
+        self, file_ctx: _ExportFile, sym: dict, dynamic_patterns: tuple[str, ...]
     ) -> bool:
         """Uses the graph cannot carry: framework registration, dynamic names, local refs."""
+        node_data = file_ctx.node_data
         sym_name = sym.get("name", "")
         decorators = sym.get("decorators", [])
 
@@ -283,7 +343,7 @@ class UnusedExportPass:
         if self.ctx._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
-        if _nested_class_used(node_data, sym):
+        if _nested_class_used(node_data, sym, lambda: self._imported_packages(file_ctx.node)):
             return True
 
         # TS/JS: type names referenced in type positions of the same file.
@@ -295,6 +355,15 @@ class UnusedExportPass:
         # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
         local_refs = node_data.get("local_refs")
         return bool(local_refs and sym_name in local_refs)
+
+    def _imported_packages(self, node: Any) -> frozenset[str]:
+        """Top-level packages *node* imports, from its ``external:`` edges."""
+        prefix = "external:"
+        return frozenset(
+            str(target)[len(prefix) :].split(".", 1)[0]
+            for target in self.graph.successors(node)
+            if str(target).startswith(prefix)
+        )
 
     def _export_use_evidence(
         self, file_ctx: _ExportFile, sym_id: str, sym: dict
@@ -310,9 +379,13 @@ class UnusedExportPass:
         # ``export { local as alias }`` publishes the symbol under the
         # alias; importers carry the alias in ``imported_names``.
         export_alias = self.ctx._ts_export_aliases.get(str(node), {}).get(sym_name)
+        # A Pascal ``uses`` brings in the whole interface, so its ``*`` names
+        # no symbol: a use is a call, type or name edge, or the name written in
+        # an importer (``pascal_name_uses``).
+        wildcard_rescues = file_ctx.node_data.get("language") != "pascal"
         has_importers = any(
             sym_name in imported_names
-            or "*" in imported_names
+            or ("*" in imported_names and wildcard_rescues)
             or (export_alias is not None and export_alias in imported_names)
             for imported_names in (
                 self.graph[pred][node].get("imported_names", [])
@@ -327,15 +400,17 @@ class UnusedExportPass:
             if unsatisfied_guard is None:
                 return True, None
 
-        # Namespace-import rescue: see ``_imported_as_namespace``. Any public
-        # symbol in a file pulled by module name could be the dispatch target
-        # for ``<modname>.<attr>(...)``.
-        if file_ctx.imported_as_namespace and unsatisfied_guard is None:
+        # Namespace-import rescue: see ``_namespace_importers``. A public
+        # symbol in a file pulled by module name is the dispatch target of
+        # ``<modname>.<attr>(...)`` when an importer writes its name. One no
+        # importer writes falls through to the repository-wide name checks,
+        # which clamp it if any other file names it.
+        if unsatisfied_guard is None and _namespace_rescues(file_ctx, sym_name):
             return True, None
 
         # Any symbol-level use edge counts even when ``imported_names`` missed
         # it; a use of one overload uses the set.
-        if unsatisfied_guard is None and self.ctx._has_inbound_use(sym_id):
+        if unsatisfied_guard is None and self._used_beyond_own_reads(sym_id, sym):
             return True, None
 
         if self._member_is_used(sym_id, sym.get("language")):
@@ -463,3 +538,16 @@ class UnusedExportPass:
                 if self.graph[pred][succ].get("edge_type") in implementor_edges:
                     return True
         return False
+
+
+def _namespace_rescues(file_ctx: _ExportFile, sym_name: str) -> bool:
+    """Whether a namespace importer may reach *sym_name* as ``mod.<attr>``.
+
+    A name the identifier scan cannot see (too short, non-ASCII) is never read
+    as absent: it keeps the rescue.
+    """
+    if not file_ctx.imported_as_namespace:
+        return False
+    tokens = file_ctx.namespace_tokens
+    token = searchable_token(sym_name, path=str(file_ctx.node))
+    return tokens is None or not token or token in tokens

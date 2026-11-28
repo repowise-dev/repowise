@@ -33,6 +33,7 @@ _LIGHTWEIGHT = (
     "repowise.core.analysis.health.suggestions",
     "repowise.core.analysis.health.defect_accuracy",
     "repowise.core.analysis.module_health",
+    "repowise.core.analysis.held_origins",
     "repowise.core.analysis.owners",
     "repowise.core.analysis.reviewers",
 )

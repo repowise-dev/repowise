@@ -24,8 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.symbol_spans import symbol_at
+
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterable, Mapping, Sequence
+    from collections.abc import Collection, Coroutine, Iterable, Mapping, Sequence
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -103,6 +105,7 @@ class RepoIndex:
         self._by_file: dict[str, list[IndexedSymbol]] = {}
         self._by_name: dict[str, list[IndexedSymbol]] = {}
         self._externals: list[ExternalImport] = []
+        self._origins: Mapping[str, str] | None = None
 
     @classmethod
     def from_symbols(
@@ -113,6 +116,7 @@ class RepoIndex:
         repo_id: str,
         session: Any = None,
         names: Mapping[str, Sequence[IndexedSymbol]] | None = None,
+        origins: Mapping[str, str] | None = None,
     ) -> RepoIndex:
         """An index over *symbols* the caller already holds, with no database.
 
@@ -120,11 +124,16 @@ class RepoIndex:
         :func:`.test_impact.analyze_workspace_test_impact`); :meth:`close` leaves
         it alone. *names* replaces the name lookup built from *symbols*, for a
         caller that loads only some files but resolves names across the repo.
+        *origins* maps a path to its stored ``code_origin``, for a caller whose
+        *session* cannot read the health rows; contract extraction judges an
+        end's origin by it in place of the session (see :attr:`origins`).
         """
         index = cls(alias, Path(), session, None, repo_id=repo_id)
         index._index(symbols)
         if names is not None:
             index._by_name = names  # type: ignore[assignment]
+        if origins is not None:
+            index._origins = origins
         return index
 
     # -- Loading -----------------------------------------------------------
@@ -209,19 +218,26 @@ class RepoIndex:
         """The connection the index holds; reachability queries run on it too."""
         return self._session
 
+    @property
+    def origins(self) -> Mapping[str, str] | None:
+        """Stored ``code_origin`` by path the caller handed in, or ``None`` (read the session)."""
+        return self._origins
+
+    def files(self) -> Collection[str]:
+        """Every file with parsed symbols (POSIX, repo-relative)."""
+        return self._by_file.keys()
+
     def symbols_for_file(self, rel_path: str) -> list[IndexedSymbol]:
         """Symbols declared in *rel_path* (POSIX, repo-relative), outermost first."""
         return self._by_file.get(rel_path, [])
 
+    def symbols_named(self, name: str) -> Sequence[IndexedSymbol]:
+        """Every symbol whose own (unqualified) name is *name*, across the repo."""
+        return self._by_name.get(name, ())
+
     def symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
         """The innermost symbol whose span contains *line*, or None."""
-        best: IndexedSymbol | None = None
-        for sym in self._by_file.get(rel_path, ()):
-            if sym.start_line <= line <= sym.end_line and (
-                best is None or sym.start_line >= best.start_line
-            ):
-                best = sym
-        return best
+        return symbol_at(self._by_file.get(rel_path, ()), line)
 
     def declared_symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
         """The symbol a declaration on *line* names, or None.
@@ -288,8 +304,7 @@ class RepoIndex:
         # No engine means the caller built this over its own handle and owns it.
         if self._engine is None:
             return
-        await self._session.close()
-        await self._engine.dispose()
+        await _close_index_db(self._session, self._engine)
 
 
 class WorkspaceIndex:
@@ -310,9 +325,14 @@ class WorkspaceIndex:
     async def ensure(self, aliases: Collection[str]) -> None:
         """Open the index of each alias in *aliases* not opened yet. A repo that fails is skipped."""
         todo = [(a, self._openable.pop(a)) for a in sorted(aliases) if a in self._openable]
-        opened = await asyncio.gather(
-            *(open_repo_index(alias, path) for alias, path in todo), return_exceptions=True
-        )
+        tasks = [asyncio.create_task(open_repo_index(alias, path)) for alias, path in todo]
+        try:
+            opened = await asyncio.gather(*tasks, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Restore aliases before cleanup can re-raise a repeated cancellation.
+            self._openable.update(todo)
+            await _run_to_end(_close_opened(tasks))
+            raise
         for (alias, _path), index in zip(todo, opened, strict=True):
             if isinstance(index, BaseException):
                 _log.warning("Could not open the index for '%s'", alias, exc_info=index)
@@ -320,12 +340,58 @@ class WorkspaceIndex:
                 self._repos[alias] = index
 
     async def close(self) -> None:
-        for repo in self._repos.values():
-            try:
-                await repo.close()
-            except Exception:
-                _log.warning("Error closing index for '%s'", repo.alias, exc_info=True)
+        repos = list(self._repos.values())
         self._repos.clear()
+        await _run_to_end(_close_indexes(repos))
+
+
+async def _close_index_db(session: AsyncSession, engine: Any) -> None:
+    async def close() -> None:
+        try:
+            await session.close()
+        finally:
+            await engine.dispose()
+
+    await _run_to_end(close())
+
+
+async def _run_to_end(cleanup: Coroutine[Any, Any, None]) -> None:
+    """Finish *cleanup* however often the caller is cancelled, then re-raise.
+
+    A shield holds off one cancellation. An anyio cancel scope, which MCP tool
+    calls run under, cancels again on every pass of the loop, and the next one
+    would reach the cleanup and leave its connection checked out.
+    """
+    task = asyncio.create_task(cleanup)
+    cancelled: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            # asyncio.wait never cancels the task it waits on.
+            await asyncio.wait({task})
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    if cancelled is None:
+        return task.result()
+    if not task.cancelled() and task.exception() is not None:
+        _log.warning("Error closing index database", exc_info=task.exception())
+    raise cancelled
+
+
+async def _close_opened(tasks: list[asyncio.Task[RepoIndex | None]]) -> None:
+    """gather settles every open before it re-raises a cancellation, so each
+    index that opened is closed here and none finishes later with no owner.
+    """
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await _close_indexes([r for r in results if r is not None and not isinstance(r, BaseException)])
+
+
+async def _close_indexes(indexes: list[RepoIndex]) -> None:
+    """Close each index; one that fails is logged and the rest still close."""
+    for index in indexes:
+        try:
+            await index.close()
+        except Exception:
+            _log.warning("Error closing index for '%s'", index.alias, exc_info=True)
 
 
 async def checkout_repository(session: AsyncSession, repo_path: Path) -> Any:
@@ -372,8 +438,7 @@ async def open_repo_index(alias: str, repo_path: Path) -> RepoIndex | None:
         # BaseException too: a cancellation landing in _load would otherwise
         # leak the engine and its connection.
         if not ok:
-            await session.close()
-            await engine.dispose()
+            await _close_index_db(session, engine)
     return index
 
 

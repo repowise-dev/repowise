@@ -273,6 +273,30 @@ def test_only_an_unmeasured_loop_is_unproven(marker, facets, proof) -> None:
     assert perf_queue_verdict(row).reason == ("unmeasured_cost" if proof == "unproven" else None)
 
 
+@pytest.mark.parametrize(
+    ("marker", "facets", "static"),
+    [
+        ("io_in_loop", {"loop_magnitude": "unknown"}, "size_unknown"),
+        ("io_in_loop", {}, "size_unknown"),
+        ("io_in_loop", {"loop_magnitude": "bounded"}, "bounded"),
+        ("io_in_loop", {"loop_magnitude": "grows_with_data"}, "grows_with_data"),
+        ("sql_cartesian_join", {"loop_magnitude": "bounded"}, "grows_by_shape"),
+        ("hot_path_sync_io", {"exposure": "entry_reachable"}, "per_call_reached"),
+        ("hot_path_sync_io", {"exposure": "not_entry_reachable"}, "per_call_unreached"),
+        ("some_new_marker", {"loop_magnitude": "n/a"}, "per_call_unreached"),
+    ],
+)
+def test_static_cost_reads_the_code_alone(marker, facets, static) -> None:
+    from repowise.core.analysis.health.worth import cost_proof, static_cost
+
+    assert static_cost(marker, facets) == static
+    # A run that measured the loop owner proves the cost; the static part stays.
+    measured = {**facets, "confirmed": "measured"}
+    assert static_cost(marker, measured) == static
+    row = {"biomarker_type": marker, "details": {"facets": measured}}
+    assert cost_proof(row) == "proven"
+
+
 def test_an_unknown_loop_ranks_no_higher_than_a_bounded_one() -> None:
     from repowise.core.analysis.health.perf.opportunity_rank import MAGNITUDE_POINTS
 

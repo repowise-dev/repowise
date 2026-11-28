@@ -145,6 +145,27 @@ def test_day_one_files_replace_an_arbitrary_oldest_file() -> None:
     assert "oldest_file" not in out
 
 
+def test_file_records_rank_production_code_only() -> None:
+    metrics = [
+        {"file_path": "src/app.py", "nloc": 400, "max_ccn": 12, "code_origin": "production"},
+        # The stored origin read the file's head: a generated parser by content.
+        {"file_path": "src/parser.py", "nloc": 9000, "max_ccn": 90, "code_origin": "generated"},
+        # No stored origin, as on an index written before the column: the path decides.
+        {"file_path": "tests/test_app.py", "nloc": 3000, "max_ccn": 40, "code_origin": None},
+        {"file_path": "src/small.py", "nloc": 50, "max_ccn": 2},
+    ]
+    meta = [
+        {"file_path": "tests/test_app.py", "commit_count_total": 80},
+        {"file_path": "src/app.py", "commit_count_total": 30},
+        # Unscored by health, still judged by origin.
+        {"file_path": "vendor/lib/big.py", "commit_count_total": 99},
+    ]
+    out = build_file_records(metrics, meta, None)
+    assert out["largest_file"] == {"path": "src/app.py", "nloc": 400}
+    assert out["gnarliest_file"] == {"path": "src/app.py", "max_ccn": 12}
+    assert out["most_changed_file"] == {"path": "src/app.py", "commit_count": 30}
+
+
 def test_function_records_leave_test_code_out() -> None:
     def fn(name: str, path: str, end: int, kind: str = "function") -> dict:
         return {"name": name, "kind": kind, "file_path": path, "start_line": 1, "end_line": end}

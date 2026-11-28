@@ -22,7 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.persistence.database import get_session
 from repowise.server.auth import (
     PER_CALL_TOOL_SCOPE,
+    ROUTE_ACTION_ATTR,
+    Action,
     Principal,
+    authorize_repo,
+    authorize_tool,
+    checks_repo_access,
     get_authenticator,
     get_authorizer,
 )
@@ -170,6 +175,19 @@ _SCOPE_FILTERED_ROUTES = frozenset(
 )
 
 
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def request_action(request: Request) -> Action:
+    """What this request does: the action its route declares (``read_route``),
+    else ``READ`` for GET, HEAD and OPTIONS and ``WRITE`` for any other method."""
+    endpoint = getattr(request.scope.get("route"), "endpoint", None)
+    declared = getattr(endpoint, ROUTE_ACTION_ATTR, None)
+    if isinstance(declared, Action):
+        return declared
+    return Action.READ if request.method in _READ_METHODS else Action.WRITE
+
+
 async def _repo_identifiers(request: Request, repo_id: str) -> tuple[str, ...]:
     """The id plus the stored name, so a scope may list either."""
     from repowise.core.persistence import crud
@@ -184,21 +202,27 @@ async def _repo_identifiers(request: Request, repo_id: str) -> tuple[str, ...]:
 
 
 async def _enforce_repo_scope(request: Request, principal: Principal) -> None:
-    """403 unless the route's repo is in scope. A restricted principal is
-    refused on routes that name no repo, except the filtered listings."""
-    if principal.repo_scope is None:
-        return
+    """403 unless the route's repo is in scope for the request's action. A
+    repo-scoped principal is refused on routes that name no repo, except the
+    filtered listings; an action-aware authorizer decides those from the
+    action alone."""
     authorizer = get_authorizer()
+    if not checks_repo_access(principal, authorizer):
+        return
+    action = request_action(request)
     repo_id = request.path_params.get("repo_id") or request.query_params.get("repo_id")
     if repo_id:
-        if authorizer.can_access_repo(principal, (repo_id,)):
+        if authorize_repo(principal, (repo_id,), action, authorizer):
             return
-        if authorizer.can_access_repo(principal, await _repo_identifiers(request, repo_id)):
+        identifiers = await _repo_identifiers(request, repo_id)
+        if authorize_repo(principal, identifiers, action, authorizer):
             return
-    else:
+    elif principal.repo_scope is not None:
         route = request.scope.get("route")
         if (request.method, getattr(route, "path", None)) in _SCOPE_FILTERED_ROUTES:
             return
+    elif authorize_repo(principal, (), action, authorizer):
+        return
     raise HTTPException(status_code=403, detail="Repository is outside this credential's scope")
 
 
@@ -212,7 +236,7 @@ def scoped_repo_id(request: Request) -> str | None:
     None for unrestricted callers. Routes that load an object by its own id
     check it belongs to this repo."""
     principal = request_principal(request)
-    if principal is None or principal.repo_scope is None:
+    if principal is None or not checks_repo_access(principal):
         return None
     return request.path_params.get("repo_id") or request.query_params.get("repo_id")
 
@@ -245,9 +269,10 @@ async def verify_api_key(
     ):
         raise HTTPException(status_code=403, detail="This credential is limited to tools")
     authorizer = get_authorizer()
+    action = request_action(request)
     for scope in scopes:
         tool = scope.removeprefix("tool:")
-        if tool != scope and not authorizer.can_use_tool(principal, tool):
+        if tool != scope and not authorize_tool(principal, tool, action, authorizer):
             raise HTTPException(
                 status_code=403, detail=f"Tool '{tool}' is outside this credential's scope"
             )
