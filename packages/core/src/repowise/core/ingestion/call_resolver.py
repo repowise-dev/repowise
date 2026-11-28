@@ -2061,11 +2061,8 @@ class CallResolver(
         symbol = self._symbols_by_id[sym_id]
         if symbol.kind in _TYPE_KINDS:
             return True
-        # C# indexes only constructors and delegates as functions.
-        if symbol.language == "csharp" and symbol.kind == "function":
-            return True
-        parts = sym_id.split("::")
-        return len(parts) >= 3 and id_segment_name(parts[-1]) == id_segment_name(parts[-2])
+        # Construction is marked only in C#, where a function is a constructor or a delegate.
+        return symbol.language == "csharp" and symbol.kind == "function"
 
     def _flat_hit_is_stranger(self, call: CallSite, callee_id: str) -> bool:
         """Is the flat same-file hit no rival for the caller's own class member?
