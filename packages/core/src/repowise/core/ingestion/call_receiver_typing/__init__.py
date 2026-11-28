@@ -1098,10 +1098,8 @@ class ReceiverTypingMixin(
         type_name, scope, typing_file = self._receiver_type_and_scope(
             file_path, caller_id, language, head, line
         )
-        if language == "csharp" and scope == "field":
-            _, owner = self._field_owner(file_path, caller_id, language)
-            if self._csharp_qualified_field_type(owner, head):
-                return None
+        if self._csharp_qualified_head_field(file_path, caller_id, language, head, scope):
+            return None
         if type_name is not None and language == "python" and "::" in type_name:
             return self._located(file_path, type_name)  # typed from a call
         return None if type_name is None else self._class_named(typing_file, type_name, caller_id)
@@ -1131,6 +1129,15 @@ class ReceiverTypingMixin(
         if hop is None:
             return None
         return hop[0], hop[1], max(tier, hop[2], key=_CHAIN_TIER_RANK.__getitem__)
+
+    def _csharp_qualified_head_field(
+        self, file_path: str, caller_id: str, language: str, head: str, scope: str | None
+    ) -> bool:
+        """Whether a chain's head is a C# field of the caller's class with a qualified type."""
+        if language != "csharp" or scope != "field":
+            return False
+        _, owner = self._field_owner(file_path, caller_id, language)
+        return self._csharp_qualified_field_type(owner, head)
 
     def _csharp_qualified_field_type(self, class_id: str, field: str) -> bool:
         """A qualified field type cannot be proved by a chain's bare-name lookup."""
