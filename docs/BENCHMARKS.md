@@ -15,7 +15,7 @@ code, against answer keys we did not write, with every sample published in
 | **Up to 99.5% less noise** | Test, install and git output trimmed before the agent reads it, with every error line kept. [Details](#4-command-output-compression) |
 | **15 million lines on a laptop** | dotnet/runtime indexed on one laptop with no API key, building the map with 10x less memory than the next tool. [Details](#scale) |
 
-Also measured: **93.8% to 99.8%** of the calls it draws are confirmed by the
+Also measured: **93.9% to 99.8%** of the calls it draws are confirmed by the
 language's own compiler ([by language](#accuracy-by-language)), and **97.5%**
 correct on which tests to run for a change ([tests](#test-intelligence)).
 
@@ -235,10 +235,11 @@ Guide: [docs/agent/DISTILL.md](agent/DISTILL.md).
 ## Call graph accuracy by language
 
 When repowise says "function A calls function B", the language's own compiler
-checks it. Precision is **0.938 to 0.998** on Go, TypeScript, Dart, C and
+checks it. Precision is **0.939 to 0.998** on Go, TypeScript, Dart, C and
 Python, **0.898 to 1.000** on Java, and **0.780 to 0.975** on Kotlin, C#, C++
-and Rust. Held-out repositories, never used to pick a fix, read as well as the
-ones accuracy work is developed against. Measured October 2026 on repowise main.
+and Rust. Held-out repositories, never used to pick a fix, sit beside the ones
+accuracy work is developed against. Measured October 2026 on repowise main; C and
+C++ rows November 2026.
 
 | Language | Repository | Set | Answer key | Precision | Recall | Edges |
 |---|---|---|---|---:|---:|---:|
@@ -253,11 +254,12 @@ ones accuracy work is developed against. Measured October 2026 on repowise main.
 | Python | attrs | dev | jedi | **0.942** | 0.757 | 1,472 |
 | Python | typer | held out | jedi | **0.963** | 0.847 | 2,099 |
 | Python | alembic | held out | jedi | **0.991** | 0.696 | 1,319 |
-| C | redis | dev | scip-clang (clang) | **0.938** | 0.717 | 34,209 |
-| C | git | held out | scip-clang (clang) | **0.979** | 0.837 | 28,104 |
-| C++ | fmt | dev | scip-clang (clang) | **0.858** | 0.615 | 1,414 |
-| C++ | ninja | dev | scip-clang (clang) | **0.944** | 0.714 | 1,047 |
-| C++ | yaml-cpp | held out | scip-clang (clang) | **0.841** | 0.634 | 1,172 |
+| C | redis | dev | scip-clang (clang) | **0.939** | 0.771 | 32,787 |
+| C | git | held out | scip-clang (clang) | **0.978** | 0.852 | 27,797 |
+| C++ | fmt | dev | scip-clang (clang) | **0.902** | 0.830 | 1,314 |
+| C++ | ninja | dev | scip-clang (clang) | **0.973** | 0.943 | 1,027 |
+| C++ | yaml-cpp | held out | scip-clang (clang) | **0.857** | 0.699 | 1,351 |
+| C++ | jsoncpp 1.9.6 | held out | scip-clang (clang) | **0.924** | 0.771 | 1,104 |
 | Java | jsoup | dev | scip-java (javac) | **0.980** | 0.943 | 4,332 |
 | Java | gson | dev | scip-java (javac) | **0.958** | 0.949 | 1,760 |
 | Java | eclipse-hawkbit (Spring Boot application) | dev | scip-java (javac) | **0.937** | 0.845 | 5,977 |
@@ -649,14 +651,16 @@ Reports:
   declaration line the compiler names. Python's reference is jedi, which follows
   re-exports and type stubs to the real definition. Where clang or Roslyn's index
   cannot tell which overload an unresolved call names, that call is left
-  ungraded, and Java's reference places Lombok-generated members where javac
+  ungraded. On C and C++, clang's index is read with half-open source ranges,
+  as the SCIP format defines them, and a call where clang names no function,
+  such as a call through a function-pointer field or inside a macro expansion,
+  is left ungraded. Java's reference places Lombok-generated members where javac
   does. Apex has no public compiler index, so its recall is read against a census
   of literal `new X(` and `X.m(` references and its precision from 30
   hand-graded edges on each of three repositories. Every cell carries a 95%
   confidence interval in the published artifacts.
 - **Held out means never tuned on.** Held-out repositories are chosen in advance
-  and never used to pick a fix. None sits more than 0.04 below its language's
-  lowest dev row.
+  and never used to pick a fix, and every held-out row is published.
 - **Recall depends on entry points** (4 on gitleaks, 268 on syft with tests), so
   compare it within a language or a row. On syft without tests, 44% of missed
   edges are dynamic dispatch, at 6.5 possible targets per call site.

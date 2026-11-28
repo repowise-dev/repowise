@@ -115,8 +115,8 @@ though someone had written it.
   several wrong edges for each right one.
 - **Against compiler indexes for more languages.** Java reads 0.898 to
   1.000 precision against javac across seven repositories. C on git,
-  a repository held out from all tuning, reads 0.979 precision at
-  0.837 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+  a repository held out from all tuning, reads 0.978 precision at
+  0.852 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
   static analyser) are in the same table.
 
 Unused methods are not reported for any language because method-level precision

@@ -187,7 +187,7 @@ walk, the flow reports which origins it declined.
 |---|---|---|
 | Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
 | javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
-| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
+| Compiler index | C on git, held out from all tuning | Precision 0.978 at 0.852 recall |
 
 In all seven Go and TypeScript cells, no tool in the five-tool comparison that
 finds as much of the call graph gets more of it right; two tools post higher
