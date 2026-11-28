@@ -45,7 +45,8 @@ __all__ = [
 ]
 
 #: ``state.json`` key holding ``{"<seam>:<name>": {cursor, settings_fp, last_state,
-#: last_run_at, last_stored_at}}``.
+#: last_run_at, last_stored_at, last_batches, last_message}}``. ``last_message`` is
+#: the result's message, which has every secret masked.
 LEDGER_KEY = "source_sync"
 
 
@@ -291,7 +292,12 @@ def record_result(
     entry = entry if isinstance(entry, dict) else {}
     at = datetime.now(UTC).isoformat(timespec="seconds")
     entry.update(
-        cursor=cursor, settings_fp=planned.settings_fp, last_state=result["state"], last_run_at=at
+        cursor=cursor,
+        settings_fp=planned.settings_fp,
+        last_state=result["state"],
+        last_run_at=at,
+        last_batches=result["batches"],
+        last_message=result["message"],
     )
     if result["state"] == "stored":
         entry["last_stored_at"] = at

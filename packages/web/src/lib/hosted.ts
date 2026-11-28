@@ -27,8 +27,15 @@ export function homeLink(surface: string): string {
   return `${SITE_URL}/?${srcQuery(surface)}`;
 }
 
+/** `https://repowise.dev/integrations?src=local_web_<surface>`: every hosted integration and its plan. */
+export function integrationsLink(surface: string): string {
+  return `${SITE_URL}/integrations?${srcQuery(surface)}`;
+}
+
 export interface Nudge {
   text: string;
+  /** Where "See how" goes, when not the hosted page. */
+  href?: string;
   /** Becomes `src=local_web_<surface>`. */
   surface: string;
   /** The section of the hosted page the link opens. */
@@ -52,6 +59,12 @@ export const NUDGES = {
     text: "Want AI-written docs without an API key? repowise.dev includes the model.",
     surface: "docs",
     moment: "keys",
+  },
+  plugins: {
+    text: "Hosted repowise.dev has ready-made integrations.",
+    surface: "plugins",
+    moment: "integrations",
+    href: integrationsLink("plugins"),
   },
 } satisfies Record<string, Nudge>;
 

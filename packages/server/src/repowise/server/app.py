@@ -68,6 +68,7 @@ from repowise.server.routers import (
     owners,
     pages,
     platform,
+    plugins,
     providers,
     refactoring,
     reports,
@@ -370,6 +371,7 @@ _ROUTERS = (
     platform,
     settings,
     setup,
+    plugins,
 )
 
 

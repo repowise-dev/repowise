@@ -549,7 +549,7 @@ Verified by reading the routes and, where noted, by request:
 
 ## 6. Orientation: which part of `/docs` to open
 
-Swagger groups operations by tag. There are 36 tags in the published document,
+Swagger groups operations by tag. There are 46 tags in the published document,
 one per router area; this table maps an area to the tag to open there.
 
 | Area | OpenAPI tag | Router |
@@ -580,6 +580,7 @@ one per router area; this table maps an area to the tag to open there.
 | MCP tool surface per repo | `mcp` | `routers/mcp.py` |
 | Version freshness and changelog | `meta` | `routers/meta.py` |
 | Install identity and repowise.dev publishing | `platform` | `routers/platform.py` |
+| Installed plugins, their sources, and Sync now | `plugins` | `routers/plugins.py` |
 | Cost totals and distill savings | `costs` | `routers/costs.py` |
 | Ownership rollups | `owners` | `routers/owners.py` |
 | Module health | `modules` | `routers/modules.py` |

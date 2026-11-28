@@ -64,8 +64,17 @@ function useSettingsRegistryLabels(areas: string[]): Partial<SettingsRegistryLab
   };
 }
 
-/** Every setting for one repository, fetched and written through the settings API. */
-export function SettingsRegistryPanel({ repoId, repoName }: { repoId: string; repoName: string }) {
+/** Every setting for one repository, fetched and written through the settings API.
+ *  `initialQuery` starts the search there, for a link to one setting. */
+export function SettingsRegistryPanel({
+  repoId,
+  repoName,
+  initialQuery,
+}: {
+  repoId: string;
+  repoName: string;
+  initialQuery?: string;
+}) {
   const t = useTranslations("settings.registry");
   const tg = useTranslations("settings.groups");
   const { data, error, isLoading, mutate } = useSWR(["settings-registry", repoId], () =>
@@ -106,6 +115,7 @@ export function SettingsRegistryPanel({ repoId, repoName }: { repoId: string; re
       onReset={(key) => resetSetting(repoId, key)}
       linkFor={linkFor}
       labels={labels}
+      initialQuery={initialQuery}
     />
   );
 }

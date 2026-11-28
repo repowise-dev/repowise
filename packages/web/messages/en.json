@@ -1477,6 +1477,10 @@
       "display": {
         "title": "Display"
       },
+      "plugins": {
+        "title": "Plugins",
+        "description": "Plugins add data repowise can't read from git, such as an issue tracker. Each one lists its state, its settings and what's left to set up; each source shows its last sync."
+      },
       "all": {
         "title": "All settings",
         "description": "Every repowise setting for this repository: its value, where it came from, and what it does. Changes save to .repowise/config.yaml, the same file repowise config set writes."
@@ -1550,6 +1554,44 @@
         "providers": "Model providers",
         "server": "Server"
       }
+    },
+    "plugins": {
+      "loading": "Loading plugins...",
+      "loadFailed": "Couldn't load plugins.",
+      "retry": "Try again",
+      "sourcesTitle": "Sources",
+      "pluginsTitle": "Installed plugins",
+      "ready": "Ready",
+      "failed": "Failed",
+      "notConfigured": "Not configured",
+      "status": {
+        "skipped": "Skipped",
+        "pending": "Pending"
+      },
+      "settingsOf": "Settings of {plugin}",
+      "set": "set",
+      "notSet": "not set",
+      "secretSet": "secret, set",
+      "secretNotSet": "secret, not set",
+      "builtIn": "Built in",
+      "fromPlugin": "From {plugin}",
+      "neverSynced": "Never synced",
+      "stored": "Stored {batches, plural, one {# batch} other {# batches}}",
+      "syncStates": {
+        "unavailable": "Unavailable",
+        "refused": "Refused",
+        "failed": "Failed"
+      },
+      "syncedAt": "{time}",
+      "syncing": "Syncing...",
+      "syncNow": "Sync now",
+      "syncNowAria": "Sync {source} now",
+      "syncFailed": "The sync didn't start.",
+      "emptyTitle": "No plugins installed",
+      "emptyBody": "Plugins feed repowise what lives outside git: issue trackers for defects and decisions, production evidence, team directories, and new outputs.",
+      "guide": "Read the plugin guide",
+      "emptyBuild": "Start your own plugin:",
+      "hostedIntegrations": "Hosted repowise.dev has ready-made integrations."
     }
   },
   "repos": {
