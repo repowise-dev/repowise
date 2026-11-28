@@ -39,6 +39,33 @@ def test_a_warmup_two_languages_share_runs_once_per_context(monkeypatch: pytest.
     assert calls == [ctx, other]
 
 
+def test_a_failing_warmup_logs_a_warning_and_the_build_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#6621: a swallowed warmup exception must still log a warning."""
+    from structlog.testing import capture_logs
+
+    def boom(ctx: object) -> None:
+        raise RuntimeError("index exploded")
+
+    monkeypatch.setattr(
+        graph_warmups, "_WARMUPS", {"csharp": ("graph.csharp_index", boom)}
+    )
+    parsed = {"a.cs": _parsed("csharp")}
+    ctx = SimpleNamespace()
+
+    with capture_logs() as logs:
+        graph_warmups.run_warmups(parsed, ctx)  # must return normally
+
+    warnings = [r for r in logs if r["log_level"] == "warning"]
+    assert any(
+        r.get("event") == "graph_warmup_failed"
+        and r.get("phase") == "graph.csharp_index"
+        and r.get("error") == "index exploded"
+        for r in warnings
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "names", "stems", "expected"),
     [

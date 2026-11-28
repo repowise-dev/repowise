@@ -809,8 +809,16 @@ def run_warmups(
         done_warmups.add(warmup)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
-        with contextlib.suppress(Exception):  # warmup failures must not abort the build
+        try:
             warmup(ctx)
+        except Exception as exc:  # a failing warmup must not abort the build
+            # But it must not be invisible either: downstream, the only
+            # symptom of a broken index is missing edges (see the
+            # ``rust_macro_mods_failed`` / ``community_detection_failed``
+            # precedents).
+            structlog.get_logger(__name__).warning(
+                "graph_warmup_failed", phase=phase_name, error=str(exc)
+            )
         if progress is not None:
             done = getattr(progress, "on_phase_done", None)
             if callable(done):
