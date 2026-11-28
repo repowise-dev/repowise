@@ -12,6 +12,7 @@ configs through this module.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from functools import lru_cache
 
@@ -163,3 +164,18 @@ def _string_end(text: bytes, start: int) -> int:
             return i
         i += 1
     return len(text)
+
+
+def jest_root_dir(text: bytes, config: str) -> str | None:
+    """The literal ``rootDir`` directory in *text*, resolved against *config*'s directory."""
+    config_dir = posixpath.dirname(config)
+    for span in value_spans(text, ("rootDir",)):
+        for literal in string_literals(span):
+            if not literal or literal.startswith("/") or "<rootDir>" in literal or "\n" in literal:
+                continue
+            joined = posixpath.normpath(posixpath.join(config_dir, literal))
+            if joined == ".":
+                return ""
+            if not joined.startswith(".."):
+                return joined
+    return None
