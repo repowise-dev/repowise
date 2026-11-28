@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..models import CallSite, Import, Symbol
 from ..parser_helpers import _find_enclosing_symbol
-from .cics import DYNAMIC_PREFIX, program_transfers
+from .cics import DYNAMIC_PREFIX, call_transfers, program_transfers
 from .source import code_view
 from .statements import copy_statements
 
@@ -30,25 +30,32 @@ def cobol_imports(source: bytes) -> list[Import]:
             seen.add(DYNAMIC_PREFIX + transfer.dynamic)
             raw = f"EXEC CICS {transfer.verb} PROGRAM({transfer.dynamic})"
             imports.append(_import(raw, DYNAMIC_PREFIX + transfer.dynamic))
+    for call in call_transfers(code):
+        if call.dynamic and DYNAMIC_PREFIX + call.dynamic not in seen:
+            seen.add(DYNAMIC_PREFIX + call.dynamic)
+            raw = f"CALL {call.dynamic}"
+            imports.append(_import(raw, DYNAMIC_PREFIX + call.dynamic))
     return imports
 
 
 def cobol_call_sites(source: bytes, symbols: list[Symbol]) -> list[CallSite]:
-    """A call site per static LINK/XCTL target, from the paragraph holding it."""
+    """A call site per static LINK/XCTL target and static CALL target, from the paragraph holding it."""
     ranges = sorted(
         ((s.start_line, s.end_line, s.id) for s in symbols), key=lambda t: (t[0], -t[1])
     )
+    code = code_view(source)
     return [
         CallSite(
             target_name=target,
             receiver_name=None,
-            caller_symbol_id=_find_enclosing_symbol(transfer.line, ranges),
-            line=transfer.line,
+            caller_symbol_id=_find_enclosing_symbol(item.line, ranges),
+            line=item.line,
             argument_count=None,
             program_call=True,
         )
-        for transfer in program_transfers(code_view(source))
-        for target in transfer.targets
+        for collection in (program_transfers(code), call_transfers(code))
+        for item in collection
+        for target in item.targets
     ]
 
 
