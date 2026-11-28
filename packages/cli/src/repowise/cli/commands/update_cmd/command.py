@@ -2675,7 +2675,11 @@ def _update_single_repo(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
     ):
         return _already_up_to_date(opts, run)
+    return _update_changed_files(opts, run)
 
+
+def _update_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
+    """Under the update lock: detect the changes, rebuild the index, write the pages."""
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred

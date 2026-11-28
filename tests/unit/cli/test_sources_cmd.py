@@ -15,7 +15,11 @@ from repowise.core.analysis.actions.rules import setup as setup_rules
 from repowise.core.analysis.actions.setup import SetupFacts
 from repowise.core.source_sync import LEDGER_KEY, plan_sources, unsynced_sources
 from tests.unit.cli.test_evidence_cmd import _indexed_copy, _stored
-from tests.unit.settings.plugin_double import DB, SECRET, TOKEN, installed, no_plugins  # noqa: F401
+from tests.unit.settings import plugin_double
+from tests.unit.settings.plugin_double import DB, SECRET, TOKEN
+
+installed = plugin_double.installed
+no_plugins = plugin_double.no_plugins
 
 
 @pytest.fixture
@@ -47,7 +51,7 @@ def _state(root: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
 
 
-def test_a_source_missing_a_setting_says_the_command_that_sets_it(installed, root) -> None:  # noqa: F811
+def test_a_source_missing_a_setting_says_the_command_that_sets_it(installed, root) -> None:
     code, out = _sync(root)
     assert code == 0
     (r,) = out["sources"]
@@ -66,7 +70,7 @@ def test_a_source_missing_a_setting_says_the_command_that_sets_it(installed, roo
 def test_a_configured_source_stores_its_batches_and_resumes_from_its_cursor(
     installed,
     root,
-    monkeypatch,  # noqa: F811
+    monkeypatch,
 ) -> None:
     _configure(root, monkeypatch)
     code, out = _sync(root, "--source", "synctest")
@@ -106,7 +110,7 @@ def test_a_failing_source_says_why_and_what_to_run(
     root,
     monkeypatch,
     fail,
-    next_command,  # noqa: F811
+    next_command,
 ) -> None:
     _configure(root, monkeypatch)
     installed.fail = fail
@@ -119,20 +123,20 @@ def test_a_failing_source_says_why_and_what_to_run(
     assert _state(root)[LEDGER_KEY]["evidence-source:synctest"]["cursor"] is None
 
 
-def test_an_unknown_source_is_refused(installed, root) -> None:  # noqa: F811
+def test_an_unknown_source_is_refused(installed, root) -> None:
     code, out = _sync(root, "--source", "nope")
     assert code == 1
     assert (out["error"], out["next_command"]) == ("unknown_source", "repowise plugins")
 
 
-def test_with_no_source_installed_sync_says_so(no_plugins, root) -> None:  # noqa: F811
+def test_with_no_source_installed_sync_says_so(no_plugins, root) -> None:
     assert _sync(root) == (
         0,
         {"repo": str(root), "sources": [], "next_command": "repowise plugins"},
     )
 
 
-def test_text_output_ends_with_the_next_command(installed, root, monkeypatch) -> None:  # noqa: F811
+def test_text_output_ends_with_the_next_command(installed, root, monkeypatch) -> None:
     _configure(root, monkeypatch)
     out = CliRunner().invoke(cli, ["sources", "sync", "--path", str(root)])
     assert "stored 2 batches. Next: repowise evidence status" in " ".join(out.output.split())
@@ -141,7 +145,7 @@ def test_text_output_ends_with_the_next_command(installed, root, monkeypatch) ->
 def test_update_with_no_configured_source_reads_and_writes_nothing(
     installed,
     root,
-    capsys,  # noqa: F811
+    capsys,
 ) -> None:
     path = root / ".repowise" / "state.json"
     path.write_text('{"last_sync_commit": "abc"}', encoding="utf-8")
@@ -152,7 +156,7 @@ def test_update_with_no_configured_source_reads_and_writes_nothing(
     assert installed.requests == []
 
 
-def test_update_syncs_a_configured_source(installed, root, monkeypatch, capsys) -> None:  # noqa: F811
+def test_update_syncs_a_configured_source(installed, root, monkeypatch, capsys) -> None:
     _configure(root, monkeypatch)
     sources_cmd.sync_after_update(root)
     assert "Sources: evidence-source synctest: stored 2 batches" in " ".join(
@@ -160,7 +164,7 @@ def test_update_syncs_a_configured_source(installed, root, monkeypatch, capsys) 
     )
 
 
-def test_a_source_failure_never_fails_the_update(installed, root, monkeypatch, capsys) -> None:  # noqa: F811
+def test_a_source_failure_never_fails_the_update(installed, root, monkeypatch, capsys) -> None:
     _configure(root, monkeypatch)
 
     def boom(*_a, **_k):
@@ -217,7 +221,7 @@ def test_update_runs_the_sync_after_its_own_work_only(
 def test_a_configured_source_that_never_synced_is_a_setup_step(
     installed,
     root,
-    monkeypatch,  # noqa: F811
+    monkeypatch,
 ) -> None:
     assert unsynced_sources(root) == ()  # not configured yet
     _configure(root, monkeypatch)
@@ -230,7 +234,7 @@ def test_a_configured_source_that_never_synced_is_a_setup_step(
     assert setup_rules.sources_unsynced(SetupFacts()).status == "unavailable"
 
 
-def test_planned_credentials_never_print(installed, monkeypatch) -> None:  # noqa: F811
+def test_planned_credentials_never_print(installed, monkeypatch) -> None:
     monkeypatch.setenv(TOKEN.env.name, SECRET)
     (planned,) = plan_sources({})
     assert planned.credentials == {TOKEN.key: SECRET}
@@ -238,7 +242,7 @@ def test_planned_credentials_never_print(installed, monkeypatch) -> None:  # noq
     assert [s.key for s in planned.missing] == [DB.key]
 
 
-def test_a_source_that_declares_no_settings_is_left_to_its_host(installed, root, capsys) -> None:  # noqa: F811
+def test_a_source_that_declares_no_settings_is_left_to_its_host(installed, root, capsys) -> None:
     from repowise.core.evidence.sources import evidence_sources
 
     class HostOnly:

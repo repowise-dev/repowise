@@ -101,6 +101,42 @@ def _line(r: dict[str, Any]) -> str:
     return f"{head}. Next: [cyan]{escape(r['next_command'])}[/cyan]"
 
 
+def _planned(repo_path: Path, only: str | None, fmt: str) -> list[Any]:
+    """The sources to report, narrowed to *only*; refuses an unreadable config or unknown name."""
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
+    from repowise.core.source_sync import plan_sources
+
+    try:
+        planned = plan_sources(load_repo_config(repo_path))
+    except RepoConfigError as exc:
+        emit_refusal(
+            "config_unreadable", str(exc), fmt, remedy="Fix the file, then run this again."
+        )
+        raise AssertionError("unreachable") from None
+    if only is None:
+        return planned
+    planned = [p for p in planned if p.name == only]
+    if not planned:
+        emit_refusal(
+            "unknown_source",
+            f"No source named {only} is registered.",
+            fmt,
+            remedy="`repowise plugins` lists each source under its seam.",
+            next_command="repowise plugins",
+        )
+    return planned
+
+
+def _say_none_installed(repo_path: Path, fmt: str) -> None:
+    if fmt == "json":
+        emit_json({"repo": str(repo_path), "sources": [], "next_command": "repowise plugins"})
+        return
+    notice_console(fmt).print(
+        "No plugin source is installed. Install a plugin that registers one "
+        "(an evidence-source). Next: [cyan]repowise plugins[/cyan]"
+    )
+
+
 @sources_group.command("sync")
 @click.option("--source", "only", default=None, help="Sync only the source with this name.")
 @click.option("--path", default=None, help="Repo path (defaults to cwd).")
@@ -114,36 +150,11 @@ def sources_sync_command(only: str | None, path: str | None, fmt: str) -> None:
     not store.
     """
     from repowise.cli.helpers import resolve_command_target
-    from repowise.core.repo_config import RepoConfigError, load_repo_config
-    from repowise.core.source_sync import plan_sources
 
     repo_path = resolve_command_target(path=path).single_repo_path()
-    try:
-        planned = plan_sources(load_repo_config(repo_path))
-    except RepoConfigError as exc:
-        emit_refusal(
-            "config_unreadable", str(exc), fmt, remedy="Fix the file, then run this again."
-        )
-        return
-    if only is not None:
-        planned = [p for p in planned if p.name == only]
-        if not planned:
-            emit_refusal(
-                "unknown_source",
-                f"No source named {only} is registered.",
-                fmt,
-                remedy="`repowise plugins` lists each source under its seam.",
-                next_command="repowise plugins",
-            )
+    planned = _planned(repo_path, only, fmt)
     if not planned:
-        payload = {"repo": str(repo_path), "sources": [], "next_command": "repowise plugins"}
-        if fmt == "json":
-            emit_json(payload)
-        else:
-            notice_console(fmt).print(
-                "No plugin source is installed. Install a plugin that registers one "
-                "(an evidence-source). Next: [cyan]repowise plugins[/cyan]"
-            )
+        _say_none_installed(repo_path, fmt)
         return
     results = run_async(_sync(repo_path, planned))
     if results is None:

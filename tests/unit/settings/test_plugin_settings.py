@@ -20,14 +20,11 @@ from repowise.core.settings.plugins import (
     source_values,
 )
 from repowise.core.settings.views import HIDDEN
-from tests.unit.settings.plugin_double import (  # noqa: F401
-    DB,
-    MODE,
-    SECRET,
-    TOKEN,
-    installed,
-    no_plugins,
-)
+from tests.unit.settings import plugin_double
+from tests.unit.settings.plugin_double import DB, MODE, SECRET, TOKEN
+
+installed = plugin_double.installed
+no_plugins = plugin_double.no_plugins
 
 
 def test_a_plugin_setting_is_keyed_under_its_plugin() -> None:
@@ -49,7 +46,7 @@ def test_a_plugin_setting_is_keyed_under_its_plugin() -> None:
         plugin_setting("linear", "a.b", "str", None, "T.")
 
 
-def test_registered_settings_join_every_lookup(installed, monkeypatch) -> None:  # noqa: F811
+def test_registered_settings_join_every_lookup(installed, monkeypatch) -> None:
     assert settings.get("plugins.synctest.db") == DB
     assert settings.by_env("REPOWISE_PLUGIN_SYNCTEST_TOKEN") == TOKEN
     assert {s.key for s in settings.settings_in("plugins")} == {DB.key, MODE.key, TOKEN.key}
@@ -62,7 +59,7 @@ def test_registered_settings_join_every_lookup(installed, monkeypatch) -> None: 
     assert "setting:REPOWISE_PLUGIN_SYNCTEST_TOKEN" in record.seams
 
 
-def test_a_clash_adds_nothing_and_fails_the_registration(no_plugins) -> None:  # noqa: F811
+def test_a_clash_adds_nothing_and_fails_the_registration(no_plugins) -> None:
     before = settings.all_settings()
     fresh = plugin_setting("other", "x", "str", None, "X.")
     taken = plugin_setting("other", "y", "str", None, "Y.", env=settings.Env("REPOWISE_API_KEY"))
@@ -76,14 +73,14 @@ def test_a_clash_adds_nothing_and_fails_the_registration(no_plugins) -> None:  #
         register_settings(fresh)
 
 
-def test_a_setting_registered_before_the_first_lookup_is_collected(no_plugins) -> None:  # noqa: F811
+def test_a_setting_registered_before_the_first_lookup_is_collected(no_plugins) -> None:
     registry._by_key = None  # as in a fresh process: nothing collected yet
     register_settings(plugin_setting("early", "x", "str", None, "X."))
     assert settings.get("plugins.early.x").area == "plugins"
     assert settings.get("decisions.mode").area == "decisions"
 
 
-def test_an_uninstalled_plugins_key_is_unknown(no_plugins, tmp_path: Path) -> None:  # noqa: F811
+def test_an_uninstalled_plugins_key_is_unknown(no_plugins, tmp_path: Path) -> None:
     with pytest.raises(KeyError):
         settings.get("plugins.synctest.db")
     out = CliRunner().invoke(
@@ -94,7 +91,7 @@ def test_an_uninstalled_plugins_key_is_unknown(no_plugins, tmp_path: Path) -> No
     assert json.loads(out.output)["error"] == "unknown_setting"
 
 
-def test_doctor_names_a_key_no_loaded_plugin_declares(no_plugins) -> None:  # noqa: F811
+def test_doctor_names_a_key_no_loaded_plugin_declares(no_plugins) -> None:
     from repowise.cli.commands.doctor_cmd._checks.settings import _file_settings, _unknown_rows
 
     (row,) = _unknown_rows({"plugins": {"synctest": {"db": "app"}}}, _file_settings())
@@ -105,7 +102,7 @@ def test_doctor_names_a_key_no_loaded_plugin_declares(no_plugins) -> None:  # no
 def test_config_lists_explains_and_sets_an_installed_plugins_settings(
     installed,
     tmp_path: Path,
-    monkeypatch,  # noqa: F811
+    monkeypatch,
 ) -> None:
     (tmp_path / ".repowise").mkdir()
     monkeypatch.setenv(TOKEN.env.name, SECRET)
@@ -150,7 +147,7 @@ def test_fix_command_is_the_one_command_that_sets_it() -> None:
     assert fix_command(TOKEN) == "export REPOWISE_PLUGIN_SYNCTEST_TOKEN=<value>"
 
 
-def test_plugins_lists_what_each_plugin_still_needs(installed, tmp_path, monkeypatch) -> None:  # noqa: F811
+def test_plugins_lists_what_each_plugin_still_needs(installed, tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     out = CliRunner().invoke(cli, ["plugins", "--format", "json"])
     (row,) = [r for r in json.loads(out.output)["plugins"] if r["name"] == "synctest"]
