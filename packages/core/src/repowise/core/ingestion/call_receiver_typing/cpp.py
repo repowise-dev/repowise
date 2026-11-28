@@ -585,8 +585,7 @@ def _cpp_alias(node: Node) -> _CppAlias | None:
 
     *node* is an ``alias_declaration`` or ``type_definition`` capture.
     """
-    key = node.child_by_field_name("name" if node.type == "alias_declaration" else "declarator")
-    target = node.child_by_field_name("type")
+    key, target, expandable = _cpp_alias_parts(node)
     if key is None or key.type != "type_identifier" or target is None:
         return None
     # ``typedef struct { ... } S`` defines a class already held in the index.
@@ -598,6 +597,8 @@ def _cpp_alias(node: Node) -> _CppAlias | None:
     # not flatten their aliases or qualified targets into file scope.
     scope = _cpp_alias_scope(node)
     full = written.removeprefix("typename ").removeprefix("::")
+    if not expandable or node.has_error or _names_template_parameter(node, full):
+        full = written = ""
     return _CppAlias(
         name,
         written if scope is None and written.isidentifier() else None,
@@ -606,6 +607,62 @@ def _cpp_alias(node: Node) -> _CppAlias | None:
         node.start_point.row + 1,
         _cpp_nested(node),
     )
+
+
+# One level of indirection an alias may add over its class.
+_ABSTRACT_INDIRECTION = ("abstract_pointer_declarator", "abstract_reference_declarator")
+_INDIRECTION = ("pointer_declarator", "reference_declarator")
+
+
+def _cpp_alias_parts(node: Node) -> tuple[Node | None, Node | None, bool]:
+    """``(name, class type, expandable)`` of an alias, read past ``const`` and one ``*`` or ``&``.
+
+    ``using Arg = const Vec3&;`` and ``typedef const Foo* FooPtr;`` name ``Vec3``
+    and ``Foo``. A deeper ``using`` declarator (``**``, an array) still binds
+    the name, but expands to nothing.
+    """
+    target = node.child_by_field_name("type")
+    if node.type == "alias_declaration":
+        if target is None or target.type != "type_descriptor":
+            return node.child_by_field_name("name"), target, True
+        declarator = target.child_by_field_name("declarator")
+        inner = target.child_by_field_name("type")
+        expandable = inner is not None and _one_indirection(declarator, _ABSTRACT_INDIRECTION)
+        return node.child_by_field_name("name"), inner or target, expandable
+    # A deeper ``typedef`` declarator (``**``, a function pointer) names no class.
+    key = node.child_by_field_name("declarator")
+    if key is not None and _one_indirection(key, _INDIRECTION) and key.named_children:
+        key = key.named_children[-1]
+    return key, target, True
+
+
+def _one_indirection(declarator: Node | None, kinds: tuple[str, ...]) -> bool:
+    """Is *declarator* absent, a bare name, or one ``*``/``&`` over a bare name?"""
+    if declarator is None or declarator.type == "type_identifier":
+        return True
+    return declarator.type in kinds and not any(
+        "declarator" in c.type for c in declarator.named_children
+    )
+
+
+def _names_template_parameter(node: Node, written: str) -> bool:
+    """Does *written* name a parameter of a template around the alias?
+
+    ``template <class T> using P = const T*;``, or a ``typedef`` in a function
+    template's body. Any word of a parameter list counts, so a constrained or
+    commented parameter is caught too.
+    """
+    if not written:
+        return False
+    head = re.compile(rf"\b{re.escape(scoped_type_segments(written)[0])}\b")
+    parent = node.parent
+    while parent is not None:
+        if parent.type == "template_declaration":
+            parameters = parent.child_by_field_name("parameters")
+            if parameters is not None and head.search(parameters.text.decode("utf-8")):
+                return True
+        parent = parent.parent
+    return False
 
 
 def _cpp_alias_scope(node: Node) -> tuple[int, int] | None:

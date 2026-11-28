@@ -661,3 +661,68 @@ def test_a_qualifier_the_class_file_opens_still_binds(tmp_path: Path) -> None:
         },
     )
     assert _callees(_build(tmp_path), "lib/use.cc::Run") == {"lib/peer.h::Peer::send"}
+
+
+
+_CONST_PEER_H = "#pragma once\nclass Peer {\n public:\n  int send(int n) const { return n; }\n};\n"
+
+
+def _decorated_alias_repo(root: Path, alias: str, body: str) -> None:
+    _alias_repo(
+        root,
+        {
+            "lib/peer.h": _CONST_PEER_H,
+            "lib/alias.h": f'#pragma once\n#include "peer.h"\nnamespace net {{\n{alias}\n}}\n',
+            "lib/use.cc": f'#include "alias.h"\nnamespace net {{\n{body}\n}}\n',
+        },
+    )
+
+
+class TestDecoratedAliases:
+    """An alias that adds ``const``, one ``&`` or one ``*`` to a class still names it."""
+
+    @pytest.mark.parametrize(
+        ("alias", "call"),
+        [
+            ("using PeerArg = const Peer;", "p.send(1)"),
+            ("using PeerArg = const Peer &;", "p.send(1)"),
+            ("using PeerArg = const Peer *;", "p->send(1)"),
+            ("typedef const Peer &PeerArg;", "p.send(1)"),
+            ("typedef Peer *PeerArg;", "p->send(1)"),
+        ],
+    )
+    def test_a_namespace_alias_with_cv_or_indirection_binds_its_class(
+        self, tmp_path: Path, alias: str, call: str
+    ) -> None:
+        _decorated_alias_repo(tmp_path, alias, f"int Run(PeerArg p) {{ return {call}; }}")
+        assert _callees(_build(tmp_path), "lib/use.cc::Run") == {"lib/peer.h::Peer::send"}
+
+    @pytest.mark.parametrize(
+        ("alias", "body"),
+        [
+            ("using PeerArg = const Peer **;", "int Run(PeerArg p) { return (*p)->send(1); }"),
+            ("using PeerArg = const Peer[;", "int Run(PeerArg p) { return p.send(1); }"),
+            (
+                "template <class /* any */ Peer> using PeerArg = const Peer *;",
+                "struct Other { int send(int n) const; };\n"
+                "int Run(PeerArg<Other> p) { return p->send(1); }",
+            ),
+        ],
+    )
+    def test_a_deeper_broken_or_template_parameter_alias_types_nothing(
+        self, tmp_path: Path, alias: str, body: str
+    ) -> None:
+        _decorated_alias_repo(tmp_path, alias, body)
+        assert "lib/peer.h::Peer::send" not in _callees(_build(tmp_path), "lib/use.cc::Run")
+
+    def test_a_typedef_of_a_function_templates_parameter_types_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        _decorated_alias_repo(
+            tmp_path,
+            "",
+            "template <class Peer>\nint Run(Peer& x) {\n  typedef const Peer& Handle;\n"
+            "  Handle p = x;\n  return p.send(1);\n}",
+        )
+        assert "lib/peer.h::Peer::send" not in _callees(_build(tmp_path), "lib/use.cc::Run")
+
