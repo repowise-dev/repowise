@@ -88,9 +88,13 @@ def schedule_setup_refresh(result: Any) -> None:
     if not (Path(root) / ".repowise").is_dir() or not _needed(root):
         _settled.add(root)
         return
-    # The task must not write into the finished call's interaction.
+    # The task must not write into the finished call's interaction, nor read
+    # the calling session's repo: it refreshes the served root's setup.
+    from repowise.core.workspace.registry import caller_alias
+
     context = contextvars.copy_context()
     context.run(interaction._CURRENT.set, None)
+    context.run(caller_alias.set, None)
     task = asyncio.get_running_loop().create_task(_refresh(root), context=context)
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)

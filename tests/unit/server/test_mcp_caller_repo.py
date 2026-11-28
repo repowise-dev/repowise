@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
 from mcp.types import ListRootsResult, Root
@@ -63,6 +64,14 @@ async def test_a_root_in_a_member_names_it_once_per_session(registry, tmp_path, 
     assert await _caller_repo.session_alias(session, "req-1", registry) == "frontend"
     assert await _caller_repo.session_alias(session, "req-1", registry) == "frontend"
     assert session.calls == 1
+
+
+def test_a_root_uri_is_decoded_once(tmp_path):
+    asked: list[str] = []
+    recorder = SimpleNamespace(resolve_repo_param=lambda path: asked.append(path) or "x")
+    for name in ("my dir", "a%41b"):
+        assert _caller_repo._first_member([Root(uri=(tmp_path / name).as_uri())], recorder) == "x"
+    assert asked == [str(tmp_path / "my dir"), str(tmp_path / "a%41b")]
 
 
 @pytest.mark.parametrize(
