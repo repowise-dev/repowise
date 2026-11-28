@@ -88,7 +88,7 @@ def _sent_metadata(body: RepoCreate) -> tuple[str | None, str | None]:
     sent = body.model_fields_set
     return (
         body.url if "url" in sent else None,
-        body.default_branch if "default_branch" in sent else None,
+        body.default_branch if "default_branch" in sent and body.default_branch else None,
     )
 
 

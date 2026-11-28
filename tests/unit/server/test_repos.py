@@ -312,8 +312,9 @@ async def test_indexed_create_on_a_registered_path_keeps_omitted_fields_in_both_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("branch_fields", [{}, {"default_branch": ""}], ids=["omitted", "empty"])
 async def test_indexed_create_after_a_metadata_only_one_keeps_its_fields(
-    client: AsyncClient, app, tmp_path, monkeypatch
+    client: AsyncClient, app, tmp_path, monkeypatch, branch_fields
 ) -> None:
     from sqlalchemy import select
 
@@ -338,7 +339,7 @@ async def test_indexed_create_after_a_metadata_only_one_keeps_its_fields(
         },
     )
 
-    data = (await client.post("/api/repos", json={**body, "index": True})).json()
+    data = (await client.post("/api/repos", json={**body, "index": True, **branch_fields})).json()
 
     assert (data["url"], data["default_branch"]) == ("https://github.com/acme/legacy", "master")
     async with app.state.session_factory() as session:
