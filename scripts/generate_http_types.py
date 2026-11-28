@@ -142,8 +142,18 @@ def _docstring(schema: dict[str, Any]) -> list[str]:
     return ["/**", *(f" * {line}".rstrip() for line in lines), " */"]
 
 
+# Pydantic 2.13 emits class docstrings on dataclasses into OpenAPI schema
+# descriptions, whereas earlier supported Pydantic releases (>=2.8,<2.13)
+# omit them. Strip descriptions for these models so generated types stay
+# deterministic across all supported Pydantic versions without fake drift.
+_UNSTABLE_SCHEMA_DESCRIPTIONS = {"ActionCommand", "QueueCounts"}
+
+
 def _declaration(name: str, schema: dict[str, Any]) -> str:
     ident = _identifier(name)
+    if name in _UNSTABLE_SCHEMA_DESCRIPTIONS and "description" in schema:
+        schema = dict(schema)
+        schema.pop("description", None)
     out: list[str] = _docstring(schema)
 
     if "properties" not in schema:
