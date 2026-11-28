@@ -72,7 +72,14 @@ async def run_step(ctx: PersistRun, step: Step) -> None:
         await step.run(ctx)
     except Exception as exc:
         if step.on_error is not None:
-            step.on_error(ctx)
+            # Bookkeeping about the failure must not replace it: the step is
+            # still reported as skipped and the run carries on.
+            try:
+                step.on_error(ctx)
+            except Exception as bookkeeping_exc:
+                ctx.log(
+                    f"[yellow]{step.name}: could not record the failure: {bookkeeping_exc}[/yellow]"
+                )
         ctx.skip(step.name, exc, range_scoped=step.range_scoped)
         if step.reraise is not None and step.reraise(ctx):
             raise

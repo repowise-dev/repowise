@@ -204,23 +204,34 @@
     lhs: (_) @call.receiver
     rhs: (exprTpl entity: (identifier) @call.target))) @call.site
 
+; A property write, `Obj.Prop := X;`: the setter runs, so it is a call on
+; `Obj` as much as the read on an assignment's RHS above is.
+(assignment
+  lhs: (exprDot
+    lhs: (_) @call.receiver
+    rhs: (identifier) @call.target)) @call.site
+
 ; ---------------------------------------------------------------
-; `inherited Foo;` / `inherited Foo(...)` -- calls the base class's
-; same-named method. The bare `inherited;` form (no explicit name) is
-; NOT captured here: the target name isn't in the node's own text at
-; all -- resolving it needs the *enclosing* method's name, which is
-; extraction-time context this query layer doesn't have. Left as a
-; known gap rather than adding that lookup in a first cut.
+; `inherited Foo;` / `inherited Foo(...)` / bare `inherited;` -- calls the
+; base class's method. The `kInherited` keyword is captured as the call's
+; scope; languages/pascal_names.py turns it into a `super` receiver and,
+; for the bare form (whose target is the keyword itself), names the
+; enclosing method.
 ; ---------------------------------------------------------------
 
 (statement
   (inherited
+    (kInherited) @call.scope
     (identifier) @call.target)) @call.site
 
 (exprCall
   entity: (inherited
+    (kInherited) @call.scope
     (identifier) @call.target)
   args: (exprArgs)? @call.arguments) @call.site
+
+(statement
+  (inherited . (kInherited) @call.scope @call.target .)) @call.site
 
 ; ---------------------------------------------------------------
 ; Type references -- a class/interface/record named only in a field,

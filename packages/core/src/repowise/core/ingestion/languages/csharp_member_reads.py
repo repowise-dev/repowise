@@ -47,13 +47,14 @@ if TYPE_CHECKING:
     import networkx as nx
 
 # ``var foo = new Bar(`` / ``var foo = new Bar<...>(`` / ``Bar foo = new(``
-# / ``Bar foo = new Bar(``. We capture the LOCAL name + the type name
-# in a single match. Generic / qualified type names are stripped to the
+# / ``Bar foo = new Bar(``, plus the object-initializer forms
+# ``var foo = new Bar {`` / ``Bar foo = new Bar {``. We capture the
+# LOCAL name + the type name in a single match. Generic / qualified type names are stripped to the
 # last identifier so we resolve through ``DotNetProjectIndex.type_map``.
 _LOCAL_DECL_RE = re.compile(
     r"\b(?:var|(?P<type1>[A-Z][\w\.]*(?:<[^>]+>)?))\s+"
     r"(?P<name>[a-z_]\w*)\s*=\s*"
-    r"new(?:\s+(?P<type2>[A-Z][\w\.]*(?:<[^>]+>)?))?\s*\("
+    r"new(?:\s+(?P<type2>[A-Z][\w\.]*(?:<[^>]+>)?))?\s*[({]"
 )
 
 # ``receiver.Member`` — only PascalCase member names (properties /

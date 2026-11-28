@@ -49,7 +49,7 @@ function typeTabs(
 }
 
 const SELECT_CLASS =
-  "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus-visible:border-[var(--color-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-60";
+  "rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1.5 text-xs text-[var(--color-text-primary)] outline-none focus-visible:border-[var(--color-border-active)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-60";
 
 /**
  * The list's controls. State lives in the URL, so a filtered view is linkable

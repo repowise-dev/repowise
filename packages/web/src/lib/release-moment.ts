@@ -6,7 +6,9 @@
  * What's new dialog once, and a patch shows a quiet "Updated to vX" note. A
  * fresh browser stores the version and shows nothing; a browser with earlier
  * repowise state but no stored version counts as an upgrade. Highlighted pages carry a
- * "New" mark in the nav until visited, or for 14 days.
+ * "New" mark in the nav until visited, or for 14 days. The welcome
+ * (`welcome-moment.ts`) shares a session guard with it: one interruption per
+ * session.
  *
  * Every storage call is best-effort: blocked site data means no moment, never
  * an error.
@@ -18,8 +20,12 @@ const LAST_SEEN_KEY = "repowise:last-seen-server-version";
 const NEW_SURFACES_KEY = "repowise:new-surfaces";
 const NEW_SURFACES_EVENT = "repowise:new-surfaces";
 const LAST_REPO_KEY = "repowise:last-repo";
+/** Set once, on the first visit of a browser with no earlier repowise use. */
+const NEW_BROWSER_KEY = "repowise:new-browser";
+/** One interruption per session: What's new, a patch note or the welcome. */
+const SESSION_MOMENT_KEY = "repowise:session-moment";
 /** Keys this module writes itself, which say nothing about earlier use. */
-const OWN_KEYS = new Set([LAST_SEEN_KEY, NEW_SURFACES_KEY, LAST_REPO_KEY]);
+const OWN_KEYS = new Set([LAST_SEEN_KEY, NEW_SURFACES_KEY, LAST_REPO_KEY, NEW_BROWSER_KEY]);
 export const NEW_MARK_DAYS = 14;
 
 export type UpgradeMoment = "none" | "dialog" | "notice";
@@ -78,7 +84,7 @@ function write(key: string, value: string): void {
  *  app's own keys (banner dismissals, chat and docs state). Browsers that
  *  predate the last-seen key would otherwise count as first visits and never
  *  see the release they upgraded to. */
-function hasPriorUse(): boolean {
+export function hasPriorUse(): boolean {
   try {
     const store = window.localStorage;
     for (let i = 0; i < store.length; i++) {
@@ -98,8 +104,47 @@ export function takeUpgradeMoment(current: string, hasHighlights: boolean): Upgr
   // "0" stands for "some earlier version": prior use with nothing stored.
   const stored = read(LAST_SEEN_KEY) ?? (hasPriorUse() ? "0" : null);
   const moment = upgradeMoment(stored, current, hasHighlights);
-  write(LAST_SEEN_KEY, current);
+  markVersionSeen(current);
   return moment;
+}
+
+/** Stores `version` as seen, so the release moment stays quiet for it. */
+export function markVersionSeen(version: string): void {
+  // Whichever moment stores the first version records a new browser.
+  if (isNewBrowser()) write(NEW_BROWSER_KEY, "1");
+  write(LAST_SEEN_KEY, version);
+}
+
+/** Whether this browser started out with no repowise use: a first visit now,
+ *  or one recorded by an earlier visit. A browser that predates this mark has
+ *  a stored version or other repowise state, so an upgrading user never
+ *  counts as new. */
+export function isNewBrowser(): boolean {
+  if (read(NEW_BROWSER_KEY) === "1") return true;
+  return read(LAST_SEEN_KEY) === null && !hasPriorUse();
+}
+
+// --- One moment per session ---------------------------------------------------
+
+/** Fallback for blocked session storage: the guard then lasts for this page load. */
+let sessionMomentFallback = false;
+
+/** Whether What's new, a patch note or the welcome already showed this session. */
+export function sessionMomentTaken(): boolean {
+  try {
+    return window.sessionStorage.getItem(SESSION_MOMENT_KEY) === "1";
+  } catch {
+    return sessionMomentFallback;
+  }
+}
+
+/** Records that this session had its one interruption. */
+export function takeSessionMoment(): void {
+  try {
+    window.sessionStorage.setItem(SESSION_MOMENT_KEY, "1");
+  } catch {
+    sessionMomentFallback = true;
+  }
 }
 
 // --- "New" marks ------------------------------------------------------------
@@ -135,12 +180,44 @@ export function startNewSurfaces(version: string, highlights: ChangelogHighlight
   saveNewSurfaces({ version, since: Date.now(), routes, visited: [] });
 }
 
-/** `/repos/abc/chat/123` matches `/repos/:id/chat`. */
-export function routeMatches(route: string, pathname: string): boolean {
-  const want = route.split("/").filter(Boolean);
-  const have = pathname.split("/").filter(Boolean);
+function segments(path: string): string[] {
+  return path.split("/").filter(Boolean);
+}
+
+/** `/repos/abc/chat/123` matches `/repos/:id/chat`. A route that names a query
+ *  (`/repos/:id/code-health?tab=performance`) matches only a location that
+ *  carries it, so a highlighted tab is not cleared by opening another tab. */
+export function routeMatches(route: string, location: string): boolean {
+  const [routePath = "", routeQuery = ""] = route.split("?");
+  const [path = "", query = ""] = location.split("?");
+  const want = segments(routePath);
+  const have = segments(path);
   if (have.length < want.length) return false;
-  return want.every((p, i) => p === ":id" || p === have[i]);
+  if (!want.every((p, i) => p === ":id" || p === have[i])) return false;
+  const params = new URLSearchParams(query);
+  return [...new URLSearchParams(routeQuery)].every(([k, v]) => params.get(k) === v);
+}
+
+/** Whether the nav entry at `href` is where a highlighted `route` lives: its
+ *  own page, or a page or tab beneath it that has no entry of its own
+ *  (`/settings/setup` under Settings, `?tab=performance` on Code Health). The
+ *  root and `exact` entries own only their own page, so Dashboard never claims
+ *  every route and the workspace overview never claims its siblings. A route
+ *  above every entry (`/repos/:id/report`) marks none. */
+export function navOwnsRoute(route: string, href: string, exact = false): boolean {
+  const have = segments(route.split("?")[0] ?? "");
+  const want = segments(href);
+  if (have.length < want.length) return false;
+  if ((exact || want.length === 0) && have.length !== want.length) return false;
+  return want.every((p, i) => have[i] === ":id" || have[i] === p);
+}
+
+/** Whether `location` (a page plus its query, such as a tab's URL) is exactly
+ *  a highlighted route that names a query: the mark inside a page. */
+export function tabOwnsRoute(route: string, location: string): boolean {
+  if (!route.includes("?")) return false;
+  const depth = (s: string) => segments(s.split("?")[0] ?? "").length;
+  return depth(route) === depth(location) && routeMatches(route, location);
 }
 
 /** Routes still marked "New" for `now`. */
@@ -149,10 +226,11 @@ export function activeNewRoutes(value: NewSurfaces | null, now: number): string[
   return value.routes.filter((r) => !value.visited.includes(r));
 }
 
-/** Records a visit to `pathname`, clearing the mark of the route it opens. */
-export function visitNewSurface(pathname: string): void {
+/** Records a visit to `location` (a pathname, or one with its query for a
+ *  tab), clearing the mark of the route it opens. */
+export function visitNewSurface(location: string): void {
   const value = readNewSurfaces();
-  const hit = activeNewRoutes(value, Date.now()).find((r) => routeMatches(r, pathname));
+  const hit = activeNewRoutes(value, Date.now()).find((r) => routeMatches(r, location));
   if (!value || !hit) return;
   saveNewSurfaces({ ...value, visited: [...value.visited, hit] });
 }
@@ -204,7 +282,8 @@ export function previewMoment(search: string): UpgradeMoment | null {
 }
 
 /** The moment due on load: a `?whats-new=` replay, or the real upgrade check,
- *  which also starts the "New" marks for that release. */
+ *  which also starts the "New" marks for that release. When the welcome
+ *  already showed this session, the upgrade waits for the next one. */
 export function decideMoment(
   version: string,
   highlights: ChangelogHighlight[],
@@ -212,8 +291,16 @@ export function decideMoment(
 ): { moment: UpgradeMoment; preview: boolean } {
   const replay = previewMoment(search);
   if (replay) return { moment: replay, preview: true };
+  // `?tour=1` opens the welcome on this load: one dialog at a time, and the
+  // upgrade (left unstored) waits for the next session.
+  if (sessionMomentTaken() || new URLSearchParams(search).get("tour") === "1") {
+    return { moment: "none", preview: false };
+  }
   const moment = takeUpgradeMoment(version, highlights.length > 0);
-  if (moment !== "none") startNewSurfaces(version, highlights);
+  if (moment !== "none") {
+    startNewSurfaces(version, highlights);
+    takeSessionMoment();
+  }
   return { moment, preview: false };
 }
 

@@ -18,7 +18,7 @@ async def _seed(session, rid: str) -> None:
     )  # fmt: skip
     session.add_all(
         DeadCodeFinding(repository_id=rid, kind="unused_export", file_path="src/dead.py",
-                        symbol_name=f"f{i}", lines=10, safe_to_delete=True)
+                        symbol_name=f"f{i}", lines=10, confidence=0.9, safe_to_delete=True)
         for i in range(3)
     )  # fmt: skip
     session.add(
@@ -30,47 +30,64 @@ async def _seed(session, rid: str) -> None:
 
 
 @pytest.mark.asyncio
+async def _setup(session, rid: str):
+    """The live setup facts the overview reads for the fixture's checkout."""
+    from repowise.core.persistence import crud
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    return await setup_facts(session, await crud.get_repository(session, rid))
+
+
+@pytest.mark.asyncio
 async def test_overview_carries_the_stored_actions(setup_mcp, session):
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
     from repowise.server.mcp_server import get_overview
 
     await _seed(session, setup_mcp)
-    result = await get_overview()
+    view = await load_actions_view(session, setup_mcp, setup=await _setup(session, setup_mcp))
+    lead = next(h for h in ("week", "quarter") if view["horizons"][h]["actions"])
 
-    block = result["next_actions"]
+    result = await get_overview()
     assert "next_actions_reason" not in result
-    view = await load_actions_view(session, setup_mcp)
+    block = result["next_actions"]
     for horizon in ("week", "quarter"):
-        full = view["horizons"][horizon]
-        assert block[horizon]["total"] == full["total"]
-        assert block[horizon]["by_tier"] == full["by_tier"]
-        # Same rows, same order, as the UI reads.
-        assert [a["id"] for a in block[horizon]["actions"]] == [
-            a["id"] for a in full["actions"][:3]
-        ]
-    assert block["quarter"]["actions"], "the seed should produce actions"
-    for row in block["quarter"]["actions"]:
-        assert set(row) == {"id", "tier", "title", "impact", "done_when", "target"}
+        assert block[horizon]["total"] == view["horizons"][horizon]["total"]
+    # Rows for the nearest horizon only, in the order the UI reads them.
+    assert [a["id"] for a in block[lead]["actions"]] == [
+        a["id"] for a in view["horizons"][lead]["actions"][:3]
+    ]
+    for row in block[lead]["actions"]:
+        assert set(row) == {"id", "tier", "title", "impact", "target"}
         assert None not in row["target"].values()
+
+    full = (await get_overview(include=["actions"]))["next_actions"]
+    for horizon in ("week", "quarter"):
+        assert full[horizon]["by_tier"] == view["horizons"][horizon]["by_tier"]
+    assert full["quarter"]["actions"], "the seed should produce actions"
+    for row in full["quarter"]["actions"]:
+        assert set(row) == {"id", "tier", "title", "impact", "done_when", "target"}
 
 
 @pytest.mark.asyncio
 async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session):
     """An agent following Do next opens the id it was handed, details and all."""
+    from repowise.core.agent_prompts.setup import SETUP_STEP_RULES
     from repowise.core.persistence.crud.analysis.actions import load_action
     from repowise.server.mcp_server import get_health, get_overview
 
     await _seed(session, setup_mcp)
-    block = (await get_overview())["next_actions"]
+    block = (await get_overview(include=["actions"]))["next_actions"]
     ids = {a["id"] for h in ("week", "quarter") for a in block[h]["actions"]}
     assert ids, "the seed should produce actions"
     for action_id in ids:
         full = await get_health(fix_id=action_id)
         assert full["mode"] == "action" and full["found"] is True
         # The same serialization the REST actions route renders from.
-        expected = (await load_action(session, setup_mcp, action_id)).as_dict()
+        setup = await _setup(session, setup_mcp)
+        expected = (await load_action(session, setup_mcp, action_id, setup=setup)).as_dict()
         assert full["action"] == expected
-        assert full["action"]["details"] and full["action"]["commands"]
+        if expected["rule"] not in SETUP_STEP_RULES:  # a setup step is one command
+            assert full["action"]["details"] and full["action"]["commands"]
 
     missing = await get_health(fix_id="act_0000000000000000")
     assert missing["mode"] == "action" and missing["found"] is False
@@ -80,10 +97,10 @@ async def test_every_handed_out_action_id_opens_in_get_health(setup_mcp, session
 
 @pytest.mark.asyncio
 async def test_a_failed_read_is_omitted_with_a_reason(setup_mcp, monkeypatch):
+    from repowise.core.persistence.crud.analysis import actions as mod
     from repowise.server.mcp_server import get_overview
-    from repowise.server.mcp_server.tool_overview import actions as mod
 
-    async def boom(session, repo_id):
+    async def boom(session, repo_id, **_cut):
         raise RuntimeError("no such table: action_states")
 
     monkeypatch.setattr(mod, "load_actions_view", boom)
@@ -109,7 +126,7 @@ def test_compact_view_keeps_three_rows_and_names_unavailable_stores():
             "quarter": {"actions": [], "total": 0, "hidden": 0, "by_tier": {}},
         },
         "summary": {"week": "9 things worth doing this week.", "quarter": "Nothing."},
-        "unavailable": {"security": "why", "performance": "why"},
+        "unavailable": {"security": "not computed", "performance": "read failed"},
     }
 
     block = compact_actions_view(view)
@@ -122,6 +139,43 @@ def test_compact_view_keeps_three_rows_and_names_unavailable_stores():
     assert block["week"]["actions"][0]["target"] == {"kind": "file", "path": "a0.py"}
     assert block["quarter"] == {"total": 0, "by_tier": {}, "actions": []}
     assert block["unavailable"] == ["performance", "security"]
+    assert block["unavailable_reasons"] == {
+        "performance": "read failed",
+        "security": "not computed",
+    }
+
+
+def test_the_default_cut_is_one_horizon_with_one_line_impacts():
+    long = "Changed often; " * 20
+    row = {"id": "act_0", "tier": "plan", "title": "T", "impact": f"First. {long}",
+           "done_when": "d", "target": {"kind": "file", "path": "a.py"}}
+    wordy = {**row, "id": "act_1", "impact": long}
+    view = {
+        "horizons": {
+            "week": {"actions": [], "total": 0, "by_tier": {}},
+            "quarter": {"actions": [row, wordy], "total": 2, "by_tier": {"plan": 2}},
+        },
+    }  # fmt: skip
+
+    block = compact_actions_view(view, full=False)
+
+    # An empty week hands the rows to the quarter, as `repowise next` does.
+    assert block["week"] == {"total": 0}
+    first, second = block["quarter"]["actions"]
+    assert set(first) == {"id", "tier", "title", "impact", "target"}
+    assert first["impact"] == "First."
+    assert len(second["impact"]) <= 140 and second["impact"].endswith("…")
+
+
+def test_a_repository_wide_target_sends_no_empty_path():
+    row = {"id": "act_0", "tier": "improve_signal", "title": "Add a coverage report",
+           "impact": "x", "target": {"kind": "repo", "path": "", "symbol": None}}
+    view = {"horizons": {"week": {"actions": [row], "total": 1, "by_tier": {}},
+                         "quarter": {"actions": [], "total": 0, "by_tier": {}}}}  # fmt: skip
+
+    (only,) = compact_actions_view(view, full=False)["week"]["actions"]
+
+    assert only["target"] == {"kind": "repo"}
 
 
 def test_budget_sheds_the_block_before_the_protected_ones():
@@ -154,7 +208,7 @@ def _record(monkeypatch, gate=None):
             await gate.wait()  # finishes only if next_actions runs meanwhile
         return {"average_health": 7.0}
 
-    async def next_actions(session, _repo):
+    async def next_actions(session, _repo, full=False, alias=None):
         seen["next_actions"] = session
         if gate is not None:
             gate.set()
@@ -204,7 +258,7 @@ async def test_a_failed_overview_leaves_no_slow_read_running(tmp_path, monkeypat
     _record(monkeypatch, gate=asyncio.Event())
     from repowise.server.mcp_server.tool_overview import tool
 
-    async def stuck(session, _repo):
+    async def stuck(session, _repo, full=False, alias=None):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(tool, "_build_next_actions", stuck)

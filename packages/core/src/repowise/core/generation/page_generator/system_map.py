@@ -18,12 +18,12 @@ import structlog
 from repowise.core.analysis.c4.containers import (
     assign_containers,
     container_name,
-    is_manifest,
     manifest_roots,
 )
 from repowise.core.analysis.external_systems import build_declaration_links
+from repowise.core.code_origin import code_origin
 from repowise.core.ingestion.languages.registry import REGISTRY
-from repowise.core.support_paths import file_population, is_support_path
+from repowise.core.support_paths import is_support_path
 
 from ..architecture_map import SystemMap, build_system_map
 
@@ -38,14 +38,18 @@ def build_run_system_map(run: Any) -> SystemMap | None:
         pf.file_info.path: pf.file_info.language
         for pf in run.parsed_files
         if pf.file_info.language in _CODE_LANGUAGES
-        and file_population(pf.file_info.path, is_test=pf.file_info.is_test) == "production"
         and not is_support_path(pf.file_info.path)
+        and _ships(run, pf)
     }
     if not files:
         return None
     graph = run.graph_builder.graph()
     manifests = {s.get("declared_in") for s in run.external_systems if s.get("declared_in")}
-    manifests |= {pf.file_info.path for pf in run.parsed_files if is_manifest(pf.file_info.path)}
+    manifests |= {
+        pf.file_info.path
+        for pf in run.parsed_files
+        if REGISTRY.is_package_manifest(pf.file_info.path)
+    }
     repo_root = Path(run.repo_path) if run.repo_path else None
     links, routes = _http_links(run, files, manifests)
     package_names = {
@@ -70,6 +74,26 @@ def build_run_system_map(run: Any) -> SystemMap | None:
             (mg.key, frozenset(mg.context_paths or mg.file_paths))
             for mg in run.sel_module_groups
         ],
+    )
+
+
+def _ships(run: Any, pf: Any) -> bool:
+    """Whether *pf* is production code by its origin, read as the health pass reads it.
+
+    Test, tooling, generated, vendored, build, docs-example and data files are
+    never a box: a monorepo's fixture apps and release scripts drew in place of
+    the product.
+    """
+    path = pf.file_info.path
+    return (
+        code_origin(
+            path,
+            run.source_map.get(path),
+            is_test=bool(pf.file_info.is_test),
+            project=run.repo_name,
+            repo_root=run.repo_path,
+        )
+        == "production"
     )
 
 

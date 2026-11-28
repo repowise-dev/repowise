@@ -21,6 +21,10 @@ _UNRESOLVED_REASONS = {
 _EMPTY_REASONS = {
     "no_contract_store": "there is no contract map yet; run 'repowise update --workspace'",
     "no_matching_links": "no contract link connects the changed files to a consumer",
+    "no_contract_links": (
+        "could not determine; the contract map links no consumer to any provider in "
+        "this workspace (see 'repowise workspace diagnostics')"
+    ),
     "no_changed_files": "no changed files were given",
 }
 

@@ -11,12 +11,17 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal, get_args
 
-from sqlalchemy import func, select, true
+from sqlalchemy import func, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.finding_registry import GateLayer
 from repowise.core.analysis.health.perf.opportunities import PERFORMANCE_MODEL_VERSION
-from repowise.core.analysis.health.queue.counts import NOT_JUDGED, QueueCounts, queue_counts
+from repowise.core.analysis.health.queue.counts import (
+    NOT_JUDGED,
+    OBSERVATION,
+    QueueCounts,
+    queue_counts,
+)
 
 from ...models import HealthFinding, PerformanceOpportunity, RefactoringOpportunity
 from .fix_first import (
@@ -26,6 +31,7 @@ from .fix_first import (
     stored_item_counts,
     unjudged,
 )
+from .performance import agent_hidden
 from .shown import gated_counts, ungated
 
 Unit = Literal["findings", "causes", "plans", "items"]
@@ -52,6 +58,8 @@ def _population(unit: str, repo_id: str) -> tuple[Any, Any]:
             (p.repository_id == repo_id)
             & (p.status == "open")
             & (p.performance_model_version == PERFORMANCE_MODEL_VERSION)
+            # An observation is no unit: not served, and not gated either.
+            & or_(p.queue_reason.is_(None), p.queue_reason != OBSERVATION)
         )
     return RefactoringOpportunity, open_opportunities(repo_id)
 
@@ -70,6 +78,7 @@ async def unit_counts(
     shown: int = 0,
     file_paths: Sequence[str] | None = None,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> QueueCounts:
     """``unit``'s counts over its open inventory, in ``file_paths`` when named.
 
@@ -92,6 +101,9 @@ async def unit_counts(
         return (await load_fix_first(session, repo_id, limit=None)).counts(shown)
     model, population = _population(unit, repo_id)
     scoped = model.file_path.in_(list(file_paths)) if file_paths is not None else true()
+    if unit == "causes" and not include_measured_hotspots:
+        # The agent surface counts no measured hotspot it leaves out.
+        scoped = scoped & ~agent_hidden(model)
     layer, kind = _GATE_LAYERS[unit]
     kind_col = getattr(model, kind)
     served = ungated(layer, model.file_path, kind_col, include_unverified=include_unverified)

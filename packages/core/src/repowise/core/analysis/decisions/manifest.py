@@ -77,6 +77,8 @@ class ManifestDecision:
     evidence: list[str] = field(default_factory=list)
     superseded_by: str = ""
     aliases: list[str] = field(default_factory=list)
+    #: Accepted-content hash from export, preserved when the entry is edited.
+    base_token: str = ""
 
     def to_mapping(self) -> dict[str, Any]:
         """The ordered projection written to disk.
@@ -95,6 +97,8 @@ class ManifestDecision:
             "source": self.source,
             "accepted_at": self.accepted_at,
         }
+        if self.base_token:
+            out["base_token"] = self.base_token
         if self.kind != ARCHITECTURAL_KIND:
             out["kind"] = self.kind
         if self.accepted_by:
@@ -140,6 +144,7 @@ class ManifestDecision:
             evidence=_list("evidence"),
             superseded_by=_text("superseded_by"),
             aliases=_list("aliases"),
+            base_token=_text("base_token"),
         )
 
 

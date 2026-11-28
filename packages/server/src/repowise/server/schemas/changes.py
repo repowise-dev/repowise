@@ -53,6 +53,14 @@ class ChangeForgeMetadata(BaseModel):
     linked_issues: list[str] | None = None
 
 
+class ChangeCategoryBasis(BaseModel):
+    """What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``."""
+
+    signal: str
+    #: The fragment path or label; null for the title.
+    value: str | None = None
+
+
 class ChangeSummary(BaseModel):
     schema_version: int
     id: str
@@ -125,6 +133,7 @@ class ChangeHealthResponse(HealthRollupResponse):
 
 class ChangeRecord(ChangeSummary):
     health: ChangeHealthResponse | None = None
+    category_basis: ChangeCategoryBasis | None = None
     commits: list[str]
     files: list[ChangeFile]
     metadata: ChangeForgeMetadata
@@ -224,6 +233,7 @@ class Suspect(BaseModel):
 class SuspectsResponse(BaseModel):
     window: dict[str, str]
     candidates: int
+    candidates_capped: bool
     #: Changes git could not read; they are ranked on title and files alone.
     texts_missing: int = 0
     symptom_files: list[str] = []

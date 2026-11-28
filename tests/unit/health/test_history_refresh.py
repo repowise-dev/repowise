@@ -73,9 +73,9 @@ def test_a_marker_that_stopped_firing_stops_deducting() -> None:
 
 def test_structural_findings_survive_untouched() -> None:
     """Nothing here reads the source, so nothing here may discard what a parse found."""
-    structural = _finding("god_class", Severity.CRITICAL)
+    structural = _finding("large_method", Severity.CRITICAL)
     (refreshed,) = _run(git_meta={"prior_defect_count": 0}, findings=[structural])
-    kept = [f for f in refreshed.findings if f.biomarker_type == "god_class"]
+    kept = [f for f in refreshed.findings if f.biomarker_type == "large_method"]
     assert len(kept) == 1
     assert refreshed.structure_deduction > 0
 
@@ -161,3 +161,19 @@ def test_rebuild_reads_a_stored_row_shape() -> None:
     rebuilt = as_biomarker_result(_Row())
     assert rebuilt.deduction == 2.5
     assert rebuilt.reason == "half the lines uncovered"
+
+
+def test_stored_legacy_biomarker_id_refreshes_as_canonical() -> None:
+    """A stored `bumpy_road` finding maps to `repeated_nesting` on replay."""
+    legacy = _finding("bumpy_road", Severity.HIGH)
+    canonical = _finding("repeated_nesting", Severity.HIGH)
+
+    assert as_biomarker_result(legacy).biomarker_type == "repeated_nesting"
+
+    (from_legacy,) = _run(git_meta={"prior_defect_count": 0}, findings=[legacy])
+    (from_canonical,) = _run(git_meta={"prior_defect_count": 0}, findings=[canonical])
+
+    assert [f.biomarker_type for f in from_legacy.findings] == ["repeated_nesting"]
+    assert from_legacy.score == from_canonical.score
+    assert from_legacy.defect_score == from_canonical.defect_score
+    assert from_legacy.structure_deduction == from_canonical.structure_deduction

@@ -389,7 +389,8 @@ class _FixedDimEmbedder:
     def __init__(self, dimensions: int) -> None:
         self.dimensions = dimensions
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         out: list[list[float]] = []
         for i, _ in enumerate(texts):
             vec = [0.0] * self.dimensions
@@ -436,6 +437,40 @@ async def test_lancedb_reindex_recreates_table_on_dimension_change(tmp_path, moc
         await store.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("embedder_cls", ["MockEmbedder", "KeylessEmbedder"])
+async def test_lancedb_refuses_mock_vectors_over_a_real_table(tmp_path, embedder_cls):
+    """Mock-width vectors never replace a table a real embedder filled.
+
+    The width-change drop above is the intended rebuild for a real embedder.
+    For the mock it traded every real vector for test ones, from whichever
+    path opened the store with it, so the writer itself refuses.
+    """
+    pytest.importorskip("lancedb")
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.persistence.vector_store.lancedb_store import (
+        MockWouldReplaceStoreError,
+        read_recorded_vector_dim,
+    )
+    from repowise.core.providers.embedding import base
+
+    db_path = str(tmp_path / "lance")
+    store = LanceDBVectorStore(db_path, _FixedDimEmbedder(1536))
+    try:
+        await store.embed_and_upsert("p1", "real", {"target_path": "a.py", "content": "real"})
+    finally:
+        await store.close()
+
+    store = LanceDBVectorStore(db_path, getattr(base, embedder_cls)())
+    try:
+        with pytest.raises(MockWouldReplaceStoreError, match="1536-wide"):
+            await store.embed_and_upsert("p2", "mock", {"target_path": "b.py", "content": "mock"})
+        assert await store.list_page_ids() == {"p1"}
+    finally:
+        await store.close()
+    assert read_recorded_vector_dim(db_path, "wiki_pages") == 1536
+
+
 # ---------------------------------------------------------------------------
 # embed_batch chunking (regression: one giant request lost a whole level)
 # ---------------------------------------------------------------------------
@@ -450,7 +485,8 @@ class _RecordingEmbedder:
         self.calls: list[list[str]] = []
         self._fail_on_call = fail_on_call
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         self.calls.append(list(texts))
         if self._fail_on_call is not None and len(self.calls) == self._fail_on_call:
             raise RuntimeError("simulated 400 max_tokens_per_request")

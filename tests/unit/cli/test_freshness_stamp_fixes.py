@@ -216,39 +216,17 @@ def test_freshness_self_heals_and_silences_false_stale(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# "Indexed at" tracks the last sync, not just the last health snapshot: a
-# no-change update advances repositories.updated_at without a new snapshot, so
-# the freshness time must not read hours-stale right after a refresh.
+# index_age_days is the age of the last sync, read through crud.index_synced_at
+# (the server parity test covers the routes that share it).
 # ---------------------------------------------------------------------------
 
 
-def test_last_indexed_at_prefers_newer_repo_update():
-    from datetime import datetime
+def test_index_age_days_counts_from_the_sync_stamp(tmp_path):
+    from datetime import datetime, timedelta
 
-    from repowise.server.routers.code_health import _resolve_last_indexed_at
+    from repowise.server.mcp_server._meta import freshness_from_repo
 
-    snapshot = datetime(2026, 7, 2, 11, 48, tzinfo=UTC)
-    refreshed = datetime(2026, 7, 2, 14, 25, tzinfo=UTC)
-    # A no-change `repowise update` bumped updated_at past the last snapshot.
-    assert _resolve_last_indexed_at(snapshot, refreshed) == refreshed.isoformat()
-
-
-def test_last_indexed_at_keeps_snapshot_when_newer():
-    from datetime import datetime
-
-    from repowise.server.routers.code_health import _resolve_last_indexed_at
-
-    snapshot = datetime(2026, 7, 2, 14, 25, tzinfo=UTC)
-    older_update = datetime(2026, 7, 2, 11, 48, tzinfo=UTC)
-    assert _resolve_last_indexed_at(snapshot, older_update) == snapshot.isoformat()
-
-
-def test_last_indexed_at_handles_missing_values():
-    from datetime import datetime
-
-    from repowise.server.routers.code_health import _resolve_last_indexed_at
-
-    only_update = datetime(2026, 7, 2, 14, 25, tzinfo=UTC)
-    assert _resolve_last_indexed_at(None, only_update) == only_update.isoformat()
-    assert _resolve_last_indexed_at(only_update, None) == only_update.isoformat()
-    assert _resolve_last_indexed_at(None, None) is None
+    # SQLite hands the stamp back naive; it is UTC.
+    synced = (datetime.now(UTC) - timedelta(days=4, hours=1)).replace(tzinfo=None)
+    repo = types.SimpleNamespace(head_commit=None, local_path=str(tmp_path), updated_at=synced)
+    assert freshness_from_repo(repo, targets=[])["index_age_days"] == 4

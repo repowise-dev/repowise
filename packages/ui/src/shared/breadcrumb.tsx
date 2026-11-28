@@ -36,7 +36,7 @@ export function Breadcrumb({ segments, LinkComponent = "a" }: BreadcrumbProps) {
               <button
                 type="button"
                 onClick={segment.onSelect}
-                className="rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="rounded text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 {segment.label}
               </button>

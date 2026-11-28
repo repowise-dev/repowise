@@ -2,9 +2,11 @@ import type { ReactNode } from "react";
 import { PageLede } from "../shared/page-lede";
 import { coverageBand } from "../health/tokens";
 import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
+import { RelativeTime } from "../shared/relative-time";
+import { FileSourceCode } from "./file-source-code";
 
 interface FileCoverageTabProps {
   coverage: FileDetailCoverage | null;
@@ -16,6 +18,8 @@ interface FileCoverageTabProps {
   coverageCodeHtml?: string | undefined;
   /** Names the file a selection inside the source came from. */
   filePath?: string;
+  /** A `?line=N` deep link: the source line to scroll to and mark. */
+  highlightLine?: number | undefined;
   /**
    * The graph-inferred "which tests reach this file" block, supplied by the host
    * already wrapped. A node rather than a fetcher because the tab bodies are
@@ -28,6 +32,7 @@ export function FileCoverageTab({
   coverage,
   coverageCodeHtml,
   filePath,
+  highlightLine,
   testsPanel,
 }: FileCoverageTabProps) {
   // Rendered on both bases. Without a report it is the whole answer; with one it
@@ -46,11 +51,11 @@ export function FileCoverageTab({
           description="What a report would add here: which lines of this file your tests actually executed, rather than which tests can reach it."
         >
           <p className="max-w-[62ch] text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-            Run your suite with coverage on and hand us the report with{" "}
             <span className="font-mono text-[var(--color-text-primary)]">
-              repowise coverage add &lt;report&gt;
-            </span>
-            . Any of {COVERAGE_REPORT_FORMATS.join(", ")} works.
+              repowise coverage setup
+            </span>{" "}
+            prints the test command that writes a report here and the line that adds it. Any of{" "}
+            {COVERAGE_REPORT_FORMATS.join(", ")} works.
           </p>
         </FileSection>
       </div>
@@ -65,6 +70,10 @@ export function FileCoverageTab({
   const band = coverageBand(pct);
   const coveredCount = coverage.covered_line_count ?? coverage.covered_lines.length;
   const uncovered = Math.max(0, coverage.total_coverable_lines - coveredCount);
+  // Covered line numbers from an earlier version of the file would tint the
+  // wrong lines, so a stale file shows no tinted source at all.
+  const stale = coverage.freshness === "stale";
+  const codeHtml = stale ? undefined : coverageCodeHtml;
 
   return (
     <div>
@@ -95,19 +104,18 @@ export function FileCoverageTab({
         }
       >
         <p>
-          Tests reach{" "}
+          Tests ran{" "}
           <Fig>
             {formatNumber(coveredCount)} of {formatNumber(coverage.total_coverable_lines)}{" "}
             coverable lines
           </Fig>
-          , leaving <Fig>{formatNumber(uncovered)}</Fig> with nothing executing them
+          , leaving <Fig>{formatNumber(uncovered)}</Fig> that no test executed
           {coverage.branch_coverage_pct != null && (
             <>
               . Branch coverage is <Fig>{coverage.branch_coverage_pct.toFixed(1)}%</Fig>
             </>
           )}
-          . These are the lines your own test run executed, so this figure is
-          line-level and exact.
+          . Measured by your own test run, not inferred from the dependency graph.
         </p>
         <p className="mt-2.5">
           Read from a{" "}
@@ -115,7 +123,7 @@ export function FileCoverageTab({
             {coverage.source_format}
           </span>{" "}
           report
-          {coverage.ingested_at && <> ingested {formatRelativeTime(coverage.ingested_at)}</>}
+          {coverage.ingested_at && <> ingested <RelativeTime date={coverage.ingested_at} /></>}
           {coverage.ingested_commit_sha && (
             <>
               {" "}
@@ -134,31 +142,22 @@ export function FileCoverageTab({
       <FileSection
         title="Source"
         description={
-          coverageCodeHtml
-            ? "Every coverable line, tinted by whether the last report saw it run."
-            : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
+          codeHtml
+            ? coveredCount > 0
+              ? "Every coverable line, tinted by whether the last report saw it run."
+              : "The last report saw no line of this file run."
+            : stale
+              ? "This file changed after coverage was measured; re-run tests with coverage to refresh."
+              : "The highlighted source appears here for files under the render cap once a coverage report has been ingested for them."
         }
       >
-        {coverageCodeHtml ? (
-          <div
-            data-chat-selection=""
-            {...(filePath ? { "data-chat-selection-path": filePath } : {})}
-            className="coverage-code overflow-x-auto border-y border-[var(--color-border-default)] text-xs leading-relaxed"
-          >
-            {/* Highlighted by the host through the shared shiki path; the
-                data-covered line attributes drive the gutter tint below. */}
-            <div dangerouslySetInnerHTML={{ __html: coverageCodeHtml /* shiki output; repowise-security-ignore: unsafe_inner_html */ }} />
-            <style>{`
-            .coverage-code pre { margin: 0; padding: 0.75rem 0; background: transparent !important; }
-            .coverage-code code { display: block; }
-            .coverage-code .line { display: inline-block; width: 100%; padding: 0 0.75rem 0 0.5rem; border-left: 3px solid transparent; }
-            .coverage-code .line[data-covered="y"] { border-left-color: var(--color-success); background: color-mix(in srgb, var(--color-success) 7%, transparent); }
-            .coverage-code .line[data-covered="n"] { border-left-color: var(--color-error); background: color-mix(in srgb, var(--color-error) 8%, transparent); }
-          `}</style>
-          </div>
+        {codeHtml ? (
+          <FileSourceCode html={codeHtml} filePath={filePath} highlightLine={highlightLine} />
         ) : (
           <p className="text-sm text-[var(--color-text-tertiary)]">
-            Source preview unavailable for this file.
+            {stale
+              ? "Source preview hidden until coverage is measured again."
+              : "Source preview unavailable for this file."}
           </p>
         )}
       </FileSection>

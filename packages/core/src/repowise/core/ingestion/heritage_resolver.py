@@ -29,11 +29,13 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, TypeVar
 
 import structlog
 
 from .models import HeritageRelation, ParsedFile, symbol_id_language
+from .symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
 
@@ -141,6 +143,7 @@ class HeritageResolver:
 
             import_maps = build_import_name_maps(parsed_files)
         self._import_names: dict[str, dict[str, str]] = import_maps.import_names
+        self._import_maps = import_maps
 
         # Lazy per-file merged view of imported files' type tables —
         # Tier-2b lookup; sorted-path merge order, first-wins (see
@@ -149,6 +152,10 @@ class HeritageResolver:
 
         # Keep reference for cross-language checks in Tier 3
         self._parsed_files = parsed_files
+        # Built on the first Apex relation (see ``_apex_namespaces_index``).
+        self._apex_namespaces: Any = None
+        # The one Apex file whose heritage clauses are being read.
+        self._apex_texts: dict[str, str] = {}
 
         self._build_indices(parsed_files)
 
@@ -231,7 +238,7 @@ class HeritageResolver:
         # inside a `mod` anchors the mod's impl to the top-level one, as it did
         # before this change. Telling those apart needs the relation to carry
         # the scope it was declared in, which it does not.
-        composed = f"{file_path}::{rel.child_name}"
+        composed = make_symbol_id(file_path, rel.child_name)
         if (
             composed in self._file_type_ids.get(file_path, ())
             or rel.child_name in self._file_ambiguous_types.get(file_path, ())
@@ -242,6 +249,28 @@ class HeritageResolver:
         parent_name = rel.parent_name
         edge_type = _heritage_kind_to_edge_type(rel.kind)
 
+        # Apex has no imports: the parent is a type its project reaches, or none.
+        if self._is_apex(file_path):
+            index = self._apex_namespaces_index()
+            # Two parents may share a last segment (``Database.Batchable`` and
+            # ``Plugin.Batchable``); the one the repository declares is the edge.
+            found = {
+                file_types[parent_name]
+                if "." not in written and parent_name in file_types
+                else index.type_path(file_path, written)
+                for written in self._apex_written_parents(file_path, rel)
+            } - {None}
+            if len(found) != 1:
+                return None
+            apex_parent = found.pop()
+            return ResolvedHeritage(
+                child_id=child_id,
+                parent_id=apex_parent,
+                edge_type=edge_type,
+                confidence=0.95 if apex_parent.startswith(f"{file_path}::") else 0.90,
+                line=rel.line,
+            )
+
         if parent_name in file_types:
             return ResolvedHeritage(
                 child_id=child_id,
@@ -251,17 +280,18 @@ class HeritageResolver:
                 line=rel.line,
             )
 
-        # Tier 2a: specific imported name
-        name_to_file = self._import_names.get(file_path, {})
-        if parent_name in name_to_file:
-            source_file = name_to_file[parent_name]
+        # Tier 2a: specific imported name. One only another function imports
+        # binds nothing here, so that import is read as a guess.
+        local = self._import_maps.local_binding(file_path, parent_name, rel.line)
+        source_file = self._import_maps.source_at(file_path, parent_name, rel.line)
+        if source_file is not None:
             source_types = self._file_types.get(source_file, {})
             if parent_name in source_types:
                 return ResolvedHeritage(
                     child_id=child_id,
                     parent_id=source_types[parent_name],
                     edge_type=edge_type,
-                    confidence=0.90,
+                    confidence=0.50 if local is not None and local[1] else 0.90,
                     line=rel.line,
                 )
 
@@ -292,6 +322,31 @@ class HeritageResolver:
             )
 
         return None
+
+    def _is_apex(self, file_path: str) -> bool:
+        parsed = self._parsed_files.get(file_path)
+        return parsed is not None and parsed.file_info.language == "apex"
+
+    def _apex_written_parents(self, file_path: str, rel: HeritageRelation) -> list[str]:
+        """The parent's paths as the Apex clause writes them (``Outer.Inner``)."""
+        from .languages.apex_namespace import written_parents
+
+        text = self._apex_texts.get(file_path)
+        if text is None:
+            abs_path = self._parsed_files[file_path].file_info.abs_path
+            try:
+                text = Path(abs_path).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            self._apex_texts = {file_path: text}
+        return written_parents(text, rel.line, rel.parent_name)
+
+    def _apex_namespaces_index(self) -> Any:
+        if self._apex_namespaces is None:
+            from .languages.apex_namespace import build_apex_namespaces
+
+            self._apex_namespaces = build_apex_namespaces(self._parsed_files)
+        return self._apex_namespaces
 
 
 def _heritage_kind_to_edge_type(kind: str) -> str:

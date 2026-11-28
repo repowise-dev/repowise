@@ -36,7 +36,8 @@ export async function getGitMetadata(
 
 /** One page of the hotspot list plus counts over the whole searched set. */
 export interface HotspotPage extends Paginated<HotspotResponse> {
-  facets: HotspotFacets;
+  /** Absent from a server that does not count filters; the list renders without chips. */
+  facets?: HotspotFacets;
 }
 
 export interface HotspotPageQuery extends MapHoldQuery {

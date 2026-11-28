@@ -57,9 +57,16 @@ export function AddRepoDialog({
       startIndex: (repoId) => startIndexJob(repoId),
       getProviderStatus: async () => {
         const res = await getProviders();
-        return res.active;
+        if (res.active.provider) return res.active;
+        // No model: ask which agent CLIs are signed in (a short process per
+        // CLI), so the wizard can offer one for the docs.
+        const detected = await getProviders(undefined, { detect: true }).catch(() => null);
+        const signedIn = (detected?.providers ?? [])
+          .filter((p) => p.detected === "signed_in")
+          .map((p) => p.name);
+        return { ...res.active, signedIn };
       },
-      settingsHref: "/settings",
+      settingsHref: "/settings/models",
       onDone: (repoId, jobId) => {
         toast.success(
           jobId ? t("addDialog.toastStarted") : t("addDialog.toastAdded"),

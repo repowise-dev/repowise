@@ -5,7 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ._common import LogFn, _noop_log
+
+
+def _has_store(repo_path: Any) -> bool:
+    """Whether a stored index exists to read, without creating one."""
+    from repowise.core.persistence.database import has_db_store
+
+    return has_db_store(repo_path)
 
 
 async def load_stored_git_meta(
@@ -29,8 +38,10 @@ async def load_stored_git_meta(
     # Never create the store as a side effect of reading it. A repo whose
     # wiki.db was deleted to force a rebuild would otherwise be handed an
     # empty one here, and an empty database reads as "indexed" downstream.
-    # Same guard, and the same reason, as the head-commit stamper.
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    # Same guard, and the same reason, as the head-commit stamper. A
+    # configured database counts as a store: the local file is absent under
+    # one by design (issue #2406).
+    if not _has_store(repo_path):
         log("[yellow]No store to read git metadata from; dead-code scope narrowed[/yellow]")
         return None
     try:
@@ -80,7 +91,7 @@ async def load_stored_performance_callers(
     log = log or _noop_log
     if not changed_paths:
         return set()
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not _has_store(repo_path):
         return None
     try:
         import json
@@ -119,7 +130,7 @@ async def load_stored_performance_callers(
             except (TypeError, ValueError, AttributeError):
                 continue
             if any(
-                isinstance(node, str) and node.split("::", 1)[0] in changed_paths for node in path
+                isinstance(node, str) and file_of_symbol(node) in changed_paths for node in path
             ):
                 callers.add(file_path)
         return callers
@@ -144,7 +155,7 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
     walked-set computation in that case.
     """
     log = log or _noop_log
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not _has_store(repo_path):
         return None
     try:
         from repowise.core.persistence import (
@@ -178,9 +189,9 @@ async def load_stored_function_mod_p80(repo_path: Any, *, log: LogFn | None = No
         # functions collapse to one row and this percentile is taken over a
         # population missing those samples. Closer than the changed-files
         # subset, still not the number a full index computes.
-        from repowise.core.analysis.health.engine import _percentile_p80
+        from repowise.core.stats import percentile
 
-        return _percentile_p80(counts)
+        return percentile(counts, 0.8)
     except Exception as exc:
         log(f"[yellow]Stored function-mod percentile unavailable: {exc}[/yellow]")
         return None
@@ -197,14 +208,15 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     (issue #1739).
 
     Returns ``{path: coverage-dict}`` by reloading the persisted ``CoverageFile``
-    rows, mirroring ``_coverage_for_rescore`` in the CLI update path. Empty dict
-    when no coverage is stored, the store is unreadable, or the repository row
-    is missing — the analyzer then scores without coverage, matching the
-    established safe default.
+    rows, mirroring ``coverage_for_rescore`` in :mod:`.rescore`. A report
+    :func:`coverage_reports_to_reread` names is read and stored first, so the
+    rows describe the newest report. Empty dict when no coverage is stored, the
+    store is unreadable, or the repository row is missing — the analyzer then
+    scores without coverage, matching the established safe default.
     """
     log = log or _noop_log
 
-    if not (Path(repo_path) / ".repowise" / "wiki.db").is_file():
+    if not _has_store(repo_path):
         return {}
     try:
         from repowise.core.persistence import (
@@ -219,8 +231,10 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
         from repowise.core.persistence.database import resolve_db_url
 
         engine = create_engine(resolve_db_url(repo_path))
+        factory = create_session_factory(engine)
         try:
-            async with get_session(create_session_factory(engine)) as session:
+            await _refresh_from_newer_reports(factory, Path(repo_path), log)
+            async with get_session(factory) as session:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return {}
@@ -231,3 +245,105 @@ async def load_stored_coverage_map(repo_path: Any, *, log: LogFn | None = None) 
     except Exception as exc:
         log(f"[yellow]Stored coverage unavailable: {exc}[/yellow]")
         return {}
+
+
+async def coverage_reports_to_reread(
+    session: Any, repo_id: str, repo_path: Path, cfg: Any
+) -> dict[Path, str | None] | None:
+    """The reports an update re-reads, each with its prefix; ``None`` keeps the stored rows.
+
+    *cfg* is the repo's ``CoverageConfig``. The decision is its ``reingest``: a
+    report written after the last ingest by default, every update or never
+    when ``coverage.reingest_on_update`` says so. An empty dict is a forced
+    re-read that found no report. Without ``paths`` or discovery there is
+    nothing to re-read. By default only ``watched_reports`` are stat-ed; the
+    discovery walk runs only for a re-read that is due.
+    """
+    from repowise.core.persistence.crud.analysis import load_newest_ingest
+
+    if cfg.reingest_on_update is False or not (cfg.paths or cfg.auto_discover):
+        return None
+    if cfg.reingest_on_update is None:
+        watched = cfg.watched_reports(repo_path)
+        if not watched:
+            return None
+        newest = await load_newest_ingest(session, repo_id)
+        last_ingest = newest.ingested_at if newest is not None else None
+        if not cfg.reingest(_newest_mtime(watched), last_ingest):
+            return None
+    return cfg.reports(repo_path)
+
+
+def _newest_mtime(reports: Any) -> float | None:
+    """The newest modification time among *reports*, ``None`` when none can be read."""
+    times = []
+    for path in reports:
+        try:
+            times.append(Path(path).stat().st_mtime)
+        except OSError:
+            continue
+    return max(times, default=None)
+
+
+async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn) -> None:
+    """Store the reports :func:`coverage_reports_to_reread` names as the coverage.
+
+    Its own session, so a report that fails to read rolls back only this write
+    and the stored rows still load. Nothing is written before anything is
+    indexed: with no indexed files every report would read as unmapped.
+    """
+    from repowise.core.analysis.health.coverage import (
+        CoverageConfig,
+        build_coverage_map,
+        measurement_commit,
+    )
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.crud import (
+        get_health_metrics,
+        get_repository_by_path,
+        save_coverage_files,
+    )
+    from repowise.core.repo_config import load_repo_config
+    from repowise.core.workspace.update import get_head_commit
+
+    try:
+        cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
+        async with get_session(factory) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return
+            reports = await coverage_reports_to_reread(session, repo.id, repo_path, cfg)
+            if not reports:
+                return
+            keys = {m.file_path for m in await get_health_metrics(session, repo.id)}
+            if not keys:
+                return
+            resolved, _errors = build_coverage_map(
+                repo_path,
+                list(reports),
+                keys,
+                coverage_format=cfg.format,
+                strip_prefix=cfg.strip_prefix,
+                path_prefix=cfg.path_prefix,
+                report_prefixes=reports,
+                ignore=cfg.ignore,
+            )
+            # Live HEAD only when the report was written since the last commit;
+            # otherwise the commit that was HEAD when the report ran (#3901, #5744).
+            await save_coverage_files(
+                session,
+                repo.id,
+                resolved.files,
+                source_format=resolved.source_format or "lcov",
+                ingested_commit_sha=measurement_commit(
+                    repo_path,
+                    resolved.measured_at,
+                    get_head_commit(repo_path),
+                ),
+                provenance=resolved.provenance,
+            )
+        log(f"Re-read coverage from {len(reports)} report(s): {len(resolved.files)} file(s) stored")
+        if stale := resolved.alignment.warning():
+            log(f"[yellow]{stale}[/yellow]")
+    except Exception as exc:
+        log(f"[yellow]Coverage re-read skipped: {exc}[/yellow]")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from datetime import UTC, datetime
 
@@ -10,7 +11,7 @@ import pytest
 
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.mcp_server import _edit_sites, _meta
-from repowise.server.mcp_server._edit_sites import reference_edit_set
+from repowise.server.mcp_server._edit_sites import edit_set_block, reference_edit_set
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 _DEF = "pkg/catalog.py"
@@ -113,11 +114,12 @@ async def test_definition_import_call_and_same_file_call(session, repo_id, tmp_p
         (_DEF, 5, "definition"),
         (_USER, 3, "import"),  # continuation line of a multi-line import
         (_USER, 9, "call"),
-        (_USER, 10, "reference"),  # a string naming it
+        (_USER, 10, "string"),  # a string naming it
         (_DEF, 2, "call"),  # same-file call
     ]
     assert out["complete"] is True
     assert "reasons" not in out
+    assert "hint" not in out
 
 
 @pytest.mark.asyncio
@@ -238,6 +240,199 @@ async def test_module_import_then_attribute_access_is_found(session, repo_id, tm
     assert out["complete"] is True
 
 
+_MODULE_OBJECT_USER = """from pkg import catalog
+
+
+def _catalog():
+    return catalog
+
+
+def run():
+    c = _catalog()
+    return c.backend_of(1)
+"""
+
+
+@pytest.mark.asyncio
+async def test_module_object_bound_outside_an_import_is_incomplete(session, repo_id, tmp_path):
+    """``c = _catalog()`` hands the module on under a name no import binds:
+    ``c.backend_of`` may be the symbol, so the set does not claim to be whole."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'})],
+    )
+    (tmp_path / "app" / "lazy.py").write_text(_MODULE_OBJECT_USER, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: app/lazy.py"
+    ]
+    assert out["hint"] == (
+        r'Not every site is listed. Before answering, run search_codebase(query="\bbackend_of\b")'
+        " for every line naming it."
+    )
+    assert "app/lazy.py" not in out["files"]
+
+
+_ANOTHER_HIDDEN_USE = "\n\ndef later():\n    d = _catalog()\n    return d.backend_of(2)\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tail", "complete"),
+    [("", True), (_ANOTHER_HIDDEN_USE, False)],
+)
+async def test_a_module_object_call_the_graph_resolved_is_listed(
+    session, repo_id, tmp_path, tail, complete
+):
+    """Once the graph resolves ``c.backend_of`` through the returned module, the
+    line is a call site; only a use it left unresolved keeps the set incomplete."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[
+            ("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'}),
+            ("app/lazy.py::run", _SYM, "calls", {"call_lines_json": "[10]"}),
+        ],
+    )
+    (tmp_path / "app" / "lazy.py").write_text(_MODULE_OBJECT_USER + tail, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is complete
+    assert ("app/lazy.py" in out["files"]) is True
+    assert ("reasons" in out) is not complete
+
+
+@pytest.mark.parametrize(
+    ("name", "query"),
+    [("backend_of", r"\bbackend_of\b"), ("$scope", r"\$scope\b"), ("operator+", r"\boperator\+")],
+)
+def test_the_hint_query_matches_the_name_as_a_whole_word(name, query):
+    assert _edit_sites._word_regex(name) == query
+
+
+@pytest.mark.asyncio
+async def test_a_call_on_a_returned_module_with_no_root_name_is_incomplete(
+    session, repo_id, tmp_path
+):
+    """``_catalog().backend_of`` has no root name, yet the file hands the module on."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'})],
+    )
+    body = "from pkg import catalog\n\n\ndef _catalog():\n    return catalog\n\n\n"
+    body += "def run():\n    return _catalog().backend_of(1)\n"
+    (tmp_path / "app" / "lazy.py").write_text(body, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: app/lazy.py"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import * as a from './a'\nconst m = a\nexport const f = () => m.pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a }\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a; }\n"
+        "export function f() { const m = load(); return m.pick(1) }\n",
+        "const a = require('./a')\nconst m = a // the module\nexport const f = () => m.pick(1)\n",
+        "import a = require('./a.js')\nconst load = () => a\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nexport default a\nexport const f = (m: any) => m.pick(1)\n",
+        "import * as a from './a'\nconst m = a as any\nexport const f = () => m.pick(1)\n",
+    ],
+)
+async def test_a_typescript_namespace_handed_on_is_incomplete(session, repo_id, tmp_path, text):
+    """A namespace import or ``require`` handed on reaches ``pick`` through a
+    local no import binds, which the scan cannot follow."""
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == ["may be called through a module object outside an import: web/b.ts"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Read through the namespace itself: a listed site.
+        "import * as a from './a'\nexport const f = () => a.pick(1)\n",
+        # Another module's namespace is handed on, not the one holding ``pick``.
+        "import * as a from './a'\nimport * as z from './z'\nconst m = z\n"
+        "export const f = () => m.pick(1)\n",
+        # The object is the class's own instance.
+        "import * as a from './a'\nconst m = a\nclass C { g() { return this.pick(1) } }\n",
+    ],
+)
+async def test_a_typescript_namespace_not_handed_on_stays_complete(
+    session, repo_id, tmp_path, text
+):
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is True
+    assert "reasons" not in out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        # The module is imported, but the object use is the file's own instance.
+        (
+            "from pkg import catalog\n\nclass C:\n    def f(self):\n        return self.backend_of()\n",
+            '["catalog"]',
+        ),
+        # The module object is only read through and passed to a patch, never handed on.
+        (
+            "from pkg import catalog\n\ndef f(ctx, mp):\n"
+            "    mp.setattr(catalog, 'x', 1)\n    return ctx.backend_of(catalog.MODELS)\n",
+            '["catalog"]',
+        ),
+        # An object use with no module import of a file holding the name.
+        (
+            "from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n",
+            '["MODELS"]',
+        ),
+        # A call's result, in a file that never hands the module on.
+        (
+            "from pkg import catalog\n\ndef f(make):\n    return make().backend_of()\n",
+            '["catalog"]',
+        ),
+    ],
+)
+async def test_object_use_without_a_module_object_stays_complete(
+    session, repo_id, tmp_path, body, names
+):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/other.py", _DEF, "imports", {"imported_names_json": names})],
+    )
+    (tmp_path / "app" / "other.py").write_text(body, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is True
+    assert "reasons" not in out
+
+
 @pytest.mark.asyncio
 async def test_importer_with_unknown_names_is_followed_onward(session, repo_id, tmp_path):
     node = await _seed(
@@ -247,16 +442,24 @@ async def test_importer_with_unknown_names_is_followed_onward(session, repo_id, 
         extra=[
             ("app/hub.py", _DEF, "imports", {"imported_names_json": "[]"}),
             ("app/far.py", "app/hub.py", "imports", {"imported_names_json": '["thing"]'}),
+            ("app/star.py", "app/hub.py", "imports", {"imported_names_json": '["*"]'}),
         ],
     )
     (tmp_path / "app" / "hub.py").write_text("from pkg.catalog import *\n", encoding="utf-8")
     (tmp_path / "app" / "far.py").write_text(
         "from app.hub import thing\n\nthing(backend_of)\n", encoding="utf-8"
     )
+    (tmp_path / "app" / "star.py").write_text(
+        "from app.hub import *\n\nthing(backend_of)\n", encoding="utf-8"
+    )
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
-    assert ("app/far.py", 3, "reference") in _sites(out)
+    # The re-export reaches a file that star-imports the hub. A file that
+    # imports only ``thing`` has no binding of the name: its use is not this
+    # symbol (Python would raise NameError), so it is not listed.
+    assert ("app/star.py", 3, "reference") in _sites(out)
+    assert ("app/far.py", 3, "reference") not in _sites(out)
 
 
 async def _seed_js(session, repo_id: str, tmp_path, files: dict[str, str], names='["pick"]'):
@@ -343,7 +546,9 @@ async def test_commonjs_destructure_rename_outside_an_import_line_is_incomplete(
 
     sites = _sites(out)
     assert ("web/one.js", 2, "reference") in sites  # the alias is scanned for too
-    assert ("web/multi.js", 4, "reference") in sites
+    # A rename outside an import marks the file but is not spelled out: an
+    # object key reads the same.
+    assert ("web/multi.js", 4, "reference") not in sites
     assert out["complete"] is False
     renamed = next(r for r in out["reasons"] if r.startswith("renamed on import or export"))
     assert "web/one.js" not in renamed and "web/multi.js" in renamed
@@ -378,7 +583,11 @@ _PICK = "export function pick(x: number) { return x }\n"
 @pytest.mark.parametrize(
     ("rel", "text", "alias_line"),
     [
-        ("web/b.ts", "import { pick as choose } from './a'\n\nexport const f = () => choose(1)\n", 3),
+        (
+            "web/b.ts",
+            "import { pick as choose } from './a'\n\nexport const f = () => choose(1)\n",
+            3,
+        ),
         (
             "web/b.ts",
             "import {\n  other,\n  pick as choose,\n} from './a'\nfunction f() {\n  return choose(1)\n}\n",
@@ -386,7 +595,11 @@ _PICK = "export function pick(x: number) { return x }\n"
         ),
         ("web/b.js", "const { pick: choose } = require('./a')\nchoose(1)\n", 2),
         ("web/b.ts", "import { pick as choose } from './a'\nconst k = new choose()\n", 2),
-        ("web/b.tsx", "import { pick as choose } from './a'\nconst e = <choose a={1}></choose>\n", 2),
+        (
+            "web/b.tsx",
+            "import { pick as choose } from './a'\nconst e = <choose a={1}></choose>\n",
+            2,
+        ),
         ("web/b.ts", "import { pick as choose } from './a'\nchoose.mockReset()\n", 2),
         ("web/b.ts", "import { pick as choose } from './a'\nconst n = choose?.length\n", 2),
     ],
@@ -540,21 +753,6 @@ async def test_python_alias_value_use_leaves_the_file(session, repo_id, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_local_alias_references_share_the_per_file_cap(session, repo_id, tmp_path):
-    spec = "import { pick as choose } from './a'\n" + "choose.mockReturnValue(1)\n" * 10
-    node = await _seed_js(
-        session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/a.test.ts": spec}
-    )
-
-    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
-
-    assert out["sites_omitted_by_file"] == {
-        "web/a.test.ts": 10 - _edit_sites.MAX_REFERENCES_PER_FILE
-    }
-    assert not any(r.startswith("renamed") for r in out["reasons"])
-
-
-@pytest.mark.asyncio
 async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tmp_path):
     from repowise.server.mcp_server import get_context
 
@@ -563,8 +761,13 @@ async def test_get_context_serves_references_for_a_symbol(setup_mcp, session, tm
 
     t = (await get_context([_SYM], include=["references"]))["targets"][_SYM]
 
-    assert t["references"]["complete"] is True
-    assert (_USER, 9, "call") in _sites(t["references"])
+    refs = t["references"]
+    assert refs["complete"] is True
+    assert refs["sites_total"] == 5
+    assert refs["files"] == {
+        _DEF: {"definition": [5], "call": [2]},
+        _USER: {"import": [3], "call": [9], "string": [10]},
+    }
 
 
 def _collector(tmp_path):
@@ -574,103 +777,318 @@ def _collector(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_small_list_is_unchanged_by_the_per_file_cap(session, repo_id, tmp_path):
-    node = await _seed(session, repo_id, tmp_path)
-
-    bare = await reference_edit_set(session, repo_id, tmp_path, node)
-    capped = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
-
-    assert json.dumps(capped) == json.dumps(bare)
-
-
-@pytest.mark.asyncio
-async def test_mock_heavy_python_test_collapses_and_sorts_after_callers(
+async def test_block_lists_every_line_of_a_mock_heavy_test_after_production(
     session, repo_id, tmp_path
 ):
-    node = await _seed(
-        session,
-        repo_id,
-        tmp_path,
-        extra=[("tests/test_catalog.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
-    )
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_catalog.py").write_text(
-        "from pkg.catalog import backend_of\n"
-        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
-        encoding="utf-8",
-    )
-    collector = _collector(tmp_path)
-
-    out = await reference_edit_set(session, repo_id, tmp_path, node, collector)
-
-    test_rows = [s for s in _sites(out) if s[0] == "tests/test_catalog.py"]
-    assert test_rows == [
-        ("tests/test_catalog.py", 1, "import"),
-        ("tests/test_catalog.py", 2, "reference"),
-        ("tests/test_catalog.py", 3, "reference"),
-        ("tests/test_catalog.py", 4, "reference"),
-    ]
-    assert _sites(out)[-len(test_rows) :] == test_rows  # production files first
-    assert (_USER, 9, "call") in _sites(out)
-    assert out["sites_omitted"] == 17
-    assert out["sites_omitted_by_file"] == {"tests/test_catalog.py": 17}
-    assert out["sites_reduced_reason"] == "per_file_reference_cap"
-    assert out["complete"] is False
-    assert any("sites_omitted_by_file" in r for r in out["reasons"])
-    response: dict = {}
-    collector.attach(response)
-    assert response["_meta"]["omitted"]["refs"]
-
-
-@pytest.mark.asyncio
-async def test_mock_heavy_typescript_test_keeps_the_real_caller(session, repo_id, tmp_path):
     spec = "import { pick } from './a'\n" + "vi.mocked(pick).mockReturnValue(1)\n" * 30
     node = await _seed_js(
         session,
         repo_id,
         tmp_path,
         {
-            "web/a.ts": "export function pick(x: number): number { return x }\n",
+            "web/a.ts": _PICK,
             "web/a.test.ts": spec,
             "web/b.ts": "import { pick } from './a'\nexport const run = () => [pick]\n",
         },
     )
 
-    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
 
-    paths = [p for p, _n, _k in _sites(out)]
-    assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
-    assert ("web/b.ts", 2, "reference") in _sites(out)
-    assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
-    assert out["sites_omitted_by_file"] == {"web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE}
+    assert list(out["files"]) == ["web/a.ts", "web/b.ts", "web/a.test.ts"]
+    assert out["files"]["web/a.test.ts"] == {"import": [1], "reference": list(range(2, 32))}
+    assert out["sites_total"] == 1 + 2 + 31
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_block_over_its_budget_serves_leading_files_with_the_exact_total(
+    session, repo_id, tmp_path, monkeypatch
+):
+    files = {"web/a.ts": _PICK}
+    files.update({f"web/u{i:02}.ts": "import { pick } from './a'\npick(1)\n" for i in range(40)})
+    node = await _seed_js(session, repo_id, tmp_path, files)
+    monkeypatch.setattr(_edit_sites, "effective_char_budget", lambda: 1000)
+    collector = _collector(tmp_path)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, collector)
+
+    assert "web/a.ts" in out["files"]
+    assert 1 < len(out["files"]) < 41
+    assert out["files_total"] == 41
+    assert out["sites_total"] == 1 + 40 * 2
     assert out["complete"] is False
+    assert f"{len(out['files'])} of 41 files shown" in out["reasons"][-1]
+    # The budget cut says where the rest are; no search is needed.
+    assert "hint" not in out
+    response: dict = {}
+    collector.attach(response)
+    assert response["_meta"]["omitted"]["refs"]
 
 
 @pytest.mark.asyncio
-async def test_call_sites_are_never_collapsed(session, repo_id, tmp_path):
-    extra = []
-    for i in range(8):
-        rel = f"svc/user{i}.py"
-        (tmp_path / "svc").mkdir(exist_ok=True)
-        (tmp_path / rel).write_text(
-            "from pkg.catalog import backend_of\n" + "backend_of(1)\n" * 6, encoding="utf-8"
-        )
-        extra.append((rel, _DEF, "imports", {"imported_names_json": '["backend_of"]'}))
-        extra.append(
-            (f"{rel}::run", _SYM, "calls", {"call_lines_json": json.dumps(list(range(2, 8)))})
-        )
-    node = await _seed(session, repo_id, tmp_path, extra=extra)
+async def test_block_counts_enclosing_symbols_inside_its_budget(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server._enclosing import _Span
 
-    out = await reference_edit_set(session, repo_id, tmp_path, node, _collector(tmp_path))
+    files = {"web/a.ts": _PICK}
+    files.update({f"web/u{i:02}.ts": "import { pick } from './a'\npick(1)\n" for i in range(40)})
+    node = await _seed_js(session, repo_id, tmp_path, files)
+    span = [_Span(1, 9, "a_long_enclosing_symbol_name_for_the_budget")]
 
-    calls = [s for s in _sites(out) if s[2] == "call" and s[0].startswith("svc/user")]
-    assert len(calls) == 8 * 6
+    async def _ranges(_session, _repo_id, paths):
+        return {p: span for p in paths}
+
+    monkeypatch.setattr(_edit_sites, "enclosing_ranges", _ranges)
+    monkeypatch.setattr(_edit_sites, "effective_char_budget", lambda: 4000)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    shown = out["files"]
+    assert 1 < len(shown) < 41
+    assert out["files_total"] == 41
+    assert all("in" in kinds for path, kinds in shown.items() if path != "web/a.ts")
+    assert len(json.dumps(shown, separators=(",", ":"))) <= int(4000 * _edit_sites._BLOCK_SHARE)
+    assert f"{len(shown)} of 41 files shown" in out["reasons"][-1]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_enclosing_read_leaves_the_block_and_session_usable(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from sqlalchemy import text
+
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {"web/a.ts": _PICK, "web/b.ts": "import { pick } from './a'\npick(1)\n"},
+    )
+
+    async def _broken(s, _repo_id, _paths):
+        await s.execute(text("SELECT * FROM no_such_table"))
+
+    monkeypatch.setattr(_edit_sites, "enclosing_ranges", _broken)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["web/b.ts"] == {"import": [1], "reference": [2]}
+    # The savepoint rolled back only the failed read.
+    assert (await session.execute(text("SELECT 1"))).scalar() == 1
+
+
+@pytest.mark.asyncio
+async def test_prose_mentions_are_counted_and_listed_only_when_asked(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            "\n\n# backend_of picks the backend\n"
+            "def g():\n"
+            '    """Calls backend_of once."""\n'
+            '    raise ValueError("backend_of failed")\n'
+            '__all__ = ["backend_of"]\n'
+            'hint: "Optional[backend_of]" = None\n'
+            'mock.patch("pkg.catalog.backend_of.cache")\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+    wide = await edit_set_block(session, repo_id, tmp_path, node, prose=True)
+
+    assert out["prose_lines"] == 3
+    # A type written as a string is a reference; a name or dotted target in a
+    # string is its own kind.
+    assert out["files"][_USER] == {
+        "import": [3],
+        "call": [9],
+        "reference": [18],
+        "string": [10, 17, 19],
+    }
     assert out["complete"] is True
-    assert "sites_omitted_by_file" not in out
+    assert wide["files"][_USER]["prose"] == [13, 15, 16]
+    assert "prose_lines" not in wide
 
 
 @pytest.mark.asyncio
-async def test_get_context_collapses_a_flood_into_recoverable_counts(setup_mcp, session, tmp_path):
+async def test_typescript_comments_are_prose_and_jsx_tags_are_code(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/v.tsx": (
+                "import { pick } from './a'\n"
+                "// `pick` chooses one\n"
+                "/**\n * Wraps `pick`.\n */\n"
+                "export const V = () => <p>Don't <pick>x</pick></p>\n"
+                "const s = 'pick'\n"
+            ),
+        },
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["web/v.tsx"] == {"import": [1], "reference": [6], "string": [7]}
+    assert out["prose_lines"] == 2
+
+
+@pytest.mark.asyncio
+async def test_mock_patch_targets_are_strings_not_references(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            '@mock.patch("pkg.catalog.backend_of")\n'
+            "def t1(m): ...\n"
+            "with patch.object(catalog, 'backend_of', return_value=1): ...\n"
+            'monkeypatch.setattr("pkg.catalog.backend_of", lambda n: n)\n'
+            'mocker.patch("pkg.catalog.backend_of", backend_of)\n'
+            'fn = f"{backend_of}"\n'
+            'fn = vars(catalog)["backend_of"]\n'
+            'names = ["backend_of"]\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    files = out["files"][_USER]
+    assert files["string"] == [10, 11, 13, 14, 18]
+    # A line that also names it in code stays a reference.
+    assert files["reference"] == [15, 16, 17]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_forward_reference_annotations_stay_references(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            'def t2(u: "backend_of") -> None: ...\n'
+            'def t3() -> "backend_of": ...\n'
+            'T = TypeVar("T", bound="backend_of")\n'
+            'v = cast("backend_of", w)\n'
+            'getattr(catalog, "backend_of")\n'
+            'z = {"target": "pkg.catalog.backend_of"}\n'
+            'w = lambda: "backend_of"\n'
+            'x: Union["backend_of", None] = None\n'
+            'y = sorted(xs, key=lambda n: "backend_of")\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    # A type written as a string uses it in code; a getattr name, a dict value
+    # or a lambda body does not.
+    files = out["files"][_USER]
+    assert files["reference"] == [11, 12, 13, 14, 18]
+    assert files["string"] == [10, 15, 16, 17, 19]
+
+
+@pytest.mark.asyncio
+async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/a.test.ts": (
+                "import * as mod from './a'\n"
+                "import { pick } from './a'\n"
+                "vi.spyOn(mod, 'pick')\n"
+                'jest.spyOn(mod, "pick").mockReturnValue(1)\n'
+                "expect(pick).toBe(1)\n"
+                "mod['pick'](2)\n"
+                "mod?.['pick'](3)\n"
+            ),
+        },
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    # A string subscript is a member access, not a string target.
+    assert out["files"]["web/a.test.ts"] == {
+        "import": [2],
+        "reference": [5, 6, 7],
+        "string": [3, 4],
+    }
+
+
+@pytest.mark.asyncio
+async def test_import_alias_uses_are_their_own_kind(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/api.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from pkg.catalog import backend_of as pick_backend\n\nx = pick_backend(1)\n",
+        encoding="utf-8",
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["app/api.py"] == {"import": [1], "alias": [3]}
+
+
+@pytest.mark.asyncio
+async def test_a_module_named_like_the_symbol_is_not_a_site(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/api.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from pkg.backend_of import other\nfrom pkg.catalog import backend_of\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert [s for s in _sites(out) if s[0] == "app/api.py"] == [("app/api.py", 2, "import")]
+
+
+@pytest.mark.asyncio
+async def test_a_file_committed_since_the_index_is_read_live(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from repowise.core.workspace.update import state
+
+    node = await _seed(session, repo_id, tmp_path)
+    (tmp_path / "app" / "new.py").write_text(
+        "from pkg.catalog import backend_of\nbackend_of(2)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(_edit_sites, "read_live_head", lambda _p: "b" * 40)
+    monkeypatch.setattr(state, "resolve_indexed_commit", lambda *_a: state.IndexedCommit("a" * 40))
+    monkeypatch.setattr(
+        _edit_sites, "_changed_files_between", lambda *_a: frozenset({"app/new.py", "gone.py"})
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("app/new.py", 2, "call") in _sites(out)
+    assert out["complete"] is False
+    assert "unindexed edits name it: app/new.py" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_an_index_behind_head_that_git_cannot_diff_is_incomplete(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from repowise.core.workspace.update import state
+
+    node = await _seed(session, repo_id, tmp_path)
+    monkeypatch.setattr(_edit_sites, "read_live_head", lambda _p: "b" * 40)
+    monkeypatch.setattr(state, "resolve_indexed_commit", lambda *_a: state.IndexedCommit("a" * 40))
+    monkeypatch.setattr(_edit_sites, "_changed_files_between", lambda *_a: None)
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "the index is behind HEAD and git cannot list what changed" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_get_context_lists_a_flood_of_references_whole(setup_mcp, session, tmp_path):
     from repowise.server.mcp_server import get_context
 
     await _seed(session, setup_mcp, tmp_path)
@@ -681,10 +1099,24 @@ async def test_get_context_collapses_a_flood_into_recoverable_counts(setup_mcp, 
     resp = await get_context([_SYM], include=["references"])
     refs = resp["targets"][_SYM]["references"]
 
-    assert refs["sites_omitted_by_file"] == {_USER: 40 + 1 - _edit_sites.MAX_REFERENCES_PER_FILE}
-    assert (_USER, 9, "call") in _sites(refs)
-    assert refs["complete"] is False
-    assert resp["_meta"]["omitted"]["refs"]
+    assert refs["files"][_USER]["reference"] == list(range(12, 52))
+    assert refs["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_context_references_plus_lists_prose(setup_mcp, session, tmp_path):
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session, setup_mcp, tmp_path)
+    await session.commit()
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write("# backend_of\n")
+
+    plain = (await get_context([_SYM], include=["references"]))["targets"][_SYM]["references"]
+    plus = (await get_context([_SYM], include=["references+"]))["targets"][_SYM]["references"]
+
+    assert plain["prose_lines"] == 1
+    assert plus["files"][_USER]["prose"] == [11]
 
 
 @pytest.mark.parametrize(
@@ -719,7 +1151,7 @@ async def _seed_package(
         node_type="symbol",
         name=name,
         file_path=path,
-        kind="function" if language == "go" else "class",
+        kind="function" if language in ("go", "rust") else "class",
         language=language,
         start_line=start,
         end_line=end,
@@ -759,7 +1191,9 @@ async def test_java_same_package_subclasses_are_listed_and_complete(session, rep
                 "class Vet extends org.sp.petclinic.model.BaseEntity {\n}\n"
             ),
             # A subpackage holding another BaseEntity is not a use.
-            f"{_MODEL}/sub/Other.java": _model("BaseEntity", "Object", "org.sp.petclinic.model.sub"),
+            f"{_MODEL}/sub/Other.java": _model(
+                "BaseEntity", "Object", "org.sp.petclinic.model.sub"
+            ),
         },
         "java",
         (f"{_MODEL}/BaseEntity.java", "BaseEntity", 3, 4),
@@ -825,6 +1259,120 @@ async def test_go_package_is_its_live_directory(session, repo_id, tmp_path):
     assert out["complete"] is True, out.get("reasons")
 
 
+_TOKEN = "package token\n\nfunc NewServer() *Server {\n\treturn nil\n}\n"
+_TOKEN_TEST = """package token_test
+
+import (
+	"testing"
+
+	authn "example.com/app/internal/authn"
+	"example.com/app/internal/oidc"
+	"example.com/app/internal/token"
+	tok "example.com/app/internal/token"
+)
+
+func TestServers(t *testing.T) {
+	_ = token.NewServer()
+	_ = tok.NewServer()
+	_ = authn.NewServer()
+	_ = oidc.NewServer()
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_go_use_qualified_by_another_package_is_not_a_site(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "go.mod": "module example.com/app\n\ngo 1.22\n",
+            "internal/token/server.go": _TOKEN,
+            "internal/token/server_test.go": _TOKEN_TEST,
+        },
+        "go",
+        ("internal/token/server.go", "NewServer", 3, 5),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == "internal/token/server_test.go"}
+    # token.NewServer and the aliased tok.NewServer; never authn's or oidc's.
+    assert lines == {13, 14}
+    assert out["complete"] is True, out.get("reasons")
+
+
+_MAGEFILE = """package main
+
+import (
+	"fmt"
+
+	mg "github.com/magefile/mage/mg"
+)
+
+type UI mg.Namespace
+
+func Build() error {
+	mg.Deps(Clean)
+	return nil
+}
+
+func (u UI) Deps() error {
+	fmt.Println("deps")
+	return nil
+}
+
+func (u UI) Run() error {
+	mg.Deps(u.Deps)
+	return nil
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_go_method_is_never_named_through_an_import(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"go.mod": "module example.com/app\n", "magefile.go": _MAGEFILE},
+        "go",
+        ("magefile.go", "Deps", 16, 19),
+        git=False,
+    )
+    node.node_id, node.kind = "magefile.go::UI::Deps", "method"
+    # The graph bound ``mg.Deps(Clean)`` to the method by its name alone.
+    session.add(
+        _edge(1, repo_id, "magefile.go::Build", node.node_id, "calls", call_lines_json="[12]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == "magefile.go"}
+    assert 12 not in lines
+    assert {16, 22} <= lines
+
+
+def test_go_method_named_on_a_local_that_shadows_an_import_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/config"',
+        "func run() {",
+        "	config := load()",
+        "	config.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[4]
+    m = next(re.finditer(r"\bReload\b", text))
+    assert judge(text, m) is False
+
+
 @pytest.mark.asyncio
 async def test_go_directory_holding_another_package_is_incomplete(session, repo_id, tmp_path):
     node = await _seed_package(
@@ -864,6 +1412,75 @@ async def test_kotlin_same_package_in_another_directory_is_listed(session, repo_
     assert ("src/com/ex/Main.kt", 3, "reference") in _sites(out)
     assert ("app/misc/Extra.kt", 3, "reference") in _sites(out)
     assert out["complete"] is True, out.get("reasons")
+
+
+_OPEN_RO = "pub(crate) fn open_ro(path: &str) -> u8 {\n    0\n}\n"
+
+
+@pytest.mark.asyncio
+async def test_rust_path_qualified_uses_are_listed_and_complete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": _OPEN_RO,
+            # No ``use``: the path names the function.
+            "src/source.rs": "fn read(p: &str) -> u8 {\n    crate::index::open_ro(p)\n}\n",
+            "src/memory/mod.rs": "fn up(p: &str) -> u8 {\n    super::index::open_ro(p)\n}\n",
+            # Names it only as a longer word: not a site.
+            "src/other.rs": "fn open_ro_all() {}\nfn f() { crate::other::open_ro_all() }\n",
+        },
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    sites = _sites(out)
+    assert ("src/source.rs", 2, "reference") in sites
+    assert ("src/memory/mod.rs", 2, "reference") in sites
+    assert not any(p == "src/other.rs" for p, _n, _k in sites)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_rust_method_called_on_a_value_stays_incomplete(session, repo_id, tmp_path):
+    """``value.open()`` names no path: the member scan still says what it cannot see."""
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "src/index.rs": "pub struct Store;\n\nimpl Store {\n    pub fn open(&self) {}\n}\n",
+            "src/app.rs": "fn go() {\n    crate::make().open();\n}\n",
+        },
+        "rust",
+        ("src/index.rs", "Store::open", 4, 4),
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: src/app.rs" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_rust_without_git_to_search_is_incomplete(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"src/index.rs": _OPEN_RO},
+        "rust",
+        ("src/index.rs", "open_ro", 1, 3),
+        git=False,
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "rust: could not search for ::open_ro" in out["reasons"]
 
 
 _FIND = (
@@ -975,3 +1592,799 @@ async def test_oversize_package_file_is_incomplete(session, repo_id, tmp_path):
 
     assert out["complete"] is False
     assert "unreadable: big.go" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_same_name_re_export_is_not_a_rename(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("pkg/__init__.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "pkg" / "__init__.py").write_text(
+        "from .catalog import backend_of as backend_of\n", encoding="utf-8"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("pkg/__init__.py", 1, "import") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+async def _seed_method(session, repo_id, tmp_path, outside: str):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "pkg" / "store.py").write_text(
+        "class Store:\n    def fetch_rows(self):\n        return []\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\nrows = Store().fetch_rows()\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "other.py").write_text(outside, encoding="utf-8")
+    sym = "pkg/store.py::Store::fetch_rows"
+    node = GraphNode(
+        id="ref_method",
+        repository_id=repo_id,
+        node_id=sym,
+        node_type="symbol",
+        name="fetch_rows",
+        file_path="pkg/store.py",
+        kind="method",
+        language="python",
+        start_line=2,
+        end_line=3,
+        created_at=_NOW,
+    )
+    session.add_all(
+        [
+            node,
+            _edge(
+                1, repo_id, "app/use.py", "pkg/store.py", "imports", imported_names_json='["Store"]'
+            ),
+            _edge(2, repo_id, "app/use.py::__module__", sym, "calls", call_lines_json="[3]"),
+        ]
+    )
+    await session.flush()
+    return node
+
+
+@pytest.mark.asyncio
+async def test_member_with_no_untyped_access_elsewhere_is_complete(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert ("app/use.py", 3, "call") in _sites(out)
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_member_called_on_a_receiver_the_graph_did_not_type_is_a_call(
+    session, repo_id, tmp_path
+):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\n"
+        "rows = Store().fetch_rows()\n"
+        "def load(db: Store):\n"
+        "    return db.fetch_rows(\n        limit=1)\n"
+        "    # db.fetch_rows() in a comment\n"
+        "    spy = mock.MagicMock(wraps=db.fetch_rows)\n"
+        "    log('db.fetch_rows() failed', db)\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
+    # The comment, the value use and the sentence in a string stay references.
+    assert kinds == {3: "call", 5: "call", 7: "reference", 8: "reference", 9: "reference"}
+
+
+@pytest.mark.asyncio
+async def test_member_call_on_a_variable_named_like_a_definition_keyword(
+    session, repo_id, tmp_path
+):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\n"
+        "rows = Store().fetch_rows()\n"
+        "for sub in subs: sub.fetch_rows()\n"
+        "if fn is not None and fn.fetch_rows(): pass\n"
+        "tail = rows[::fetch_rows(2)]\n"
+        "tail = rows[n::fetch_rows(2)]\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
+    # A variable named ``sub`` or ``fn`` opens no definition; a slice step is no receiver.
+    assert kinds == {3: "call", 4: "call", 5: "call", 6: "reference", 7: "reference"}
+
+
+@pytest.mark.asyncio
+async def test_member_on_a_scope_operator_is_a_call_where_it_scopes(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.php").write_text(
+        "<?php\n$a = Store::fetch_rows(1);\n$b = ::fetch_rows(2);\n", encoding="utf-8"
+    )
+    session.add(
+        _edge(3, repo_id, "app/use.php", "pkg/store.py", "imports", imported_names_json="[]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.php"}
+    assert kinds == {2: "call", 3: "reference"}
+
+
+@pytest.mark.asyncio
+async def test_member_named_after_a_spread_is_no_receiver_call(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "spread.ts").write_text(
+        "const all = [...fetch_rows(id)]\nconst one = store.fetch_rows()\n", encoding="utf-8"
+    )
+    session.add(
+        _edge(3, repo_id, "app/spread.ts", "pkg/store.py", "imports", imported_names_json="[]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/spread.ts"}
+    assert kinds == {1: "reference", 2: "call"}
+
+
+@pytest.mark.asyncio
+async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, repo_id, tmp_path):
+    node = await _seed_method(
+        session, repo_id, tmp_path, "def load(store):\n    return store.fetch_rows()\n"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: app/other.py" in (out["reasons"])
+
+
+@pytest.mark.asyncio
+async def test_member_named_by_an_inherited_bare_use_elsewhere_is_incomplete(
+    session, repo_id, tmp_path
+):
+    # No receiver is written, yet the file may still reach the member.
+    node = await _seed_method(
+        session, repo_id, tmp_path, "class Sub(Base):\n    run = fetch_rows\n"
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert "member: an unscanned file names it: app/other.py" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_a_method_reached_through_its_base_names_the_base(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    base = "pkg/base.py::BaseStore::fetch_rows"
+    session.add(_edge(90, repo_id, base, node.node_id, "dispatches_to", confidence=0.75))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert f"calls through the base method are not listed: {base}" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_an_overridden_method_names_its_overrides(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    override = "pkg/sql.py::SqlStore::fetch_rows"
+    session.add(_edge(91, repo_id, node.node_id, override, "dispatches_to", confidence=0.75))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert f"1 overriding methods are not listed: {override}" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_uses_an_importing_file_binds_itself_are_not_sites(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/api.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from pkg import catalog\n"
+        "from pkg.catalog import MODELS\n"
+        "\n"
+        "class Row:\n"
+        "    backend_of: str = ''\n"
+        "\n"
+        "def run(ctx, backend_of=None):\n"
+        "    ctx.backend_of\n"
+        "    backend_of = 1\n"
+        "    return catalog.backend_of(Row(backend_of='x'))\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    # Only the use through the imported module is the symbol.
+    assert [s for s in _sites(out) if s[0] == "app/api.py"] == [("app/api.py", 10, "reference")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_typescript_mock_key_is_a_site_and_a_local_mock_is_not(session, repo_id, tmp_path):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/a.test.ts": (
+                "const pick = vi.fn();\n"
+                "vi.mock('./a', () => ({\n"
+                "  pick: (...args) => pick(...args),\n"
+                "}));\n"
+                "pick.mockReset();\n"
+            ),
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert [s for s in _sites(out) if s[0] == "web/a.test.ts"] == [
+        ("web/a.test.ts", 3, "reference")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_another_class_member_of_the_same_name_is_not_listed(session, repo_id, tmp_path):
+    node = await _seed_method(
+        session,
+        repo_id,
+        tmp_path,
+        "class Other:\n"
+        "    def fetch_rows(self):\n"
+        "        return self.fetch_rows()\n"
+        "\n"
+        "    def load(self, store):\n"
+        "        return store.fetch_rows()\n",
+    )
+    session.add(
+        _edge(
+            92, repo_id, "app/other.py", "pkg/store.py", "imports", imported_names_json='["Store"]'
+        )
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert [s for s in _sites(out) if s[0] == "app/other.py"] == [("app/other.py", 6, "reference")]
+    assert out["complete"] is False
+    assert any(r.startswith("another class defines its own member") for r in out["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("holder", "user", "handed"),
+    [
+        # A dotted file name and an index file are named by their import specifier.
+        ("web/user.service.ts", "import * as s from './user.service'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib/index'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib'\nconst m = s\n", True),
+        # A directory specifier names the directory's index.
+        ("web/index.ts", "import * as s from '.'\nconst m = s\n", True),
+        ("web/index.ts", "const s = require('../web')\nconst m = s\n", True),
+        # A relative specifier resolves from the importing file: another
+        # directory's index, or a same-named file elsewhere, is not the module.
+        ("web/lib/index.ts", "import * as s from './api/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from '..'\nconst m = s\n", False),
+        ("web/x/a.ts", "import * as s from './a'\nconst m = s\n", False),
+        # A JavaScript literal holding the namespace hands it on.
+        ("web/a.ts", "import * as s from './a'\nconst api = { s }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst api = { k: s, j: 1 }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst all = [s]\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst api = { a, s }\n", True),
+        # Call arguments are not a literal, as ``f(mod)`` is not.
+        ("web/a.ts", "import * as s from './a'\nexpect(a, s, b)\n", False),
+        ("web/a.ts", "import * as s from './a'\nf({ a }, s, b)\n", False),
+        # A package specifier names an index by its directory.
+        ("web/lib/index.ts", "import * as s from 'pkg/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from 'app/lib/index'\nconst m = s\n", True),
+        # A member of the required module is not the module.
+        ("web/m.ts", "const s = require('./m').helper\nconst m = s\n", False),
+        # A comparison reads the namespace, it does not hand it on.
+        ("web/a.ts", "import * as s from './a'\nconst ok = s !== undefined\n", False),
+        ("web/a.ts", "import * as s from './a'\nfunction f() { return s != null }\n", False),
+        ("web/a.ts", "import * as s from './a'\nconst m = s!\n", True),
+        # A Python module named index is imported by that name.
+        ("pkg/index.py", "from pkg import index\nm = index\n", True),
+        # A keyword argument passes the module to a call, as a positional one does.
+        (
+            "pkg/catalog.py",
+            "from pkg import catalog\npatch.object(target=catalog, attr='x')\n",
+            False,
+        ),
+    ],
+)
+def test_a_module_handed_on_is_found_by_the_name_its_import_spells(tmp_path, holder, user, handed):
+    rel = "web/u.ts" if holder.startswith("web/") else "app/u.py"
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(user, encoding="utf-8")
+
+    assert _edit_sites._hands_on_module(tmp_path, rel, {holder}) is handed
+
+
+@pytest.mark.parametrize("name", ["backend_of", "$scope", "operator+", "__init__"])
+def test_the_hint_query_is_read_as_a_regex_by_search_codebase(name):
+    from repowise.server.mcp_server._query_shape import query_pattern
+
+    shape = query_pattern(_edit_sites._word_regex(name))
+
+    assert shape is not None and shape[0] == "regex"
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
+    session, repo_id, tmp_path, monkeypatch
+):
+    files = {"web/a.ts": _PICK, "web/m.ts": "import * as a from './a'\nconst m = a\nm.pick(1)\n"}
+    files.update({f"web/u{i:02}.ts": "import { pick } from './a'\npick(1)\n" for i in range(40)})
+    node = await _seed_js(session, repo_id, tmp_path, files)
+    node.name = "web.a.pick"  # a qualified name: the query keeps its last part
+    monkeypatch.setattr(_edit_sites, "effective_char_budget", lambda: 1000)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert len(out["reasons"]) > 1
+    assert "files shown to fit" in out["reasons"][-1]
+    assert out["hint"] == _edit_sites.incomplete_hint("pick")
+    assert r'query="\bpick\b"' in out["hint"]
+
+
+def test_go_method_named_on_a_parameter_alone_on_its_line_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/config"',
+        "func run(",
+        "\tconfig *Config,",
+        ") {",
+        "\tconfig.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[5]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_root_package_without_a_module_is_not_judged():
+    from repowise.server.mcp_server._edit_sites_go import GoTarget, go_judge
+
+    target = GoTarget(None, "", "repo")
+    assert go_judge("cmd/main.go", ['import "x/repo"'], {1}, target, member=False) is None
+
+
+def test_go_method_named_on_a_grouped_parameter_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    lines = [
+        "package main",
+        'import "example.com/app/cfg"',
+        "func run(cfg, other *Config) {",
+        "\tcfg.Reload()",
+        "}",
+    ]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    text = lines[3]
+    assert judge(text, next(re.finditer("Reload", text))) is False
+
+
+def test_go_quoted_module_path_is_read_unquoted(tmp_path):
+    from repowise.server.mcp_server._edit_sites_go import go_target
+
+    (tmp_path / "go.mod").write_text('module "example.com/app"\n', encoding="utf-8")
+    target = go_target(tmp_path, "pkg/a.go", ["package pkg"])
+    assert target.import_path == "example.com/app/pkg"
+
+
+def test_go_method_on_a_guessed_qualifier_is_kept():
+    from repowise.server.mcp_server._edit_sites_go import GoForeign, GoTarget
+
+    # The package may declare another name, and ``config`` be a package-level value.
+    lines = ["package main", 'import "example.com/app/config"', "\tconfig.Load()"]
+    judge = GoForeign(lines, {2}, GoTarget("example.com/app", "", "main"), member=True)
+    assert judge(lines[2], next(re.finditer("Load", lines[2]))) is False
+
+
+# Two classes each with their own ``_init`` (httpx's Client/AsyncClient).
+_TWINS = """class Base:
+    pass
+
+
+class Client(Base):
+    def __init__(self):
+        self._init(1)
+
+    def _init(self, x):
+        return x
+
+
+class AsyncClient(Base):
+    def __init__(self):
+        self._init(2)
+
+    def _init(self, x):
+        return x
+
+
+class SyncClient(Client):
+    def _init(self, x):
+        return self._init(x)
+"""
+
+
+async def _seed_twins(session, repo_id, tmp_path, rel: str, text: str, language: str, symbols):
+    """Write *rel* and index its symbols ``(node_id, kind, start, end)``; the first is the target."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(text, encoding="utf-8")
+    nodes = [
+        GraphNode(
+            id=f"twin_{i}",
+            repository_id=repo_id,
+            node_id=f"{rel}::{sid}",
+            node_type="symbol",
+            name=sid.split("::")[-1],
+            file_path=rel,
+            kind=kind,
+            language=language,
+            start_line=start,
+            end_line=end,
+            created_at=_NOW,
+        )
+        for i, (sid, kind, start, end) in enumerate(symbols)
+    ]
+    session.add_all(nodes)
+    await session.flush()
+    return nodes[0]
+
+
+_TWIN_SYMBOLS = [
+    ("AsyncClient::_init", "method", 17, 18),
+    ("Base", "class", 1, 2),
+    ("Client", "class", 5, 10),
+    ("Client::_init", "method", 9, 10),
+    ("AsyncClient", "class", 13, 18),
+    ("SyncClient", "class", 21, 23),
+    ("SyncClient::_init", "method", 22, 23),
+]
+
+
+@pytest.mark.asyncio
+async def test_an_unrelated_class_s_same_named_member_is_not_a_site(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+            _edge(3, repo_id, f"{rel}::SyncClient", f"{rel}::Client", "extends"),
+        ]
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # Its own definition and the self-call in its own class stay.
+    assert {17, 15} <= lines
+    # Client's definition and Client's self-call are Client's member.
+    assert not {9, 7} & lines
+    # SyncClient (headed ``class SyncClient(Client)``) is not related to AsyncClient.
+    assert not {22, 23} & lines
+    assert out["complete"] is True, out.get("reasons")
+
+
+@pytest.mark.asyncio
+async def test_a_subclass_override_in_the_definition_file_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    target = ("Client::_init", "method", 9, 10)
+    symbols = [target] + [s for s in _TWIN_SYMBOLS if s != target]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", symbols)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+        ]
+    )
+    await session.flush()
+    # No extends edge for SyncClient: its header naming Client keeps it related.
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    assert {9, 7, 22, 23} <= lines
+    assert not {17, 15} & lines
+
+
+@pytest.mark.asyncio
+async def test_a_subclass_by_extends_edge_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    text = _TWINS.replace("class SyncClient(Client):", "class SyncClient(Mixed):")
+    target = ("Client::_init", "method", 9, 10)
+    symbols = [target] + [s for s in _TWIN_SYMBOLS if s != target]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, text, "python", symbols)
+    session.add(_edge(1, repo_id, f"{rel}::SyncClient", f"{rel}::Client", "extends"))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert {22, 23} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+_GO_TWINS = """package main
+
+type Go struct{}
+
+type UI struct{}
+
+func (g Go) Lint() error {
+	return nil
+}
+
+func (u UI) Lint() error {
+	return nil
+}
+
+type Linter interface {
+	Lint() error
+}
+"""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("implements", [False, True])
+async def test_a_go_receiver_twin_stays_listed(session, repo_id, tmp_path, implements):
+    rel = "magefile.go"
+    node = await _seed_twins(
+        session,
+        repo_id,
+        tmp_path,
+        rel,
+        _GO_TWINS,
+        "go",
+        [
+            ("Go::Lint", "method", 7, 9),
+            ("Go", "struct", 3, 3),
+            ("UI", "struct", 5, 5),
+            ("UI::Lint", "method", 11, 13),
+            ("Linter", "interface", 15, 17),
+            ("Linter::Lint", "method", 16, 16),
+        ],
+    )
+    if implements:
+        session.add(_edge(1, repo_id, f"{rel}::Go", f"{rel}::Linter", "method_implements"))
+        await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # A receiver's calls cannot be told apart, so its definition stays with them.
+    assert {7, 11, 16} <= lines
+
+
+@pytest.mark.asyncio
+async def test_a_cousin_override_of_an_inherited_member_stays_listed(session, repo_id, tmp_path):
+    rel = "pkg/client.py"
+    text = _TWINS.replace("    pass\n", "    def _init(self, x): ...\n", 1)
+    symbols = [*_TWIN_SYMBOLS, ("Base::_init", "method", 2, 2)]
+    node = await _seed_twins(session, repo_id, tmp_path, rel, text, "python", symbols)
+    session.add_all(
+        [
+            _edge(1, repo_id, f"{rel}::Client", f"{rel}::Base", "extends"),
+            _edge(2, repo_id, f"{rel}::AsyncClient", f"{rel}::Base", "extends"),
+        ]
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    # Both override Base._init: a rename of one reaches the whole family.
+    assert {2, 7, 9} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unresolved", ["Client", "AsyncClient"])
+async def test_a_declared_base_the_index_lacks_keeps_the_twin(
+    session, repo_id, tmp_path, unresolved
+):
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    # The twin's class (Client) or the symbol's (AsyncClient) declares ``(Base)``
+    # with no extends edge: their inheritance is unknown.
+    resolved = {"Client", "AsyncClient"} - {unresolved}
+    session.add_all(
+        _edge(i, repo_id, f"{rel}::{c}", f"{rel}::Base", "extends") for i, c in enumerate(resolved)
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert {7, 9} <= {n for p, n, _k in _sites(out) if p == rel}
+
+
+_NESTED = """class Target:
+    def run(self):
+        return 1
+
+
+class Outer:
+    def run(self):
+        return 2
+
+    class Inner(Target):
+        def go(self):
+            return self.run()
+"""
+
+
+@pytest.mark.asyncio
+async def test_self_uses_in_a_twin_class_holding_a_nested_class_are_kept(
+    session, repo_id, tmp_path
+):
+    rel = "pkg/nested.py"
+    node = await _seed_twins(
+        session,
+        repo_id,
+        tmp_path,
+        rel,
+        _NESTED,
+        "python",
+        [
+            ("Target::run", "method", 2, 3),
+            ("Target", "class", 1, 3),
+            ("Outer", "class", 6, 12),
+            ("Outer::run", "method", 7, 8),
+            ("Outer::Inner", "class", 10, 12),
+        ],
+    )
+    session.add(_edge(1, repo_id, f"{rel}::Outer::Inner", f"{rel}::Target", "extends"))
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    lines = {n for p, n, _k in _sites(out) if p == rel}
+    # Inner inherits Target: its ``self.run()`` is the symbol.
+    assert 12 in lines
+    # Outer's calls cannot be told apart, so its definition stays with them.
+    assert 7 in lines
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_without_indexed_lines_has_no_twins(session, repo_id, tmp_path):
+    from repowise.server.mcp_server._edit_sites_twins import sibling_twins
+
+    rel = "pkg/client.py"
+    node = await _seed_twins(session, repo_id, tmp_path, rel, _TWINS, "python", _TWIN_SYMBOLS)
+    node.start_line = None
+
+    assert await sibling_twins(session, repo_id, node, "_init", set(), frozenset()) is None
+
+
+_DENSE_C = """/*
+ * dense_alloc - carve a chunk
+ */
+static void *
+dense_alloc(int size)
+{
+\treturn 0;
+}
+
+/* dense_alloc but for shared memory. */
+void *
+shared_alloc(int size)
+{
+\t// falls back to dense_alloc
+\treturn dense_alloc(size);
+}
+"""
+
+
+@pytest.mark.asyncio
+async def test_c_comments_are_prose_not_references(session, repo_id, tmp_path):
+    node = await _seed_package(
+        session,
+        repo_id,
+        tmp_path,
+        {"hash.c": _DENSE_C},
+        "c",
+        ("hash.c", "dense_alloc", 4, 8),
+        git=False,
+    )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["files"]["hash.c"] == {"definition": [5], "reference": [15]}
+    assert out["prose_lines"] == 3
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "#error don't do this\nfoo(x);",
+        "int a = 1'000; foo(x);",
+        "char c = '\\''; foo(x);",
+        '#define Q "\nfoo(x);',
+    ],
+)
+def test_a_c_literal_never_masks_the_next_line(text):
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    full, _comments = c_family_masks(text)
+    assert full is not None and "foo(x);" in full.split("\n")[-1]
+
+
+def test_a_cpp_raw_string_leaves_the_file_unmasked():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    assert c_family_masks('auto s = R"x(a " b)x"; foo(x);') == (None, None)
+
+
+def test_c_mask_reads_openers_splices_and_prefixes():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    # ``/*/`` does not close on its own opener.
+    full, _ = c_family_masks("/*/ still a comment\nname here */ code();")
+    assert full.split("\n") == [" " * 19, " " * 12 + " code();"]
+    # A ``//`` comment ending in a backslash runs on into the next line.
+    full, _ = c_family_masks("// note \\\nname\ncode();")
+    assert full.split("\n")[1:] == ["    ", "code();"]
+    # An encoding prefix opens a string; a word or number before a quote does not.
+    full, _ = c_family_masks('x = L"name"; y = u8"name"; z = 1\'000;')
+    assert "name" not in full and "1'000" in full
+
+
+def test_c_mask_carries_a_spliced_string_and_reads_keyword_literals():
+    from repowise.server.mcp_server._c_masks import c_family_masks
+
+    # A string continued by a backslash stays a string on the next line.
+    full, _ = c_family_masks('s = "first \\\nname here";\ncode();')
+    assert full.split("\n")[1:] == [" " * 10 + ";", "code();"]
+    # A keyword may run straight into a literal.
+    full, _ = c_family_masks("return\"name\"; case'n': code();")
+    assert "name" not in full and "code();" in full
+
+
+@pytest.mark.asyncio
+async def test_block_greps_the_name_once_for_its_files_and_documents(
+    session, repo_id, tmp_path, monkeypatch
+):
+    from repowise.server.mcp_server import _line_hits
+
+    node = await _seed_method(session, repo_id, tmp_path, "x = 1\n")
+    (tmp_path / "README.md").write_text("Call `fetch_rows` for the rows.\n", encoding="utf-8")
+    calls = []
+    real = _line_hits._git_files_holding
+
+    def counted(root, needle, **kw):
+        calls.append(needle)
+        return real(root, needle, **kw)
+
+    monkeypatch.setattr(_line_hits, "_git_files_holding", counted)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert out["files"]["README.md"] == {"doc": [1]}
+    assert out["files"]["app/use.py"]["call"] == [3]
+    assert calls == ["fetch_rows"]
+    # No grep answer outlives the block.
+    assert _line_hits._HOLDING_MEMO.get() is None

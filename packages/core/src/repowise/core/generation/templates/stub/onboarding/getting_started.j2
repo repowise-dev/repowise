@@ -19,14 +19,25 @@
 {% endfor %}
 {% endif %}
 
-{% if ctx.readme_sections %}
-## From the README
+{% if ctx.user_docs %}
+## From the documentation
 
-Quoted verbatim from the repository's setup documentation.
-{% for s in ctx.readme_sections %}
-### {{ s.heading }} — `{{ s.source_path }}`
+Quoted verbatim from the repository's own install and usage documents.
+{% for s in ctx.user_docs %}
+### {{ s.heading or s.path }} (`{{ s.cite }}`)
 
-{{ s.body | trim }}
+{{ s.text | trim }}
+{% endfor %}
+{% endif %}
+
+{% if ctx.dev_docs %}
+## Working on the repository
+
+Quoted verbatim from the contributor documentation.
+{% for s in ctx.dev_docs %}
+### {{ s.heading or s.path }} (`{{ s.cite }}`)
+
+{{ s.text | trim }}
 {% endfor %}
 {% endif %}
 

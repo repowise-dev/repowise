@@ -148,7 +148,7 @@ describe("buildFileHealthAiPrompt", () => {
 describe("FLAVOR_PREAMBLE", () => {
   it("keeps every flavor's opening", () => {
     expect(FLAVOR_PREAMBLE).toMatchSnapshot();
-    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to Read / Grep / Glob only");
+    expect(FLAVOR_PREAMBLE["claude-code-mcp"]).toContain("Fall back to reading and searching the files only");
   });
 });
 
@@ -175,7 +175,7 @@ describe("the drawer's prompt affordance", () => {
       reason: "Oversized function.",
     };
     render(<HealthFileDrawer open onClose={() => {}} metric={m} findings={[f]} />);
-    fireEvent.click(screen.getByRole("button", { name: /AI prompt/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Agent prompt" }));
     expect(screen.getByText(/AI prompt for this file/i)).toBeInTheDocument();
   });
 

@@ -1,33 +1,8 @@
-"""What the repository says it is, in its own sentences, for the front page.
+"""The README's first prose paragraph: what the repository says it is.
 
-The repo overview's payload is otherwise entirely structural: pagerank,
-communities, package file counts, entry-point paths. A model handed only that
-can describe a directory tree accurately and never say what the product is
-for, because nothing it was given says so. The words are not missing from the
-repository — the intelligence layers, the store architecture, the task-oriented
-tools are all under headings in its own README. No generation prompt had ever
-read it.
-
-**The measured reason this is a keyhole and not a pipe.**
-``concept_tree/vocabulary.py`` records that nine thousand characters of README
-handed to the outline *planner* collapsed coverage from 23 pages / 87.5% to 3
-pages / 5.4%, and invented a docs path matching the marketing language rather
-than the tree. That is a **selection** task: prose outvoted structure at
-choosing what exists. The overview is a **writing** task that selects nothing,
-so the finding transfers as a bound rather than a veto. Two properties keep it
-one:
-
-* **Capped well under the collapse.** ``_MAX_CHARS`` is 2,500 against the 9,000
-  that was measured to collapse a planner. The cap is the guardrail, not a
-  token budget, which is why it is a constant here and not a config value.
-* **Headings and openers only.** A heading names a thing and its first
-  paragraph says what the thing is; the rest of a section is instructions,
-  tables and examples. Reading only the openers is what keeps 60KB of README
-  inside the cap without choosing which 2,500 characters by relevance, which
-  would be a selection decision made on prose.
-
-Structure stays the sole authority on paths, counts and package names. This
-supplies vocabulary and framing; the template says so in as many words.
+Used where one sentence of the project's own framing is wanted (the C4
+system context). The repository overview reads the README in full sections
+instead (``generation.onboarding.docs``).
 """
 
 from __future__ import annotations
@@ -35,13 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-#: Well under the 9,000 characters measured to collapse the planner, and
-#: roughly the size of the structural payload it sits beside, so neither one
-#: dominates the prompt.
-_MAX_CHARS = 2500
-
 #: Root-anchored, and only these two. A ``docs/*.md`` glob matches a path tail,
-#: which is how vendored and scratch documents reached the glossary once
+#: which is how vendored and scratch documents reached the mined terms once
 #: already; see ``concept_tree/vocabulary.py``.
 _DIGEST_DOCS = ("README.md", "docs/README.md")
 
@@ -107,51 +77,6 @@ def _opening_paragraph(lines: list[str], start: int, *, past_headings: bool = Fa
     return _LINK.sub(_LINK_TEXT, text).strip()
 
 
-def readme_digest(repo_root: Path, *, max_chars: int = _MAX_CHARS) -> str:
-    """The repository's headings and section openers, capped. Never raises.
-
-    Returns markdown: each heading kept at its own level with its opening
-    paragraph beneath it. Empty when there is no README, so the caller can
-    drop the whole block rather than label an absence.
-    """
-    out: list[str] = []
-    budget = max_chars
-    for rel in _DIGEST_DOCS:
-        path = repo_root / rel
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        lines = text.splitlines()
-        fenced = False
-        for i, line in enumerate(lines):
-            # A `# clone the repo` inside a bash block is a comment, and most
-            # READMEs open with one. Read as a heading it becomes a name the
-            # project supposedly gives one of its own parts.
-            if line.strip().startswith("```"):
-                fenced = not fenced
-                continue
-            if fenced:
-                continue
-            match = _HEADING.match(line)
-            if not match:
-                continue
-            hashes, title = match.groups()
-            entry = f"{hashes} {_LINK.sub(_LINK_TEXT, title).strip()}"
-            paragraph = _opening_paragraph(lines, i + 1)
-            if paragraph:
-                entry = f"{entry}\n{paragraph}"
-            cost = len(entry) + 2
-            if cost > budget:
-                # A cut mid-document, not a ranked selection: the cap has to
-                # bind on prose we did not choose, or the choosing becomes the
-                # thing the planner's collapse warned about.
-                return "\n\n".join(out)
-            out.append(entry)
-            budget -= cost
-    return "\n\n".join(out)
-
-
 def readme_opening(repo_root: Path) -> str:
     """The README's first prose paragraph, headed or not; "" when there is none."""
     for rel in _DIGEST_DOCS:
@@ -163,3 +88,46 @@ def readme_opening(repo_root: Path) -> str:
         if paragraph:
             return paragraph
     return ""
+
+
+#: A module page reads the README beside its code. Smaller than the front
+#: page's cap: it sits beside code excerpts that carry the mechanism.
+_MODULE_README_NAMES = ("README.md", "README.rst", "readme.md")
+_MODULE_README_CHARS = 2000
+_MODULE_README_TOTAL = 6000
+
+
+def module_readmes(repo_root: Path | str | None, directories: list[str | None]) -> list[dict]:
+    """READMEs in *directories*, shallowest first, each cut to its head. Never raises.
+
+    ``[{"path", "text"}]``; badges, images and link targets are dropped so the
+    cap is spent on the maintainers' sentences. The repository root's README is
+    the front page's, so an empty directory is skipped.
+    """
+    if repo_root is None:
+        return []
+    out: list[dict] = []
+    budget = _MODULE_README_TOTAL
+    for directory in sorted({d for d in directories if d}, key=lambda d: (d.count("/"), d)):
+        text, rel = _first_readme(Path(repo_root), directory)
+        if not text:
+            continue
+        kept = [_LINK.sub(_LINK_TEXT, _IMAGE.sub("", ln)) for ln in text.splitlines()]
+        clean = re.sub(r"\n{3,}", "\n\n", "\n".join(ln for ln in kept if not _DECORATION.match(ln)))
+        clean = clean.strip()[: min(_MODULE_README_CHARS, budget)]
+        if clean:
+            out.append({"path": rel, "text": clean})
+            budget -= len(clean)
+        if budget <= 0:
+            break
+    return out
+
+
+def _first_readme(repo_root: Path, directory: str) -> tuple[str, str]:
+    for name in _MODULE_README_NAMES:
+        rel = f"{directory}/{name}"
+        try:
+            return (repo_root / rel).read_text(encoding="utf-8", errors="replace"), rel
+        except OSError:
+            continue
+    return "", ""

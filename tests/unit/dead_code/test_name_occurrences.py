@@ -111,6 +111,19 @@ class TestUsedElsewhere:
         assert finding.confidence == 1.0
         assert finding.safe_to_delete is True
 
+    def test_an_esm_declaration_sibling_is_not_a_use_either(self):
+        # TypeScript emits .d.mts beside an .mjs module, the same restatement.
+        source = _src(
+            **{
+                "runtime__runtime_mjs": "export function WindowHide() {}\n",
+                "runtime__runtime_d.mts": "export function WindowHide(): void;\n",
+            }
+        )
+        finding = _finding("WindowHide", file_path="runtime/runtime.mjs")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == 1.0
+
     def test_a_declaration_file_elsewhere_is_still_a_use(self):
         # The narrowing is same-directory, same-stem only. A .d.ts naming a
         # symbol from another module really is referring to it.
@@ -351,6 +364,28 @@ class TestScopeAndSafety:
         clamp_unverified_absence([finding], source)
 
         assert "could not be searched" in finding.evidence[-1]
+
+    def test_js_ts_admits_dollar_in_identifier_shape(self):
+        source = _src(
+            src__a_ts="export const currentUser$ = 1;\n",
+            src__b_ts="import { currentUser$ } from './a'; console.log(currentUser$);\n",
+        )
+        finding = _finding("currentUser$", file_path="src/a.ts")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+        assert "src/b.ts" in finding.evidence[-1]
+
+    def test_js_ts_admits_two_character_identifier_shape(self):
+        source = _src(
+            src__a_ts="export const ws = 1;\n",
+            src__b_ts="import { ws } from './a'; console.log(ws);\n",
+        )
+        finding = _finding("ws", file_path="src/a.ts")
+        clamp_unverified_absence([finding], source)
+
+        assert finding.confidence == RISK_CAP_CONFIDENCE
+        assert "src/b.ts" in finding.evidence[-1]
 
     def test_a_file_outside_the_indexed_set_is_not_an_absence(self):
         # The scan cannot see the declaration it is standing on, so nothing

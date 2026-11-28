@@ -131,6 +131,45 @@ def resolve_embedder_name(
     return (name.lower(), source) if name and source else (DEFAULT_EMBEDDER, "default")
 
 
+def resolve_reindex_embedder(repo_path: Path | str | None) -> tuple[str, str]:
+    """``(name, source)`` that ``reindex --embedder auto`` writes with.
+
+    The repo's pin wins, except a ``mock`` pin: a keyless run persists that on
+    its way out, so it is no choice, and keeping it means reindex never adds
+    semantic search. A real embedder detectable now replaces it.
+    """
+    name, source = resolve_embedder_name(repo_path=repo_path)
+    if name != DEFAULT_EMBEDDER or source != "config.yaml":
+        return name, source
+    fresh = resolve_embedder_name(repo_path=repo_path, use_pin=False)
+    return fresh if fresh[0] != DEFAULT_EMBEDDER else (name, source)
+
+
+_SOURCE_REASONS: dict[str, str] = {
+    "flag": "--embedder",
+    "env:REPOWISE_EMBEDDER": "REPOWISE_EMBEDDER is set",
+    "config.yaml": "pinned in .repowise/config.yaml",
+    "global": "set in ~/.repowise/config.yaml",
+    "default": "no embedder key found",
+}
+
+
+def embedder_reason(
+    name: str,
+    source: str,
+    *,
+    repo_path: Path | str | None = None,
+    getenv: EnvLookup | None = None,
+) -> str:
+    """Why *name* was picked, in a few words: the flag, pin, or env key behind it."""
+    if source != "autodetect":
+        return _SOURCE_REASONS.get(source, source)
+    lookup = getenv or repo_getenv(repo_path)
+    env_vars = dict(_DETECT_SIGNALS).get(name, ())
+    var = next((v for v in env_vars if lookup(v)), None)
+    return f"{var} is set" if var else "detected"
+
+
 class KeyLookup(NamedTuple):
     """The resolved key, and the places consulted, for a degraded-run message."""
 
@@ -185,8 +224,8 @@ def _global_key(name: str) -> str | None:
     return str(cfg.get("embedder_api_key") or "").strip() or None
 
 
-def _positive_int(var: str) -> int | None:
-    raw = os.environ.get(var)
+def _positive_int(var: str, lookup: EnvLookup | None = None) -> int | None:
+    raw = lookup(var) if lookup is not None else os.environ.get(var)
     if not raw:
         return None
     try:
@@ -203,37 +242,85 @@ def _positive_int(var: str) -> int | None:
     return None
 
 
-def embedding_model_for(name: str) -> str | None:
-    """The configured embedding model for *name*, or ``None`` for its default."""
+def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str | None:
+    """The configured embedding model for *name*, or ``None`` for its default.
+
+    Checks process env first, then *repo_path*'s ``.repowise/.env``, and finally
+    the ``embedding_model`` pin in *repo_path*'s ``config.yaml`` if configured
+    for this embedder backend.
+    """
+    getenv = repo_getenv(repo_path)
     if name == "ollama":
-        return os.environ.get("OLLAMA_EMBEDDING_MODEL") or os.environ.get(
-            "REPOWISE_EMBEDDING_MODEL"
-        )
-    return os.environ.get("REPOWISE_EMBEDDING_MODEL")
+        model = getenv("OLLAMA_EMBEDDING_MODEL") or getenv("REPOWISE_EMBEDDING_MODEL")
+    else:
+        model = getenv("REPOWISE_EMBEDDING_MODEL")
+    if model:
+        return model
+
+    if repo_path is not None:
+        cfg = read_repo_config(repo_path)
+        pinned_model = cfg.get("embedding_model")
+        if pinned_model and str(pinned_model).strip():
+            pinned_backend = str(cfg.get("embedder") or "").strip().lower()
+            if not pinned_backend:
+                logger.warning(
+                    "Repo pins embedding_model %r without a pinned embedder; ignoring unbound pin.",
+                    pinned_model,
+                )
+                return None
+            if pinned_backend != name.strip().lower():
+                logger.warning(
+                    "Repo pins embedding_model %r for embedder %r, but %r was resolved; ignoring pin.",
+                    pinned_model,
+                    pinned_backend,
+                    name,
+                )
+                return None
+            return str(pinned_model).strip()
+    return None
 
 
-def _ollama_kwargs() -> dict[str, Any]:
+def _ollama_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    lookup = repo_getenv(repo_path)
     kwargs: dict[str, Any] = {}
-    base_url = os.environ.get("OLLAMA_BASE_URL")
+    base_url = lookup("OLLAMA_BASE_URL")
     if base_url:
         kwargs["base_url"] = base_url
-    dims = _positive_int("OLLAMA_EMBEDDING_DIMS") or _positive_int("REPOWISE_EMBEDDING_DIMS")
+    dims = _positive_int("OLLAMA_EMBEDDING_DIMS", lookup) or _positive_int(
+        "REPOWISE_EMBEDDING_DIMS", lookup
+    )
     if dims:
         kwargs["dimensions"] = dims
     return kwargs
 
 
-def _gemini_kwargs() -> dict[str, Any]:
+def _gemini_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    lookup = repo_getenv(repo_path)
     # Gemini spells the width ``output_dimensionality``; openai and ollama
     # read REPOWISE_EMBEDDING_DIMS in their own constructors.
-    dims = _positive_int("REPOWISE_EMBEDDING_DIMS")
+    dims = _positive_int("REPOWISE_EMBEDDING_DIMS", lookup)
     return {"output_dimensionality": dims} if dims else {}
 
 
+def _openrouter_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    # The model pin is read from the repo's .env, so its width must be too:
+    # a model outside OpenRouterEmbedder._DIMS is only accepted with one.
+    lookup = repo_getenv(repo_path)
+    kwargs: dict[str, Any] = {}
+    dims = _positive_int("REPOWISE_EMBEDDING_DIMS", lookup)
+    if dims:
+        kwargs["dimensions"] = dims
+    declared = _positive_int("REPOWISE_EMBEDDING_DECLARED_DIMS", lookup)
+    if declared:
+        kwargs["declared_dimensions"] = declared
+    return kwargs
+
+
 #: Constructor arguments only some embedders take.
-_EXTRA_KWARGS: dict[str, Callable[[], dict[str, Any]]] = {
+_EXTRA_KWARGS: dict[str, Callable[[Path | str | None], dict[str, Any]]] = {
     "ollama": _ollama_kwargs,
     "gemini": _gemini_kwargs,
+    "openrouter": _openrouter_kwargs,
 }
 
 
@@ -243,11 +330,11 @@ def embedder_kwargs(name: str, repo_path: Path | str | None = None) -> dict[str,
     Only what is configured is passed; everything else falls through to the
     embedder's own defaults, which are declared once in its constructor.
     """
-    model = embedding_model_for(name)
+    model = embedding_model_for(name, repo_path)
     kwargs: dict[str, Any] = {"model": model} if model else {}
     extra = _EXTRA_KWARGS.get(name)
     if extra is not None:
-        kwargs.update(extra())
+        kwargs.update(extra(repo_path))
     # Passed explicitly so a key in the repo's .env or the global config
     # reaches the embedder, not only an exported one.
     key = resolve_embedder_key(name, repo_path).key
@@ -261,9 +348,11 @@ __all__ = [
     "KeyLookup",
     "detect_embedder",
     "embedder_kwargs",
+    "embedder_reason",
     "embedding_model_for",
     "global_config_embedder",
     "read_global_embedder_config",
     "resolve_embedder_key",
     "resolve_embedder_name",
+    "resolve_reindex_embedder",
 ]

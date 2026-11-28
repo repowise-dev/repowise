@@ -58,6 +58,7 @@ async def test_router_rules(routed_ws):
                 "backend_probe",
                 abs_fe,
                 "src/only_fe.py:1-2",
+                "src/only_fe.py:2:5",
             ]
         )
     )
@@ -76,6 +77,8 @@ async def test_router_rules(routed_ws):
     assert routes["backend_probe"] == Route("backend_probe", "backend_probe", "backend")
     assert (routes[abs_fe].repo, routes[abs_fe].local) == ("frontend", "src/only_fe.py")
     assert routes["src/only_fe.py:1-2"].repo == "frontend"
+    # An editor's line and column, as in ``path:line:col``.
+    assert routes["src/only_fe.py:2:5"].repo == "frontend"
 
 
 async def test_router_never_lets_a_path_escape_its_repo(routed_ws):
@@ -373,13 +376,13 @@ async def test_a_routed_batch_survives_a_repo_timing_out(routed_ws, monkeypatch)
 
     async def slow(alias):
         if alias == "frontend":
-            await asyncio.sleep(30)
+            await asyncio.Event().wait()
         return await real_get(alias)
 
-    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "0.5")
+    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "3")
     monkeypatch.setattr(routed_ws, "get", slow)
     result = await get_context(targets=["src/probe.py", "src/only_fe.py"])
     assert result["targets"]["src/probe.py"]["docs"]["title"] == "Backend Probe"
     assert result["targets"]["src/only_fe.py"]["repo"] == "frontend"
     assert "did not answer" in result["targets"]["src/only_fe.py"]["error"]
-    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 0.5s"}]
+    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 3s"}]

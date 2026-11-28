@@ -591,7 +591,7 @@ def _source_roots_for_module(module_dir: Path) -> list[str]:
     return list(_DEFAULT_MAIN_SRC_ROOTS)
 
 
-def _detect_plugins(module_dir: Path) -> frozenset[str]:
+def detect_gradle_plugins(module_dir: Path) -> frozenset[str]:
     """Extract plugin IDs from build.gradle(.kts)."""
     plugins: list[str] = []
     for build_name in ("build.gradle.kts", "build.gradle"):
@@ -718,7 +718,7 @@ def build_jvm_gradle_index(
         if not mod_dir.is_dir():
             continue
 
-        plugins = _detect_plugins(mod_dir)
+        plugins = detect_gradle_plugins(mod_dir)
 
         # Discover source sets
         source_sets = _detect_source_sets_from_dirs(mod_dir)

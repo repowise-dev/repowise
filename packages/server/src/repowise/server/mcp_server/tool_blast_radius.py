@@ -18,6 +18,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 from repowise.server.mcp_server._test_impact import cross_repo_tests_for, tests_block_for
 
 if TYPE_CHECKING:
@@ -76,23 +77,29 @@ async def get_blast_radius(
         include_behavioral: include co-change (behavioral) edges (default true).
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_blast_radius is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_blast_radius is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     raw = enricher.get_system_graph() if enricher is not None else None
     if not raw:
-        return {
-            "error": (
-                "No system graph is available yet. Run `repowise update --workspace` "
-                "to build cross-repo relationships."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No system graph is available yet. Run `repowise update --workspace` "
+                    "to build cross-repo relationships."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
-    collector = OmissionCollector("get_blast_radius", repo_root=_state._repo_path)
+    collector = OmissionCollector("get_blast_radius", repo_root=_state.served_path())
     payload = await blast_radius_payload(
         enricher,
         raw,
@@ -161,6 +168,8 @@ async def blast_radius_payload(
             f"None of the requested targets matched a service in the graph: "
             f"{result.unresolved_targets}."
         )
+    elif result.undetermined_targets:
+        summary = _undetermined_summary(result)
     # After the override: an unmatched-targets response must not claim consumers.
     if symbol_targets and result.targets:
         consumers = sum(t["consumer_count"] for t in symbol_targets)
@@ -181,12 +190,26 @@ async def blast_radius_payload(
         "max_distance": result.max_distance,
         "total_impacted": result.total_impacted,
         "unresolved_targets": result.unresolved_targets,
+        "undetermined_targets": result.undetermined_targets,
+        "evidence": result.evidence,
         "impact_score_semantics": workspace_impact_score_semantics(),
         "summary": summary,
     }
     if symbol_targets:
         payload["symbol_targets"] = symbol_targets
     return payload
+
+
+def _undetermined_summary(result: Any) -> str:
+    """An empty reach for a target no edge touches is "not seen", said with why."""
+    names = ", ".join(result.undetermined_targets)
+    why = (result.evidence or {}).get("summary") or "no dependency on or from it was detected"
+    if len(result.undetermined_targets) == len(result.targets):
+        return f"Could not determine the downstream impact of {names}: {why}."
+    return (
+        f"Changing {len(result.targets)} service(s) impacts {result.total_impacted} "
+        f"downstream service(s); impact could not be determined for {names}: {why}."
+    )
 
 
 def _graph_node_for(nodes_by_repo: dict[str, list[Any]], contract: dict[str, Any]) -> str | None:
@@ -262,6 +285,7 @@ async def _resolve_symbol_targets(
                 "contract_type": link.get("contract_type"),
                 "match_type": link.get("match_type"),
                 "confidence": link.get("confidence"),
+                **enricher.link_provenance(link, "consumer"),
                 # An import sits at file scope, so code contracts carry none.
                 **({"symbol_id": sid} if (sid := link.get("consumer_symbol_id")) else {}),
             }

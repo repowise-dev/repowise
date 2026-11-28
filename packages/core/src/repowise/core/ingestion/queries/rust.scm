@@ -184,6 +184,12 @@
   (expression_statement
     (macro_invocation (token_tree) @import.module) @import.statement))
 
+;; File includes can occur inside an expression as well as at module scope.
+((macro_invocation
+  macro: (identifier) @_include_name
+  (token_tree) @import.module) @import.statement
+ (#any-of? @_include_name "include" "include_str" "include_bytes"))
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module
@@ -295,6 +301,15 @@
     name: (identifier) @call.target
   )
 ) @call.site
+
+; A call inside a macro's arguments: println!("{}", foo()), vec![a::b(x)].
+; Macro arguments parse as bare tokens, so a call is a name with a group after
+; it; the parser checks the group is parenthesised and reads the path or
+; receiver written before the name.
+(token_tree
+  (identifier) @call.target @call.site
+  .
+  (token_tree))
 
 ; Function pointer / callback argument: register(my_handler), vec.iter().map(process)
 ; Captures top-level identifier arguments in call expressions as references

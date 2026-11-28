@@ -17,13 +17,12 @@ import re
 from typing import TYPE_CHECKING
 
 from repowise.core.ingestion.framework_routes import scan_code
+from repowise.core.workspace.origins import ContractOrigin
 
 from ..base import ScanContext, line_at
+from ..calls import code_matches
 from ..langs import PHP
 from .dialect import (
-    ALTER_CONFIDENCE,
-    CONVENTION_CONFIDENCE,
-    EXPLICIT_CONFIDENCE,
     dedup_consumers,
     dedup_emit,
     found_names,
@@ -43,6 +42,7 @@ class EloquentDialect:
 
     name = "eloquent"
     extensions = PHP
+    requires = ("$table", "Model", "Authenticatable")
 
     _TABLE_RE = re.compile(r"protected\s+\$table\s*=\s*['\"](\w+)['\"]")
     # Only the framework's own bases: a model extending an app base class
@@ -58,12 +58,12 @@ class EloquentDialect:
     _ELOQUENT_IMPORT = ("Illuminate\\Database\\Eloquent", "Illuminate\\Foundation\\Auth")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        found = found_names(self._TABLE_RE, ctx.content, EXPLICIT_CONFIDENCE)
+        found = found_names(self._TABLE_RE, ctx.content, ContractOrigin.EXPLICIT_TABLE)
         if not found and any(i in ctx.content for i in self._ELOQUENT_IMPORT):
             found = found_names(
                 self._MODEL_CLASS_RE,
                 ctx.content,
-                CONVENTION_CONFIDENCE,
+                ContractOrigin.NAME_CONVENTION,
                 lambda cls: pluralize(snake_case(cls)),
             )
         return dedup_emit(ctx, self.name, found)
@@ -74,16 +74,15 @@ class LaravelMigrationDialect:
 
     name = "laravel-migration"
     extensions = PHP
+    requires = ("Schema::",)  # far cheaper than the regexes, which have no literal prefix
 
     _HEAD = r"\bSchema::(?:connection\s*\([^)]*\)\s*->\s*)?"
     _CREATE_RE = re.compile(_HEAD + r"create\s*\(\s*['\"]([\w.]+)['\"]")
     _ALTER_RE = re.compile(_HEAD + r"table\s*\(\s*['\"]([\w.]+)['\"]")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        if "Schema::" not in ctx.content:
-            return []  # far cheaper than the regexes, which have no literal prefix
-        created = found_names(self._CREATE_RE, ctx.content, EXPLICIT_CONFIDENCE)
-        altered = found_names(self._ALTER_RE, ctx.content, ALTER_CONFIDENCE)
+        created = found_names(self._CREATE_RE, ctx.content, ContractOrigin.DDL)
+        altered = found_names(self._ALTER_RE, ctx.content, ContractOrigin.DDL)
         return dedup_emit(ctx, self.name, created, schema="create") + dedup_emit(
             ctx, self.name, altered, schema="alter"
         )
@@ -94,6 +93,7 @@ class LaravelQueryDialect:
 
     name = "laravel-db"
     extensions = PHP
+    requires = ("DB::",)
 
     _TABLE_RE = re.compile(
         r"\bDB::(?:connection\s*\([^)]*\)\s*->\s*)?table\s*\(\s*"
@@ -128,10 +128,8 @@ class LaravelQueryDialect:
         return "update"  # increment / decrement
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        if "DB::" not in ctx.content:
-            return []
         found = [
             (m.group("table"), self._verb(ctx.content, m.end()), line_at(ctx.content, m.start()))
-            for m in self._TABLE_RE.finditer(ctx.content)
+            for m in code_matches(ctx, self._TABLE_RE)
         ]
         return dedup_consumers(ctx, self.name, found)

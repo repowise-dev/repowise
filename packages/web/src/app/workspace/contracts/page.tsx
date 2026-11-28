@@ -7,7 +7,11 @@ import { PageShell } from "@repowise-dev/ui/shared";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { StatRibbon, type RibbonStat } from "@repowise-dev/ui/stats/stat-ribbon";
-import { groupOrphanProviders } from "@repowise-dev/ui/workspace/contract-facts";
+import {
+  groupOrphanProviders,
+  unmatchedOutsideService,
+  unmatchedReasonsOutsideService,
+} from "@repowise-dev/ui/workspace/contract-facts";
 import { MAX_PROMPT_ROWS } from "@repowise-dev/ui/workspace/contract-ai-prompt";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import {
@@ -15,6 +19,7 @@ import {
   getWorkspaceContracts,
   getWorkspaceDiagnostics,
 } from "@/lib/api/workspace";
+import { httpLinkedStat, unmatchedHint } from "@/lib/http-link-coverage";
 import { BreakingChangesSection } from "./breaking-changes-section";
 import { ContractDrawerProvider } from "./contract-drawer-host";
 import { ContractListControls, ContractListPager } from "./contract-filters";
@@ -64,6 +69,7 @@ type Props = {
  */
 export default async function ContractsPage({ searchParams }: Props) {
   const t = await getTranslations("contracts");
+  const tLinks = await getTranslations("linkCoverage");
   const sp = await searchParams;
   const deepLink =
     sp.contract && sp.repo && sp.file
@@ -130,18 +136,18 @@ export default async function ContractsPage({ searchParams }: Props) {
     },
     {
       label: t("ribbon.unmatched"),
-      value: diagnostics ? formatNumber(diagnostics.unmatched_consumers.length) : "",
+      value: diagnostics ? formatNumber(unmatchedOutsideService(diagnostics).length) : "",
       sub: unmatchedReasonSub(t, diagnostics),
+      hint: diagnostics ? unmatchedHint(tLinks, diagnostics) : undefined,
     },
     {
       label: t("ribbon.orphans"),
       value: diagnostics ? formatNumber(diagnostics.orphan_providers.length) : "",
       sub: t("ribbon.orphansSub"),
     },
-    {
-      // Extraction reporting on its own recall: the denominator is calls a
-      // dialect located, so it says nothing about calls nothing recognised.
-      label: t("ribbon.httpResolved"),
+    // An artifact older than the linked count keeps the read share.
+    (diagnostics && httpLinkedStat(tLinks, diagnostics)) ?? {
+      label: t("ribbon.httpRead"),
       value:
         diagnostics?.http_consumer_coverage != null
           ? `${Math.floor(diagnostics.http_consumer_coverage * 100)}%`
@@ -152,6 +158,7 @@ export default async function ContractsPage({ searchParams }: Props) {
           })
         : t("ribbon.httpSub"),
     },
+    ...topicStat(t, diagnostics),
   ];
 
   return (
@@ -277,6 +284,7 @@ const REASON_KEYS: Record<string, string> = {
   unlinked: "reasons.unlinked",
   internal_only: "reasons.internal_only",
   external_host: "reasons.external_host",
+  ambiguous_provider: "reasons.ambiguous_provider",
 };
 
 /** Name why consumers went unmatched, since the count alone invites the wrong read. */
@@ -285,11 +293,36 @@ function unmatchedReasonSub(
   diagnostics: ExtractionDiagnostics | null,
 ): string {
   if (!diagnostics) return "";
-  const reasons = Object.entries(diagnostics.unmatched_by_reason ?? {})
-    .filter(([, n]) => n > 0)
+  const reasons = Object.entries(unmatchedReasonsOutsideService(diagnostics.unmatched_by_reason))
     .sort((a, b) => b[1] - a[1]);
   if (reasons.length === 0) return t("reasons.everyMatched");
   return reasons
     .map(([reason, n]) => `${n} ${t(REASON_KEYS[reason] ?? "reasons.unknown")}`)
     .join(", ");
+}
+
+/**
+ * Topic calls read, beside the broker calls not named and the files on a
+ * messaging SDK no extractor reads. Counts only, like the CLI line; absent on
+ * an artifact older than the messaging probe and on a workspace with no messaging.
+ */
+function topicStat(t: Translator, diagnostics: ExtractionDiagnostics | null): RibbonStat[] {
+  const files = diagnostics?.unrecognised_message_file_count;
+  if (!diagnostics || files == null) return [];
+  const read = diagnostics.repo_breakdown.reduce(
+    (n, r) => n + (r.providers_by_type.topic ?? 0) + (r.consumers_by_type.topic ?? 0),
+    0,
+  );
+  const unresolved = diagnostics.topic_names_unresolved ?? 0;
+  if (read + unresolved + files === 0) return [];
+  return [
+    {
+      label: t("ribbon.topicRead"),
+      value: formatNumber(read),
+      sub: t("ribbon.topicSub", {
+        unresolved: formatNumber(unresolved),
+        files: formatNumber(files),
+      }),
+    },
+  ];
 }

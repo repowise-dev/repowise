@@ -181,10 +181,12 @@ def _refactor_fields(plan: _RefactorPlan) -> dict[str, Any]:
     symbol = plan.sym if lead.get("target_symbol") else None
     return {
         "title": text.clip(_refactor_title(plan, lead_plan)),
+        # The symbol's own span, as a finding's target gives it; where the
+        # first edit lands is the first step's line.
         "target": FixTarget(
             path,
             symbol,
-            fix_steps[0].line,
+            lead.get("line_start") or fix_steps[0].line,
             lead.get("line_end"),
         ),
         "why": files.why(

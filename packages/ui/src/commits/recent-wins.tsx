@@ -1,6 +1,8 @@
 import * as React from "react";
 import type { WinsResponse } from "@repowise-dev/types/history";
 import { ReadsColumn, type ReadItem } from "../overview/reads-column";
+import { CollapsibleSection } from "../shared/collapsible-section";
+import { formatNumber } from "../lib/format";
 
 /** Where each win links. The host owns routes. */
 export interface RecentWinsRoutes {
@@ -24,6 +26,8 @@ export interface RecentWinsCopy {
   refactorsWhy: (symbol: string, before: number | null, after: number | null) => string;
   /** Said when the window holds no wins at all. */
   none: string;
+  /** One line for the collapsed panel: "33 findings resolved, 517 files healthier". */
+  summary: (wins: WinsResponse) => string;
 }
 
 const s = (n: number) => (n === 1 ? "" : "s");
@@ -31,7 +35,7 @@ const s = (n: number) => (n === 1 ? "" : "s");
 const DEFAULT_COPY: RecentWinsCopy = {
   title: "Recent wins",
   findingsLabel: "Findings resolved",
-  findingsUnit: (commits) => `across ${commits.toLocaleString()} commit${s(commits)}`,
+  findingsUnit: (commits) => `across ${formatNumber(commits)} commit${s(commits)}`,
   findingsWhy: (subject, resolved) => `Most in one commit: ${subject} (${resolved}).`,
   filesLabel: "Files got healthier",
   filesUnit: "score rose",
@@ -43,6 +47,14 @@ const DEFAULT_COPY: RecentWinsCopy = {
       ? `${symbol}: complexity ${before} to ${after}.`
       : `${symbol} was refactored as planned.`,
   none: "No wins recorded in this window yet. Resolved findings, healthier files and landed refactorings show up here as they happen.",
+  summary: (w) =>
+    [
+      w.findings_resolved.count > 0 && `${formatNumber(w.findings_resolved.count)} resolved`,
+      w.files_improved.count > 0 && `${formatNumber(w.files_improved.count)} healthier`,
+      w.refactorings_landed.count > 0 && `${formatNumber(w.refactorings_landed.count)} refactored`,
+    ]
+      .filter(Boolean)
+      .join(", "),
 };
 
 /**
@@ -88,7 +100,7 @@ export function winsReads(
   ];
   return sections
     .filter((s) => s.count > 0)
-    .map(({ count, ...s }) => ({ ...s, value: count.toLocaleString(), good: true }));
+    .map(({ count, ...s }) => ({ ...s, value: formatNumber(count), good: true }));
 }
 
 export interface RecentWinsProps {
@@ -99,6 +111,11 @@ export interface RecentWinsProps {
   copy?: Partial<RecentWinsCopy> | undefined;
   LinkComponent?: React.ElementType | undefined;
   className?: string | undefined;
+  /**
+   * A disclosure (open by default) on a faint success ground, with the
+   * one-line summary on its toggle so a closed panel still says what is in it.
+   */
+  collapsible?: boolean;
 }
 
 /**
@@ -107,9 +124,41 @@ export interface RecentWinsProps {
  * no celebration. Reusable wherever a window of wins belongs (Commits,
  * Overview, a person page with `?author=`); the host fetches `/wins`.
  */
-export function RecentWins({ wins, routes, scope, copy, LinkComponent, className }: RecentWinsProps) {
+export function RecentWins({ wins, routes, scope, copy, LinkComponent, className, collapsible = false }: RecentWinsProps) {
   const c = { ...DEFAULT_COPY, ...copy };
   const reads = winsReads(wins, routes, c);
+  const body =
+    reads.length > 0 ? (
+      <ReadsColumn items={reads} LinkComponent={LinkComponent} />
+    ) : (
+      <p className="text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">{c.none}</p>
+    );
+  if (collapsible) {
+    // Green has a fixed job: success. A faint ground of it marks the panel as
+    // good news without competing with the lede's figure.
+    return (
+      <section
+        className={`rounded-lg bg-[color-mix(in_srgb,var(--color-success)_6%,transparent)] px-4 pb-3 ring-1 ring-[color-mix(in_srgb,var(--color-success)_18%,transparent)] ${className ?? ""}`}
+        aria-label={c.title}
+      >
+        <CollapsibleSection
+          title={
+            <span className="flex flex-col">
+              <span>{c.title}</span>
+              {c.summary(wins) && (
+                <span className="text-xs font-normal text-[var(--color-success)]">{c.summary(wins)}</span>
+              )}
+            </span>
+          }
+          hint={scope}
+          defaultOpen
+          className="border-t-0"
+        >
+          {body}
+        </CollapsibleSection>
+      </section>
+    );
+  }
   return (
     <section className={className} aria-label={c.title}>
       <div className="mb-3.5 flex items-baseline justify-between gap-3">
@@ -118,13 +167,7 @@ export function RecentWins({ wins, routes, scope, copy, LinkComponent, className
           {scope}
         </span>
       </div>
-      {reads.length > 0 ? (
-        <ReadsColumn items={reads} LinkComponent={LinkComponent} />
-      ) : (
-        <p className="text-xs leading-relaxed text-[var(--color-text-tertiary)] [text-wrap:pretty]">
-          {c.none}
-        </p>
-      )}
+      {body}
     </section>
   );
 }

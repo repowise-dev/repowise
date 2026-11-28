@@ -204,6 +204,28 @@ class TestSaveFullHealthReport:
         )
         assert {row.analyzed_commit for row in rows} == {None}
 
+    async def test_empty_findings_rescore_closes_prior_open_health_findings(self, async_session):
+        from repowise.core.persistence.models import HealthFinding
+
+        repo_id = (await insert_repo(async_session)).id
+        await save_full_health_report(
+            async_session, repo_id, _report([_perf_finding(10)]), analyzed_commit="a" * 40
+        )
+        await save_full_health_report(async_session, repo_id, _report([]), analyzed_commit="b" * 40)
+        open_findings = (
+            (
+                await async_session.execute(
+                    select(HealthFinding).where(
+                        HealthFinding.repository_id == repo_id,
+                        HealthFinding.status == "open",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert open_findings == []
+
 
 async def session_rows(session, repo_id: str):
     return (

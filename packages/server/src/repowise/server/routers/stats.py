@@ -136,7 +136,11 @@ async def _symbol_records(
     blame = await _rows(
         session,
         select(GitFunctionBlame.function_name, GitFunctionBlame.file_path, GitFunctionBlame.mod_count)
-        .where(GitFunctionBlame.repository_id == repo_id)
+        .where(
+            GitFunctionBlame.repository_id == repo_id,
+            # The churn the biomarkers scored, as before rows kept for owners only.
+            GitFunctionBlame.history_only.is_(False),
+        )
         .order_by(GitFunctionBlame.mod_count.desc())
         .limit(_BLAME_CANDIDATES),
     )
@@ -179,8 +183,6 @@ async def stats_highlights(
         select(
             GraphNode.node_id,
             GraphNode.language,
-            GraphNode.symbol_count,
-            GraphNode.external_system_id,
         ).where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file"),
     )
     metrics = await _rows(
@@ -191,6 +193,7 @@ async def stats_highlights(
             HealthFileMetric.module,
             HealthFileMetric.max_ccn,
             HealthFileMetric.is_test,
+            HealthFileMetric.code_origin,
         ).where(HealthFileMetric.repository_id == repo_id),
     )
     all_meta = await _rows(
@@ -247,7 +250,7 @@ async def stats_highlights(
     index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
-        "scale": sh.build_scale(file_nodes, metrics),
+        "scale": sh.build_scale(file_nodes, metrics, await crud.count_symbols(session, repo_id)),
         "origin": activity["origin"],
         "churn": sh.build_churn(totals),
         "rhythm": rhythm,

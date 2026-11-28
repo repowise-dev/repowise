@@ -50,6 +50,7 @@ def _finding(path: str, line: int, *, marker: str = "serial_await_in_loop", **de
             "resolution_basis": "call-site",
             "dataflow_verified": True,
             "loop_magnitude": "grows_with_data",
+            "execution_role": "request",
             **details,
         },
         health_impact=0.0,
@@ -96,6 +97,7 @@ async def test_one_pass_materializes_the_queue_its_plans_and_its_headline(
     assert row.performance_model_version == PERFORMANCE_MODEL_VERSION
     assert row.analyzed_commit == "b" * 40
     assert row.cost_proof == "proven"
+    assert row.static_cost == "grows_with_data"
 
     # Filter and order live in columns; the rest stays in the open payload, and
     # nothing appears in both.
@@ -110,7 +112,9 @@ async def test_one_pass_materializes_the_queue_its_plans_and_its_headline(
 
     summary = await crud.get_performance_summary(async_session, repo.id)
     assert summary.opportunities_total == 1
-    assert json.loads(summary.summary_json)["lead"]["opportunity_id"] == row.opportunity_id
+    # An advisory cause is queued but never the lead: only a plan-ready one is.
+    assert row.actionability_state == "advisory"
+    assert json.loads(summary.summary_json)["lead"] is None
 
 
 @pytest.mark.asyncio
@@ -381,17 +385,24 @@ def test_a_non_leading_marker_never_leads_the_summary():
 
     def _opp(oid: str, marker: str, may_lead: bool):
         return SimpleNamespace(
-            opportunity_id=oid, actionability_state="advisory", biomarker_type=marker,
+            opportunity_id=oid, actionability_state="plan_ready", biomarker_type=marker,
             boundary_kind="db", execution_context="production", intervention_symbol=None,
             terminal_sink=None, evidence=[{"file_path": "a.py"}], observations_total=1,
             affected_call_sites_total=1, affected_files_total=1, why_ranked=[],
             prerequisites=(), actionability_reason="", may_lead=may_lead,
-            facets={"loop_magnitude": "grows_with_data"},
+            facets={
+                "loop_magnitude": "grows_with_data",
+                "growth_source": "loop",
+                "execution_role": "request",
+            },
         )
 
     ranked = [_opp("lazy", "lazy_load_in_loop", False), _opp("io", "io_in_loop", True)]
     assert _summary_payload(ranked, {})["lead"]["opportunity_id"] == "io"
     assert _summary_payload(ranked[:1], {})["lead"] is None
+    # A queued cause whose growth only a registry loop shows never leads.
+    ranked[1].facets = {**ranked[1].facets, "growth_source": "registry"}
+    assert _summary_payload(ranked, {})["lead"] is None
 
 
 @pytest.mark.asyncio
@@ -401,6 +412,7 @@ async def test_an_unmeasured_loop_is_stored_unproven_and_never_leads(async_sessi
 
     (row,) = await _rows(async_session, repo.id)
     assert row.cost_proof == "unproven"
+    assert row.static_cost == "size_unknown"
     assert json.loads(row.details_json)["may_lead"] is False
     summary = json.loads((await crud.get_performance_summary(async_session, repo.id)).summary_json)
     assert summary["lead"] is None

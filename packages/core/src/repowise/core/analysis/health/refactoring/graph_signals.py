@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....ingestion.cohesion import cannot_close_cycle
 from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
@@ -113,6 +115,23 @@ def cycle_edges(graph: Any, members: tuple[str, ...]) -> list[tuple[str, str]]:
     return sorted(set(edges))
 
 
+def build_split_partial_types(graph: Any) -> dict[str, frozenset[str]]:
+    """Each file's ``partial`` type names that have parts in other files.
+
+    Read from the ``partial_class`` edges that link a partial type's files.
+    Both ends count: the linker skips a direction that already had an edge.
+    """
+    if graph is None:
+        return {}
+    out: dict[str, set[str]] = {}
+    for u, v, data in graph.edges(data=True):
+        if data.get("hint_source") == "partial_class":
+            names = data.get("imported_names") or ()
+            out.setdefault(u, set()).update(names)
+            out.setdefault(v, set()).update(names)
+    return {path: frozenset(names) for path, names in out.items()}
+
+
 def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
     """Methods defined in each file, precomputed in one graph sweep.
 
@@ -132,7 +151,7 @@ def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
             and data.get("kind") == "method"
             and "::" in node_id
         ):
-            prefix_map.setdefault(node_id.split("::", 1)[0], set()).add(node_id)
+            prefix_map.setdefault(file_of_symbol(node_id), set()).add(node_id)
     for u, v, data in graph.edges(data=True):
         if data.get("edge_type") != "defines":
             continue

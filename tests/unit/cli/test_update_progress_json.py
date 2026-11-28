@@ -147,6 +147,25 @@ class TestUpdateProgressJsonCli:
         for line in lines:
             json.loads(line)  # would raise if any non-JSON line leaked through
 
+    @pytest.mark.parametrize(
+        ("state", "reason"),
+        [(None, "no_index"), ('{"total_pages": 3}', "no_sync_base")],
+    )
+    def test_no_prior_sync_reports_a_reason_code(self, monkeypatch, state, reason):
+        from repowise.cli.platform import telemetry
+
+        recorded: dict = {}
+        monkeypatch.setattr(telemetry, "add_command_outcome", recorded.update)
+        with tempfile.TemporaryDirectory() as td:
+            os.makedirs(os.path.join(td, ".repowise"))
+            if state is not None:
+                with open(os.path.join(td, ".repowise", "state.json"), "w") as fh:
+                    fh.write(state)
+            result = _split_output_runner().invoke(cli, ["update", td])
+
+        assert result.exit_code != 0
+        assert recorded["failure_reason"] == reason
+
     def test_up_to_date_emits_start_stage_done(self):
         runner = _split_output_runner()
         with tempfile.TemporaryDirectory() as td:

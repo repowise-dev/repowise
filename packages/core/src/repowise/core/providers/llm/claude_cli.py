@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -63,6 +64,30 @@ _TOOLLESS_SYSTEM_INSTRUCTION = (
     "Answer the user directly in a single response."
 )
 
+# Run from inside a Claude Code session (an agent calling ``repowise init``),
+# the child inherits the parent's session id and its IPC socket and token, so
+# the child's SessionEnd hooks try to reach the parent session and fail. Only
+# the markers of that one session go: auth and backend settings
+# (CLAUDE_CODE_USE_BEDROCK, CLAUDE_CODE_OAUTH_TOKEN, ...) still pass through.
+_PARENT_SESSION_VARS = frozenset(
+    {
+        "CLAUDECODE",
+        "CLAUDE_PID",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_EXECPATH",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ATTENDED",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+    }
+)
+
+_NOT_SIGNED_IN = (
+    "claude -p is not signed in. Run `claude auth login` as this user, or set "
+    "CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`."
+)
+
 _SUPPORTED_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "auto",
     "low",
@@ -91,10 +116,19 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     status_code = (
         raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
     )
-    detail = raw_status or payload.get("subtype") or "unknown error"
     result_text = payload.get("result")
-    if isinstance(result_text, str) and result_text.strip():
-        detail = f"{detail}: {tail(result_text, max_chars=500)}"
+    text = result_text.strip() if isinstance(result_text, str) else ""
+    # The CLI's "Please run /login" names an interactive command, and a server
+    # has no session to type it into. With an API status (a rejected key or
+    # token), the status and the CLI's own text say more, so they stay.
+    if raw_status is None and "Please run /login" in text:
+        return _NOT_SIGNED_IN, None
+    # A failed call can still carry subtype "success", which reads as a
+    # contradiction when quoted.
+    subtype = payload.get("subtype")
+    detail = raw_status or (subtype if subtype != "success" else None) or "error"
+    if text:
+        detail = f"{detail}: {tail(text, max_chars=500)}"
     return f"claude -p reported failure ({detail}).", status_code
 
 
@@ -226,6 +260,9 @@ class ClaudeCliProvider(AgentCliProvider):
             # ``off``, ``none`` and ``minimal`` have no Claude CLI equivalent.
             log.warning("claude_cli.reasoning.unsupported", requested=mode, using="auto")
         return cmd
+
+    def subprocess_env(self) -> dict[str, str]:
+        return {k: v for k, v in os.environ.items() if k not in _PARENT_SESSION_VARS}
 
     @contextlib.contextmanager
     def working_dir(self) -> Iterator[str]:

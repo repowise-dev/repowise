@@ -76,6 +76,8 @@ class TestSingleBlamePassOwnership:
         assert meta["primary_owner_line_pct"] == pytest.approx(0.75)
         assert meta["primary_owner_commit_pct"] == pytest.approx(0.5)
         assert "blame_index" not in meta
+        # Kept for its functions' owner and last change only.
+        assert meta["history_blame_index"].lines
 
     def test_hot_file_retains_blame_index(self, repo) -> None:
         r, root = repo
@@ -86,6 +88,7 @@ class TestSingleBlamePassOwnership:
         assert "blame_index" in meta
         assert meta["blame_index"].lines
         assert meta["primary_owner_name"] == "Alice"  # 3 of 5 lines
+        assert "history_blame_index" not in meta
 
     def test_essential_tier_skips_blame_entirely(self, repo) -> None:
         r, root = repo
@@ -96,3 +99,51 @@ class TestSingleBlamePassOwnership:
         assert "blame_index" not in meta
         # Commit-author fallback ownership still present (2 commits: alice, bob).
         assert meta["primary_owner_name"] in ("Alice", "Bob")
+
+
+def _big(lines: int) -> str:
+    # Over the biomarkers' 100 KB blame cap, under the function blame cap.
+    return "".join(f"value_{i:06d} = {i}  # padding padding padding padding\n" for i in range(lines))
+
+
+@pytest.fixture
+def big_repo(tmp_path: Path):
+    import git as gitpython
+
+    r = gitpython.Repo.init(tmp_path)
+    alice = gitpython.Actor("Alice", "alice@example.com")
+    bob = gitpython.Actor("Bob", "bob@example.com")
+    (tmp_path / "tests").mkdir()
+    for path in ("big.py", "tests/test_big.py"):
+        (tmp_path / path).write_text(_big(2500))
+    r.index.add(["big.py", "tests/test_big.py"])
+    r.index.commit("feat: alice writes the big module", author=alice, committer=alice)
+    for n in range(2):
+        (tmp_path / "big.py").write_text(_big(2500) + f"bob_{n} = 1\n")
+        r.index.add(["big.py"])
+        r.index.commit(f"feat: bob appends {n}", author=bob, committer=bob)
+    yield r, tmp_path
+    r.close()
+
+
+class TestLargeFileFunctionBlame:
+    def test_a_large_production_file_is_blamed_for_its_functions_only(self, big_repo) -> None:
+        r, root = big_repo
+        assert (root / "big.py").stat().st_size > 100 * 1024
+        meta = index_file(
+            r, "big.py", repo_path=root, commit_limit=500,
+            follow_renames=False, include_blame=True,
+        )
+        assert meta["history_blame_index"].lines
+        assert "blame_index" not in meta
+        # The file keeps its commit-based owner: Bob made 2 of 3 commits.
+        assert meta["primary_owner_name"] == "Bob"
+        assert meta.get("primary_owner_line_pct") is None
+
+    def test_a_large_test_file_is_not_blamed(self, big_repo) -> None:
+        r, root = big_repo
+        meta = index_file(
+            r, "tests/test_big.py", repo_path=root, commit_limit=500,
+            follow_renames=False, include_blame=True,
+        )
+        assert "history_blame_index" not in meta and "blame_index" not in meta

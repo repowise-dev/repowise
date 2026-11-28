@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import click
@@ -30,6 +31,14 @@ def _setup_embedder() -> None:
       3. Prompt the user interactively → save choice for next time.
     """
     if os.environ.get("REPOWISE_EMBEDDER") or _restore_saved_embedder():
+        return
+    if not sys.stdin.isatty():
+        # Nobody can answer: an agent or a script started serve. A prompt here
+        # reads EOF and aborts the whole server.
+        console.print(
+            "[dim]No embedder set, so chat and search are off. "
+            "Set REPOWISE_EMBEDDER or run serve in a terminal to choose one.[/dim]\n"
+        )
         return
 
     choice = _prompt_embedder_choice()

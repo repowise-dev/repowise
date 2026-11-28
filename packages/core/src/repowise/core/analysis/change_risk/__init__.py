@@ -33,12 +33,14 @@ from .model import SCORE_MEASURES, SCORE_UNIT, ChangeRisk, RiskDriver, score_cha
 from .normalize import RiskNormalizer, review_priority_classification
 from .service import (
     ChangeRiskResult,
+    RangeCommits,
     assess_change,
     change_risk_payload,
     normalize_extensions,
     range_anchor,
     riskignore_patterns,
     score_live_change,
+    score_range_commits,
 )
 
 __all__ = [
@@ -50,6 +52,7 @@ __all__ = [
     "ChangeRisk",
     "ChangeRiskResult",
     "FixHistoryUnavailableError",
+    "RangeCommits",
     "RiskDriver",
     "RiskNormalizer",
     "assess_change",
@@ -73,6 +76,7 @@ __all__ = [
     "riskignore_patterns",
     "score_change",
     "score_live_change",
+    "score_range_commits",
     "scores_excluding",
     "working_tree_is_dirty",
 ]

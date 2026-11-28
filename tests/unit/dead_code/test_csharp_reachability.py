@@ -451,3 +451,48 @@ def test_a_called_extension_block_keeps_its_holder(tmp_path: Path) -> None:
 def test_an_extension_block_nobody_calls_is_still_reported(tmp_path: Path) -> None:
     findings = _extension_block_findings(tmp_path, "Console.WriteLine(name);")
     assert ("unused_export", "StringExtensions") in findings
+
+
+def _main_findings(tmp_path: Path, modifiers: str) -> set[tuple[str, str | None]]:
+    """Findings for an ``App`` project whose ``Program`` holds one ``Main``."""
+    from repowise.core.pipeline.incremental import build_repo_graph
+
+    files = {
+        "App/App.csproj": _csproj(refs=(r"..\Core\Core.csproj",)),
+        "App/Program.cs": (
+            "using Core;\n\nnamespace App\n{\n    public class Program\n    {\n"
+            f"        {modifiers} int Main(string[] args)\n"
+            "        {\n            return Util.One();\n        }\n    }\n}\n"
+        ),
+        "Core/Core.csproj": _csproj(),
+        "Core/Util.cs": (
+            "namespace Core\n{\n    public class Util\n    {\n"
+            "        public static int One() { return 1; }\n    }\n}\n"
+        ),
+    }
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    _, sources, builder, _, _ = build_repo_graph(
+        tmp_path, [], collect_sources=True, log=lambda *a, **k: None, read_only=True
+    )
+    report = DeadCodeAnalyzer(
+        builder.graph(),
+        {},
+        parsed_files=builder._parsed_files,
+        source_map=sources,
+        repo_root=tmp_path,
+    ).analyze({"min_confidence": 0.0})
+    return {(f.kind.value, f.symbol_name or f.file_path) for f in report.findings}
+
+
+def test_a_project_with_a_static_main_is_a_program(tmp_path: Path) -> None:
+    findings = _main_findings(tmp_path, "static")
+    assert ("zombie_package", "App") not in findings
+    assert ("unused_export", "Program") not in findings
+
+
+def test_an_instance_main_does_not_make_a_program(tmp_path: Path) -> None:
+    findings = _main_findings(tmp_path, "public")
+    assert ("zombie_package", "App") in findings

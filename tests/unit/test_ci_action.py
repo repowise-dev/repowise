@@ -23,6 +23,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 ACTION = ROOT / "action.yml"
 RUNNER = ROOT / "ci" / "github" / "run-gates.sh"
+SUMMARY = ROOT / "ci" / "github" / "summary.sh"
 GUIDE = ROOT / "docs" / "start" / "CI.md"
 GITLAB = ROOT / "ci" / "gitlab" / "repowise.gitlab-ci.yml"
 
@@ -43,9 +44,27 @@ def test_every_variable_the_runner_reads_is_passed_by_the_action() -> None:
     script = RUNNER.read_text(encoding="utf-8")
     read = set(re.findall(r"\$\{?([A-Z][A-Z_]+)", script))
     runner_env = {"GITHUB_OUTPUT", "GITHUB_BASE_REF"}
-    for_python = {"PYTHONUTF8"}
+    for_python = {"PYTHONUTF8", "REPOWISE_GATE_SUMMARY_DIR"}
     assert read - runner_env <= passed
     assert passed - for_python <= read
+
+
+def test_the_summary_step_reads_what_the_gates_step_writes() -> None:
+    steps = {s.get("id"): s for s in _action()["runs"]["steps"]}
+    gates, summary = steps["gates"], steps["summary"]
+    assert summary["env"]["SUMMARY_DIR"] == gates["env"]["REPOWISE_GATE_SUMMARY_DIR"]
+    # Every gate the runner accepts hands its exit code on.
+    accepted = re.search(r"^\s+(coverage \|[^)]*)\)", RUNNER.read_text(encoding="utf-8"), re.M)
+    names = {n.strip() for n in accepted.group(1).split("|")}
+    pairs = re.findall(r"(\S+)=\$\{\{ steps\.gates\.outputs\.(\S+) \}\}", summary["env"]["EXIT_CODES"])
+    assert all(name == output for name, output in pairs)
+    assert {name for name, _ in pairs} == names
+    read = set(re.findall(r"\$\{?([A-Z][A-Z_]+)", SUMMARY.read_text(encoding="utf-8")))
+    from_github = {"GITHUB_OUTPUT", "GITHUB_EVENT_PATH", "GITHUB_REPOSITORY"}
+    for_tools = {"PYTHONUTF8", "GH_TOKEN"}
+    assert read - from_github <= set(summary["env"])
+    assert set(summary["env"]) - for_tools <= read
+    assert _action()["outputs"]["verdict"]["value"] == "${{ steps.summary.outputs.verdict }}"
 
 
 def test_the_gitlab_template_parses() -> None:
@@ -54,8 +73,10 @@ def test_the_gitlab_template_parses() -> None:
         "repowise-coverage",
         "repowise-doc-drift",
         "repowise-security",
+        "repowise-health",
         "repowise-risk",
     } <= set(jobs)
+    assert '$REPOWISE_HEALTH == "true"' in jobs["repowise-health"]["rules"][0]["if"]
     risk = " ".join(jobs["repowise-risk"]["script"])
     assert "--fail-above-percentile" in risk and "--format markdown" in risk
     assert "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE" in jobs["repowise-risk"]["rules"][0]["if"]
@@ -69,7 +90,7 @@ def _gitlab_jobs() -> dict:
     return yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
 
 
-@pytest.mark.parametrize("gate", ["doc-drift", "security"])
+@pytest.mark.parametrize("gate", ["doc-drift", "security", "health"])
 def test_the_gitlab_code_quality_report_is_the_file_the_job_writes(gate) -> None:
     job = _gitlab_jobs()[f"repowise-{gate}"]
     report = f"gl-code-quality-{gate}.json"
@@ -105,14 +126,24 @@ def _run_gitlab_job(tmp_path: Path, bin_dir: Path, job_name: str, **env: str) ->
     python_dir = str(Path(sys.executable).parent)
     full = {
         **os.environ,
+        **_job_variables(job_name),
         "PATH": os.pathsep.join([str(bin_dir), python_dir, os.environ["PATH"]]),
         "FAKE_LOG": str(tmp_path / "log"),
         "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "main",
         **env,
     }
+    # As before_script does.
+    (tmp_path / "repowise-summary").mkdir(exist_ok=True)
     script = "\n".join(["set -eo pipefail", *lines]) + "\n"
     proc = subprocess.run([bash, "-c", script], cwd=tmp_path, env=full, capture_output=True)
     return proc.returncode
+
+
+def _job_variables(job_name: str) -> dict[str, str]:
+    jobs = _gitlab_jobs()
+    job = jobs[job_name]
+    base = jobs[job["extends"]].get("variables", {}) if "extends" in job else {}
+    return {**base, **job.get("variables", {})}
 
 
 @pytest.mark.parametrize(
@@ -146,6 +177,108 @@ def test_the_gitlab_job_writes_a_valid_report_and_exits_with_the_gate(
     assert first.removesuffix("markdown") == second.removesuffix("gitlab")
     artifact = tmp_path / f"gl-code-quality-{gate}.json"
     assert json.loads(artifact.read_text(encoding="utf-8")) == report
+    # The note job reads the gate's own exit code, not the Code Quality run's.
+    recorded = tmp_path / "repowise-summary" / f"{gate}.exit"
+    assert recorded.read_text(encoding="utf-8").strip() == markdown_code
+
+
+@pytest.mark.parametrize(("job", "code"), [("repowise-coverage", "1"), ("repowise-risk", "2")])
+def test_a_single_run_gitlab_job_records_its_exit_code(tmp_path, fake_repowise, job, code) -> None:
+    env = {"REPOWISE_COVERAGE_REPORT": "a.info", "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE": "90"}
+    ran = _run_gitlab_job(tmp_path, fake_repowise, job, FAKE_COVERAGE=code, FAKE_RISK=code, **env)
+    assert ran == int(code)
+    gate = job.removeprefix("repowise-")
+    recorded = tmp_path / "repowise-summary" / f"{gate}.exit"
+    assert recorded.read_text(encoding="utf-8").strip() == code
+
+
+GATE_JOBS = ("coverage", "doc-drift", "security", "health", "risk")
+
+
+@pytest.mark.parametrize("gate", GATE_JOBS)
+def test_each_gitlab_gate_job_hands_its_row_to_the_note_job(gate) -> None:
+    jobs = _gitlab_jobs()
+    job = jobs[f"repowise-{gate}"]
+    assert _job_variables(f"repowise-{gate}") == {
+        "GIT_DEPTH": "0",
+        "REPOWISE_GATE_SUMMARY_DIR": "repowise-summary",
+        "REPOWISE_GATE": gate,
+    }
+    assert "repowise-summary/" in job["artifacts"]["paths"]
+    assert job["artifacts"]["when"] == "always"
+    # First, so the missing report of a job that stopped early cannot skip it.
+    assert job["after_script"][0] == jobs[".repowise-exit-code"]
+    assert {"job": f"repowise-{gate}", "optional": True} in jobs["repowise-note"]["needs"]
+
+
+@pytest.mark.parametrize(
+    ("recorded", "status", "expected"),
+    [
+        ("1", "failed", "1"),  # the gate ran and recorded its code
+        (None, "failed", "2"),  # stopped before the gate (a failed install)
+        (None, "success", "0"),
+    ],
+)
+def test_a_gitlab_job_that_stopped_early_reads_as_could_not_evaluate(
+    tmp_path, recorded, status, expected
+) -> None:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is not available")
+    rows = tmp_path / "repowise-summary"
+    if recorded is not None:
+        rows.mkdir()
+        (rows / "health.exit").write_text(f"{recorded}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "REPOWISE_GATE_SUMMARY_DIR": "repowise-summary",
+        "REPOWISE_GATE": "health",
+        "CI_JOB_STATUS": status,
+    }
+    # The whole after_script, as GitLab runs it; no report exists here.
+    lines = _gitlab_jobs()["repowise-health"]["after_script"]
+    script = "\n".join(["set -eo pipefail", *lines]) + "\n"
+    subprocess.run([bash, "-c", script], cwd=tmp_path, env=env)
+    assert (rows / "health.exit").read_text(encoding="utf-8").strip() == expected
+
+
+def test_the_gitlab_note_job_runs_after_the_gates_and_never_fails_the_pipeline() -> None:
+    job = _gitlab_jobs()["repowise-note"]
+    assert job["stage"] == ".post" and job["allow_failure"] is True
+    # Serialised per merge request: find-then-post must not race.
+    assert job["resource_group"] == "repowise-note-$CI_MERGE_REQUEST_IID"
+    assert job["rules"] == [
+        {
+            "if": '$CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_GITLAB_TOKEN',
+            "when": "always",
+        }
+    ]
+    assert [n["job"] for n in job["needs"]] == [f"repowise-{g}" for g in GATE_JOBS]
+
+
+@pytest.mark.parametrize(
+    ("codes", "expected"),
+    [
+        (
+            {"security": "1", "doc-drift": "0"},
+            "ci-summary repowise-summary --gate doc-drift=0 --gate security=1 --gitlab-note",
+        ),
+        ({}, None),
+    ],
+)
+def test_the_gitlab_note_job_passes_each_gate_that_ran(
+    tmp_path, fake_repowise, codes, expected
+) -> None:
+    rows = tmp_path / "repowise-summary"
+    rows.mkdir()
+    for gate, code in codes.items():
+        (rows / f"{gate}.exit").write_text(f"{code}\n", encoding="utf-8")
+    assert _run_gitlab_job(tmp_path, fake_repowise, "repowise-note") == 0
+    log = tmp_path / "log"
+    if expected is None:
+        assert not log.exists()
+    else:
+        assert log.read_text(encoding="utf-8").strip() == expected
 
 
 def test_the_default_branch_job_writes_the_doc_drift_report(tmp_path, fake_repowise) -> None:
@@ -211,6 +344,7 @@ def fake_repowise(tmp_path: Path) -> Path:
         '  coverage) exit "${FAKE_COVERAGE:-0}" ;;\n'
         '  doc-drift) exit "${FAKE_DOC_DRIFT:-0}" ;;\n'
         '  security) exit "${FAKE_SECURITY:-0}" ;;\n'
+        '  health) exit "${FAKE_HEALTH:-0}" ;;\n'
         '  risk) exit "${FAKE_RISK:-0}" ;;\n'
         "esac\n",
         encoding="utf-8",
@@ -258,6 +392,9 @@ def _run(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[int, str, str]:
         "DOC_DRIFT_BASELINE": "",
         "SECURITY_FAIL_ON": "high",
         "SECURITY_BASELINE": "",
+        "FAIL_ON_BASELINE_GROWTH": "false",
+        "HEALTH_FAIL_ON": "introduced",
+        "HEALTH_FAIL_AT": "high",
         "RISK_FAIL_ABOVE_PERCENTILE": "",
         "SARIF": "false",
         "SARIF_DIR": str(tmp_path / "sarif"),
@@ -305,6 +442,40 @@ def test_inputs_reach_the_commands(tmp_path, fake_repowise) -> None:
     assert security == (
         "security check origin/main...HEAD --fail-on high "
         "--baseline .security-baseline.json --format github"
+    )
+
+
+def test_baseline_growth_reaches_each_gate_with_a_baseline(tmp_path, fake_repowise) -> None:
+    code, _, calls = _run(
+        tmp_path,
+        fake_repowise,
+        CHECKS="doc-drift,security",
+        DOC_DRIFT_BASELINE=".doc-drift-baseline.json",
+        FAIL_ON_BASELINE_GROWTH="true",
+    )
+    assert code == 0
+    drift, security = calls.splitlines()
+    assert drift == (
+        "doc-drift --check --baseline .doc-drift-baseline.json "
+        "--fail-on-baseline-growth --format github"
+    )
+    assert "growth" not in security
+
+
+def test_health_inputs_reach_the_command(tmp_path, fake_repowise) -> None:
+    code, outputs, calls = _run(
+        tmp_path,
+        fake_repowise,
+        CHECKS="health",
+        BASE="origin/main...HEAD",
+        HEALTH_FAIL_ON="worsened",
+        HEALTH_FAIL_AT="medium",
+        FAKE_HEALTH="1",
+    )
+    assert code == 1
+    assert outputs.split() == ["health=1"]
+    assert calls.strip() == (
+        "health check origin/main...HEAD --fail-on worsened --fail-at medium --format github"
     )
 
 
@@ -550,3 +721,161 @@ def test_the_gitlab_job_runs_everything_when_the_cache_cannot_update(
     assert code == 0
     assert report == "RUN_ALL_TESTS=true\n" and written == ":all\n"
     assert (tmp_path / "log").read_text(encoding="utf-8").strip() == "update --index-only"
+
+
+@pytest.fixture
+def fake_tools(tmp_path: Path) -> Path:
+    """``repowise`` and ``gh`` stand-ins that log their arguments.
+
+    ``repowise ci-summary`` prints ``$FAKE_VERDICT`` and exits ``$FAKE_SUMMARY``,
+    writing a body to ``--comment-file``; ``gh`` prints ``$FAKE_GH_LOGIN`` as the
+    token's login (and fails without one, as the default token does), prints
+    ``$FAKE_GH_ID`` for the comment search and exits ``$FAKE_GH`` for a post.
+    """
+    bin_dir = tmp_path / "tools"
+    bin_dir.mkdir()
+    scripts = {
+        "repowise": (
+            'echo "$*" >> "$FAKE_LOG"\n'
+            'prev=""\n'
+            'for a in "$@"; do [ "$prev" = --comment-file ] && echo body > "$a"; prev=$a; done\n'
+            'echo "${FAKE_VERDICT-pass}"\n'
+            'exit "${FAKE_SUMMARY:-0}"\n'
+        ),
+        "gh": (
+            'echo "gh $*" >> "$FAKE_LOG"\n'
+            'case "$*" in\n'
+            '  "api user --jq .login") [ -n "${FAKE_GH_LOGIN:-}" ] || exit 1\n'
+            '    echo "$FAKE_GH_LOGIN" ;;\n'
+            '  *"--jq .body"*) echo "<!-- earlier -->" ;;\n'
+            '  *--jq*) echo "${FAKE_GH_ID:-}" ;;\n'
+            '  *) exit "${FAKE_GH:-0}" ;;\n'
+            "esac\n"
+        ),
+    }
+    for name, body in scripts.items():
+        tool = bin_dir / name
+        tool.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8", newline="\n")
+        tool.chmod(tool.stat().st_mode | stat.S_IEXEC)
+    return bin_dir
+
+
+def _summarize(tmp_path: Path, bin_dir: Path, **env: str) -> tuple[str, list[str], str]:
+    """Run ``summary.sh``: ``(outputs, logged calls, stdout)``."""
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is not available")
+    out = tmp_path / "out"
+    log = tmp_path / "log"
+    event = tmp_path / "event.json"
+    event.write_text(env.pop("EVENT", "{}"), encoding="utf-8")
+    full = {
+        **os.environ,
+        "PATH": os.pathsep.join([str(bin_dir), str(Path(sys.executable).parent), os.environ["PATH"]]),
+        "GITHUB_OUTPUT": str(out),
+        "GITHUB_EVENT_PATH": str(event),
+        "GITHUB_REPOSITORY": "o/r",
+        "FAKE_LOG": str(log),
+        "EXIT_CODES": "coverage= doc-drift=0 security=1 health= risk=",
+        "SUMMARY_DIR": str(tmp_path / "rows"),
+        "WORKING_DIRECTORY": ".",
+        "COMMENT": "false",
+        **env,
+    }
+    proc = subprocess.run([bash, str(SUMMARY)], cwd=tmp_path, env=full, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    calls = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    return (out.read_text(encoding="utf-8") if out.exists() else ""), calls, proc.stdout
+
+
+_PR = '{"pull_request": {"number": 7}}'
+
+
+def test_the_summary_passes_each_gate_that_ran_and_sets_the_verdict(tmp_path, fake_tools) -> None:
+    (tmp_path / "rows").mkdir()
+    outputs, calls, _ = _summarize(tmp_path, fake_tools, FAKE_VERDICT="fail")
+    (call,) = calls
+    assert call.split()[0] == "ci-summary"
+    assert call.split()[2:] == ["--gate", "doc-drift=0", "--gate", "security=1"]
+    assert outputs.split() == ["verdict=fail"]
+    # Read once, so a second use of the action in the job starts clean.
+    assert not (tmp_path / "rows").exists()
+
+
+def test_the_summary_is_skipped_when_no_gate_ran(tmp_path, fake_tools) -> None:
+    outputs, calls, _ = _summarize(
+        tmp_path, fake_tools, EXIT_CODES="coverage= doc-drift= security= health= risk="
+    )
+    assert (outputs, calls) == ("", [])
+
+
+def test_a_failed_summary_never_fails_the_job(tmp_path, fake_tools) -> None:
+    outputs, _, stdout = _summarize(tmp_path, fake_tools, FAKE_SUMMARY="1", COMMENT="true", EVENT=_PR)
+    assert outputs == ""
+    assert "::warning::Could not combine the gate results" in stdout
+
+
+def test_no_comment_outside_a_pull_request(tmp_path, fake_tools) -> None:
+    outputs, calls, stdout = _summarize(tmp_path, fake_tools, COMMENT="true")
+    assert not any(c.startswith("gh ") or "--comment-file" in c for c in calls)
+    assert outputs.split() == ["verdict=pass"]
+    assert "::notice::This event has no pull request" in stdout
+
+
+def test_the_first_run_posts_the_comment(tmp_path, fake_tools) -> None:
+    _, calls, _ = _summarize(tmp_path, fake_tools, COMMENT="true", EVENT=_PR)
+    login, search, summary, post = calls
+    assert login == "gh api user --jq .login"
+    assert search.startswith("gh api --paginate repos/o/r/issues/7/comments --jq")
+    # The default token cannot read its login; it posts as github-actions[bot].
+    assert '.user.login == "github-actions[bot]"' in search
+    assert 'startswith("<!-- repowise-ci-summary -->")' in search
+    assert "--comment-file" in summary and "--previous" not in summary
+    assert post.startswith("gh api --method POST repos/o/r/issues/7/comments -F body=@")
+
+
+def test_a_later_run_edits_the_comment_in_place(tmp_path, fake_tools) -> None:
+    _, calls, _ = _summarize(tmp_path, fake_tools, COMMENT="true", EVENT=_PR, FAKE_GH_ID="42")
+    _, _, previous, summary, edit = calls
+    assert previous == "gh api repos/o/r/issues/comments/42 --jq .body"
+    assert "--previous" in summary
+    assert edit.startswith("gh api --method PATCH repos/o/r/issues/comments/42 -F body=@")
+
+
+def test_a_personal_token_finds_its_own_comment(tmp_path, fake_tools) -> None:
+    _, calls, _ = _summarize(
+        tmp_path, fake_tools, COMMENT="true", EVENT=_PR, FAKE_GH_LOGIN="octo-cat"
+    )
+    assert '.user.login == "octo-cat"' in calls[1]
+
+
+def test_an_unexpected_login_falls_back_to_the_actions_bot(tmp_path, fake_tools) -> None:
+    _, calls, _ = _summarize(
+        tmp_path, fake_tools, COMMENT="true", EVENT=_PR, FAKE_GH_LOGIN='x" or true'
+    )
+    assert '.user.login == "github-actions[bot]"' in calls[1]
+
+
+def test_a_comment_that_cannot_be_edited_is_replaced(tmp_path, fake_tools) -> None:
+    _, calls, _ = _summarize(
+        tmp_path, fake_tools, COMMENT="true", EVENT=_PR, FAKE_GH_ID="42", FAKE_GH="1"
+    )
+    assert calls[-2].startswith("gh api --method PATCH repos/o/r/issues/comments/42")
+    assert calls[-1].startswith("gh api --method POST repos/o/r/issues/7/comments")
+
+
+def test_each_working_directory_keeps_its_own_comment(tmp_path, fake_tools) -> None:
+    from repowise.core.ci.summary import comment_marker
+
+    _, calls, _ = _summarize(
+        tmp_path, fake_tools, COMMENT="true", EVENT=_PR, WORKING_DIRECTORY="apps/my web"
+    )
+    _, search, summary, _ = calls
+    assert f'startswith("{comment_marker("apps/my web")}")' in search
+    assert summary.endswith("--comment-key apps/my_web") or "--comment-key apps/my_web " in summary
+
+
+def test_a_read_only_token_warns_and_keeps_the_verdict(tmp_path, fake_tools) -> None:
+    outputs, _, stdout = _summarize(tmp_path, fake_tools, COMMENT="true", EVENT=_PR, FAKE_GH="1")
+    assert outputs.split() == ["verdict=pass"]
+    assert "::warning::Could not post the summary comment" in stdout

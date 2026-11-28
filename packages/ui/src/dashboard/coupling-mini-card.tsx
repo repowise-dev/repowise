@@ -65,7 +65,7 @@ export function CouplingMiniCard({ edges, href, LinkComponent }: CouplingMiniCar
                 </div>
                 <div className="h-1 w-full overflow-hidden rounded-full bg-[var(--color-bg-inset)]">
                   <div
-                    className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                    className="h-full rounded-full bg-[var(--color-progress-fill)]"
                     style={{ width: `${Math.max(8, Math.round((e.strength / maxStrength) * 100))}%` }}
                   />
                 </div>

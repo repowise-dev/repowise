@@ -170,15 +170,17 @@ def test_only_the_files_whose_bytes_moved_are_stale():
 def test_the_render_key_is_stored_where_it_survives_a_restart():
     """The salt is worthless if it is not persisted.
 
-    ``GeneratedPage.content_hash`` looks like the natural home and is not one:
-    nothing writes it to the database and nothing reads it back, so a key kept
-    there would be silently absent on the next run and no page would ever look
-    stale. Metadata round-trips, so the key lives there.
+    The structural render key lives in metadata (``render_key``), which
+    round-trips through the page row. ``content_hash`` is a real column too,
+    but it is the *subject* reuse key (issue #1089) — written by the reuse
+    gate and read back by ``load_prior_pages`` — not a home for the render
+    salt. A key stored in neither place would be silently absent on the next
+    run and no page would ever look stale.
     """
     from repowise.core.persistence.models import Page
 
-    assert not hasattr(Page, "content_hash")
-    assert RENDER_KEY == "render_key"
+    assert hasattr(Page, "content_hash")  # the subject key is persisted now
+    assert RENDER_KEY == "render_key"  # but the structural salt rides in metadata
 
 
 def test_a_style_switch_makes_every_page_stale():

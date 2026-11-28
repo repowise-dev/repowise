@@ -11,7 +11,7 @@ proposals, and read the health dashboard. No LLM key required for list/health.
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 Decisions are mined during indexing from inline markers, commits, and other

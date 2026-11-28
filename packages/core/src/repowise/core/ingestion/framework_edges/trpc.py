@@ -19,7 +19,7 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     _build_ts_var_to_file,
-    read_text,
+    read_text_from,
 )
 
 if TYPE_CHECKING:
@@ -48,8 +48,6 @@ def _has_trpc_imports(parsed_files: dict[str, Any]) -> bool:
 
 class _TrpcHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        if "trpc" in dctx.stack_lower:
-            return True
         return _has_trpc_imports(dctx.parsed_files)
 
     def add_edges(
@@ -63,7 +61,7 @@ class _TrpcHandler:
         for path, parsed in parsed_files.items():
             if parsed.file_info.language not in ("typescript", "javascript"):
                 continue
-            text = read_text(parsed)
+            text = read_text_from(path, parsed, ctx.source_map)
             if not text or ("@trpc/" not in text and "publicProcedure" not in text \
                     and "protectedProcedure" not in text):
                 continue

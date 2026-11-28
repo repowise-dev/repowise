@@ -43,10 +43,10 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
     // Badge what the tree actually lists (medium+ confidence, top-N), not the
     // server's global total: a four-digit badge on the activity bar is noise.
     const listed = Math.min(targets.plans.length, MAX_PLANS);
-    this.setBadge(listed, `${listed} ranked refactoring plans`);
+    this.setBadge(listed, `${listed} refactoring steps`);
 
     if (targets.plans.length === 0) {
-      return [this.messageNode("No refactoring targets")];
+      return [this.messageNode("No refactoring opportunities yet")];
     }
     return targets.plans.slice(0, MAX_PLANS).map((plan) => this.planNode(plan));
   }
@@ -55,12 +55,10 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
     const tooltip = new vscode.MarkdownString();
     tooltip.appendMarkdown(`**${humanizeType(plan.refactoring_type)}**\n\n`);
     tooltip.appendMarkdown(`\`${plan.file_path}\`\n\n`);
-    tooltip.appendMarkdown(`- Priority: ${plan.rank_score.toFixed(2)}\n`);
-    if (plan.impact_delta > 0) {
-      tooltip.appendMarkdown(`- Health recovery: ${plan.impact_delta.toFixed(2)}\n`);
-    }
-    tooltip.appendMarkdown(`- Effort: ${plan.effort_bucket}\n`);
-    tooltip.appendMarkdown(`- Confidence: ${plan.confidence}\n`);
+    // The Refactoring page's words for the same facts.
+    tooltip.appendMarkdown(`- ${healthWords(plan.impact_delta)}\n`);
+    tooltip.appendMarkdown(`- ${effortWords(plan.effort_bucket)}\n`);
+    tooltip.appendMarkdown(`- ${plan.confidence} confidence\n`);
     const blast = blastCount(plan.blast_radius);
     if (blast != null) tooltip.appendMarkdown(`- Blast radius: ${blast}\n`);
     return {
@@ -68,7 +66,7 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
       label: `${humanizeType(plan.refactoring_type)} ${
         plan.target_symbol ?? baseName(plan.file_path)
       }`,
-      description: `priority ${plan.rank_score.toFixed(2)} · ${plan.effort_bucket}`,
+      description: `${healthWords(plan.impact_delta)} · ${effortWords(plan.effort_bucket)}`,
       tooltip,
       icon: new vscode.ThemeIcon("wrench"),
       collapsibleState: vscode.TreeItemCollapsibleState.None,
@@ -79,6 +77,18 @@ class RefactoringTreeProvider extends RepowiseTreeProvider {
       },
     };
   }
+}
+
+const EFFORT_WORD: Record<string, string> = { S: "Small", M: "Medium", L: "Large", XL: "Extra large" };
+
+/** "Medium effort", as the Refactoring page's rows say it. */
+function effortWords(bucket: string): string {
+  return `${EFFORT_WORD[bucket] ?? bucket} effort`;
+}
+
+/** "+1.4 health", or the page's words for a step that moves no score. */
+function healthWords(delta: number): string {
+  return delta > 0 ? `+${delta.toFixed(1)} health` : "no score change";
 }
 
 /** Registers the Refactoring tree view. */

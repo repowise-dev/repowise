@@ -6,8 +6,7 @@ enterprise security, compliance, governance, and operations layer, and removes t
 AGPL obligations for anyone embedding Repowise in their own product.
 
 This document covers what the open-source distribution includes, what the commercial
-license adds on top, the honest GA / in-development / planned status of each
-commercial capability, the on-premise deployment model, and the available pricing
+license adds on top, the status of each commercial capability, the on-premise deployment model, and the available pricing
 models. Specific pricing figures are provided in a separate proposal.
 
 > **Looking for the open-source feature set?** The [README](../../README.md) and
@@ -43,17 +42,18 @@ scale, in a regulated or security-sensitive environment**:
 All of the following ship in `pip install repowise` today, free for internal use.
 
 - **[Five intelligence layers](../layers/INTELLIGENCE_LAYERS.md)**: Graph
-  (tree-sitter AST across 27 languages, two-tier dependency graph, call
+  (tree-sitter AST across 29 languages, two-tier dependency graph, call
   resolution, heritage extraction, Leiden communities, PageRank / betweenness /
   SCC), Git (hotspots, ownership, co-change pairs, bus factor, significant
   commits, contributor profiles, module health), Documentation (a wiki page per
   module and file, freshness scoring, hybrid search), Decision (architectural
   decision records linked to graph nodes, staleness tracking), and Code Health
-  (53 deterministic detectors, 1–10 score per file, coverage ingestion, trend
+  (59 deterministic detectors, 1–10 score per file, coverage ingestion, trend
   alerts). Full detail on each, and what every layer costs to build:
   **[INTELLIGENCE_LAYERS.md](../layers/INTELLIGENCE_LAYERS.md)**.
 - **Zero LLM calls in every analysis layer.** Graph, git, code health, change
-  risk, dead code and the PR bot make no model calls at all, and the whole wiki
+  risk, dead code and the PR bot's checks make no model calls at all (AI review
+  on pull requests is opt-in), and the whole wiki
   renders from code structure with no API key (`repowise init --no-prose`).
   Model-written prose is opt-in, priced before you confirm it, and runs on your
   own key or fully offline through Ollama. Six of the seven decision sources are
@@ -62,10 +62,13 @@ All of the following ship in `pip install repowise` today, free for internal use
 - **Ten task-shaped MCP tools**: `get_overview`, `get_answer`, `get_context`,
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
   `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
-  Measured at **−31.6 % of the agent's own output tokens** against a bare agent
-  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
-  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
-  the sample sizes, all three agent harnesses, and the rows where we lose.
+  Across five models the agent opens **up to 99% fewer files**, writes **up to
+  51% less** and answers **up to 47% faster** (Sonnet 4.6, 71 of 72 answers
+  right), and every model opens fewer files. Side by side with four other context
+  tools, repowise cuts the agent's output by **31.6%** (43 questions,
+  p < 0.0001), the most of the five, in 3.8 tool calls where the bare agent
+  needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for the sample sizes and
+  the method.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and
@@ -84,8 +87,8 @@ All of the following ship in `pip install repowise` today, free for internal use
   LCOV / Cobertura / Clover / JaCoCo / Go coverprofile like a coverage service,
   then does the half a coverage service structurally cannot: answers *which
   tests reach this file* and *which tests does this diff exercise* **with no
-  report at all**, at **95.7% and 97.5% precision** measured against a real
-  `coverage run --contexts=test`. Measured and inferred rows are labelled and
+  report at all**, at **97.7% precision** on the files tests call into (against the
+  unit suite's coverage) and **97.5%** on the tests to run (against per-test coverage). Measured and inferred rows are labelled and
   never averaged. Zero LLM calls, no CI integration needed.
   ([TEST_INTELLIGENCE.md](../layers/TEST_INTELLIGENCE.md))
 - **Change evidence and governance**: Change Records with an evidence checklist
@@ -93,16 +96,18 @@ All of the following ship in `pip install repowise` today, free for internal use
   owners compared against recent activity, local change policy (`repowise check`,
   SARIF and JUnit), assessment, change and inventory reports, and package usage
   with a CycloneDX 1.6 export. ([CHANGES.md](../layers/CHANGES.md),
-  [COMPONENTS.md](../layers/COMPONENTS.md), [POLICY.md](../layers/POLICY.md),
+  [components](../layers/REPORTS.md#components-and-ownership), [policy](../layers/REPORTS.md#change-policy),
   [REPORTS.md](../layers/REPORTS.md))
 - **Scoped access and plugin seams**: REST, MCP over HTTP and webhooks resolve
   each caller to a principal scoped to repositories and tools, with hashed,
   expiring tokens. Authentication, team directory, change metadata, event
   delivery and report sections are named seams a plugin can fill.
 - **Privacy** (self-hosted): source never leaves your infrastructure, BYOK or fully
-  offline via Ollama. Anonymous, opt-out usage telemetry (command names and coarse
-  environment only, never code, paths or repo names) can be turned off with
-  `repowise telemetry disable`, `DO_NOT_TRACK=1`, or by running offline. Stored:
+  offline via Ollama. Anonymous, opt-out usage telemetry (command, MCP tool and
+  client names, status, duration and coarse environment, never code, paths or
+  repo names; raw events deleted after 90 days) can be turned off with
+  `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`
+  or `REPOWISE_OFFLINE=1`. Stored:
   graph, non-reversible embeddings, wiki pages, git metadata, decision records. Raw
   source is processed transiently and never persisted. Full detail:
   [SECURITY_COMPLIANCE.md](SECURITY_COMPLIANCE.md) and
@@ -112,20 +117,21 @@ All of the following ship in `pip install repowise` today, free for internal use
 
 ## 3. First-class language coverage
 
-Repowise parses **27 languages to a full AST** and places **41 on a five-rung
+Repowise parses **29 languages to a full AST** and places **43 on a five-rung
 ladder**, so "do you support X" gets the rung as its answer rather than a yes or a
 no. Both numbers matter and neither is worth quoting alone.
 
-The 27 are the top three rungs. At **Full tier sit 14** (Python, TypeScript,
-JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, and Ruby) with
+The 29 are the top three rungs. At **Full tier sit 15** (Python, TypeScript,
+JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, **C#**, Scala, Ruby and
+Salesforce Apex) with
 AST parsing, import resolution, named bindings, call resolution, heritage
 extraction, multi-project workspace resolvers, framework-aware edges, per-language
-dynamic-hint extractors, and code-health markers. A further **11 at Good tier** (C,
+dynamic-hint extractors, and code-health markers. A further **12 at Good tier** (C,
 Swift, PHP, Dart, Object Pascal/Delphi, COBOL, GDScript, VB.NET, Elixir, F#,
-Objective-C) get most of that without the full health suite. COBOL resolves
+Objective-C, Perl) get most of that without the full health suite. COBOL resolves
 literal `CALL` and local `PERFORM` targets but not copybooks or dynamic calls;
-GDScript and F# also lack framework edges and named bindings. Luau
-and Razor/Blazor are partial. SQL/dbt, shell, HTML, and the config formats are
+GDScript and F# also lack framework edges and named bindings. **2 sit at Partial
+tier** (Luau and Razor/Blazor). SQL/dbt, shell, HTML, and the config formats are
 handled by dedicated extractors on top of that.
 
 Below the AST line the ladder continues rather than stopping: **6 at Lightweight**
@@ -138,9 +144,9 @@ would not survive a technical evaluation. Full ladder:
 [LANGUAGE_SUPPORT.md](../layers/LANGUAGE_SUPPORT.md).
 
 **Languages are never gated.** Every one of them ships in the AGPL distribution,
-including the ones still climbing. COBOL now ships at the Good tier; remaining
+including the ones still climbing. COBOL sits at the Good tier; remaining
 work is on the public [roadmap](../../ROADMAP.md#languages). Where you need a language
-or framework that is not there, §5.5 covers having it built and maintained by us
+or framework that is not there, §5.4 covers having it built and maintained by us
 as a commercial line item, and the result still ships to everyone under AGPL.
 
 For estates built on a particular stack, the relevant Full-tier capabilities are
@@ -159,16 +165,23 @@ worth calling out. For **.NET**, as one example:
 The same depth exists for the other Full-tier languages. The language pipeline is
 modular by design; adding or deepening a language touches per-language subpackages,
 not the parser core, which is what makes the **custom language / framework
-extensions** in §5.5 a tractable commercial offering.
+extensions** in §5.4 a tractable commercial offering.
 
 ---
 
 ## 4. Commercial capabilities: at a glance
 
-Status is honest: **GA** (generally available today), **dev** (working internals,
-limited customer-facing surface), or **planned** (near-term roadmap). Sequencing
-against your procurement timeline is agreed as part of the commercial proposal,
-the items that matter most to you can be prioritized.
+Each commercial row carries one of two statuses: **GA** (generally available
+today, on the hosted platform or on your infrastructure as marked) or **set up per
+deployment** (scoped with you and set up for your deployment during the pilot).
+Sequencing against your procurement timeline is agreed as part of the commercial
+proposal, so the items that matter most to you come first.
+
+**Plan names.** **Pro** and **Teams** are the paid plans of the hosted platform at
+repowise.dev. A
+capability marked "Pro and Teams" is on both plans; one marked "Teams" is on the
+Teams plan. Current prices are on
+[repowise.dev/pricing](https://www.repowise.dev/pricing).
 
 | Capability | Open Source (AGPL) | Commercial License |
 |------------|:------------------:|:------------------:|
@@ -188,10 +201,9 @@ the items that matter most to you can be prioritized.
 | Assessment, change evidence and inventory reports | ✅ | ✅ |
 | Package usage with CycloneDX 1.6 usage export | ✅ | ✅ |
 | Scoped tokens for REST, MCP HTTP and webhooks; plugin seams | ✅ | ✅ |
-| Central policy management, org-wide enforcement, approvals and policy audit | — | ✅ *(planned)* |
-| Foresight: learned fix localization, forgotten files, tests to update, learned health | — | ✅ *(waitlist, [FORESIGHT.md](FORESIGHT.md))* |
+| Central policy management, org-wide enforcement, approvals and policy audit | — | ✅ *(set up per deployment)* |
 | Graph-aware enhanced security scanning | — | ✅ *(GA on hosted)* |
-| Language-specific security rulesets | — | ✅ *(dev)* |
+| Language-specific security rulesets | — | ✅ *(set up per deployment)* |
 | CVE-aware dependency analysis (KEV / EPSS / priority-scored) | — | ✅ *(GA on hosted)* |
 | Usage-aware CVE triage (imports × dead code) | — | ✅ *(GA on hosted)* |
 | Function-level reachability triage | — | ✅ *(GA on hosted, per-language coverage)* |
@@ -201,13 +213,13 @@ the items that matter most to you can be prioritized.
 | Audit trail (in-product + JSON / CSV export + webhook stream) | — | ✅ *(GA on hosted, security surface)* |
 | Jira / Confluence integration | — | ✅ *(GA on hosted, Teams)* |
 | GitLab.com repositories (connect, add projects, sync on push) | — | ✅ *(GA on hosted)* |
-| GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket | — | ✅ *(rolling out)* |
+| GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket | — | ✅ *(set up per deployment)* |
 | Slack / Teams security alerting (signed webhooks) | — | ✅ *(GA on hosted, Teams)* |
-| SAML / OIDC SSO + SCIM | — | ✅ *(rolling out)* |
-| RBAC + multi-tenant | — | ✅ *(planned)* |
-| Air-gapped install bundle | — | ✅ *(planned)* |
+| SAML / OIDC SSO + SCIM | — | ✅ *(set up per deployment)* |
+| RBAC + multi-tenant | — | ✅ *(set up per deployment)* |
+| Air-gapped install bundle | — | ✅ *(set up per deployment)* |
 | Reference HA topology | — | ✅ *(GA on customer infra)* |
-| Engineering leader dashboard | — | ✅ *(rolling out)* |
+| Engineering leader dashboard | — | ✅ *(set up per deployment)* |
 | Custom language / framework extensions | — | ✅ *(GA)* |
 | Priority support & SLA | — | ✅ *(GA)* |
 | IP indemnification + defensive patent grant | — | ✅ *(GA)* |
@@ -227,35 +239,36 @@ the items that matter most to you can be prioritized.
   code graph (feeding a bounded priority bump), and AI agents see security
   state before modifying a file through the hosted `get_security` MCP tool and
   the security section `get_risk` attaches.
-- **Language-specific security rulesets** *(dev)*: rulesets built on top of the
-  per-language dynamic-hint extractors and framework edges. For .NET, planned checks
-  include `[Authorize]` coverage on controllers and Minimal API endpoints,
+- **Language-specific security rulesets** *(set up per deployment)*: rulesets built
+  on top of the per-language dynamic-hint extractors and framework edges. For .NET,
+  the checks include `[Authorize]` coverage on controllers and Minimal API endpoints,
   `IConfiguration` secret leakage, EF Core raw-SQL risk, `HttpClient` lifetime
   issues, and `AllowAnonymous` on sensitive routes. Each language's ruleset ships as
   a focused subset, then expands on customer feedback.
-- **CVE-aware dependency analysis** *(available on the hosted platform, Pro+)*:
+- **CVE-aware dependency analysis** *(available on the hosted platform, Pro and
+  Teams)*:
   full dependency inventory from manifests and lock files (all major ecosystems,
   transitive deps included) matched against the OSV.dev database (which aggregates
   GitHub Advisory and NVD-derived data), enriched with CISA KEV listing, EPSS
   exploitation probability, and fix availability, then ranked by a composed
   priority score. A nightly refresh re-matches stored inventories so new
   advisories surface without re-indexing, with in-product notifications.
-- **Usage-aware CVE triage** *(available on the hosted platform, Pro+)*: every
+- **Usage-aware CVE triage** *(available on the hosted platform, Pro and Teams)*: every
   CVE is labeled by whether your code actually imports the vulnerable package,
   imports it only from dead code, or doesn't import it at all (with the import
   sites as clickable evidence), cross-referencing the existing parse and
-  dead-code layers. Unmappable packages are labeled `unknown` honestly, never
-  guessed.
+  dead-code layers. Unmappable packages are labeled `unknown`, never guessed.
 - **Function-level reachability triage** *(available on the hosted platform,
-  Pro+)*: classifies CVEs by whether the advisory's affected packages or
+  Pro and Teams)*: classifies CVEs by whether the advisory's affected packages or
   symbols are actually imported, crossing OSV symbol data with the per-import
-  names the indexer captures. Coverage is per-ecosystem and reported honestly
+  names the indexer captures. Coverage is per-ecosystem and reported
   in-product: Go is import-path-reliable (the Go vulndb lists affected
   packages per advisory), PyPI / npm / cargo are assessed only when both the
   advisory and the code name symbols, and other ecosystems stay at
   package-level triage. Provably-unreachable findings are discounted, never
   hidden; nothing is ever claimed without evidence on both sides.
-- **SBOM generation + VEX export** *(available on the hosted platform, Pro+)*,
+- **SBOM generation + VEX export** *(available on the hosted platform, Pro and
+  Teams)*:
   CycloneDX 1.6 SBOM per snapshot with per-dependency license detection and
   license-risk classification, downloadable in-product, plus dependency diffs
   between any two snapshots, and a CycloneDX 1.6 **VEX** document that maps
@@ -263,109 +276,104 @@ the items that matter most to you can be prioritized.
   standard impact-analysis states, generated fresh at download so it always
   reflects current triage. SPDX and cross-format conversion on the extended
   roadmap.
-- **Compliance reporting** *(available on the hosted platform, Teams+)*,
+- **Compliance reporting** *(available on the hosted platform, Teams)*:
   **PCI-DSS 4.0** and **SOC 2** control-coverage reports derived from the live
   security findings, with per-control evidence drill-ins and JSON / Markdown
-  export. Framed honestly in-product and in every export: coverage signals,
+  export. Framed in-product and in every export as coverage signals,
   not an audit or certification: controls automated findings cannot evidence
-  are marked for manual attestation rather than silently passed. ISO 27001
-  Annex A and GDPR / data-residency mappings on the extended roadmap; we'd
-  rather ship two solid mappings than four shallow ones.
+  are marked for manual attestation, never silently passed. ISO 27001
+  Annex A and GDPR / data-residency mappings are on the extended roadmap.
 - **Audit trail** *(available on the hosted platform for the security surface,
-  Teams+)*: security reads and actions (scans triggered, vulnerability and
+  Teams)*: security reads and actions (scans triggered, vulnerability and
   secret views, SBOM / VEX exports, compliance views, finding-status changes,
   and MCP reads by AI agents) logged insert-only with user, IP, and timestamp,
   queryable in-product and exportable to JSON / CSV, plus an opt-in
   SIEM-lite stream that forwards audit events to any HTTPS endpoint as signed
-  webhooks. Coverage beyond the security surface (decisions, overrides) is in
-  development; native Splunk / Datadog / Elastic connectors on the roadmap.
+  webhooks. Native Splunk / Datadog / Elastic connectors are on the roadmap.
 - **Secret-in-code detection**: **OSS / self-hosted:** `repowise security scan
   --history` walks full git history with the same local pattern registry used
   during `init` / `update` (working-tree scanning), and persists findings
-  locally. **Hosted platform (Pro+):** fingerprint + redacted-preview storage,
+  locally. **Hosted platform (Pro and Teams):** fingerprint + redacted-preview storage,
   live-at-`HEAD` flagging, and incremental re-scans, never the secret value.
   Graph integration (which services / modules referenced a leaked secret) is on
   the roadmap.
 
-### 5.2 Workflow Integrations *(rolling out)*
+### 5.2 Workflow Integrations
 
-The plumbing these sit on (audit trail, RBAC, the commercial event bus) is in
-development. The connectors themselves are sequenced by customer demand; additional
-integrations beyond this list are available on request.
+Connectors not yet on the hosted platform are scoped and set up for your
+deployment, sequenced by customer demand; integrations beyond this list are
+available on request.
 
-- **Jira** *(available on the hosted platform, Teams+)*: architectural decisions
+- **Jira** *(available on the hosted platform, Teams)*: architectural decisions
   linked to the Jira issues that motivated them: links are mined from decision
   evidence commits (validated against the site's real project keys) or added
   manually by key, with live-ish status on the decision pages and in `get_why`,
   so AI agents see the originating ticket next to the rationale. Risk-finding
   links and PR-impact auto-comments on linked issues are on the roadmap.
-- **Confluence** *(available on the hosted platform, Teams+)*: scheduled (weekly
+- **Confluence** *(available on the hosted platform, Teams)*: scheduled (weekly
   or on-demand) publication of the Repowise wiki to a nominated space and parent
   page, updated in place and never duplicated; every page carries a link-back and
   a freshness banner stating the exact source commit, with an explicit stale
   warning when the snapshot trails the repository head.
 - **GitLab.com** *(available on the hosted platform)*: connect a GitLab account,
   add projects, and keep them current on every push or through polling.
-- **GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket**: managed webhooks, a
+- **GitHub Enterprise / Azure DevOps / GitLab self-managed / Bitbucket** *(set up
+  per deployment)*: managed webhooks, a
   PR-comment bot that posts blast-radius and reviewer suggestions, and a
   branch-protection check that blocks merges touching hotspots without a reviewer
   from the ownership list.
 - **Slack & Microsoft Teams**: security alerting is available today on the
-  hosted platform (Teams+) as HMAC-signed webhooks with a Slack-compatible
+  hosted platform (Teams) as HMAC-signed webhooks with a Slack-compatible
   format (works with Slack, Microsoft Teams, and Mattermost inbound
   webhooks): new critical CVEs, live secrets, failed scans, and
   rotation-overdue reminders, plus the opt-in audit-event stream. Alerts on
-  hotspot drift, bus-factor warnings, and decision staleness are rolling out
-  on the same plumbing, routed by ownership.
-- **SAML / OIDC SSO**: Okta, Entra ID, Auth0, Google Workspace, generic SAML 2.0.
-- **SCIM provisioning**: automatic user / group lifecycle.
+  hotspot drift, bus-factor warnings, and decision staleness run on the same
+  plumbing, routed by ownership, and are set up per deployment.
+- **SAML / OIDC SSO** *(scoped and set up for your deployment)*: Okta, Entra ID,
+  Auth0, Google Workspace, generic SAML 2.0.
+- **SCIM provisioning** *(scoped and set up for your deployment)*: automatic
+  user / group lifecycle.
 
 ### 5.3 Engineering Leadership & Governance
 
 The underlying signals (ownership, bus factor, hotspot trends, decision staleness)
 are already computed and queryable today via the OSS dashboard; the leadership-facing
-presentation and policy layer is what's rolling out commercially.
+presentation and policy layer is the commercial part, set up per deployment.
 
-- **Engineering leader dashboard** *(rolling out)*: bus-factor trends, hotspot
+- **Engineering leader dashboard** *(set up per deployment)*: bus-factor trends, hotspot
   evolution over time, cross-repo dead code, ownership drift, decision-staleness
   curves, scheduled email digests (weekly / sprint / monthly / executive).
-- **Session intelligence harvesting** *(planned)*: architectural decisions surfaced
+- **Session intelligence harvesting** *(set up per deployment)*: architectural decisions surfaced
   from AI coding sessions and proposed to the team knowledge base, so tribal
   knowledge generated *during* AI-assisted work doesn't evaporate when the session
   ends.
-- **Shared team context layer** *(dev)*: one `CLAUDE.md` backed by the full graph
+- **Shared team context layer** *(set up per deployment)*: one `CLAUDE.md` backed by the full graph
   and decision layer, auto-injected into every team member's IDE / agent session via
   MCP. Every engineer's agent starts from the same institutional context.
-- **Cross-repo intelligence at scale** *(dev)*: hotspots, dead code, and ownership
+- **Cross-repo intelligence at scale** *(set up per deployment)*: hotspots, dead code, and ownership
   across the entire estate with centralized dashboards (beyond the local-workspace
   scope already shipping in OSS).
-- **Organisation-wide change policy** *(planned)*: policy authoring and local or
+- **Organisation-wide change policy** *(set up per deployment)*: policy authoring and local or
   CI evaluation ship in open source today (`.repowise/policies.yaml` and
   `repowise check`). The commercial layer adds central policy management,
   organisation-wide enforcement across repositories, approval workflows and a
   policy audit trail.
 
-### 5.4 Foresight *(waitlist)*
+<a id="55-enterprise-operations"></a>
 
-Learned models, trained on years of public open-source history, that read the
-index to predict what a piece of work will need: the files and functions a fix
-will touch, the file a change forgot, the tests to update, and a health signal
-with learned weights. No LLM, CPU only, local inference, so it runs self-hosted or
-air-gapped, and it never trains on customer code. Measured results and the
-waitlist: [FORESIGHT.md](FORESIGHT.md).
+### 5.4 Enterprise Operations
 
-### 5.5 Enterprise Operations
-
-- **Role-based access control** *(planned)*: repo-, module-, and decision-level
-  permissions; SCIM group mapping.
-- **Multi-tenant deployment** *(planned)*: segregate engineering orgs / product
-  lines while sharing cross-cutting infrastructure repos.
-- **Air-gapped install bundle** *(planned)*: packaged install with bundled grammars,
-  embedding model, and optional Ollama runtime for fully offline environments.
-- **Reference HA topology** *(GA on customer infra; managed scaling tooling:
-  planned)*, Postgres-backed metadata store, S3-compatible artefact storage, and
-  horizontally scalable MCP servers.
-- **Backup & restore tooling** *(planned)*: point-in-time snapshots of the
+- **Role-based access control** *(scoped and set up for your deployment)*: repo-,
+  module-, and decision-level permissions; SCIM group mapping.
+- **Multi-tenant deployment** *(scoped and set up for your deployment)*: segregate
+  engineering orgs / product lines while sharing cross-cutting infrastructure repos.
+- **Air-gapped install bundle** *(scoped and set up for your deployment)*: packaged
+  install with bundled grammars, embedding model, and optional Ollama runtime for
+  fully offline environments.
+- **Reference HA topology** *(GA on customer infra; managed scaling tooling set up
+  per deployment)*: Postgres-backed metadata store, S3-compatible artefact storage,
+  and horizontally scalable MCP servers.
+- **Backup & restore tooling** *(set up per deployment)*: point-in-time snapshots of the
   intelligence layers.
 - **Priority support & SLA** *(GA)*: named support contact, response-time SLA, and a
   quarterly architecture-review session.

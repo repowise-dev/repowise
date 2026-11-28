@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from typing import Any
 
 import pytest
-from rich.console import Console
 
 from repowise.cli.agent_targets import registry
 from repowise.cli.commands.init_cmd.command import _interactive_gate
 from repowise.cli.ui import provider_selection as ui
+from repowise.cli.ui.subscription import SubscriptionContext
 from repowise.core.agents.identity import identity_for_target_id
+
+from ._provider_picker import pick_default
 
 
 class _Target:
@@ -35,18 +36,8 @@ def _set_up(monkeypatch: Any, *target_ids: str) -> None:
 def _default_pick(
     monkeypatch: Any, detected: dict[str, str], prefer: tuple[str, ...]
 ) -> tuple[str, str]:
-    """The provider the picker offers as its default, and what it printed."""
-    monkeypatch.setattr(ui, "_detect_provider_status", lambda: detected)
-    seen: dict[str, str] = {}
-
-    def ask(*_a: object, default: str, **_k: object) -> str:
-        seen["default"] = default
-        return default
-
-    monkeypatch.setattr(ui.Prompt, "ask", ask)
-    buf = io.StringIO()
-    ui._interactive_provider_name(Console(file=buf, width=120), None, prefer=prefer)
-    return ui._PROVIDER_CHOICES[int(seen["default"]) - 1], buf.getvalue()
+    monkeypatch.setattr(ui, "_detect_provider_status", lambda *_a: detected)
+    return pick_default(monkeypatch, subscription=SubscriptionContext(prefer=prefer))
 
 
 def test_agent_set_up_here_lists_its_provider(tmp_path: Path, monkeypatch: Any) -> None:
@@ -119,14 +110,14 @@ def test_opencode_reason_does_not_claim_a_login(monkeypatch: Any) -> None:
 
 
 def test_setup_text_for_a_missing_opencode_claims_no_login(monkeypatch: Any) -> None:
-    monkeypatch.setattr(ui, "_agent_cli_status", lambda _name: (False, False))
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_status", lambda _name: (False, False))
     text = " ".join(ui._agent_cli_setup_lines("opencode"))
     assert "uses your opencode CLI setup" in text
     assert "login" not in text
 
 
 def test_setup_text_for_claude_names_the_auth_login(monkeypatch: Any) -> None:
-    monkeypatch.setattr(ui, "_agent_cli_status", lambda _name: (True, False))
+    monkeypatch.setattr("repowise.cli.ui.subscription.agent_cli_status", lambda _name: (True, False))
     text = " ".join(ui._agent_cli_setup_lines("claude_cli"))
     assert "uses your Claude Code login" in text
     assert "claude auth login" in text

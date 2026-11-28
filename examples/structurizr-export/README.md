@@ -2,7 +2,7 @@
 
 Emit your architecture as [Structurizr](https://structurizr.com) DSL from the
 graph Repowise already built. Deterministic — no LLM key, works after
-`init --index-only`.
+`init --no-prose`.
 
 ## Prerequisites
 
@@ -13,7 +13,7 @@ graph Repowise already built. Deterministic — no LLM key, works after
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Model fragment (default)
@@ -67,7 +67,7 @@ repowise export --format structurizr --no-externals
 
 | Step | Expected |
 |------|----------|
-| `repowise init --index-only --yes` | Completes without an API key |
+| `repowise init --yes --no-prose` | Completes without an API key |
 | `repowise export --format structurizr` | Writes a `.dsl` fragment; prints include hint |
 | `repowise export --format structurizr --standalone -o /tmp/rw-arch/` | Complete workspace that Structurizr can open alone |
 | Zero containers in the printed counts | Index/graph problem — re-run init, not a format bug |

@@ -17,9 +17,51 @@ import { READER_PERSONAS, type ReaderPersona } from "./reader-persona";
 import { cn } from "../lib/cn";
 
 /**
- * Per-page controls for the DocsHeader row — the compact freshness badge and
- * the reader-level segmented control. The reader control renders only when
- * filtering actually changes this page; on curated pages it disappears.
+ * The reader-level segmented control: how much of a page to show. Render it
+ * only when filtering changes the page; on curated pages it is a no-op.
+ */
+export function ReaderLevelControl({
+  persona,
+  setPersona,
+  className,
+}: {
+  persona: ReaderPersona;
+  setPersona: (next: ReaderPersona) => void;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0",
+        className,
+      )}
+      role="group"
+      aria-label="Reader level"
+    >
+      {READER_PERSONAS.map((p) => (
+        <button
+          key={p.value}
+          onClick={() => setPersona(p.value)}
+          title={p.hint}
+          aria-pressed={persona === p.value}
+          className={cn(
+            "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
+            persona === p.value
+              ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
+              : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
+          )}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Per-page controls for the DocsHeader row: the compact freshness badge and
+ * the reader-level control. The reader control renders only when filtering
+ * actually changes this page; on curated pages it disappears.
  */
 export function DocsPageActions({
   confidence,
@@ -38,27 +80,7 @@ export function DocsPageActions({
     <>
       <ConfidenceBadge score={confidence} status={freshnessStatus} compact />
       {personaHasEffect && (
-        <div
-          className="inline-flex items-center rounded-md border border-[var(--color-border-default)] p-0.5 shrink-0"
-          role="group"
-          aria-label="Reader level"
-        >
-          {READER_PERSONAS.map((p) => (
-            <button
-              key={p.value}
-              onClick={() => setPersona(p.value)}
-              title={p.hint}
-              className={cn(
-                "rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors",
-                persona === p.value
-                  ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
-                  : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
-              )}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
+        <ReaderLevelControl persona={persona} setPersona={setPersona} />
       )}
     </>
   );

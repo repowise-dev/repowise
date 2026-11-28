@@ -13,8 +13,8 @@ An agent can touch repowise in two independent ways:
 - Indexing backend: the agent's own CLI runs as the LLM that writes the
   wiki, using the user's existing login, with no API key.
 
-An agent can have either, both or neither. GitHub Copilot CLI, for example, is
-an integration target with a registered identity and no indexing backend.
+An agent can have either, both or neither. GitHub Copilot CLI is both an
+integration target and an indexing backend through its authenticated local CLI.
 
 **Contents**
 

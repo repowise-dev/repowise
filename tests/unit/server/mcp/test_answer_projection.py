@@ -32,7 +32,7 @@ class _Provider:
         return SimpleNamespace(content=self.content)
 
 
-def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 1.0)):
+def _patch_retrieval(monkeypatch, answer_mod, scores=(6.0, 4.0)):
     async def _fake_retrieve(question, ctx):
         return [dict(hit, score=score) for hit, score in zip(_HITS, scores, strict=True)]
 
@@ -157,7 +157,10 @@ def test_high_medium_and_low_are_intentionally_different_shapes():
     assert "retrieval" not in high and "best_guesses" not in high
     assert "retrieval" not in medium and len(medium["best_guesses"]) == 1
     assert "best_guesses" in low and "retrieval" not in low
-    assert high["next_action_hint"] == "Use the answer and citations directly."
+    assert high["next_action_hint"] == (
+        "Use the answer directly; it rests on `check` (src/auth/service.py:1-2), "
+        "served in symbol_bodies."
+    )
     assert medium["next_action_hint"] != high["next_action_hint"]
     assert low["next_action_hint"] != high["next_action_hint"]
 
@@ -255,7 +258,7 @@ def test_expanded_degraded_answer_names_only_retained_blocks():
     raw = _raw("low")
     raw.update(
         {
-            "degraded": "no-llm-provider",
+            "degraded": "synthesis-failed",
             "answer": "raw summary names retrieval, fallback_targets, and candidates",
         }
     )
@@ -377,7 +380,7 @@ async def test_no_llm_and_failed_legs_remain_compact_and_actionable(
     assert not set(result["candidate_files"]) & set(result.get("citations") or [])
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
     if legs["vector"] == "error":
-        assert result["_meta"]["retrieval_degraded"] == ["vector"]
+        assert result["_meta"]["degraded"] == ["retrieval:vector"]
 
 
 @pytest.mark.asyncio
@@ -424,8 +427,8 @@ async def test_real_embedding_failure_keeps_fts_evidence_in_final_projection(
 
     assert result["answer"]
     assert result.get("best_guesses") or result.get("retrieval")
-    assert "embed" in result["_meta"]["retrieval_degraded"]
-    assert "vector" in result["_meta"]["retrieval_degraded"]
+    assert "retrieval:embed" in result["_meta"]["degraded"]
+    assert "retrieval:vector" in result["_meta"]["degraded"]
     assert len(json.dumps(result, separators=(",", ":"), default=str)) < 24_000
 
 
@@ -475,7 +478,7 @@ def _behind(**extra) -> dict:
     return {"index_behind": True, "indexed_commit": "abc123abc123", **extra}
 
 
-def test_low_confidence_on_a_behind_index_points_at_repowise_update():
+def test_low_confidence_on_a_behind_index_states_the_fact():
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
     from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
 
@@ -484,8 +487,8 @@ def test_low_confidence_on_a_behind_index_points_at_repowise_update():
 
     assert hint == f"{existing} {INDEX_BEHIND_LOW_CONFIDENCE_HINT}"
     assert hint.startswith(existing)
-    assert "repowise update" in hint
-    assert INDEX_BEHIND_LOW_CONFIDENCE_HINT.count("repowise update") == 1
+    assert "behind HEAD" in hint
+    assert "repowise update" not in hint
 
 
 def test_the_pointer_is_the_whole_hint_when_there_was_none():
@@ -511,10 +514,10 @@ def test_a_current_index_never_adds_the_pointer():
         assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
 
 
-def test_a_stale_warning_already_names_the_command_so_the_hint_is_left_alone():
+def test_a_stale_warning_already_states_the_fact_so_the_hint_is_left_alone():
     from repowise.server.mcp_server.tool_answer.projection import _hint_with_update_pointer
 
-    freshness = _behind(stale_warning="Index is behind live HEAD, run `repowise update`.")
+    freshness = _behind(stale_warning="Facts below describe abc123abc123; HEAD is def456def456.")
 
     assert _hint_with_update_pointer("Low confidence.", "low", freshness) == "Low confidence."
 
@@ -661,7 +664,9 @@ def test_key_symbols_served_nowhere_else_keep_their_text():
         }
     )
 
-    payload = project_answer_payload(raw, question="how does auth work")
+    # The default reply serves lean symbols; the dedupe keeps unserved text
+    # wherever text is served.
+    payload = project_answer_payload(raw, question="how does auth work", include=["evidence"])
 
     outside = payload["retrieval"][0]["key_symbols"][0]
     other_file = payload["retrieval"][1]["key_symbols"][0]
@@ -829,3 +834,103 @@ def test_degraded_empty_retrieval_retains_full_fallback_targets():
     out = project_answer_payload(raw, question="where is LCOM4 computed")
     assert out["fallback_targets"] == paths
     assert "retrieval" not in out
+
+
+def test_keyless_note_drops_its_generic_sentences():
+    from repowise.server.mcp_server.tool_answer.config import (
+        _BODY_NOTE,
+        _NO_SYNTHESIS_NOTE,
+        _RATIONALE_NOTE,
+    )
+    from repowise.server.mcp_server.tool_answer.projection import _trim_keyless_note
+
+    generic = {"degraded": "no-llm-provider", "note": _NO_SYNTHESIS_NOTE + _RATIONALE_NOTE + _BODY_NOTE}
+    _trim_keyless_note(generic)
+    assert "note" not in generic
+
+    pointed = {"degraded": "no-llm-provider", "note": _NO_SYNTHESIS_NOTE + " Read src/a.py:40-90 next."}
+    _trim_keyless_note(pointed)
+    assert pointed["note"] == "Read src/a.py:40-90 next."
+
+    keyed = {"degraded": "synthesis-timeout", "note": _NO_SYNTHESIS_NOTE}
+    _trim_keyless_note(keyed)
+    assert keyed["note"] == _NO_SYNTHESIS_NOTE
+
+
+def _raw_retrieval_only(confidence: str) -> dict:
+    """A synthesized reply whose evidence is page rows, as on a documented index."""
+    return {
+        "answer": "Use AuthService.check.",
+        "citations": ["src/auth/service.py"],
+        "confidence": confidence,
+        "retrieval_quality": "partial",
+        "retrieval": [
+            {"path": "src/auth/service.py", "title": "Auth service", "excerpt": "page " * 300},
+            {
+                "path": "src/auth/middleware.py",
+                "title": "Middleware",
+                "excerpt": "page " * 300,
+                "key_symbols": [
+                    {
+                        "name": "guard",
+                        "kind": "function",
+                        "start_line": 4,
+                        "end_line": 9,
+                        "source_excerpt": "def guard(): ...",
+                        "docstring": "Guard the route.",
+                    }
+                ],
+            },
+            {"path": "src/auth/routes.py", "title": "Routes", "excerpt": "page " * 300},
+        ],
+        "_candidate_file_facts": {
+            "src/auth/routes.py": {"functions": [{"name": "login", "line": 12}]}
+        },
+        "_meta": {"contract_version": 1},
+    }
+
+
+@pytest.mark.parametrize("confidence", ["medium", "low"])
+def test_a_synthesized_reply_serves_retrieval_rows_without_page_excerpts(confidence):
+    raw = _raw_retrieval_only(confidence)
+
+    compact = project_answer_payload(raw, question="how does auth work")
+    expanded = project_answer_payload(raw, question="how does auth work", include=["evidence"])
+
+    rows = compact["retrieval"]
+    assert all("excerpt" not in row for row in rows)
+    # Rows stay as the shape kept them; symbols and functions point Reads.
+    assert [row["path"] for row in rows] == [
+        "src/auth/service.py",
+        "src/auth/middleware.py",
+        "src/auth/routes.py",
+    ][: len(rows)]
+    assert len(rows) == (2 if confidence == "medium" else 3)
+    assert rows[1]["key_symbols"] == [
+        {"name": "guard", "kind": "function", "start_line": 4, "end_line": 9}
+    ]
+    if confidence == "low":
+        assert rows[2]["functions"] == [{"name": "login", "line": 12}]
+    assert compact["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
+    assert all(row.get("excerpt") for row in expanded["retrieval"])
+    assert expanded["retrieval"][1]["key_symbols"][0]["docstring"] == "Guard the route."
+
+
+def test_a_degraded_reply_keeps_its_retrieval_excerpts():
+    raw = _raw_retrieval_only("low")
+    raw["degraded"] = "synthesis-failed"
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    assert all(row.get("excerpt") for row in payload["retrieval"])
+
+
+def test_rows_with_nothing_to_cut_advertise_no_recovery():
+    raw = _raw_retrieval_only("low")
+    raw["retrieval"] = [{"path": "src/auth/routes.py", "title": "Routes"}]
+    raw.pop("_candidate_file_facts")
+
+    payload = project_answer_payload(raw, question="how does auth work")
+
+    assert payload["retrieval"] == [{"path": "src/auth/routes.py", "title": "Routes"}]
+    assert "recovery" not in payload.get("_meta", {}).get("projection", {})

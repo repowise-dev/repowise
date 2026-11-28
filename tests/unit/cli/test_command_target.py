@@ -118,6 +118,27 @@ def test_repo_alias_implies_workspace(fake_workspace, chdir):
     assert target.repo_filter == "backend"
 
 
+def test_workspace_flag_reaches_the_workspace_from_a_non_member_repo(fake_workspace, chdir):
+    clone = fake_workspace / "clones" / "other"
+    (clone / ".git").mkdir(parents=True)
+    chdir(clone)
+    assert resolve_command_target().ws_root is None
+    target = resolve_command_target(workspace_flag=True)
+    assert target.mode == "workspace"
+    assert target.ws_root == fake_workspace
+
+
+def test_indexed_root_with_a_broken_workspace_config_names_no_workspace(tmp_path, chdir):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".repowise-workspace.yaml").write_text("repos: [", encoding="utf-8")
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    chdir(tmp_path)
+    target = resolve_command_target()
+    assert target.mode == "single"
+    assert target.ws_root is None
+
+
 def test_workspace_flag_raises_when_no_workspace(tmp_path, chdir):
     chdir(tmp_path)
     with pytest.raises(WorkspaceNotFound):
@@ -195,6 +216,28 @@ def test_plain_dir_stays_single(tmp_path, chdir):
     assert target.auto_detected is False
 
 
+def test_nested_non_member_repo_is_its_own_target(fake_workspace, chdir):
+    """A git repo cloned under the workspace, but not one of its members,
+    is targeted itself even before it is indexed."""
+    clone = fake_workspace / "test-repos" / "clone"
+    (clone / ".git").mkdir(parents=True)
+    (clone / "src").mkdir()
+
+    for cwd in (clone, clone / "src"):
+        chdir(cwd)
+        target = resolve_command_target()
+        assert target.mode == "single"
+        assert target.repo_path == cwd
+        assert target.ws_root is None
+
+    # Indexed, it stays single and names no upstream workspace either.
+    (clone / ".repowise").mkdir()
+    (clone / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    chdir(clone)
+    target = resolve_command_target()
+    assert (target.mode, target.ws_root) == ("single", None)
+
+
 # ---------------------------------------------------------------------------
 # CommandTarget helpers
 # ---------------------------------------------------------------------------
@@ -255,3 +298,72 @@ def test_single_repo_path_refuses_an_unknown_alias(fake_workspace, chdir):
 
     with pytest.raises(click.ClickException):
         target.single_repo_path()
+
+
+# ---------------------------------------------------------------------------
+# narrow: the one repo, with the scope said in one line
+# ---------------------------------------------------------------------------
+
+
+def _said(target, **kwargs) -> tuple[Path, str]:
+    from io import StringIO
+
+    from rich.console import Console
+
+    buf = StringIO()
+    picked = target.narrow(Console(file=buf, width=300), command="health", **kwargs)
+    return picked, buf.getvalue()
+
+
+def test_narrow_from_the_root_names_the_primary_not_the_workspace(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    assert said.strip() == (
+        f"[workspace] health reads one repo: backend (primary) of 2 in {fake_workspace.name}; "
+        "pass --repo <alias> for another"
+    )
+
+
+def test_narrow_names_the_picked_alias(fake_workspace, chdir):
+    chdir(fake_workspace)
+    picked, said = _said(resolve_command_target(repo_alias="frontend"))
+
+    assert picked == fake_workspace / "frontend"
+    assert "reads one repo: frontend of 2" in said and "--repo" not in said
+
+
+def test_narrow_hint_matches_a_command_without_repo_option(fake_workspace, chdir):
+    chdir(fake_workspace)
+    _, said = _said(resolve_command_target(), repo_option=False)
+
+    assert "--repo" not in said and "run it inside another member repo" in said
+
+
+def test_narrow_inside_a_member_repo_says_so(fake_workspace, chdir):
+    chdir(fake_workspace / "backend")
+    picked, said = _said(resolve_command_target())
+
+    assert picked == fake_workspace / "backend"
+    # The tag survives Rich markup, and no --workspace promise is made.
+    assert said.strip() == (
+        f"[single-repo] health reads backend, a repo inside workspace {fake_workspace.name}"
+    )
+
+
+def test_narrow_is_silent_for_an_explicit_single_repo(fake_workspace):
+    picked, said = _said(resolve_command_target(path=str(fake_workspace / "backend")))
+
+    assert picked == fake_workspace / "backend" and said == ""
+
+
+def test_decision_json_skips_the_workspace_line(fake_workspace, chdir, capsys):
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    chdir(fake_workspace)
+    picked = _resolve_decision_repo(None, "json", needs_store=False)
+
+    assert picked == fake_workspace / "backend"
+    out, err = capsys.readouterr()
+    assert "reads one repo" not in out + err

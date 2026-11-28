@@ -51,6 +51,9 @@ export function TestsView({ repoId: id }: { repoId: string }) {
       batchPromptLabel: (count) => t("batchPromptAction", { count }),
       cleanTitle: (files) => t("cleanTitle", { files: formatNumber(files) }),
       cleanDescription: t("cleanBody"),
+      unreachedTitle: t("unreachedTitle"),
+      unavailableTitle: t("unavailableTitle"),
+      unavailableBody: t("unavailableBody"),
     }),
     [t],
   );

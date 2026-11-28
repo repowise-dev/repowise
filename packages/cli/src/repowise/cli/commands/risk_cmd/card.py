@@ -41,11 +41,13 @@ def _render_card(name: str, card: dict) -> None:
     _print_cross_repo(card.get("cross_repo_impact") or {})
     _print_defects(card.get("defect_profile"))
     if card.get("test_gap"):
-        console.print("  [yellow]No test file matches this file's name.[/yellow]")
+        console.print("  [yellow]No test is shown to reach this file.[/yellow]")
     for signal in card.get("security_signals") or []:
+        snippet = signal.get("snippet")
         console.print(
             f"  [red]{escape(str(signal.get('severity', '')))}[/red] "
-            f"{escape(str(signal.get('kind', '')))}: {escape(str(signal.get('snippet', '')))}"
+            f"{escape(str(signal.get('kind', '')))}"
+            + (f": {escape(str(snippet))}" if snippet else "")
         )
     _print_partners(card.get("co_change_partners") or [])
     episodes = card.get("episodes")
@@ -130,26 +132,26 @@ def _print_cross_repo(cross: dict) -> None:
     repos = cross.get("affected_repos") or []
     historical = cross.get("cross_repo_consumers") or []
     contracts = cross.get("contract_consumers") or []
-    console.print(
-        "  [bold]Crosses repo boundaries[/bold] [dim]"
-        f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
-        + (
-            f", {cross.get('contract_consumers_total', len(contracts))} "
-            "typed contract consumer(s)"
-            if contracts
-            else ""
+    parts = []
+    if historical:
+        parts.append(
+            f"{cross.get('cross_repo_consumers_total', len(historical))} historical co-change(s)"
         )
-        + (f" in {', '.join(str(r) for r in repos)}" if repos else "")
-        + "[/dim]"
-    )
+    if contracts:
+        parts.append(
+            f"{cross.get('contract_consumers_total', len(contracts))} typed contract consumer(s)"
+        )
+    where = f" in {', '.join(str(r) for r in repos)}" if repos else ""
+    console.print(f"  [bold]Crosses repo boundaries[/bold] [dim]{', '.join(parts)}{where}[/dim]")
 
 
 def _print_defects(defect: dict | None) -> None:
     if not defect:
         return
     magnet = " [magenta](bug magnet)[/magenta]" if defect.get("bug_magnet") else ""
+    window = f" in {defect['window']}" if defect.get("window") else ""
     console.print(
-        f"  [yellow]{defect.get('fix_count', 0)} bug fix(es)[/yellow], last "
+        f"  [yellow]{defect.get('fix_count', 0)} bug fix(es)[/yellow]{window}, last "
         f"{defect.get('last_fix_days_ago', '?')} day(s) ago{magnet}"
     )
     # ``top_symbols`` is a ``{name: fix_count}`` dict; iterating it bare drops the counts.

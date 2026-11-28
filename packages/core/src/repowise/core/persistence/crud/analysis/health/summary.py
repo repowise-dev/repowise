@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .....analysis.health.grading import analysed_share
 from .....analysis.health.ranking import deduction_by_path, worst_kpis
 from .....analysis.health.rows import split_unscored
-from .....analysis.health.scoring import nloc_weighted_attr
+from .....analysis.health.scoring import headline_split, nloc_weighted_attr
 from ....models import HealthFileMetric, HealthFinding
 from ..plain_rows import plain_rows
 from ..shown import shown
@@ -98,6 +98,8 @@ async def get_health_summary(
     *,
     metrics: list | None = None,
     findings: list | None = None,
+    include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> dict:
     """Aggregate KPIs over the per-file metrics table.
 
@@ -112,6 +114,7 @@ async def get_health_summary(
     ``get_health_findings(repository_id)``, i.e. every open row for the repo,
     post-exclusion. Handing over a *filtered* subset would silently skew
     ``open_findings`` and the per-dimension counts, which are repo headlines.
+    ``performance_causes`` counts language-gated causes only with *include_unverified*.
     """
     if metrics is None:
         metrics = await get_health_metrics(session, repository_id)
@@ -134,8 +137,7 @@ async def get_health_summary(
             "structure_average": None,
             "history_average": None,
             "maintainability_findings": 0,
-            "performance_findings": 0,
-            "performance_findings_density": None,
+            "performance_causes": None,
             "performance_coverage_pct": None,
             "performance_covered_files": 0,
             "performance_analyzed_files": 0,
@@ -145,6 +147,7 @@ async def get_health_summary(
             "worst_performance_score": None,
         }
     avg = nloc_weighted_attr(metrics, "score")
+    structure_average, history_average = headline_split(metrics)
 
     # The two co-surfaced pillars: the same NLOC weighting over their own
     # columns, ``None`` when no row carries one so a surface reads "not
@@ -180,18 +183,19 @@ async def get_health_summary(
 
     # Perf coverage: honest denominator for the score. On a repo that is mostly a
     # perf-unsupported language the aggregate perf average is meaningless, so we
-    # surface how much of the analyzed code a detector actually ran on, plus a
-    # findings-per-10K-LOC density over the *covered* lines (not the whole repo).
+    # surface how much of the analyzed code a detector actually ran on.
     from .....analysis.health.perf.coverage import coverage_for_metrics
+    from ..performance import performance_headline
 
     lang_by_path = await get_file_language_map(session, repository_id)
     coverage = coverage_for_metrics(metrics, lang_by_path)
-    performance_findings = by_dim.get("performance", 0)
-    performance_findings_density: float | None = None
-    if coverage.covered_nloc > 0:
-        performance_findings_density = round(
-            10000.0 * performance_findings / coverage.covered_nloc, 2
-        )
+    causes = await performance_headline(
+        session,
+        repository_id,
+        covered_nloc=coverage.covered_nloc,
+        include_unverified=include_unverified,
+        include_measured_hotspots=include_measured_hotspots,
+    )
     return {
         "file_count": len(metrics),
         "unanalysed_file_count": unanalysed,
@@ -204,11 +208,10 @@ async def get_health_summary(
         # The headline's two halves, in deduction points. Both come off columns
         # already on the rows in hand, so this costs no query — and without them
         # the page can show a score falling without saying which half moved.
-        "structure_average": _rounded(nloc_weighted_attr(metrics, "structure_deduction")),
-        "history_average": _rounded(nloc_weighted_attr(metrics, "history_deduction")),
+        "structure_average": _rounded(structure_average),
+        "history_average": _rounded(history_average),
         "maintainability_findings": by_dim.get("maintainability", 0),
-        "performance_findings": performance_findings,
-        "performance_findings_density": performance_findings_density,
+        "performance_causes": causes.as_dict(),
         "performance_coverage_pct": (coverage.pct_loc if coverage.analyzed_files else None),
         "performance_covered_files": coverage.covered_files,
         "performance_analyzed_files": coverage.analyzed_files,

@@ -1,0 +1,115 @@
+name: Rerun command
+
+# A `/rerun` comment on an open pull request re-runs the failed jobs of that
+# pull request's current head commit. GitHub's Triage role cannot re-run
+# workflows, so this lets trusted contributors retry flaky CI without write
+# access.
+#
+# Allowed: OWNER, MEMBER or COLLABORATOR (Triage collaborators report
+# COLLABORATOR), or anyone with at least one merged pull request here.
+# Everyone else gets a thumbs-down reaction and nothing runs; CONTRIBUTING.md
+# states the rule, so the PR thread stays free of bot replies.
+#
+# Security: issue_comment runs this file from the default branch, never from
+# the pull request, and no step checks out or executes pull request code. The
+# comment body is read from the event payload inside the script and is never
+# put in a shell command. A re-run keeps the privileges of its original
+# event: a fork pull request run still gets a read-only token and no secrets,
+# so re-running it grants nothing new. Runs awaiting first-time approval
+# (`action_required`) are never re-run, so this cannot approve fork CI.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  actions: write         # list runs and re-run failed jobs
+  pull-requests: read    # read the pull request's head SHA
+  issues: write          # react to the comment
+
+concurrency:
+  group: rerun-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.comment.body, '/rerun')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            // Re-run at most this many attempts of one run, so a broken job
+            // cannot be retried forever.
+            const MAX_ATTEMPTS = 3;
+            const RERUNNABLE = new Set(['failure', 'cancelled', 'timed_out']);
+            const { owner, repo } = context.repo;
+            const comment = context.payload.comment;
+
+            // Exact command only: `/rerun` alone or followed by whitespace.
+            if (!/^\/rerun(\s|$)/.test(comment.body)) return;
+
+            const react = (content) => github.rest.reactions.createForIssueComment({
+              owner, repo, comment_id: comment.id, content,
+            });
+
+            const login = comment.user.login;
+            let allowed = false;
+            if (comment.user.type !== 'Bot') {
+              if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association)) {
+                allowed = true;
+              } else {
+                const { data } = await github.rest.search.issuesAndPullRequests({
+                  q: `repo:${owner}/${repo} is:pr is:merged author:${login}`,
+                  per_page: 1,
+                });
+                allowed = data.total_count > 0;
+              }
+            }
+            if (!allowed) {
+              core.info(`${login} has no merged pull request here; not re-running.`);
+              await react('-1');
+              return;
+            }
+
+            const eyes = await react('eyes');
+            const { data: pr } = await github.rest.pulls.get({
+              owner, repo, pull_number: context.issue.number,
+            });
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
+              { owner, repo, head_sha: pr.head.sha, per_page: 100 },
+            );
+
+            let rerun = 0;
+            for (const run of runs) {
+              // Pull request CI only: never re-run push, schedule or dispatch
+              // runs that happen to share this SHA and may carry secrets.
+              if (run.head_sha !== pr.head.sha || run.event !== 'pull_request') continue;
+              if (run.status !== 'completed' || !RERUNNABLE.has(run.conclusion)) continue;
+              if (run.run_attempt >= MAX_ATTEMPTS) {
+                core.info(`Skipping ${run.name} (#${run.id}): already at attempt ${run.run_attempt}.`);
+                continue;
+              }
+              try {
+                await github.rest.actions.reRunWorkflowFailedJobs({ owner, repo, run_id: run.id });
+                core.info(`Re-running failed jobs of ${run.name} (#${run.id}).`);
+                rerun++;
+              } catch (err) {
+                core.warning(`Could not re-run ${run.name} (#${run.id}): ${err.message}`);
+              }
+            }
+
+            try {
+              await github.rest.reactions.deleteForIssueComment({
+                owner, repo, comment_id: comment.id, reaction_id: eyes.data.id,
+              });
+            } catch (err) {
+              core.warning(`Could not remove the eyes reaction: ${err.message}`);
+            }
+            // Rocket when something was re-run, confused when nothing qualified.
+            await react(rerun > 0 ? 'rocket' : 'confused');

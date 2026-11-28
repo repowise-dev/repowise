@@ -201,6 +201,25 @@ async def list_commit_shas(
     return list(rows.scalars())
 
 
+async def count_commit_categories(
+    session: AsyncSession, repository_id: str, where: CommitFilter | None = None
+) -> dict[str, int]:
+    """Commits under *where* per work category, classified from the subject
+    the same way the commit evolution chart does, so the two never disagree."""
+    from repowise.core.ingestion.git_indexer._constants import classify_commit_category
+
+    rows = await session.execute(
+        select(GitCommit.subject).where(
+            GitCommit.repository_id == repository_id, *commit_filter_clauses(where)
+        )
+    )
+    counts: dict[str, int] = {}
+    for subject in rows.scalars():
+        category = classify_commit_category(subject or "")
+        counts[category] = counts.get(category, 0) + 1
+    return counts
+
+
 async def get_commit_health_bulk(
     session: AsyncSession, repository_id: str, shas: Sequence[str]
 ) -> dict[str, GitCommitHealthDelta]:
