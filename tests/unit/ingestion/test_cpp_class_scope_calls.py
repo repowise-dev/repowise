@@ -251,3 +251,37 @@ class TestNonCallees:
         )
         graph = _build(tmp_path, {"node.h": node_h, "node.cc": node_cc, "value.h": value_h})
         assert "enclosing_inherited" not in _calls(graph, "value.h::value::value").values()
+
+
+_TOPO_CC = """struct TopoSort { void VisitTarget(int t); };
+struct Plan { void Compute(); };
+void Plan::Compute() {
+  struct TopoSort {
+    void VisitTarget(int t) { Visit(t); }
+    void Visit(int e) { record(e); }
+    void record(int e) {}
+  };
+  TopoSort topo_sort;
+  topo_sort.VisitTarget(1);
+}
+struct Guard {
+  ~Guard() { Refresh(); }
+  bool operator()(int x) const { return Check(x); }
+  void Refresh() {}
+  bool Check(int x) const { return true; }
+};
+"""
+
+
+class TestCallersThatAreNotPlainMethods:
+    def test_a_local_class_is_the_callee_and_the_caller(self, tmp_path: Path) -> None:
+        graph = _build(tmp_path, {"build.cc": _TOPO_CC})
+        local = "build.cc::Plan::Compute::TopoSort"
+        assert set(_calls(graph, "build.cc::Plan::Compute")) == {f"{local}::VisitTarget"}
+        assert set(_calls(graph, f"{local}::VisitTarget")) == {f"{local}::Visit"}
+        assert set(_calls(graph, f"{local}::Visit")) == {f"{local}::record"}
+
+    def test_a_destructor_and_an_operator_call_their_class_members(self, tmp_path: Path) -> None:
+        graph = _build(tmp_path, {"build.cc": _TOPO_CC})
+        assert set(_calls(graph, "build.cc::Guard::~Guard")) == {"build.cc::Guard::Refresh"}
+        assert set(_calls(graph, "build.cc::Guard::operator()")) == {"build.cc::Guard::Check"}

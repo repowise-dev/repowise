@@ -80,6 +80,7 @@ from .symbol_rules import (
     _refine_symbol_kind,
     _refine_visibility,
     _symbol_end_line,
+    cpp_local_type_member,
 )
 
 _node_text = node_text
@@ -507,8 +508,13 @@ def _kind_and_end_line(
         src,
         file.cpp_exports.container_ids,
         # An anonymous class member is a method of its own class, even
-        # inside another method's body; ``_find_parent`` names it.
-        keep_nested=has_object_owner or in_anonymous_class(def_node, config.anonymous_class_types),
+        # inside another method's body; ``_find_parent`` names it. So is a
+        # member of a C++ class declared in a function body.
+        keep_nested=(
+            has_object_owner
+            or in_anonymous_class(def_node, config.anonymous_class_types)
+            or (language == "cpp" and cpp_local_type_member(def_node, config.parent_class_types))
+        ),
     )
     if kind is None:
         return None
@@ -606,6 +612,10 @@ def _resolve_parent_name(
 ) -> str | None:
     """The enclosing type or module name, trying each language's own shape."""
     parent_name = _find_parent(def_node, config, receiver_nodes, src)
+    if language == "cpp":
+        local_parent = _cpp_local_parent(def_node, config, src)
+        if local_parent is not None:
+            return local_parent
     if parent_name is not None:
         return parent_name
 
@@ -650,6 +660,52 @@ def _resolve_parent_name(
     if language == "perl" and name_nodes:
         return perl_sub_owner(def_node, _node_text(name_nodes[0], src))
     return None
+
+
+def _cpp_local_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
+    """The parent of a class declared in a function body, or of a member of one.
+
+    It is the function's own id scope followed by every class between it and
+    *def_node* (``Plan::Compute::TopoSort``), so a local ``struct bytes`` never
+    shares an id with a namespace-scope ``bytes``. None when *def_node* is not
+    inside a local class (or is not one).
+    Ceiling: overloads of one function share the scope without their
+    discriminator, so same-named local classes in two overloads share ids.
+    """
+    classes: list[str] = []
+    child, node = def_node, def_node.parent
+    while node is not None:
+        if node.type in config.parent_class_types:
+            classes.append(_parent_type_name(node, src) or "")
+        elif node.type == "function_definition":
+            if not classes and def_node.type not in config.parent_class_types:
+                return None
+            # Only a class in the body is local. One the grammar recovered as
+            # a broken function's return type (an unexpanded macro before the
+            # next definition) is a namespace-scope class and keeps its own id.
+            body = node.child_by_field_name("body")
+            if body is None or body.id != child.id:
+                return None
+            owner = _cpp_function_scope(node, config, src)
+            return "::".join([owner, *reversed(classes)]) if owner else None
+        child, node = node, node.parent
+    return None
+
+
+def _cpp_function_scope(function: Node, config: LanguageConfig, src: str) -> str | None:
+    """``Class::name`` (or ``name``) of a C++ function definition, as its symbol id spells it."""
+    declarator = function.child_by_field_name("declarator")
+    while declarator is not None and declarator.type != "function_declarator":
+        declarator = declarator.child_by_field_name("declarator") or next(
+            iter(declarator.named_children), None
+        )
+    name = declarator.child_by_field_name("declarator") if declarator is not None else None
+    while name is not None and name.type == "qualified_identifier":
+        name = name.child_by_field_name("name")
+    if name is None:
+        return None
+    owner = _qualified_cpp_parent(name, src) or _nesting_parent(function, config, src)
+    return f"{owner}::{_node_text(name, src)}" if owner else _node_text(name, src)
 
 
 def _go_interface_owner(def_node: Node, src: str) -> str | None:
