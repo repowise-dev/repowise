@@ -1676,7 +1676,25 @@ def _initializer_end(cleaned: str, index: int) -> int:
                 return -1
         elif char in ",;" and not depth:
             return at
+        elif char in "\"'":
+            # Strings are not blanked here, so a quoted comma would split the list.
+            return -1
     return -1
+
+
+# What may stand before the type of a declaration list: specifiers, or a
+# label. Anything else (``x = a * b, c;``, ``typedef``, ``friend``, a ``for``
+# head) leaves the list unread.
+_CPP_LIST_PREFIX = re.compile(
+    r"\s*(?:(?:const|static|mutable|volatile|constexpr|inline|thread_local|extern|"
+    r"class|struct)\s+)*"
+)
+
+
+def _cpp_starts_statement(cleaned: str, start: int) -> bool:
+    """Is the type at *start* the head of its statement, past specifiers alone?"""
+    opened = max(cleaned.rfind(stop, 0, start) for stop in ";{}:") + 1
+    return _CPP_LIST_PREFIX.fullmatch(cleaned, opened, start) is not None
 
 
 def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int, str]]:
@@ -1685,6 +1703,8 @@ def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int
     Kept only when the list ends its statement at ``;``: anything else (a
     parameter list, a template argument) gives none.
     """
+    if not _cpp_starts_statement(cleaned, match.start()):
+        return []
     at, later = match.end(), []
     while True:
         if cleaned.startswith("=", at):

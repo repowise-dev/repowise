@@ -453,14 +453,20 @@ class CppFieldOwners:
                 return True
         return False
 
-    def _cpp_reached_method(self, path: str, call: CallSite, bare: str) -> tuple[str, str] | None:
-        """The method of the one class *bare* that *path*'s includes reach, directly or not.
+    def _cpp_reached_method(
+        self, path: str, call: CallSite, caller_id: str, bare: str
+    ) -> tuple[str, str] | None:
+        """The method of the one class *bare* that the includes reach, directly or not.
 
         Two same-named classes (a platform port beside an example port) refuse
-        the repository-wide tier, though only one is in reach of the file that
-        typed the receiver.
+        the repository-wide tier, though only one is in reach. Reach is what
+        either the file that typed the receiver or the calling file includes: a
+        header may only forward-declare the class its caller includes.
         """
-        reach = self._cpp_include_closure(path)
+        if bare in self._externally_bound_names(path):
+            return None
+        caller_path = self._symbol_paths_by_id.get(caller_id, path)
+        reach = self._cpp_include_closure(path) | self._cpp_include_closure(caller_path)
         classes = {identity for file, identity, _ in self._declared_types_named(bare) if file in reach}
         if len(classes) != 1:
             return None

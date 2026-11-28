@@ -389,6 +389,16 @@ class TestClassReachedThroughIncludes:
         callees = _callees(_build(tmp_path), "db/db.cc::Db::Run")
         assert not any(t.endswith("::Acquire") for t in callees)
 
+    def test_a_class_only_the_calling_file_reaches_also_counts(self, tmp_path: Path) -> None:
+        """The header reaches one ``Lock``; the body includes the other, so both are in reach."""
+        _port_repo(tmp_path, include_example=False)
+        (tmp_path / "db" / "db.cc").write_text(
+            '#include "db/db.h"\n#include "port/port_example.h"\n'
+            "namespace store {\nvoid Db::Run() { lock_.Acquire(); }\n}\n"
+        )
+        callees = _callees(_build(tmp_path), "db/db.cc::Db::Run")
+        assert not any(t.endswith("::Acquire") for t in callees)
+
 
 class TestTypedCalleeOnHeaderDeclarations:
     """A typed call lands on a header declaration only where no body could be missing."""

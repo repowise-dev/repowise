@@ -555,7 +555,7 @@ class ReceiverTypingMixin(
             if promoted is not None and promoted[1] != caller_id:
                 return promoted[1], "import"
         if found is None and self._language_of(file_path) == "cpp":
-            found = self._cpp_reached_method(file_path, call, bare)
+            found = self._cpp_reached_method(file_path, call, caller_id, bare)
         if found is None and self._language_of(file_path) == "cpp":
             return self._cpp_base_class_target(call, caller_id, bare)
         return found

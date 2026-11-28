@@ -1089,6 +1089,10 @@ class TestCppDeclarations:
             ("Slice a, b(3);", {"a": "Slice"}),
             ("Slice a, b) {", {"a": "Slice"}),
             ("x = y < z, w;", {}),
+            ('Label a = "x, q;";', {"a": "Label"}),
+            ("typedef Foo a, b;", {"a": "Foo"}),
+            ("total = a * b, c;", {"b": "a"}),
+            ("Foo a{1}, b;", {"a": "Foo"}),
         ],
     )
     def test_a_list_that_ends_no_declaration_adds_no_later_name(
