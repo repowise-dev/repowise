@@ -85,11 +85,12 @@ class TestStdNameLeaks:
     def test_a_constructor_still_binds(self, tmp_path: Path) -> None:
         _repo(tmp_path, "")
         (tmp_path / "src" / "slice.h").write_text(
-            "#pragma once\nstruct Slice {\n  Slice(const char* s);\n  const char* d;\n};\n"
-            "inline Slice::Slice(const char* s) : d(s) {}\n"
+            "#pragma once\nstruct Slice {\n  Slice(const char* s, int n);\n  const char* d;\n};\n"
+            "inline Slice::Slice(const char* s, int n) : d(s) {}\n"
         )
+        # Two arguments: a one-argument ``Slice(x)`` is a cast, which binds the class.
         (tmp_path / "src" / "use.cc").write_text(
-            '#include "slice.h"\nint Free() { Slice s = Slice("x"); return 0; }\n'
+            '#include "slice.h"\nint Free() { Slice s = Slice("x", 1); return 0; }\n'
         )
         assert any("Slice::Slice" in t for t in _callees(tmp_path, "src/use.cc::Free"))
 
