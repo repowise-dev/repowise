@@ -16,7 +16,10 @@ from sqlalchemy import func, select
 
 from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import resolve_decision_id
-from repowise.core.persistence.crud.decision_lane_fold import same_decision_text
+from repowise.core.persistence.crud.decision_lane_fold import (
+    same_decision_text,
+    same_decision_title,
+)
 from repowise.core.persistence.crud.decisions import derive_decision_id
 from repowise.core.persistence.decision_id_migration import apply_id_migration
 from repowise.core.persistence.models import (
@@ -124,6 +127,94 @@ def test_a_short_opening_is_not_enough():
 
 
 # ---------------------------------------------------------------------------
+# The title rule, for a re-mine that restates the decision from another span
+# ---------------------------------------------------------------------------
+
+#: Same commit, one choice, two titles, decision texts too far apart for the text rule.
+REWORDED_TITLES = [
+    (
+        "Replace file-risk bars with commit-level distribution views",
+        "Replace file-risk chart with commit-level distribution views",
+    ),
+    ("Make cost persistence best effort", "Make cost persistence best-effort under contention"),
+    (
+        "Model performance findings by execution role",
+        "Classify performance findings by execution role",
+    ),
+    ("Persist branch coverage counts per changed line", "Persist per-line branch coverage"),
+]
+
+#: Same commit, two choices whose titles share most of their words.
+DISTINCT_TITLES = [
+    (
+        "Exclude co-change edges from regeneration walks",
+        "Exclude co-change edges from decision centrality",
+    ),
+    (
+        "Rank performance opportunities using execution-role points",
+        "Rank performance findings by execution role",
+    ),
+    ("Cache parsed files", "Cache parsed symbols"),  # too few words to judge
+    ("Retry failed uploads in the worker", "Never retry failed uploads in the worker"),
+    ("Keep one worker pool for indexing", "Keep two worker pool for indexing"),
+    ("Don't cache auth tokens in Redis", "Cache auth tokens in Redis"),
+    ("Set retry limit to 3 attempts", "Set retry limit to 5 attempts"),
+    # One word swapped in a four-word title: 3/5 = 0.6 on three shared words.
+    ("Cache parsed files in memory", "Cache parsed files on disk"),
+    ("Send audit events over HTTP", "Send audit events to the database"),
+    (
+        "Enable authentication for internal health endpoints",
+        "Disable authentication for internal health endpoints",
+    ),
+]
+
+
+@pytest.mark.parametrize(("a", "b"), REWORDED_TITLES)
+def test_a_reworded_title_names_the_same_decision(a, b):
+    assert same_decision_title(a, b)
+    assert same_decision_title(b, a)
+
+
+@pytest.mark.parametrize(("a", "b"), DISTINCT_TITLES)
+def test_two_titles_from_one_commit_stay_apart(a, b):
+    assert not same_decision_title(a, b)
+    assert not same_decision_title(b, a)
+
+
+_NOT_CONTRACTIONS = [
+    "don't",
+    "doesn't",
+    "didn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+    "can't",
+    "cannot",
+    "couldn't",
+    "won't",
+    "wouldn't",
+    "shan't",
+    "shouldn't",
+    "mustn't",
+    "hasn't",
+    "haven't",
+    "hadn't",
+]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+@pytest.mark.parametrize("negated", _NOT_CONTRACTIONS)
+def test_a_contracted_negation_never_folds_with_the_affirmed_title(negated, apostrophe):
+    """The ruling and its negation share every other word; they are two choices."""
+    title = f"Cache auth tokens in Redis and {negated.replace(chr(39), apostrophe)} retry"
+    affirmed = "Cache auth tokens in Redis and retry"
+    assert not same_decision_title(title, affirmed)
+    assert not same_decision_title(affirmed, title)
+    assert not same_decision_text(title, affirmed)
+
+
+# ---------------------------------------------------------------------------
 # Ingest: a re-mined PR folds into the record already stored
 # ---------------------------------------------------------------------------
 
@@ -205,6 +296,52 @@ async def test_rewordings_in_one_batch_collapse(async_session):
     )
     assert len(set(touched)) == 1
     assert await _count(async_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_re_mine_restating_the_decision_under_a_close_title_folds(async_session):
+    """The span moved to another paragraph, so only the title still matches."""
+    repo = await insert_repo(async_session)
+    a, b = REWORDED_TITLES[0]
+    [first] = await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_mined(a, "Replace the file-risk chart with two commit-level panels.")],
+    )
+    touched = await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_mined(b, "Show a score distribution and a size-versus-diffusion scatter plot instead.")],
+    )
+    assert touched == [first]
+    assert await _count(async_session) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_text_match_wins_over_an_older_title_match(async_session):
+    """The record holding the sentence keeps its re-mine, not an older look-alike."""
+    repo = await insert_repo(async_session)
+    a, b = REWORDED_TITLES[0]
+    [older] = await bulk_upsert_decisions(async_session, repo.id, [_mined(a, "Two panels.")])
+    [holder] = await bulk_upsert_decisions(
+        async_session, repo.id, [_mined("Label spend by operation", _COST, files=["x.py"])]
+    )
+    assert older != holder
+    touched = await bulk_upsert_decisions(async_session, repo.id, [_mined(b, REWORDED[0][0])])
+    assert touched == [holder]
+
+
+@pytest.mark.asyncio
+async def test_a_close_title_from_another_commit_is_its_own_record(async_session):
+    repo = await insert_repo(async_session)
+    a, b = REWORDED_TITLES[0]
+    await bulk_upsert_decisions(async_session, repo.id, [_mined(a, "Two panels.")])
+    await bulk_upsert_decisions(
+        async_session,
+        repo.id,
+        [_mined(b, "A scatter plot.", commit="0123456789abcdef", files=["other.py"])],
+    )
+    assert await _count(async_session) == 2
 
 
 @pytest.mark.asyncio
@@ -392,6 +529,30 @@ async def test_stored_distinct_decisions_from_one_commit_stay(async_session, a, 
     repo = await insert_repo(async_session)
     await _stored(async_session, repo.id, "first", a, age=0)
     await _stored(async_session, repo.id, "second", b, age=1, files=["y.py"])
+    plan = await apply_id_migration(async_session, repo.id)
+    assert plan.folds() == []
+    assert await _count(async_session) == 2
+
+
+@pytest.mark.asyncio
+async def test_stored_copies_under_close_titles_fold(async_session):
+    repo = await insert_repo(async_session)
+    a, b = REWORDED_TITLES[2]
+    old = await _stored(async_session, repo.id, a, "Seed roles from ingestion.", age=0)
+    new = await _stored(
+        async_session, repo.id, b, "Assign the role of the loop owner.", age=3, files=["x.py"]
+    )
+    new_id = new.id
+    plan = await apply_id_migration(async_session, repo.id)
+    assert [(r.old_id, r.new_id) for r in plan.folds()] == [(new_id, old.id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("a", "b"), DISTINCT_TITLES)
+async def test_stored_decisions_under_distinct_titles_stay(async_session, a, b):
+    repo = await insert_repo(async_session)
+    await _stored(async_session, repo.id, a, "The first ruling.", age=0)
+    await _stored(async_session, repo.id, b, "Another ruling entirely.", age=1, files=["y.py"])
     plan = await apply_id_migration(async_session, repo.id)
     assert plan.folds() == []
     assert await _count(async_session) == 2
