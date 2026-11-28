@@ -39,10 +39,11 @@ TOP_FILES = 5
 
 
 async def _git_facts(session: Any, repository_id: str) -> dict[str, Any]:
-    from sqlalchemy import func, select
+    from sqlalchemy import and_, func, select
 
+    from repowise.core.analysis.held_origins import counts_as_hotspot
     from repowise.core.persistence.crud import code_file_rows
-    from repowise.core.persistence.models import GitCommit, GitMetadata
+    from repowise.core.persistence.models import GitCommit, GitMetadata, HealthFileMetric
 
     commits, newest = (
         await session.execute(
@@ -58,13 +59,17 @@ async def _git_facts(session: Any, repository_id: str) -> dict[str, Any]:
             )
         )
     ).one()
-    hot = (
+    # The hotspots the member's hotspot list shows: its held origins left out.
+    g, h = GitMetadata, HealthFileMetric
+    flagged = (
         await session.execute(
-            select(GitMetadata.file_path)
-            .where(code_file_rows(repository_id), GitMetadata.is_hotspot.is_(True))
-            .order_by(GitMetadata.temporal_hotspot_score.desc(), GitMetadata.file_path)
+            select(g.file_path, h.code_origin, h.is_test)
+            .outerjoin(h, and_(h.repository_id == g.repository_id, h.file_path == g.file_path))
+            .where(code_file_rows(repository_id), g.is_hotspot.is_(True))
+            .order_by(g.temporal_hotspot_score.desc(), g.file_path)
         )
-    ).scalars().all()
+    ).all()
+    hot = [path for path, origin, is_test in flagged if counts_as_hotspot(True, origin, is_test)]
     magnets = (
         await session.execute(
             select(GitMetadata.file_path, GitMetadata.prior_defect_count, GitMetadata.last_fix_at)
