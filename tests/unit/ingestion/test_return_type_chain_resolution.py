@@ -1501,3 +1501,84 @@ def test_single_candidate_with_different_argument_count_is_not_matched(tmp_path:
     assert "Z.java::B::tag" not in resolved_callees
 
 
+
+
+_CPP_TWO_NAMES = (
+    "struct Rule { const char* name() const { return 0; } };\n"
+    "struct Pool { const char* name() const { return 0; } };\n"
+)
+
+
+def _cpp_chain_edges(tmp_path: Path, source: str, outer: str) -> list[str]:
+    parsed = _parse(tmp_path, "example.cpp", "cpp", source)
+    calls = [
+        c
+        for c in parsed["example.cpp"].calls
+        if c.target_name == outer and getattr(c, "receiver_call", None)
+    ]
+    assert calls
+    edges = CallResolver(parsed, {}).resolve_file("example.cpp", calls)
+    return [edge.callee_id for edge in edges]
+
+
+def test_cpp_chain_on_an_unknown_type_skips_a_name_two_classes_declare(tmp_path: Path) -> None:
+    source = _CPP_TWO_NAMES + "Ext make() { return {}; }\nvoid use() { make().name(); }\n"
+
+    assert _cpp_chain_edges(tmp_path, source, "name") == []
+
+
+def test_cpp_chain_never_names_a_free_function(tmp_path: Path) -> None:
+    source = (
+        "int helper() { return 0; }\nExt make() { return {}; }\nvoid use() { make().helper(); }\n"
+    )
+
+    assert _cpp_chain_edges(tmp_path, source, "helper") == []
+
+
+def test_cpp_chain_binds_the_method_its_return_type_declares(tmp_path: Path) -> None:
+    source = (
+        _CPP_TWO_NAMES
+        + "struct Edge { const Rule& rule() const { return *rule_; } Rule* rule_; };\n"
+        + "void use(Edge* e) { e->rule().name(); }\n"
+    )
+
+    assert _cpp_chain_edges(tmp_path, source, "name") == ["example.cpp::Rule::name"]
+
+
+def test_cpp_chain_keeps_a_name_one_class_declares(tmp_path: Path) -> None:
+    source = (
+        "struct Rule { const char* name() const { return 0; } };\n"
+        "Ext make() { return {}; }\nvoid use() { make().name(); }\n"
+    )
+
+    assert _cpp_chain_edges(tmp_path, source, "name") == ["example.cpp::Rule::name"]
+
+
+def test_cpp_chain_counts_same_named_classes_in_two_namespaces(tmp_path: Path) -> None:
+    parsed = {}
+    for path, scope in (("a.h", "a"), ("b.h", "b")):
+        source = f"namespace {scope} {{ struct Rule {{ void name() {{}} }}; }}\n"
+        parsed.update(_parse(tmp_path, path, "cpp", source))
+    parsed.update(
+        _parse(
+            tmp_path,
+            "use.cpp",
+            "cpp",
+            '#include "a.h"\n#include "b.h"\nExt make() { return {}; }\n'
+            "void use() { make().name(); }\n",
+        )
+    )
+    calls = [c for c in parsed["use.cpp"].calls if c.target_name == "name"]
+    imports = {"a.h": set(), "b.h": set(), "use.cpp": {"a.h", "b.h"}}
+
+    assert CallResolver(parsed, imports).resolve_file("use.cpp", calls) == []
+
+
+def test_cpp_chain_on_a_class_without_the_method_is_refused(tmp_path: Path) -> None:
+    source = (
+        "struct Rule { void other() {} };\n"
+        "struct Pool { void name() {} };\n"
+        "Rule make() { return {}; }\nvoid use() { make().name(); }\n"
+    )
+
+    assert _cpp_chain_edges(tmp_path, source, "name") == []
