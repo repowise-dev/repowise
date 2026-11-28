@@ -632,7 +632,7 @@ What it returns, one `IssueLink` per commit and issue:
 | `status`, `url` | Stored with the link |
 | `basis` | How the commit names the issue, such as `message names ENG-42` or `PR #12 closes #40` |
 
-A few rules, checked by `tests/unit/issues/test_issue_sources.py`:
+`repowise plugins check` confirms a source has a `name` and a `fetch` method. When a sync runs, repowise also checks each link it returns. `tests/unit/issues/test_issue_sources.py` covers these rules:
 
 - Each tracker writes keys its own way, so the source finds them.
   `tracker_keys(text, projects=None)` finds `ENG-42` keys (pass your project
