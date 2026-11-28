@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from ._constants import classify_commit_category, is_fix_commit
@@ -148,10 +149,12 @@ def _file_rows_for(sha: str, changes: list) -> list[dict]:
     numstat can repeat a path (a split rename pair); (sha, path) is the natural
     key, so fold rather than let the upsert pick one arbitrarily.
     """
+    from ..traverser import _BLOCKED_EXTENSIONS
+
     seen: set[str] = set()
     rows: list[dict] = []
     for path, added, deleted in changes:
-        if not path or path in seen:
+        if not path or path in seen or PurePosixPath(path).suffix.lower() in _BLOCKED_EXTENSIONS:
             continue
         seen.add(path)
         rows.append(
@@ -175,6 +178,8 @@ def build_commit_file_rows(parsed_commits: list[dict], path_prefix: str = "") ->
     commit rows keep describing the whole commit; only the per-file detail is
     narrowed, which is what stops a bulk commit of a large repository from
     storing a row per file for a directory that indexes a handful of them.
+    Paths with an extension the index never reads (binaries, engine assets)
+    get no row either: an asset import can touch thousands of them at once.
     """
     prefix = f"{path_prefix}/" if path_prefix else ""
 

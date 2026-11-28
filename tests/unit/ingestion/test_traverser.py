@@ -1226,6 +1226,26 @@ class TestTraversalStats:
         list(traverser.traverse())
         assert traverser.stats.skipped_blocked_extension >= 1
 
+    def test_engine_assets_are_blocked_without_being_opened(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assets = ["Content/Hero.uasset", "Content/Map.umap", "Art/hero.psd", "Audio/Main.bank"]
+        for rel in assets:
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_bytes(b"\x00" * 64)
+        (tmp_path / "app.py").write_text("pass")
+        sniffed: list[str] = []
+        real_is_binary = traverser_mod._is_binary
+        monkeypatch.setattr(
+            traverser_mod,
+            "_is_binary",
+            lambda p: sniffed.append(p.name) or real_is_binary(p),
+        )
+        traverser = FileTraverser(tmp_path)
+        list(traverser.traverse())
+        assert traverser.stats.skipped_blocked_extension == len(assets)
+        assert sniffed == []
+
     def test_stats_lang_counts(self, tmp_path: Path) -> None:
         (tmp_path / "a.py").write_text("pass")
         (tmp_path / "b.py").write_text("pass")
