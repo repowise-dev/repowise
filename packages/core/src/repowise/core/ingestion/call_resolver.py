@@ -41,6 +41,7 @@ from .call_barrel_forwarding import (  # noqa: F401
 )
 from .call_cobol import CobolCallsMixin
 from .call_cpp_class_scope import CppClassScopeMixin
+from .call_cpp_constructions import CppConstructionMixin
 from .call_external import ExternalCallsMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
@@ -355,6 +356,7 @@ class CallResolver(
     BarrelForwardingMixin,
     InheritanceMixin,
     CppClassScopeMixin,
+    CppConstructionMixin,
     RustPathCallsMixin,
     ExternalCallsMixin,
 ):
@@ -411,6 +413,9 @@ class CallResolver(
         self._cpp_template_names: dict[str, frozenset[str]] = {}
         self._cpp_namespace_blocks: dict[str, dict[str, tuple[tuple[int, int], ...]]] = {}
         self._cpp_va_lists: dict[tuple[str, str], frozenset[str]] = {}
+        # {C++ type alias id: whether it names a repository class}, {file: ids in function bodies}.
+        self._cpp_alias_classes: dict[str, bool] = {}
+        self._cpp_function_local_ids: dict[str, frozenset[str]] = {}
         self._mros: dict[str, tuple[str, ...] | None] = {}
         # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
         self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
@@ -1088,6 +1093,8 @@ class CallResolver(
             call = self._typed_arguments(file_path, call)
 
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
+            if resolved:
+                resolved = self._cpp_type_name_callee(resolved, call)
             if resolved:
                 resolved = self._settle_callee(resolved, call)
             if resolved is None and external is not None:
@@ -2310,6 +2317,10 @@ class CallResolver(
 
         # An overload set is several declarations under one id, not an ambiguity.
         collapsed = self._collapse_declarations(candidates)
+        if len(collapsed) > 1:
+            # A C++ class and its own constructors are one construction target.
+            constructed = self._cpp_one_constructed_type(collapsed, call)
+            collapsed = {constructed} if constructed else collapsed
         if len(candidates) <= 1 or len(collapsed) != 1:
             return None
         only = next(iter(collapsed))
@@ -2321,13 +2332,16 @@ class CallResolver(
         """Can a bare name in *file_path* reach *sym_id* with no include in between?
 
         Not when *sym_id* has internal linkage in another translation unit: a
-        ``static`` function in one .c file cannot be linked from any other. The
+        ``static`` function in one .c file cannot be linked from any other, nor
+        a C++ type or alias declared inside another file's function body. The
         include-grounded tiers need no check, since an included file is part of
         the includer's translation unit. Nor across independent builds
         (``_in_reach_of_build``).
         """
         path = self._symbol_paths_by_id.get(sym_id, "")
         if sym_id in self._tu_local_ids and path != file_path:
+            return False
+        if path != file_path and self._cpp_function_local(sym_id):
             return False
         return self._in_reach_of_build(file_path, path)
 
