@@ -90,7 +90,17 @@ def test_a_configured_source_stores_its_batches_and_resumes_from_its_cursor(
     assert len(runs) == 2
     entry = _state(root)[LEDGER_KEY]["evidence-source:synctest"]
     assert (entry["cursor"], entry["last_state"]) == ("2", "stored")
+    assert (entry["last_batches"], entry["last_message"]) == (2, None)
     assert SECRET not in (root / ".repowise" / "state.json").read_text(encoding="utf-8")
+
+    # ``repowise plugins`` reads the same entry back as the source's last sync.
+    monkeypatch.chdir(root)
+    listing = json.loads(CliRunner().invoke(cli, ["plugins", "--format", "json"]).output)
+    (source,) = [s for s in listing["sources"] if s["source"] == "synctest"]
+    assert source["configured"] is True
+    assert source["next_command"] == "repowise sources sync --source synctest"
+    last = source["last_sync"]
+    assert (last["state"], last["batches"], last["at"]) == ("stored", 2, entry["last_run_at"])
 
     installed.batches = 3
     _code, again = _sync(root)
@@ -219,7 +229,11 @@ def test_update_runs_the_sync_after_its_own_work_only(
     monkeypatch.setattr(
         command, "_update_single_repo", lambda opts, run: command.UpdateOutcome(outcome)
     )
-    monkeypatch.setattr(sources_cmd, "sync_after_update", calls.append)
+    monkeypatch.setattr(
+        sources_cmd,
+        "sync_after_update",
+        lambda path, before=False: calls.append(path) if not before else None,
+    )
     result = command.run_update(
         path=str(tmp_path),
         provider_name=None,

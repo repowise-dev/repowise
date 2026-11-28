@@ -1706,12 +1706,12 @@ repowise changes list --needs-attention
 repowise changes show pr-123 --format in-toto
 ```
 
-A change is one first-parent commit, identified by its message's PR or MR number, then Gerrit `Change-Id`, then merge or
-commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
+A change is one first-parent commit, identified by the Perforce changelist a git-p4 or p4-fusion mirror wrote into its
+message, then its PR or MR number, then Gerrit `Change-Id`, then merge or commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
 
 | Flag | Subcommand | What it does | Default |
 |------|-----|--------------|---------|
-| `REF` | `show` | Id (`pr-123`) or any sha the change landed. | |
+| `REF` | `show` | Id (`pr-123`), a changelist number (`12345`) or any sha the change landed. | |
 | `--path` | all | Repo path. | cwd |
 | `--category` | `list` | Category (feature, fix, ...). | |
 | `--shape` | `list` | `merge`, `squash` or `commit`. | |
@@ -2585,7 +2585,8 @@ repowise telemetry disable               # or: enable
 List plugins from `repowise.plugins` entry points and `REPOWISE_PLUGINS`: loaded or why not, seams registered,
 implementation per seam. Plugin commands load only for an unknown command name or a command listing. Each plugin
 also says whether it is configured and, for each required setting it declares that has no value, the command that
-sets it (`configured` and `missing` in JSON).
+sets it (`configured` and `missing` in JSON). The JSON also lists each plugin's declared `settings` (set or not, never
+the value), its `next_command` and `version`, and every fetching source under `sources` with its `last_sync`.
 
 ```bash
 repowise plugins --format json

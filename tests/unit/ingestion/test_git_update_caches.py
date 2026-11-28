@@ -244,7 +244,7 @@ def test_fix_walk_cache_reads_only_new_commits_and_matches_a_fresh_walk(
     monkeypatch.setattr(
         prior_defects,
         "_read_commits",
-        lambda r, *revs: reads.append(revs) or real_read(r, *revs),
+        lambda r, *revs, **kw: reads.append(revs) or real_read(r, *revs, **kw),
     )
     warm = walk(cached=True)
     assert reads == [("--no-walk=unsorted", *new)]
@@ -297,7 +297,7 @@ def test_a_deeper_fix_walk_reads_only_the_missing_run_past_the_patch_cap(
     monkeypatch.setattr(
         prior_defects,
         "_read_commits",
-        lambda r, *revs: reads.append(revs) or real_read(r, *revs),
+        lambda r, *revs, **kw: reads.append(revs) or real_read(r, *revs, **kw),
     )
     warm = prior_defects.collect_fix_commits(
         repo, files, as_of_ts=None, walk_cache=FixWalkCache.load(tmp_path, repo)
@@ -321,12 +321,12 @@ def test_a_ranged_fix_walk_that_disagrees_with_the_order_walks_afresh(
     monkeypatch.setattr(git_commit_index, "_MIN_WALKED_RUN", 2)
     real_read = prior_defects._read_commits
 
-    def _off_by_one(r, *revs):
+    def _off_by_one(r, *revs, **kw):
         # The run's length, one commit further down: right size, wrong commits.
         if len(revs) == 3 and revs[1].startswith("--skip="):
             rev, skip, count = revs
-            return real_read(r, rev, f"--skip={int(skip.split('=')[1]) + 1}", count)
-        return real_read(r, *revs)
+            return real_read(r, rev, f"--skip={int(skip.split('=')[1]) + 1}", count, **kw)
+        return real_read(r, *revs, **kw)
 
     monkeypatch.setattr(prior_defects, "_read_commits", _off_by_one)
     warm = prior_defects.collect_fix_commits(

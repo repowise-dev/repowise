@@ -31,9 +31,11 @@ async def persist_incremental_commits(
         upsert_git_commit_files_bulk,
         upsert_git_commits_bulk,
     )
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.repo_config import load_repo_config
 
     cfg = load_repo_config(repo_path)
+    tracker_fixes = await load_tracker_fixes(session, repo_id)
     indexer = GitIndexer(
         repo_path,
         commit_limit=cfg.get("commit_limit"),
@@ -44,6 +46,7 @@ async def persist_incremental_commits(
         exclude_patterns=cfg.get("exclude_patterns"),
         # Git episodes ride the same capture and inherit those excludes.
         record_episodes=True,
+        tracker_fixes=tracker_fixes,
     )
     newest = await get_latest_commit_committed_at(session, repo_id)
     since_ts: int | None = None
@@ -78,6 +81,7 @@ async def persist_incremental_commits(
     # the scan can take minutes and must not hold the write lock.
 
     with timed(timings, "persist.commits.experience"):
+        await reconcile_issue_fix_flags(session, repo_id, tracker_fixes)
         await reconcile_commit_experience(session, repo_id, indexer)
     # Fills the commit-offset column on indexes written before it existed, so a
     # new capture never needs a re-index to become useful.
@@ -201,6 +205,45 @@ async def reconcile_commit_experience(session: Any, repo_id: str, indexer: Any) 
             logger.info("commit_experience_reconciled", repo_id=repo_id, count=len(updates))
     except Exception as exc:
         logger.debug("commit_experience_reconcile_failed", error=str(exc))
+
+
+async def reconcile_issue_fix_flags(
+    session: Any, repo_id: str, tracker_fixes: frozenset[str] | None = None
+) -> None:
+    """Set ``git_commits.is_fix`` where a stored bug or incident issue names the commit.
+
+    ``is_fix`` is the benchmark keyword rule at capture time; a linked bug
+    issue adds to it and never takes a keyword fix away. Re-derived from the
+    stored subject on every update, so a link that came, changed type or went
+    (the last one too) is reflected without a re-walk. With no links every row
+    already matches the rule that wrote it, so nothing is written.
+    Failure-isolated like the other commit reconciles.
+    """
+    from repowise.core.persistence.crud import get_commit_experience_inputs, upsert_git_commits_bulk
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
+
+    try:
+        if tracker_fixes is None:
+            tracker_fixes = await load_tracker_fixes(session, repo_id)
+        updates = _issue_fix_updates(
+            await get_commit_experience_inputs(session, repo_id), tracker_fixes
+        )
+        if updates:
+            await upsert_git_commits_bulk(session, repo_id, updates)
+    except Exception as exc:
+        logger.debug("issue_fix_reconcile_failed", error=str(exc))
+
+
+def _issue_fix_updates(stored: list[dict], tracker_fixes: frozenset[str]) -> list[dict]:
+    """Rows whose ``is_fix`` moves. The flag is reported, not scored, so no score moves."""
+    from repowise.core.ingestion.git_indexer import is_fix_commit
+
+    updates: list[dict] = []
+    for r in stored:
+        is_fix = is_fix_commit(r["subject"] or "") or r["sha"] in tracker_fixes
+        if bool(r["is_fix"]) != is_fix:
+            updates.append({"sha": r["sha"], "is_fix": is_fix})
+    return updates
 
 
 async def reconcile_commit_offsets(session: Any, repo_id: str, indexer: Any) -> None:

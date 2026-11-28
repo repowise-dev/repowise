@@ -1035,8 +1035,10 @@ async def _convert(
     from repowise.core.frame_resolver import (
         checkout_reader,
         frame_paths,
+        load_clr_symbols,
         load_frame_symbols,
         load_jvm_source_paths,
+        place_clr_frames,
         place_jvm_frames,
     )
 
@@ -1048,6 +1050,10 @@ async def _convert(
         # A JVM profile names classes, not files: put each frame on its class's file.
         files = await load_jvm_source_paths(session, repo_id)
         run = replace(run, frames=place_jvm_frames(run.frames, root=str(root), files=files))
+    if any(f.language == "csharp" for f in run.frames):
+        # A dotnet-trace export names types, not files: put each frame on its type's file.
+        cs_symbols = await load_clr_symbols(session, repo_id)
+        run = replace(run, frames=place_clr_frames(run.frames, root=str(root), symbols_by_file=cs_symbols))
     symbols, origins = await load_frame_symbols(
         session,
         repo_id,

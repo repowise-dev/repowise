@@ -18,7 +18,7 @@ import math
 import re
 from typing import Any
 
-from repowise.core.frame_resolver import ProfileFrame
+from repowise.core.frame_resolver import ProfileFrame, parse_clr_frame
 
 from ..format_v1 import EvidenceFormatError
 from .model import ProfileRun, StackTally, frame_language
@@ -31,8 +31,9 @@ _UNITS = {
     "milliseconds": "ms",
     "seconds": "s",
 }
-#: Exporters known to time wall-clock: pyinstrument samples the wall clock.
-_WALL_CLOCK_TOOLS = frozenset({"pyinstrument"})
+#: Exporters known to time wall-clock: pyinstrument samples the wall clock, and
+#: dotnet-trace (TraceEvent) samples every managed thread, waiting ones included.
+_WALL_CLOCK_TOOLS = frozenset({"pyinstrument", "Microsoft.Diagnostics.Tracing.TraceEvent"})
 #: The ``$schema`` key every speedscope file carries.
 _SCHEMA_RE = re.compile(
     rb'"\$schema"\s*:\s*"https?://(?:www\.)?speedscope\.app/file-format-schema\.json"'
@@ -102,11 +103,16 @@ def _frame(raw: Any) -> ProfileFrame:
     raw = raw if isinstance(raw, dict) else {}
     path = raw.get("file") if isinstance(raw.get("file"), str) else ""
     line, col = raw.get("line"), raw.get("col")
+    function = raw.get("name") if isinstance(raw.get("name"), str) else ""
+    language = frame_language(path)
+    if language == "unknown" and parse_clr_frame(function):
+        # dotnet-trace writes no file: ``Calc!Shop.Billing.Cart.Total(int32)``.
+        language = "csharp"
     return ProfileFrame(
         path=path,
         line=line if _whole(line) else 0,
-        language=frame_language(path),
-        function=raw.get("name") if isinstance(raw.get("name"), str) else "",
+        language=language,
+        function=function,
         column=col if _whole(col) else None,
     )
 

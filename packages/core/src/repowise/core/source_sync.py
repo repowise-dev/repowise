@@ -45,7 +45,8 @@ __all__ = [
 ]
 
 #: ``state.json`` key holding ``{"<seam>:<name>": {cursor, settings_fp, last_state,
-#: last_run_at, last_stored_at}}``.
+#: last_run_at, last_stored_at, last_batches, last_message}}``. ``last_message`` is
+#: the result's message, which has every secret masked.
 LEDGER_KEY = "source_sync"
 
 
@@ -67,6 +68,9 @@ class FetchingSeam:
     store_for: Callable[[Any, Any, Path], Callable[[Any], Awaitable[dict[str, Any]]]]
     #: The command that shows what a sync stored.
     review: str
+    #: Sync at the start of ``repowise update`` instead of its end, for a seam
+    #: whose facts the update itself reads (``issue-source``).
+    before_update: bool = False
 
 
 def _evidence_store(
@@ -80,9 +84,37 @@ def _evidence_store(
     return store
 
 
+@dataclass(frozen=True)
+class _IssueTarget:
+    """What an ``issue-source`` sync writes to: it builds its own request from the checkout."""
+
+    session: Any
+    repo_path: Path
+
+
+def _issue_target(session: Any, repo: Any, repo_path: Path) -> Any:
+    return _IssueTarget(session, repo_path)
+
+
+async def _run_issue_sync(source: Any, request: Any, target: _IssueTarget) -> Any:
+    """Ask *source* about the defect window's commits and store its links."""
+    from repowise.core.issues.sync import sync_issues
+
+    return await sync_issues(
+        target.session,
+        request.repository_id,
+        target.repo_path,
+        source,
+        repository_name=request.repository_name,
+        settings=request.settings,
+        credentials=request.credentials,
+    )
+
+
 def fetching_seams() -> tuple[FetchingSeam, ...]:
     """Every seam ``sources sync`` runs, in the order it runs them."""
     from repowise.core.evidence.sources import evidence_sources, run_fetch
+    from repowise.core.issues import issue_sources
 
     return (
         FetchingSeam(
@@ -91,6 +123,15 @@ def fetching_seams() -> tuple[FetchingSeam, ...]:
             run_fetch,
             _evidence_store,
             "repowise evidence status",
+        ),
+        # Before the update, so a commit it indexes is counted with its linked issues.
+        FetchingSeam(
+            "issue-source",
+            issue_sources,
+            _run_issue_sync,
+            _issue_target,
+            "repowise update",
+            before_update=True,
         ),
     )
 
@@ -291,7 +332,12 @@ def record_result(
     entry = entry if isinstance(entry, dict) else {}
     at = datetime.now(UTC).isoformat(timespec="seconds")
     entry.update(
-        cursor=cursor, settings_fp=planned.settings_fp, last_state=result["state"], last_run_at=at
+        cursor=cursor,
+        settings_fp=planned.settings_fp,
+        last_state=result["state"],
+        last_run_at=at,
+        last_batches=result["batches"],
+        last_message=result["message"],
     )
     if result["state"] == "stored":
         entry["last_stored_at"] = at

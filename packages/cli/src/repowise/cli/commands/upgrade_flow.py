@@ -180,13 +180,17 @@ async def _backfill_git(
         upsert_git_commits_bulk,
         upsert_git_metadata_bulk,
     )
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.persistence.stores.sql_job_store import SqlJobStore
 
+    async with get_session(sf) as session:
+        tracker_fixes = await load_tracker_fixes(session, repo_id)
     indexer = GitIndexer(
         repo_path,
         commit_limit=commit_limit,
         follow_renames=follow_renames,
         tier=GitIndexTier.FULL,
+        tracker_fixes=tracker_fixes,
     )
 
     async with get_session(sf) as session:
@@ -205,6 +209,10 @@ async def _backfill_git(
         # (Foundation 1 only wrote them on the full orchestrator index).
         if summary.commit_rows:
             await upsert_git_commits_bulk(session, repo_id, summary.commit_rows)
+            if tracker_fixes:
+                from repowise.core.pipeline.incremental import reconcile_issue_fix_flags
+
+                await reconcile_issue_fix_flags(session, repo_id, tracker_fixes)
         await clear_attribution_if_disabled(session, repo_id)
 
     console.print(

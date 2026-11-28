@@ -1,7 +1,7 @@
 """``repowise sources sync``: fetch from every configured plugin source into the index.
 
-The same sync runs at the end of ``repowise update`` for configured sources
-(:func:`sync_after_update`), where a failing source costs one line and never
+The same sync runs in ``repowise update`` for configured sources
+(:func:`sync_after_update`; issue sources at its start, the rest at its end), where a failing source costs one line and never
 the update. See :mod:`repowise.core.source_sync`.
 """
 
@@ -24,7 +24,7 @@ _COLORS = {"stored": "green", "unavailable": "yellow", "not_configured": "yellow
 
 @click.group(name="sources")
 def sources_group() -> None:
-    """Fetch evidence from the sources plugins register (a database, a profiler)."""
+    """Fetch from the sources plugins register (a database, a profiler, an issue tracker)."""
 
 
 async def _sync(repo_path: Path, planned: list[Any]) -> list[dict[str, Any]] | None:
@@ -178,9 +178,11 @@ def sources_sync_command(only: str | None, path: str | None, fmt: str) -> None:
         raise click.exceptions.Exit(1)
 
 
-def sync_after_update(repo_path: Path) -> None:
+def sync_after_update(repo_path: Path, *, before: bool = False) -> None:
     """Run every configured source after ``repowise update``; never raises.
 
+    With *before*, run instead the sources whose seam syncs at the start of
+    the update (``issue-source``), so the update reads what they stored.
     With no configured source this reads nothing past the plugin list and
     writes nothing. A source that fails prints one line and the update
     carries on.
@@ -194,7 +196,9 @@ def sync_after_update(repo_path: Path) -> None:
     try:
         from repowise.core.source_sync import plan_sources
 
-        planned = [p for p in plan_sources(config) if p.configured]
+        planned = [
+            p for p in plan_sources(config) if p.configured and p.seam.before_update == before
+        ]
         if not planned:
             return
         results = run_async(_sync(repo_path, planned)) or []

@@ -162,7 +162,7 @@ def test_line_below_one_is_bad() -> None:
 
 
 def test_unknown_language_is_unsupported() -> None:
-    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "csharp", function="x")  # type: ignore[arg-type]
+    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "ruby", function="x")  # type: ignore[arg-type]
     assert _resolve(frame).skipped == {"unsupported_language": 1}
 
 

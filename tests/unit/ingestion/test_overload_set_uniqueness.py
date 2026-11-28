@@ -19,9 +19,8 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from repowise.core.ingestion.call_resolver import CallResolver
+from repowise.core.ingestion.languages.receiver_types import holds_function
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
 
@@ -132,6 +131,118 @@ public class FieldCaller
 }
 """
 
+CS_PROPERTY_ONLY = """
+namespace App;
+
+public class PropertyHolder
+{
+    public int Balance { get; set; }
+}
+"""
+
+CS_PROPERTY_CALLER = """
+namespace App;
+
+public class PropertyCaller
+{
+    public int Run() => Balance();
+}
+"""
+
+# A field typed as a delegate holds a function, so the bare call is kept.
+CS_DELEGATE_FIELD_ONLY = """
+namespace App;
+
+public class Holder
+{
+    public System.Func<int, int> Amount;
+}
+"""
+
+# A nullable delegate field (`Func<..>?`, `Action?`) still holds a function.
+CS_NULLABLE_DELEGATE_FIELD = """
+namespace App;
+
+public class Holder
+{
+    public Func<int>? Amount;
+}
+"""
+
+# A class invokes its own event, of any delegate type, across a partial split.
+CS_EVENT_ONLY = """
+namespace App;
+
+public partial class Holder
+{
+    public event AmountHandler Amount;
+}
+"""
+
+CS_EVENT_RAISER = """
+namespace App;
+
+public partial class Holder
+{
+    public void Run() => Amount(this, null);
+}
+"""
+
+VB_FIELD_ONLY = """
+Public Class Holder
+    Public Amount As Integer
+End Class
+"""
+
+# The control: a real function of the same name, so the refusal is about data
+# members and not about the name or the language.
+VB_FUNCTION_ONLY = """
+Public Class Other
+    Public Function Amount() As Integer
+        Return 1
+    End Function
+End Class
+"""
+
+VB_FIELD_CALLER = """
+Public Class FieldCaller
+    Public Function Run() As Integer
+        Return Amount()
+    End Function
+End Class
+"""
+
+PAS_PROPERTY_ONLY = """
+unit Holder;
+interface
+type
+  THolder = class
+  private
+    FAmount: Integer;
+  public
+    property Amount: Integer read FAmount;
+  end;
+implementation
+end.
+"""
+
+PAS_PROPERTY_CALLER = """
+unit Caller;
+interface
+uses Holder;
+type
+  TCaller = class
+  public
+    function Run: Integer;
+  end;
+implementation
+function TCaller.Run: Integer;
+begin
+  Result := Amount();
+end;
+end.
+"""
+
 
 # A getter and its setter are two declarations under one id. That reads as an
 # overload set and is not one: the name is an attribute, not a callable.
@@ -204,12 +315,6 @@ class TestOverloadSetIsOneSymbol:
             f"the inherited tier must keep this site, not the global rung; edges: {edges}"
         )
 
-    @pytest.mark.xfail(
-        reason="_NON_CALLABLE_KINDS is {'property'} while C# extracts a field "
-        "or property as kind 'variable', so the data-member refusal never "
-        "reaches C#. Pre-existing, and unchanged by this collapse.",
-        strict=True,
-    )
     def test_a_non_callable_symbol_is_still_refused(self, tmp_path: Path) -> None:
         parsed = _parse_all(
             tmp_path,
@@ -221,6 +326,103 @@ class TestOverloadSetIsOneSymbol:
         edges = _edges(parsed, tmp_path)
         assert not [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
             f"a data member must not be the unique answer; edges: {edges}"
+        )
+
+    def test_a_csharp_property_symbol_is_refused(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/PropertyHolder.cs": ("csharp", CS_PROPERTY_ONLY),
+                "src/PropertyCaller.cs": ("csharp", CS_PROPERTY_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert not [e for e in edges if e[0].endswith("::PropertyCaller::Run")], (
+            f"a property must not be the unique answer; edges: {edges}"
+        )
+
+    def test_a_delegate_typed_field_is_still_callable(self, tmp_path: Path) -> None:
+        """A `Func<..>` field declaration itself holds the invoked function."""
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_DELEGATE_FIELD_ONLY),
+                "src/FieldCaller.cs": ("csharp", CS_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a delegate-typed field keeps its bare-name call; edges: {edges}"
+        )
+
+    def test_a_nullable_delegate_typed_field_is_still_callable(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_NULLABLE_DELEGATE_FIELD),
+                "src/FieldCaller.cs": ("csharp", CS_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a nullable delegate-typed field keeps its bare-name call; edges: {edges}"
+        )
+
+    def test_an_event_is_still_callable(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.cs": ("csharp", CS_EVENT_ONLY),
+                "src/Holder.Raise.cs": ("csharp", CS_EVENT_RAISER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert [e for e in edges if e[0].endswith("::Holder::Run")], (
+            f"raising an event keeps its bare-name call; edges: {edges}"
+        )
+
+    def test_a_delegate_type_argument_does_not_make_a_field_callable(self) -> None:
+        assert not holds_function("List<Func<int>> Amount;", "Amount", "csharp")
+        assert not holds_function("Dictionary<string, Func<int>> Amount;", "Amount", "csharp")
+
+    def test_a_vbnet_field_is_refused(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.vb": ("vbnet", VB_FIELD_ONLY),
+                "src/FieldCaller.vb": ("vbnet", VB_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert not [e for e in edges if e[0].endswith("::FieldCaller::Run")], (
+            f"a VB.NET field must not be the unique answer; edges: {edges}"
+        )
+
+    def test_a_vbnet_function_of_the_same_name_still_resolves(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Other.vb": ("vbnet", VB_FUNCTION_ONLY),
+                "src/FieldCaller.vb": ("vbnet", VB_FIELD_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        hits = [e[1] for e in edges if e[0].endswith("::FieldCaller::Run")]
+        assert hits == ["src/Other.vb::Other::Amount"], (
+            f"a real function named Amount must still resolve; edges: {edges}"
+        )
+
+    def test_a_pascal_property_is_refused(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/Holder.pas": ("pascal", PAS_PROPERTY_ONLY),
+                "src/Caller.pas": ("pascal", PAS_PROPERTY_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert not [e for e in edges if e[0].endswith("::TCaller::Run")], (
+            f"a Pascal property must not be the unique answer; edges: {edges}"
         )
 
     def test_a_property_getter_and_setter_are_not_an_overload_set(

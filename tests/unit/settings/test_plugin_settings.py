@@ -176,3 +176,31 @@ def test_check_plugin_can_check_a_loaded_plugin_that_declares_settings(installed
     assert settings.get(DB.key) == DB
     assert settings.by_env(TOKEN.env.name) == TOKEN
     assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 3
+
+
+def test_plugins_json_lists_each_setting_and_source_without_values(
+    installed, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(TOKEN.env.name, SECRET)
+    out = CliRunner().invoke(cli, ["plugins", "--format", "json"])
+    assert SECRET not in out.output
+    report = json.loads(out.output)
+    (row,) = [r for r in report["plugins"] if r["name"] == "synctest"]
+    assert row["settings"] == [
+        {"key": DB.key, "env": DB.env.name, "secret": False, "set": False},
+        {"key": MODE.key, "env": MODE.env.name, "secret": False, "set": True},
+        {"key": TOKEN.key, "env": TOKEN.env.name, "secret": True, "set": True},
+    ]
+    assert row["next_command"] == fix_command(DB)
+    assert "version" in row
+    (source,) = [s for s in report["sources"] if s["source"] == "synctest"]
+    assert source == {
+        "source": "synctest",
+        "seam": "evidence-source",
+        "plugin": "synctest",
+        "configured": False,
+        "message": f"needs {DB.key}",
+        "next_command": fix_command(DB),
+        "last_sync": None,
+    }

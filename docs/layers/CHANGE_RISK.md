@@ -82,7 +82,9 @@ caused. For a range, the record is read at the fork point. Up to 20,000 commits 
 walked, once per repository state. A bug fix is a commit whose subject matches `fix`,
 `bug`, `patch`, `resolves`, `closes #N` or `fixes #N`, and does not contain `docs`,
 `typo`, `bump`, `deps`, `chore`, `lint`, `format` or `style`. The same rule feeds the
-health layer and [bug-fix history](BUG_HISTORY.md).
+health layer and [bug-fix history](BUG_HISTORY.md). This record reads git alone; the
+index-backed `prior_fixes` overlap also counts commits an issue source links to a bug
+and names the issue.
 
 ### The diff-shape score
 

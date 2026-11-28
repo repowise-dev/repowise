@@ -30,6 +30,7 @@ from repowise.core.persistence.crud import (
     get_kg_layers,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.issue_links import fix_issue_quotes
 from repowise.core.persistence.crud.tombstoned_pages import announces_deletion
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
@@ -273,11 +274,18 @@ async def _triage_section(card: CardState) -> None:
             if card.resolved.target_type == "symbol":
                 # Counted per file: say so on a symbol card rather than pass it off as the symbol's.
                 fixes = {**fixes, "scope": "file"}
+            fixes = await _with_linked_issues(card, triage_path, fixes)
             card.data["fix_history"] = fixes
     # Governing decisions, opt-in only: the graph query is not worth its
     # latency on every card. Returns titles; get_why has the rationale.
     if card.wants("decisions"):
         await _governing_decision_titles(card, triage_path)
+
+
+async def _with_linked_issues(card: CardState, path: str, fixes: dict) -> dict:
+    """*fixes* plus the tracker issues behind them, when any bug or incident is linked."""
+    quotes = (await fix_issue_quotes(card.session, card.repo_id, [path])).get(path)
+    return {**fixes, "linked_issues": quotes} if quotes else fixes
 
 
 async def _directory_triage(card: CardState) -> None:

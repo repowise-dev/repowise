@@ -129,3 +129,24 @@ def coverage_add(repo_path: Path, report: Path) -> CliRun:
     """``repowise coverage add REPORT --path PATH``; *report* is absolute and inside the repo."""
     args = ["coverage", "add", str(report), "--path", str(repo_path)]
     return run_cli(args, cwd=repo_path, timeout=_WRITE_TIMEOUT_SECONDS)
+
+
+# -- plugins -----------------------------------------------------------------
+
+#: A source can page through a whole service on its first sync.
+_SYNC_TIMEOUT_SECONDS = 900.0
+
+
+def plugins_json(repo_path: Path) -> dict | None:
+    """``repowise plugins --format json``, which reads the repository in the current directory."""
+    run = run_cli(["plugins", "--format", "json"], cwd=repo_path, timeout=_READ_TIMEOUT_SECONDS)
+    payload = run.json()
+    return payload if isinstance(payload, dict) else None
+
+
+def sources_sync(repo_path: Path, source: str | None) -> CliRun:
+    """``repowise sources sync [--source NAME] --path PATH --format json``."""
+    args = ["sources", "sync", "--path", str(repo_path), "--format", "json"]
+    if source is not None:
+        args.append(f"--source={source}")
+    return run_cli(args, cwd=repo_path, timeout=_SYNC_TIMEOUT_SECONDS)

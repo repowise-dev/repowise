@@ -80,6 +80,7 @@ async def _run_git_indexing(
         progress.on_phase_start("git", None)
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.issues.sync import stored_tracker_fixes
 
         git_indexer = GitIndexer(
             repo_path,
@@ -90,6 +91,8 @@ async def _run_git_indexing(
             # The indexing pass proper, and the one that knows the repo's
             # excludes, so this is where a git episode may be recorded.
             record_episodes=True,
+            # Linked bug issues a re-index of an existing store already holds.
+            tracker_fixes=await stored_tracker_fixes(repo_path),
         )
 
         started = False

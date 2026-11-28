@@ -368,6 +368,9 @@ GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: backfill`` so the next update re-walks history to label the newly bound
 #: commits, and can say so instead of reporting a rules change.
 GIT_HISTORY_BACKFILL_REWALK = "attribution-backfill"
+#: Stored the same way when a stored bug or incident issue link came or went on
+#: a commit the index already holds, so its fix counts are read again.
+GIT_HISTORY_ISSUE_LINKS_REWALK = "issue-links"
 
 
 def git_history_stale(state: dict[str, Any]) -> bool:
@@ -379,6 +382,32 @@ def git_history_stale(state: dict[str, Any]) -> bool:
     do not change.
     """
     return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
+
+def request_history_rewalk(repo_path: Any, marker: str) -> bool:
+    """Make the next ``repowise update`` re-read git history once; False when there is no index.
+
+    Replaces a current stamp in ``.repowise/state.json`` with *marker*, which
+    the update reads as stale and names as the reason. A stamp already stale
+    is left alone: that walk reads everything again too.
+    """
+    import json
+    from pathlib import Path
+
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    if state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION:
+        return True
+    state[GIT_HISTORY_VERSION_KEY] = marker
+    atomic_write_text(state_path, json.dumps(state, indent=2))
+    return True
 
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"

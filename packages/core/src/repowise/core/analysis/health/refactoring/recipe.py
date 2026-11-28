@@ -175,7 +175,7 @@ _RENAME_EACH = RENAME_NOTE.replace("The helper's name", "Each stage's helper nam
     "rename it", "rename each one"
 )
 #: The placeholder ``helper_naming.placeholder_names`` writes, in any casing.
-_PLACEHOLDER = re.compile(r"_?extracted_?[hH]elper_?\d*")
+_PLACEHOLDER = re.compile(r"_?[eE]xtracted_?[hH]elper_?\d*")
 
 
 def _rename_note(plan: Mapping[str, Any], helpers: int) -> str | None:

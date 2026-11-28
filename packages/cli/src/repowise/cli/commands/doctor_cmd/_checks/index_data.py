@@ -60,12 +60,15 @@ def _stamp(state: dict[str, Any], key: str) -> str:
 def _history_part(state: dict[str, Any]) -> str:
     from repowise.core.ingestion.git_indexer import (
         GIT_HISTORY_BACKFILL_REWALK,
+        GIT_HISTORY_ISSUE_LINKS_REWALK,
         GIT_HISTORY_VERSION,
         GIT_HISTORY_VERSION_KEY,
     )
 
     if state.get(GIT_HISTORY_VERSION_KEY) == GIT_HISTORY_BACKFILL_REWALK:
         return "git history awaits a re-walk after attribution backfill"
+    if state.get(GIT_HISTORY_VERSION_KEY) == GIT_HISTORY_ISSUE_LINKS_REWALK:
+        return "git history awaits a re-walk after linked bug issues changed"
     return (
         f"git history written by older rules "
         f"({_stamp(state, GIT_HISTORY_VERSION_KEY)}, current v{GIT_HISTORY_VERSION})"

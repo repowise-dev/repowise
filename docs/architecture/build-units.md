@@ -3,7 +3,7 @@
 A build unit is one thing a build tool declares: a .NET project, a Cargo
 crate, an npm workspace package, a Gradle project, a Go module, a Maven
 module, a Python distribution, a Dart package, a Swift package, a Composer package, a Delphi or Lazarus project
-or package. `repowise.core.build_units` reads them once, from the resolver indexes the graph build
+or package, a CMake target. `repowise.core.build_units` reads them once, from the resolver indexes the graph build
 already holds, and stores one answer to three questions:
 
 - What units does this repo build?
@@ -31,12 +31,12 @@ Paths are relative to `packages/core/src/repowise/core/`.
 
 | Field | Meaning |
 |---|---|
-| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `php:<composer name>` / `php:<dir>` when unnamed, `manifest:<root>` (`manifest:.` at the repo root) |
-| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `dart`, `swift`, `php`, `pascal` or `manifest` |
-| `name` | The name the build tool uses (assembly, crate, package, module path, artifactId) |
+| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `php:<composer name>` / `php:<dir>` when unnamed, `cmake:<target>`, `manifest:<root>` (`manifest:.` at the repo root) |
+| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `dart`, `swift`, `php`, `pascal`, `cmake` or `manifest` |
+| `name` | The name the build tool uses (assembly, crate, package, module path, artifactId, target) |
 | `root` | Repo-relative POSIX directory, `""` at the repo root |
 | `manifest` | Repo-relative path of the file that declares the unit |
-| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `pubspec`, `swiftpm`, `composer`, `pascal`, `manifest-root` |
+| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `pubspec`, `swiftpm`, `composer`, `pascal`, `cmake`, `manifest-root` |
 | `deps` | Sorted ids of the in-repo units this one depends on. Third-party dependencies are not units |
 
 `BuildUnitIndex` holds every unit by id and the owners of each file:
@@ -58,8 +58,9 @@ the same rows.
 
 1. **Listed files first.** An adapter that knows a unit's exact files lists
    them: a .NET project's compiled sources, a Gradle project's source-set
-   directories (which may sit outside the project, `srcDirs("../shared/src")`).
-   A listed file is owned by every unit listing it.
+   directories (which may sit outside the project, `srcDirs("../shared/src")`),
+   a CMake target's sources and the headers under its public include
+   directories. A listed file is owned by every unit listing it.
 2. **Otherwise the deepest unit root.** Any other file is owned by the units
    whose `root` is the deepest directory above it. A unit declared in a
    build file (a manifest the language registry lists as build config, such
@@ -114,6 +115,7 @@ Which units exist is decided per manifest:
 | Dart | `pubspec.yaml` read with `yaml.safe_load`, name from top-level `name` | One unit per `pubspec.yaml` naming a package (`name:`) | `path:` dependencies in `dependencies` and `dev_dependencies`, resolved against the package root and matched by directory |
 | Swift | `Package.swift` read with `parse_package_manifest` | One unit per `Package.swift` naming a package (`Package(name: "...")`) | `.package(path: "...")` calls matched by the directory they point at |
 | Delphi, Lazarus | `PascalProjectIndex` (`ingestion/resolvers/pascal.py`) | One unit per readable `.dpr`, `.dpk`, `.lpr` and `.lpk`, listing the files its `uses` and `contains` clauses reach | `.dpk` `requires`, `.lpk` `RequiredPkgs`, `.lpi` `RequiredPackages`, and `.dproj` `DCC_UsePackage` under `UsePackages`, matched by name to packages of the same toolchain, the requiring project's directory first |
+| CMake | `CppWorkspaceIndex` (`ingestion/resolvers/cpp_workspace.py`), its CMake targets only | One unit per `add_library` / `add_executable` target, rooted at the directory of the `CMakeLists.txt` declaring it; sources, named headers and headers under its PUBLIC or INTERFACE include directories listed | `target_link_libraries` names matching another target |
 | Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby and the rest) | None |
 
 ### Ceilings
@@ -157,6 +159,18 @@ answer:
   named under any of them counts. Pascal declares no package manifest, so an
   unreadable project gets no `manifest:` unit: its files go to the deepest
   other unit.
+- **CMake is read without configuring.** Generator expressions, targets and
+  deps built in loops, functions or `include()`-d modules, and every `if()`
+  branch are read statically. `ALIAS` and `IMPORTED` libraries become units
+  of their own, so a dep on an alias points at an empty unit. An include
+  directory several targets declare gives its headers several owners, since
+  the build gives them none, and headers under another target's root inside
+  that directory stay with that target. Private include directories are not read. Below
+  the repo root, `${CMAKE_CURRENT_SOURCE_DIR}/x` paths resolve wrongly (and
+  `${PROJECT_SOURCE_DIR}/x` on Windows), so those files are missed. A
+  `CMakeLists.txt` is build config, not a package manifest, so the fallback
+  never covers a CMake directory. A CMake File API reply in the build tree is
+  the upgrade path, and the index already prefers it when present.
 - **The fallback has no deps.** Ecosystems without an adapter get correct
   roots and ownership but no edges until an adapter is added.
 
@@ -215,13 +229,18 @@ and edge precision and recall are 1.0 on every repo. File ownership agrees
 with the oracle's deepest unit on 50 of 50 sampled source files per repo. No
 adapter fails on any of them.
 
+CMake is not measured yet. Its oracle is the CMake File API codemodel of a
+configured build (targets, their sources and their link dependencies); so far
+the adapter is checked only against `tests/fixtures/cmake_build_units`, which
+builds with CMake.
+
 ## Adding an adapter
 
 Open adapter requests: Ruby
 ([#5802](https://github.com/repowise-dev/repowise/issues/5802)), Elixir
 ([#5806](https://github.com/repowise-dev/repowise/issues/5806)) and Scala
-([#5807](https://github.com/repowise-dev/repowise/issues/5807)). C and C++
-targets (CMake, Bazel) are tracked with the build-graph partitioner in
+([#5807](https://github.com/repowise-dev/repowise/issues/5807)). Bazel
+`cc_*` targets are tracked with the build-graph partitioner in
 [#5775](https://github.com/repowise-dev/repowise/issues/5775).
 
 1. **Check the manifest names.** The ecosystem's package manifests must be in

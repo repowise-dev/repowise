@@ -764,9 +764,26 @@ _SWIFT_INVOKABLE = re.compile(
     r"(?<![\w.])(?:let|var)\s+(?P<name>[a-z_]\w*)\s*(?::\s*(?:@\w+\s+)*\(|=\s*\{)"
 )
 
+# C# reads a member typed as a delegate (`Func<int> f;`, `System.Action? a;`,
+# not a type argument such as `List<Func<int>> fs`) and any `event`, which its
+# class invokes. Ceiling: a custom delegate type outside an event is missed.
+_CS_INVOKABLE = (
+    re.compile(
+        r"(?<![\w.<,])(?<![<,]\s)(?:[\w.]*\.)?"
+        r"(?:Func|Action|Predicate|Comparison|Converter|EventHandler)"
+        r"(?:<[^;\n=]*>)?\??\s+(?P<name>[A-Za-z_]\w*)\b"
+    ),
+    re.compile(r"(?<![\w.])event\s+[^;{=]*?(?P<name>[A-Za-z_]\w*)\s*[;{=]"),
+)
+_INVOKABLE_SHAPES = {
+    "kotlin": _KT_INVOKABLE,
+    "swift": (_SWIFT_INVOKABLE,),
+    "csharp": _CS_INVOKABLE,
+}
+
 
 def holds_function(declaration: str, name: str, language: str) -> bool:
-    """Does Kotlin or Swift *declaration* give property *name* a function value?
+    """Does Kotlin, Swift or C# *declaration* give property *name* a function value?
 
     Read with comments and string literals blanked, so text inside them never
     looks like a function type.
@@ -776,7 +793,7 @@ def holds_function(declaration: str, name: str, language: str) -> bool:
     for index, char, _ in scan_code(declaration, quotes=quotes, text_blocks=True):
         code[index] = char
     masked = "".join(code)
-    shapes = _KT_INVOKABLE if language == "kotlin" else (_SWIFT_INVOKABLE,)
+    shapes = _INVOKABLE_SHAPES.get(language, ())
     return any(match.group("name") == name for shape in shapes for match in shape.finditer(masked))
 
 
