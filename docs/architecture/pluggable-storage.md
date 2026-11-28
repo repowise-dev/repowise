@@ -2,8 +2,10 @@
 
 Writing a plugin? Start with the plugin author guide,
 [docs/reference/PLUGINS.md](../reference/PLUGINS.md), and the example in
-[examples/plugins/hello](../../examples/plugins/hello/). This page covers the
-storage contracts and how core contributors add a seam.
+[examples/plugins/hello](../../examples/plugins/hello/). How plugins load,
+how a seam's implementation is chosen, and every registry and seam contract
+are in the [plugin reference](../reference/PLUGINS_REFERENCE.md). This page
+covers the storage contracts and how core contributors add a seam.
 
 repowise ships with sensible defaults — a local SQLite database, an
 in-process NetworkX graph, an in-memory or LanceDB vector store, a
@@ -48,7 +50,7 @@ concrete implementations bundled with repowise.
 | Registry | What it collects | When the host applies it |
 |---|---|---|
 | `cli_registry` | Click commands and groups | At CLI import time, via `cli_registry.apply(cli)` |
-| `mcp_tool_registry` | MCP tool functions | At MCP server boot, via `mcp_tool_registry.apply(mcp)` |
+| `mcp_tool_registry` | MCP tool functions | At MCP server boot, via `mcp_tool_registry.apply(mcp)`. The `.tool()` alias on the registry lets call sites read as they did against the FastMCP instance |
 | `pipeline_hooks` | Pre/post phase callbacks | On every phase transition, via `HookProgressCallback` wrapping the orchestrator's progress callback |
 
 ---
@@ -65,15 +67,10 @@ Reach for these seams when you want one of:
   `JobStore` contract is the foundation for checkpoint/resume; pair it
   with a `GitIndexTier`-aware indexer and a custom pipeline hook that
   flushes state on a fast cadence.
-- **An additional CLI subcommand.** Register it through `cli_registry`
-  and the root group picks it up at startup.
-- **An additional MCP tool.** Decorate the function with
-  `@mcp_tool_registry.register` (or the `@mcp_tool_registry.tool()`
-  alias) and the FastMCP server attaches it at boot.
-- **Cross-cutting observability.** Register a hook on
-  `pipeline_hooks` to fire around any phase the orchestrator announces
-  — traverse, parse, graph, git, co_change, dead_code, decisions,
-  generation.
+
+For a CLI command, an MCP tool or a pipeline hook, see the
+[plugin guide](../reference/PLUGINS.md) and the
+[registries](../reference/PLUGINS_REFERENCE.md#registries) in the reference.
 
 ---
 
@@ -154,82 +151,6 @@ is published now so plugin authors can target it.
 
 ---
 
-## Adding a CLI subcommand
-
-```python
-import click
-from repowise.core.registry import register_command
-
-
-@click.command()
-def my_thing() -> None:
-    """Description shown in `repowise --help`."""
-    click.echo("hello")
-
-
-register_command(my_thing)
-```
-
-Import the module that calls `register_command` before
-`cli_registry.apply()` runs. In a plugin distributed as a separate
-wheel, the simplest pattern is a top-level import in your plugin's
-`__init__.py`.
-
----
-
-## Adding an MCP tool
-
-```python
-from repowise.core.registry import mcp_tool_registry as mcp
-
-
-@mcp.tool()
-async def my_tool(arg: str) -> dict:
-    """Tool description visible to MCP clients."""
-    return {"arg": arg}
-```
-
-The host server calls `mcp_tool_registry.apply(mcp_instance)` once at
-boot, attaching every registered tool to the FastMCP server. The
-`.tool()` alias on the registry exists so call sites read the same as
-they did against the FastMCP instance directly.
-
----
-
-## Observing pipeline phases
-
-```python
-from repowise.core.registry import register_hook
-
-
-def warm_caches(phase: str) -> None:
-    ...
-
-
-register_hook("graph", warm_caches, when="post")
-register_hook("parse", lambda phase: ..., when="pre")
-```
-
-Hook callbacks receive the phase name as their only positional
-argument. Exceptions raised inside a hook are caught and logged so a
-broken plugin cannot derail the pipeline.
-
----
-
-## Loading plugins and choosing a seam
-
-A distribution declares an entry point in the `repowise.plugins` group (or a
-module is listed in `REPOWISE_PLUGINS` as `module` or `module:attr`), and
-repowise imports it once, calling the target if it is callable, so its
-registrations land in the registries above. A plugin that fails to load is
-reported by `repowise plugins` and never stops startup. Named seams use
-`SeamRegistry` from `repowise.core.registry.plugins`: the local default
-registers first and stays chosen unless the plugin passes `default=True` or
-`REPOWISE_SEAM_<NAME>` names another implementation. Both variables are read
-from the process environment only, never from a repo's `.repowise/.env`.
-
----
-
 ## Adding a new seam
 
 A seam is for a point that plugins should extend. Open an issue first that
@@ -243,8 +164,9 @@ used, and what a failure does.
 3. Resolve with `get()` (one) or `all()` (every). Both load plugins first, so
    do not read `names` alone.
 4. Add a row to the catalog in
-   [PLUGINS.md](../reference/PLUGINS.md#extension-points-catalog): name, one
-   or every, when it runs, failure behaviour, file.
+   [PLUGINS_REFERENCE.md](../reference/PLUGINS_REFERENCE.md#extension-points-catalog):
+   name, one or every, when it runs, failure behaviour, file, and a one-line
+   row to the seams table in [PLUGINS.md](../reference/PLUGINS.md#seams).
 
 ---
 

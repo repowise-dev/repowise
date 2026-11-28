@@ -58,7 +58,7 @@ After that, `repowise update` syncs it first. GitHub Enterprise and
 self-managed GitLab work once their host is mapped below. Azure Boards
 (`AB#12`) and Bitbucket issues are not read. Details, including which labels
 count as bugs, are in
-[PLUGINS.md](../reference/PLUGINS.md#issues-from-github-and-gitlab).
+[PLUGINS.md](../reference/PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
 
 ## Self-managed hosts
 

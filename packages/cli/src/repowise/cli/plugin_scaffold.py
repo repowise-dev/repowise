@@ -1,7 +1,7 @@
 """Templates and file writing for ``repowise plugins new <seam>``.
 
 Each seam's module template is the matching example in
-``docs/reference/PLUGINS.md`` with the plugin name as ``${plugin}``. A test
+``docs/reference/PLUGINS_REFERENCE.md`` with the plugin name as ``${plugin}``. A test
 renders every template with the name the doc uses and compares it to the doc's
 code block, so change the two together.
 """
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
-DOCS_URL = "https://github.com/repowise-dev/repowise/blob/main/docs/reference/PLUGINS.md"
+DOCS_URL = "https://github.com/repowise-dev/repowise/blob/main/docs/reference/PLUGINS_REFERENCE.md"
 
 _ISSUE_SOURCE = """\
 import json
@@ -155,7 +155,7 @@ class SeamTemplate:
     #: One line for the README title and the package description.
     summary: str
     module: str
-    #: Section of PLUGINS.md that documents the contract.
+    #: Section of PLUGINS_REFERENCE.md that documents the contract.
     anchor: str
     #: Markdown for AGENTS.md: what to change in the stub.
     finish: str
@@ -285,7 +285,7 @@ repowise plugins check
 
 ${configure}
 The contract this plugin follows is in
-[PLUGINS.md](${docs}#${anchor}).
+[PLUGINS_REFERENCE.md](${docs}#${anchor}).
 """
 
 _README_CONFIGURE_FETCH = """\
@@ -387,7 +387,7 @@ def dist_name(name: str) -> str:
 
 
 def render_module(seam: str, plugin: str) -> str:
-    """The module body for *seam*, as PLUGINS.md shows it, named *plugin*."""
+    """The module body for *seam*, as PLUGINS_REFERENCE.md shows it, named *plugin*."""
     return Template(SEAMS[seam].module).substitute(plugin=plugin)
 
 

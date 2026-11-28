@@ -326,7 +326,7 @@ def _document_extractor(impl: Any) -> list[tuple[str, str]]:
     try:
         _validate_document_extractor(getattr(impl, "name", None) or type(impl).__name__, impl)
     except ValueError as exc:
-        return [(str(exc), "see the document-extractors rules in docs/reference/PLUGINS.md")]
+        return [(str(exc), "see the document-extractors rules in docs/reference/PLUGINS_REFERENCE.md")]
     return []
 
 

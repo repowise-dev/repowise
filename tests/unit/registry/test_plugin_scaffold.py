@@ -1,4 +1,4 @@
-"""``repowise plugins new``: the generated package loads, passes the contract checks and matches PLUGINS.md."""
+"""``repowise plugins new``: the generated package loads, passes the contract checks and matches PLUGINS_REFERENCE.md."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from repowise.core.registry import plugins
 from repowise.core.registry.plugins import PLUGIN_API_VERSION, seams
 from tests.unit.settings.plugin_double import _restore, _tables
 
-_DOCS = Path(__file__).resolve().parents[3] / "docs" / "reference" / "PLUGINS.md"
+_DOCS = Path(__file__).resolve().parents[3] / "docs" / "reference" / "PLUGINS_REFERENCE.md"
 _FILES = [
     "pyproject.toml",
     "src/repowise_{pkg}/__init__.py",
@@ -116,7 +116,7 @@ def test_each_template_is_the_example_in_plugins_md(seam):
     blocks = re.findall(r"```python\n(.*?)```", _DOCS.read_text(encoding="utf-8"), re.S)
     rendered = render_module(seam, SEAMS[seam].default_name)
     assert rendered in blocks, (
-        f"The {seam} example in docs/reference/PLUGINS.md and the `repowise plugins new` "
+        f"The {seam} example in docs/reference/PLUGINS_REFERENCE.md and the `repowise plugins new` "
         "template in repowise/cli/plugin_scaffold.py differ: change them together."
     )
 
