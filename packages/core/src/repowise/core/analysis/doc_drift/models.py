@@ -79,6 +79,8 @@ class DocReference:
     column: int = field(default=-1, compare=False)
     """0-based offset of ``raw`` in the untrimmed line, or -1 when unknown.
     Outside equality, so one reference repeated on a line still dedupes."""
+    previous_context: str = field(default="", compare=False)
+    """The preceding prose line, used only for context-sensitive classification."""
 
 
 @dataclass

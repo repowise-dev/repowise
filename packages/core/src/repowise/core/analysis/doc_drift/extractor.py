@@ -421,7 +421,18 @@ def extract_with_suppressed(
     ignore_file = False
     ignored_lines: set[int] = set()
     trail = _SectionTrail()
-    for lineno, line in prose_lines(text):
+    previous_line = ""
+    lines = list(prose_lines(text))
+    for index, (lineno, line) in enumerate(lines):
+        is_atx_heading = re.match(r"^\s{0,3}#{1,6}(?:\s|$)", line) is not None
+        is_setext_underline = re.match(r"^\s{0,3}(?:=+|-{2,})\s*$", line) is not None
+        is_setext_title = (
+            index + 1 < len(lines)
+            and re.match(r"^\s{0,3}(?:=+|-{2,})\s*$", lines[index + 1][1]) is not None
+        )
+        is_heading = is_atx_heading or is_setext_title or is_setext_underline
+        if is_heading:
+            previous_line = ""
         marker = "<!--" in line and _IGNORE_RE.search(_CODE_SPAN_RE.sub("", line))
         if marker:
             if marker.group(1):
@@ -436,11 +447,12 @@ def extract_with_suppressed(
         section = trail.trail()
         for extractor in _EXTRACTORS:
             for ref in extractor(line, lineno, doc_path):
-                ref = replace(ref, section=section)
+                ref = replace(ref, section=section, previous_context=previous_line.strip())
                 if ref in seen:
                     continue
                 seen.add(ref)
                 (suppressed if lineno in ignored_lines else out).append(ref)
+        previous_line = "" if is_heading else line
     if ignore_file:
         return [], sorted(out + suppressed, key=lambda ref: ref.line)
     return out, suppressed

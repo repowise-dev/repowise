@@ -322,28 +322,34 @@ def _foreign_project(ref: DocReference) -> str:
     ``"reader-project"`` for the reader's own, ``"other-repository"`` for
     another repository the sentence names or points at.
 
-    ``s = ref.context.find(ref.raw)`` rather than ``ref.column``: ``context``
-    is the source line stripped of leading whitespace, while ``column`` indexes
-    the unstripped one, so slicing ``context`` by ``column`` directly would be
-    off by exactly the amount of indentation a list item or a blockquote adds.
-    A plain substring search sidesteps the mismatch, since ``context`` already
-    strips consistently from both.
+    The current source line and its immediately preceding prose line are
+    searched together, using a substring lookup rather than ``ref.column``:
+    ``context`` is stripped for display while ``column`` indexes the unstripped
+    line, so the two offsets can differ for list items and blockquotes.
 
-    Scoped to the current sentence (back to the nearest ``.``/``!``/``?``
-    outside a code span) so
+    Scoped to the current sentence (back to the nearest sentence-ending
+    ``.``/``!``/``?`` outside a code span) so
     "This mirrors your project's layout. See ``src/gone.ts`` for details."
     still reports the real miss in its own, unrelated sentence. Another
     repository may also be named right after the path ("``tools/x.py`` in that
     repository").
     """
-    idx = ref.context.find(ref.raw)
-    preceding = ref.context[:idx] if idx != -1 else ref.context
+    context = " ".join(part for part in (ref.previous_context, ref.context) if part)
+    current_start = len(context) - len(ref.context)
+    idx = context.find(ref.raw, current_start)
+    preceding = context[:idx] if idx != -1 else context
     prose = _CODE_SPAN_RE.sub(lambda m: " " * len(m.group()), preceding)
-    sentence_start = max(prose.rfind("."), prose.rfind("!"), prose.rfind("?")) + 1
+    # A dot inside a dotted identifier (for example ``scanner.js``) is not
+    # sentence punctuation. Only treat it as a boundary when it is followed
+    # by whitespace or the end of the available prose. Code spans have already
+    # been blanked, so do not require a word character before the period.
+    boundaries = [m.end() for m in re.finditer(r"[!?]|\.(?=\s|$)", prose)]
+    sentence_start = max(boundaries, default=0)
     sentence = preceding[sentence_start:]
     if _READER_PROJECT_RE.search(sentence):
         return "reader-project"
-    following = ref.context[idx + len(ref.raw) :] if idx != -1 else ""
+    current_idx = idx - current_start if idx != -1 else -1
+    following = ref.context[current_idx + len(ref.raw) :] if current_idx != -1 else ""
     if _OTHER_REPOSITORY_RE.search(sentence) or _OTHER_REPOSITORY_AFTER_RE.match(following):
         return "other-repository"
     return ""

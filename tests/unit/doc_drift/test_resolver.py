@@ -158,6 +158,45 @@ def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
     assert res.detail == "other-repository"
 
 
+def test_dotted_repository_name_does_not_end_the_sentence():
+    text = "In the acme/scanner.js repo, `src/x.py` handles it."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py")
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
+def test_previous_wrapped_line_is_considered_for_repository_context():
+    text = "In the acme/scanner repo,\n`src/x.py` handles it."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py")
+    assert ref.previous_context == "In the acme/scanner repo,"
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
+def test_sentence_ending_after_code_span_does_not_leak_reader_context():
+    context = "Clone your repo with `git`. Then see `src/gone.py`."
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_repeated_path_on_previous_line_does_not_steal_current_context():
+    text = "In the acme/scanner repo, `src/x.py`.\nAlso `src/x.py` is listed."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/x.py" and ref.line == 2)
+    assert ref.previous_context == "In the acme/scanner repo, `src/x.py`."
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_heading_does_not_become_previous_repository_context():
+    text = "## Your project setup\nSee `src/gone.py` for details."
+    ref = next(ref for ref in extract(text, "docs/guide.md") if ref.raw == "src/gone.py")
+    assert ref.previous_context == ""
+    res = resolve(_index(), ref)
+    assert res.verdict is DriftVerdict.MISSING
+
+
 @pytest.mark.parametrize(
     "context",
     [
