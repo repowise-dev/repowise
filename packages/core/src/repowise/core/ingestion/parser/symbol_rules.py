@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 from tree_sitter import Node
@@ -120,8 +121,34 @@ def _language_symbol_name(language: str, def_node: Node, name: str, src: str) ->
         # category by the class it extends plus its own name.
         return _objc_symbol_name(def_node, name, src)
     if language == "cpp":
+        if _is_cpp_member_macro_call(def_node, name, src):
+            return None
         return _cpp_conversion_operator_name(def_node, src) or name
     return name
+
+
+_ALL_CAPS_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
+
+
+def _is_cpp_member_macro_call(def_node: Node, name: str, src: str) -> bool:
+    """Is *def_node* a macro invoked in a class body, like ``REGISTER_CLASS(Foo, Base);``?
+
+    The grammar reads it as a typeless, bodiless member declaration, the shape
+    of a constructor. An ALL_CAPS name that is not the class's own is a macro.
+    """
+    if def_node.type != "declaration" or def_node.child_by_field_name("type") is not None:
+        return False
+    if not _ALL_CAPS_NAME.fullmatch(name):
+        return False
+    body = def_node.parent
+    if body is None or body.type != "field_declaration_list" or body.parent is None:
+        return False
+    class_name = body.parent.child_by_field_name("name")
+    if class_name is None:
+        return True
+    # ``template_type`` for a specialization ``class VEC<int>``.
+    base = class_name.child_by_field_name("name") or class_name
+    return _node_text(base, src) != name
 
 
 def _cpp_conversion_operator_name(def_node: Node, src: str) -> str | None:
