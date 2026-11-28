@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.author_identity import TRAILER_PERSON_RE, accountable_human
+from repowise.core.changelist import split_changelist
 
 from ._constants import _CODE_EXTENSIONS
 
@@ -98,6 +99,8 @@ class _CommitRec:
     # The person ownership credits when a coding agent authored the commit
     # (``author_identity.accountable_human``); None keeps the author.
     credit: tuple[str, str] | None = None
+    # The Perforce changelist a depot mirror's trailer named, cut from the text.
+    changelist: str | None = None
 
 
 def commit_credit(header: dict) -> tuple[str, str] | None:
@@ -153,7 +156,9 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
     body. Returns ``(header, numstat_lines)`` or ``None`` if the record is
     malformed (too few fields). ``header`` keys mirror :class:`_CommitRec`
     fields except ``added``/``deleted`` (the caller attributes churn), plus
-    ``parents`` (the commit's parent shas).
+    ``parents`` (the commit's parent shas) and ``changelist`` (the Perforce
+    changelist a depot mirror's trailer names, or ``None``). The trailer is cut
+    from ``subject`` and ``body``, so no stored or prompted text carries it.
     """
     parts = record.split(_FIELD_SEP)
     if len(parts) < 10:
@@ -180,6 +185,7 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         ts = 0
 
     parent_shas = tuple(p for p in parents.split() if p)
+    subject, body, changelist = split_changelist(subject, "\n".join(body_lines))
     header = {
         "sha": sha,
         "author_name": an or "unknown",
@@ -194,7 +200,8 @@ def _parse_commit_record(record: str) -> tuple[dict, list[str]] | None:
         # contains the traced change).
         "parents": parent_shas,
         "subject": subject,
-        "body": "\n".join(body_lines).strip(),
+        "body": body,
+        "changelist": changelist,
     }
     return header, numstat_lines
 

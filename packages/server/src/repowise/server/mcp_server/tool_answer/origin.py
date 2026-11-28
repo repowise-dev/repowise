@@ -39,6 +39,7 @@ from sqlalchemy import or_, select
 
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.analysis.git_cli import landed_apart, landing_date
+from repowise.core.changelist import without_changelist_number
 from repowise.core.code_origin import path_origin
 from repowise.core.persistence.crud.changes import find_changes
 from repowise.core.persistence.database import get_session
@@ -588,7 +589,7 @@ def _walk(repo_path: str, args: list[str], paths: list[str], timeout: int) -> di
         # Its own committer date until :func:`_landed` reads the landing's.
         "date": committed[:10],
         "authored": authored[:10],
-        "subject": subject,
+        "subject": without_changelist_number(subject),
         "source": "git",
         # A shallow clone's cut commit shows as adding everything it holds.
         "cut": sha in shallow_roots(repo_path),

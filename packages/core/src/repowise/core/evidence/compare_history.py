@@ -20,6 +20,7 @@ from collections.abc import Collection, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..changelist import without_changelist_number
 from .compare import (
     Cause,
     Comparison,
@@ -81,7 +82,7 @@ def git_range(
         head_line, _, rest = block.partition("\n")
         sha, _, subject = head_line.partition("\x1f")
         files = [line.strip() for line in rest.splitlines() if line.strip()]
-        out.append((sha.strip(), subject.strip() or None, files))
+        out.append((sha.strip(), without_changelist_number(subject) or None, files))
     return out
 
 

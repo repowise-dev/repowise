@@ -30,7 +30,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from repowise.core.changelist import changelist_number, without_changelist_number
+from repowise.core.changelist import (
+    changelist_number,
+    split_changelist,
+    without_changelist_number,
+)
 from repowise.core.forges import ForgeKind, change_number, get_forge
 
 from .category import classify_change
@@ -111,6 +115,8 @@ class _Commit:
     ts: int
     subject: str
     body: str
+    # Read before the mirror trailer was cut from subject and body.
+    changelist: str | None = None
 
     @property
     def is_merge(self) -> bool:
@@ -176,10 +182,19 @@ def _shown_title(head: _Commit, kind: str, value: str) -> str:
 
 
 def change_identity(
-    subject: str, body: str, sha: str, is_merge: bool, forge: ForgeKind | str
+    subject: str,
+    body: str,
+    sha: str,
+    is_merge: bool,
+    forge: ForgeKind | str,
+    changelist: str | None = None,
 ) -> tuple[str, str, str | None]:
-    """``(kind, value, forge_ref)`` in the order changelist, PR number, Change-Id, merge, commit."""
-    if changelist := changelist_number(f"{subject}\n{body}"):
+    """``(kind, value, forge_ref)`` in the order changelist, PR number, Change-Id, merge, commit.
+
+    *changelist* is the number a parser read before cutting the mirror trailer
+    from *subject* and *body*.
+    """
+    if changelist := changelist or changelist_number(f"{subject}\n{body}"):
         return KIND_CHANGELIST, changelist, f"CL {changelist}"
     number = change_number(subject, body, forge)
     if number is not None:
@@ -243,8 +258,9 @@ def _graph(repo: Any, head: str, exclude: list[str]) -> dict[str, _Commit]:
         except ValueError:
             stamp = 0
         sha = sha.strip()
+        subject, body, changelist = split_changelist(subject, "\x1f".join(parts[6:]))
         graph[sha] = _Commit(
-            sha, tuple(parents.split()), name, email, stamp, subject, "\x1f".join(parts[6:]).strip()
+            sha, tuple(parents.split()), name, email, stamp, subject, body, changelist
         )
     return graph
 
@@ -368,10 +384,9 @@ class _Builder:
             header["ts"],
             header["subject"],
             header["body"],
+            header.get("changelist"),
         )
-        kind, value, ref = change_identity(
-            commit.subject, commit.body, commit.sha, commit.is_merge, self.forge
-        )
+        kind, value, ref = self._identity(commit)
         if not commit.is_merge:
             self._emit(commit, kind, value, ref, [commit.sha], files)
             return
@@ -420,7 +435,9 @@ class _Builder:
             self._emit(merge, kind, value, ref, rest, _merged_files(*(stats.get(s, []) for s in rest)))
 
     def _identity(self, commit: _Commit) -> tuple[str, str, str | None]:
-        return change_identity(commit.subject, commit.body, commit.sha, commit.is_merge, self.forge)
+        return change_identity(
+            commit.subject, commit.body, commit.sha, commit.is_merge, self.forge, commit.changelist
+        )
 
     def _emit(
         self,

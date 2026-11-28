@@ -46,6 +46,8 @@ _SKIPPED_SECTION_RE = re.compile(
 )
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
 _SEPARATOR_RE = re.compile(r"^\s*(?:-{3,}|={3,}|\*{3,})\s*$")
+#: ``(body, PR number, Perforce changelist)`` for one commit.
+_Body = tuple[str, int | None, str | None]
 
 
 def body_excerpt(body: str, subject: str, query: str) -> str | None:
@@ -149,9 +151,10 @@ async def attach_body_excerpts(
         _annotate(row, stored.get(_sha(row)) or live.get(_sha(row)), query)
 
 
-def _annotate(row: dict, found: tuple[str, int | None] | None, query: str) -> None:
-    body, pr = found or ("", None)
-    if changelist := changelist_number(body):
+def _annotate(row: dict, found: _Body | None, query: str) -> None:
+    body, pr, changelist = found or ("", None, None)
+    # An indexed body had the trailer cut; its number rides beside it.
+    if changelist := changelist or changelist_number(body):
         row["changelist"] = changelist
         body = without_changelist_number(body)
     excerpt = body_excerpt(body, str(row.get("message") or ""), query) if body else None
@@ -203,9 +206,9 @@ def _sha(row: dict) -> str:
     return str(row.get("sha") or row.get("commit") or "")[:8].lower()
 
 
-def _stored_bodies(target_git: dict[str, Any]) -> dict[str, tuple[str, int | None]]:
-    """``{sha8: (body, pr number)}`` from the targets' indexed significant commits."""
-    out: dict[str, tuple[str, int | None]] = {}
+def _stored_bodies(target_git: dict[str, Any]) -> dict[str, _Body]:
+    """``{sha8: _Body}`` from the targets' indexed significant commits."""
+    out: dict[str, _Body] = {}
     for meta in target_git.values():
         raw = getattr(meta, "significant_commits_json", None)
         try:
@@ -216,11 +219,14 @@ def _stored_bodies(target_git: dict[str, Any]) -> dict[str, tuple[str, int | Non
             # A body at the indexer's cap was cut; the clone has it whole.
             body = e.get("body") if isinstance(e, dict) else None
             if body and e.get("sha") and len(body.encode()) < _MAX_COMMIT_BODY_BYTES - 4:
-                out.setdefault(str(e["sha"])[:8].lower(), (e["body"], e.get("pr_number")))
+                out.setdefault(
+                    str(e["sha"])[:8].lower(),
+                    (e["body"], e.get("pr_number"), e.get("changelist")),
+                )
     return out
 
 
-async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, tuple[str, int | None]]:
+async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, _Body]:
     """Bodies of *shas* from the local clone; empty without one, or on any git failure."""
     from repowise.server.mcp_server import _state
 
@@ -234,8 +240,8 @@ async def _live_bodies(repo_root: Any, shas: list[str]) -> dict[str, tuple[str, 
         return {}
 
 
-def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, tuple[str, int | None]]:
-    """``{sha8: (body, pr number)}`` from one ``git cat-file --batch``.
+def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, _Body]:
+    """``{sha8: _Body}`` from one ``git cat-file --batch``; the trailer stays in the body.
 
     The batch answers each name on its own, so a sha the clone lacks (a shallow
     clone, rewritten history, an ambiguous prefix) loses only its own body.
@@ -258,14 +264,14 @@ def _git_bodies(repo_root: str, shas: list[str]) -> dict[str, tuple[str, int | N
         return {}
     messages = dict(zip(names, _batch_messages(proc.stdout), strict=False))
     forge = detect_forge(repo_root) if messages else None
-    out: dict[str, tuple[str, int | None]] = {}
+    out: dict[str, _Body] = {}
     for name, message in messages.items():
         subject, _, body = message.partition("\n\n")
         # A one-line description leaves a mirror's trailer in the subject paragraph.
         body = body or (subject if changelist_number(subject) else "")
         if body.strip():
             subject = " ".join(subject.split())
-            out[name[:8].lower()] = (body.strip(), change_number(subject, body, forge))
+            out[name[:8].lower()] = (body.strip(), change_number(subject, body, forge), None)
     return out
 
 

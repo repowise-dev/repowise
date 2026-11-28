@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.changed_lines import shallow_roots
+from repowise.core.changelist import without_changelist_number
 from repowise.server.mcp_server._why_relevance import floor_ranked
 
 _GIT_LOG_FORMAT = "--format=%H\t%an\t%ai\t%s"
@@ -238,7 +239,7 @@ def _parse_git_log(
                 "commit": parts[0],
                 "author": parts[1],
                 "date": parts[2][:10],
-                "message": parts[3],
+                "message": without_changelist_number(parts[3]),
                 "source": source,
             }
         )
