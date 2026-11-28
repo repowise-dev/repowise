@@ -519,13 +519,23 @@ _CSHARP_TYPE_NODES = frozenset(
 
 
 def _csharp_type_parameter_count(def_node: Node) -> int | None:
-    """How many type parameters a C# type declares (0 if none); None for a non-type."""
-    if def_node.type not in _CSHARP_TYPE_NODES:
+    """How many type parameters a C# type or method declares (0 if none); None otherwise."""
+    if def_node.type not in _CSHARP_TYPE_NODES and def_node.type != "method_declaration":
         return None
     for child in def_node.children:
         if child.type == "type_parameter_list":
             return sum(1 for param in child.children if param.type == "type_parameter")
     return 0
+
+
+def _csharp_explicit_interface(def_node: Node, language: str) -> str | None:
+    """``IEnumerable`` for ``IEnumerator IEnumerable.GetEnumerator()``: the interface as written."""
+    if language != "csharp":
+        return None
+    for child in def_node.children:
+        if child.type == "explicit_interface_specifier" and child.named_children:
+            return child.named_children[0].text.decode("utf-8", "replace")
+    return None
 
 
 # Nodes between a C++ declaration's ``@symbol.def`` node and the template head over it.

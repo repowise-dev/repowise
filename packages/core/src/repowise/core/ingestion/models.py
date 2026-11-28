@@ -263,9 +263,14 @@ class Symbol:
     # stubs and TypeScript overload signatures are declarations too: they share
     # the implementation's id, and the implementation is the symbol to serve.
     is_declaration: bool = False
-    # C# type declarations only: how many type parameters it declares, which is
-    # what tells ``IFoo<T>`` from a same-named ``IFoo``. None elsewhere.
+    # C# type and method declarations only: how many type parameters it
+    # declares, which is what tells ``IFoo<T>`` from a same-named ``IFoo``, and
+    # ``Run<T>(..)`` from a ``Run(..)`` of the same erasure. None elsewhere.
     type_parameter_count: int | None = None
+    # C# explicit interface implementations only: the interface as written
+    # (``IEnumerable``, ``Gen.IHook<int>``), what tells the member from a
+    # same-named public one. None elsewhere.
+    explicit_interface: str | None = None
     # C++ only: the ``template <...>`` parameter list written directly over
     # the declaration (``<typename T, int N>``), else None. What tells
     # same-signature SFINAE overloads apart.

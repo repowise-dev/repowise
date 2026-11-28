@@ -1971,7 +1971,9 @@ class ReceiverTypingMixin(
         """Read C# property and field types the AST kept, regardless of line layout."""
         parsed = self._parsed_files.get(file_path)
         symbols = parsed.symbols if parsed else ()
-        generic_scopes = tuple(f"{s.id}::" for s in symbols if s.type_parameter_count)
+        generic_scopes = tuple(
+            f"{s.id}::" for s in symbols if s.type_parameter_count and s.kind != "method"
+        )
         for symbol in symbols:
             declared = self._csharp_declared_field_type(file_path, symbol, generic_scopes)
             if declared is not None:

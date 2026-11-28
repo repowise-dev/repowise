@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **C++ template overloads that share a signature get their own symbol ids.** SFINAE overloads such as two `write(OutputIt, T)` templates that differ only in their `enable_if` constraint used to share one id, so the graph kept one node and charged the second body's calls to the first. Each now appends its compacted template parameters, as in `format.h::write#2(OutputIt,T)<Char,OutputIt,T,FMT_ENABLE_IF(is_integral<T>)>`; template definitions equal even there append `~2`, `~3`. This changes C++ template-overload symbol ids on the next index, so saved references to them (decisions, notes, bookmarks) need the new id.
+- **C# generic and explicit-interface twins get their own symbol ids.** A generic method beside a non-generic one of the same erased parameters (`Run<T>(Func<Ctx, Task<T>>)` and `Run(Func<Ctx, Task>)`), and an explicit interface implementation beside a public method of its name (`IEnumerable.GetEnumerator()` and `GetEnumerator()`), used to share one id, so the graph kept one node and dropped the other's calls. Only the member with the trait now appends it: the type-parameter count, as in ``Runner.cs::Runner::Run#2(Func`2,Ctx)`1``, or the interface, as in `Validator.cs::Validator::GetEnumerator#0()@IEnumerable`. Ids that did not collide are unchanged. This changes those C# symbol ids on the next index, so saved references to them (decisions, notes, bookmarks) need the new id.
 
 ---
 

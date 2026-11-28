@@ -479,6 +479,97 @@ class TestCSharpGenericSiblings:
             ("R.cs::R::When#1(Func`3)", "R.cs::R::B"),
         }
 
+    def test_csharp_a_generic_erasure_twin_carries_its_type_parameter_count(self) -> None:
+        """Only the generic twin is suffixed; the family's other ids stay as they were."""
+        text = (
+            "namespace App;\npublic class P {\n"
+            "  public Task Run(Func<Ctx, Task> action, Ctx ctx) => null;\n"
+            "  public Task<T> Run<T>(Func<Ctx, Task<T>> action, Ctx ctx) => null;\n"
+            "  public Task Run(Func<Task> action) => null;\n"
+            "  public Task<T> Run<T>(Func<T, bool> action) => null;\n"
+            "  public Task Run(Func<int, bool, string> action) => null;\n"
+            "}\n"
+        )
+        assert _ids(_parse("P.cs", "csharp", text))[-5:] == [
+            "P.cs::P::Run#2(Func`2,Ctx)",
+            "P.cs::P::Run#2(Func`2,Ctx)`1",
+            "P.cs::P::Run#1(Func`1)",
+            "P.cs::P::Run#1(Func`2)",
+            "P.cs::P::Run#1(Func`3)",
+        ]
+
+    def test_csharp_an_explicit_interface_member_carries_its_interface(self) -> None:
+        text = (
+            "namespace App;\npublic class V : IEnumerable<int>, IRule {\n"
+            "  public IEnumerator<int> GetEnumerator() => null;\n"
+            "  IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();\n"
+            "  string IRule.Template(string code) => Lookup(code);\n"
+            "  protected virtual string Template(string code) => Lookup(code);\n"
+            "  void Gen.IHook<int>.Fire(int x) { }\n"
+            "  public void Fire(int x) { }\n"
+            "  public void Fire() { }\n"
+            "  private string Lookup(string code) => code;\n"
+            "}\n"
+        )
+        ids = _ids(_parse("V.cs", "csharp", text))
+        assert ids[-8:] == [
+            "V.cs::V::GetEnumerator#0()",
+            "V.cs::V::GetEnumerator#0()@IEnumerable",
+            "V.cs::V::Template#1(string)@IRule",
+            "V.cs::V::Template#1(string)",
+            "V.cs::V::Fire#1(int)@IHook`1",
+            "V.cs::V::Fire#1(int)",
+            "V.cs::V::Fire#0",
+            "V.cs::V::Lookup",
+        ]
+        names = {"GetEnumerator", "Template", "Fire"}
+        for symbol_id in ids[-8:-1]:
+            assert id_segment_name(symbol_id.rpartition("::")[2]) in names
+            assert base_symbol_id(symbol_id) != symbol_id
+        assert untyped_symbol_id("V.cs::V::Fire#1(int)@IHook`1") == "V.cs::V::Fire#1"
+
+    def test_csharp_twins_keep_one_node_each_and_their_own_calls(self, tmp_path: Path) -> None:
+        text = (
+            "namespace App;\npublic class V : IRule {\n"
+            "  public void A() { }\n"
+            "  public void B() { }\n"
+            "  void IRule.Check(int x) { A(); }\n"
+            "  public void Check(int x) { B(); }\n"
+            "  public void Go(Action<int> f) { A(); }\n"
+            "  public void Go<T>(Action<T> f) { B(); }\n"
+            "}\n"
+        )
+        graph = _graph({"V.cs": ("csharp", text)})
+        for symbol_id in (
+            "V.cs::V::Check#1(int)@IRule", "V.cs::V::Check#1(int)",
+            "V.cs::V::Go#1(Action`1)", "V.cs::V::Go#1(Action`1)`1",
+        ):
+            assert symbol_id in graph, symbol_id
+        assert _edges(tmp_path, {"V.cs": ("csharp", text)}) >= {
+            ("V.cs::V::Check#1(int)@IRule", "V.cs::V::A"),
+            ("V.cs::V::Check#1(int)", "V.cs::V::B"),
+            ("V.cs::V::Go#1(Action`1)", "V.cs::V::A"),
+            ("V.cs::V::Go#1(Action`1)`1", "V.cs::V::B"),
+        }
+
+    def test_csharp_overloads_told_apart_already_take_no_suffix(self) -> None:
+        text = (
+            "namespace App;\npublic class Q : IRule {\n"
+            "  public void M(Func<int, bool> p) { }\n"
+            "  public void M<T>(Func<T, int, bool> p) { }\n"
+            "  void IRule.N(int x) { }\n"
+            "  public void N(string x) { }\n"
+            "  public void S<T>(T x) { }\n"
+            "}\n"
+        )
+        assert _ids(_parse("Q.cs", "csharp", text))[-5:] == [
+            "Q.cs::Q::M#1(Func`2)",
+            "Q.cs::Q::M#1(Func`3)",
+            "Q.cs::Q::N#1(int)",
+            "Q.cs::Q::N#1(string)",
+            "Q.cs::Q::S",
+        ]
+
 
 SHAPES_H = """namespace geo {
 class Shape {

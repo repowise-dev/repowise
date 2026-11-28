@@ -12,6 +12,10 @@ gains a discriminator:
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
   never renames its siblings. C# members those types still join spell each
   generic type with its arity, ``When#2(Func`2)`` beside ``When#2(Func`3)``.
+  C# members equal even there append what the CLR still tells apart: a
+  generic method its type-parameter count, ``Run#1(Func`1)`1`` beside
+  ``Run#1(Func`1)``, and an explicit interface implementation its interface,
+  ``GetEnumerator#0()@IEnumerable``. Only the member with the trait takes it.
   A Kotlin extension's receiver leads its types, as it leads the JVM
   signature it compiles to: ``Byte.toHexString()`` is
   ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
@@ -50,7 +54,9 @@ from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
-_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?|[A-Za-z_]\w*\(.*\)")
+_PAYLOAD = re.compile(
+    r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?(?:`\d+)?(?:@\w+(?:`\d+)?)?|[A-Za-z_]\w*\(.*\)"
+)
 _COUNT = re.compile(r"\d+")
 _GENERIC_ARITY = re.compile(r"`\d+$")
 
@@ -616,10 +622,26 @@ def _split_by_generic_arity(
     Only the members that collide change; a sibling that does not keeps its id.
     """
     seen = Counter(by_index.values())
-    return {
+    respelled = {
         index: f"{count}{_clr_parameter_types(keyed[index][0])}" if seen[key] > 1 else key
         for index, key in by_index.items()
     }
+    still = Counter(respelled.values())
+    return {
+        index: key + _clr_traits(keyed[index][0]) if still[key] > 1 else key
+        for index, key in respelled.items()
+    }
+
+
+def _clr_traits(symbol: Symbol) -> str:
+    """`` `1@IHook`1``: a C# method's own type-parameter count and its explicit interface."""
+    arity = f"`{symbol.type_parameter_count}" if symbol.type_parameter_count else ""
+    interface = symbol.explicit_interface
+    if interface is None:
+        return arity
+    name = strip_type_arguments(interface).rpartition(".")[2].strip()
+    interface_arity = type_argument_count(interface)
+    return f"{arity}@{name}" + (f"`{interface_arity}" if interface_arity else "")
 
 
 # The array, pointer and nullable marks that may follow an erased type's name.
@@ -699,7 +721,7 @@ def _split_generic_types(symbols: list[Symbol]) -> None:
     """
     types: dict[str, list[Symbol]] = defaultdict(list)
     for symbol in symbols:
-        if symbol.type_parameter_count is not None:
+        if symbol.type_parameter_count is not None and symbol.kind not in _CALLABLE_KINDS:
             types[symbol.id].append(symbol)
     for siblings in types.values():
         if len({s.type_parameter_count for s in siblings}) < 2:
