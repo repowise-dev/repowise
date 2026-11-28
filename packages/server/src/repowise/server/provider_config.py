@@ -35,6 +35,7 @@ from repowise.core.providers.embedding.registry import (
     KEYLESS_EMBEDDERS,
     list_embedders,
 )
+from repowise.core.providers.llm.inherited_pin import release_inherited_pin
 from repowise.core.providers.llm.resolve import (
     GLOBAL_CONFIG_FILENAME,
     UNSET,
@@ -274,6 +275,7 @@ def resolve_for_repo(
     if provider_override and provider_override not in _CATALOG_BY_ID:
         raise UnknownProviderError(f"Unknown provider: {provider_override}")
     _migrate_repo_selection(repo_id, repo_path)
+    release_inherited_pin(repo_path)
     legacy = _legacy_selection(repo_id) if repo_path is None else None
     return resolve_llm(
         repo_path,
