@@ -217,22 +217,86 @@ _TS_TYPE_POSITIONS = frozenset(
 )
 
 
-def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
-    """``TYPE_CHECKING`` or ``<module>.TYPE_CHECKING``, matched on the node.
+_TYPING_MODULES = frozenset({"typing", "typing_extensions"})
+_SKIP_DESCENDANTS = frozenset(
+    {"function_definition", "async_function_definition", "class_definition"}
+)
 
-    Ceiling: anything else is runtime, so ``not``/``and``/``or``, parentheses
-    and an alias (``from typing import TYPE_CHECKING as TC``) are missed on
-    the safe side: the import stays a runtime edge.
+
+def _extract_aliased_type_checking(child: Node, src: str) -> str | None:
+    if child.type != "aliased_import":
+        return None
+    name_node = child.child_by_field_name("name")
+    alias_node = child.child_by_field_name("alias")
+    if not (name_node and alias_node):
+        return None
+    if node_text(name_node, src) != "TYPE_CHECKING":
+        return None
+    return node_text(alias_node, src)
+
+
+def _statement_typing_aliases(stmt: Node, src: str) -> list[str]:
+    if stmt.type != "import_from_statement":
+        return []
+    mod = stmt.child_by_field_name("module_name")
+    if not mod or node_text(mod, src) not in _TYPING_MODULES:
+        return []
+    aliases: list[str] = []
+    for child in stmt.children:
+        alias = _extract_aliased_type_checking(child, src)
+        if alias:
+            aliases.append(alias)
+    return aliases
+
+
+def _type_checking_aliases(root: Node, src: str) -> frozenset[str]:
+    """All names *root* binds as aliases of ``TYPE_CHECKING`` from typing modules."""
+    aliases: set[str] = set()
+    stack = [root]
+    while stack:
+        curr = stack.pop()
+        aliases.update(_statement_typing_aliases(curr, src))
+        if curr.type not in _SKIP_DESCENDANTS:
+            stack.extend(reversed(curr.children))
+    return frozenset(aliases)
+
+
+def _is_literal_false_guard(node: Node, src: str) -> bool:
+    if node.type == "false":
+        return True
+    return node.type == "integer" and node_text(node, src) == "0"
+
+
+def _is_aliased_type_checking(node: Node, name: str, src: str) -> bool:
+    root = node
+    while root.parent is not None:
+        root = root.parent
+    return name in _type_checking_aliases(root, src)
+
+
+def _is_type_checking_flag(condition: Node | None, src: str) -> bool:
+    """``TYPE_CHECKING``, ``<module>.TYPE_CHECKING``, an alias, ``False`` or ``0``.
+
+    Ceiling: anything else is runtime, so ``not``/``and``/``or`` and parentheses
+    are missed on the safe side: the import stays a runtime edge.
     """
     if condition is None:
         return False
+    if _is_literal_false_guard(condition, src):
+        return True
     if condition.type == "attribute":
-        condition = condition.child_by_field_name("attribute")
-    return (
-        condition is not None
-        and condition.type == "identifier"
-        and node_text(condition, src) == "TYPE_CHECKING"
-    )
+        attr = condition.child_by_field_name("attribute")
+        return (
+            attr is not None
+            and attr.type == "identifier"
+            and node_text(attr, src) == "TYPE_CHECKING"
+        )
+    if condition.type != "identifier":
+        return False
+    name = node_text(condition, src)
+    if name == "TYPE_CHECKING":
+        return True
+    return _is_aliased_type_checking(condition, name, src)
 
 
 def _is_type_checking_branch(node: Node, child: Node, src: str) -> bool:
