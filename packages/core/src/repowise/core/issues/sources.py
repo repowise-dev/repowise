@@ -85,14 +85,14 @@ class IssueRequest:
     repository_id: str
     repository_name: str = ""
     commits: Sequence[IssueCommit] = ()
-    #: The repository's remote, parsed with the host's ``forges.hosts``
-    #: overrides; None when it has none. A source that reads the forge itself
-    #: (GitHub or GitLab issues) finds the project here.
-    remote: RemoteRef | None = None
     #: Plain settings (a project key, a workspace). Never secrets.
     settings: Mapping[str, Any] = field(default_factory=dict)
     #: The host's credentials object, passed through untouched and left out of ``repr``.
     credentials: Any = field(default=None, repr=False, compare=False)
+    #: The repository's remote, parsed with the host's ``forges.hosts``
+    #: overrides; None when it has none. A source that reads the forge itself
+    #: (GitHub or GitLab issues) finds the project here.
+    remote: RemoteRef | None = None
 
 
 @dataclass(frozen=True)

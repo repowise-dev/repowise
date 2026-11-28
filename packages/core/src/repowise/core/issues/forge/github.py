@@ -52,8 +52,8 @@ def api_url(remote: Any) -> str:
     """The GraphQL endpoint for *remote*: api.github.com, or the Enterprise host's own."""
     if not remote.is_self_hosted:
         return PUBLIC_API
-    parts = urlsplit(remote.web_base)
-    return f"{parts.scheme}://{parts.netloc}/api/graphql"
+    # Always https: the token goes in a header.
+    return f"https://{urlsplit(remote.web_base).netloc}/api/graphql"
 
 
 def fetch_links(
@@ -180,7 +180,8 @@ class _Api:
             json={"query": query % fields, "variables": {"owner": self.owner, "name": self.name}},
         )
         if answer is None:
-            raise SourceRefused(f"GitHub found nothing at {self.url} (404): check the API URL.")
+            host = urlsplit(self.url).hostname
+            raise SourceRefused(f"GitHub found nothing at {host} (404): check the API URL.")
         errors = answer.get("errors") or []
         _raise_for(errors, self.owner, self.name, self.client.last_headers)
         repo = (answer.get("data") or {}).get("repository")
@@ -207,9 +208,9 @@ def _raise_for(
         path = error.get("path") or []
         if kind in ("NOT_FOUND", "FORBIDDEN") and len(path) > 1:
             continue
-        if kind == "RATE_LIMITED":
+        if kind == "RATE_LIMITED" or "rate limit" in str(error.get("message", "")).lower():
             at = retry_point(headers)
-            when = f"after {at:%Y-%m-%d %H:%M} UTC" if at else "within the hour"
+            when = f"after {at:%Y-%m-%d %H:%M:%S} UTC" if at else "within the hour"
             raise SourceUnavailable(f"GitHub's rate limit is used up; sync again {when}.")
         if kind in ("FORBIDDEN", "UNAUTHORIZED", "NOT_FOUND"):
             raise SourceRefused(

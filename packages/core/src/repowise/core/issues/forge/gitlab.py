@@ -39,8 +39,8 @@ CLOSING_RE = re.compile(
 
 def api_url(remote: Any) -> str:
     """The API root for *remote*'s host: ``https://gitlab.com/api/v4`` or the host's own."""
-    parts = urlsplit(remote.web_base)
-    return f"{parts.scheme}://{parts.netloc}/api/v4"
+    # Always https: the token goes in a header.
+    return f"https://{urlsplit(remote.web_base).netloc}/api/v4"
 
 
 def fetch_links(
@@ -120,7 +120,8 @@ class _Api:
         project = self._get(self.project)
         if not isinstance(project, dict):
             raise SourceRefused(
-                f"GitLab found no project {self.path} at {self.root}: check the remote, the "
+                f"GitLab found no project {self.path} at {urlsplit(self.root).hostname}: "
+                "check the remote, the "
                 "API URL and that the token can read the project."
             )
         return project.get("id")
@@ -143,11 +144,21 @@ class _Api:
         return int(mr["iid"]) if mr is not None else None
 
     def closes_issues(self, iid: int) -> list[dict[str, Any]]:
-        """The issues merge request *iid* closes; none for a rollup."""
+        """The issues merge request *iid* closes; none for a rollup.
+
+        An external tracker's issue (no ``iid``) is left out. A 404 here means
+        the token cannot see a merge request GitLab just named, so the sync is
+        refused instead of reading "closes nothing" and dropping stored links.
+        """
         found = self._get(
             f"{self.project}/merge_requests/{int(iid)}/closes_issues", {"per_page": PER_PAGE}
         )
-        issues = [i for i in found or () if isinstance(i, dict)]
+        if found is None:
+            raise SourceRefused(
+                f"GitLab hid merge request !{iid} of {self.path} (404): the token needs "
+                "read access to its merge requests and issues."
+            )
+        issues = [i for i in found if isinstance(i, dict) and i.get("iid") is not None]
         return issues if len(issues) < ROLLUP else []
 
     def issues(self, iids: list[int]) -> dict[int, dict[str, Any]]:

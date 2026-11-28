@@ -561,10 +561,12 @@ setting the key replaces it:
 repowise config set plugins.forge.bug_labels '["bug", "regression"]'
 ```
 
-Two more rules keep links precise. An issue is linked only to the first
-change in the window that closes it, so a release pull request that lists it
-again is skipped. A pull or merge request that closes 5 issues or more is
-treated as a rollup and gives no links.
+Release pull requests often list every issue fixed since the last release,
+so an issue is linked only to the oldest change in the window that closes it.
+A pull request, merge request or commit message that closes 5 issues or more
+is treated as a rollup and gives no links. Every commit of a linked pull
+request gets the link; the fix walk then drops commits whose diff is not a
+code change, such as docs or tests.
 
 The project comes from the `origin` remote. For GitHub Enterprise or a
 self-managed GitLab on a neutral host name, map the host in

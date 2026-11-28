@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -73,15 +74,18 @@ class ForgeHttp:
 
     def _failure(self, response: httpx.Response) -> Exception:
         status = response.status_code
-        retry_at = retry_point(response.headers)
-        if retry_at is not None or status in _BUSY:
-            when = f"after {retry_at:%Y-%m-%d %H:%M} UTC" if retry_at else "later"
-            what = "rate limit is used up" if retry_at else f"answered {status}"
-            return SourceUnavailable(f"{self.label}'s {what}; sync again {when}.")
         if status == 401:
             return SourceRefused(
                 f"{self.label} rejected the token (401): it is missing, expired or revoked."
             )
+        retry_at = retry_point(response.headers)
+        limited = retry_at is not None or (
+            status in (403, 429) and "rate limit" in response.text[:500].lower()
+        )
+        if limited or status in _BUSY:
+            when = f"after {retry_at:%Y-%m-%d %H:%M:%S} UTC" if retry_at else "later"
+            what = "rate limit is used up" if limited else f"answer was {status}"
+            return SourceUnavailable(f"{self.label}'s {what}; sync again {when}.")
         if status == 403:
             return SourceRefused(
                 f"{self.label} refused the request (403): the token needs read access to "
@@ -93,7 +97,7 @@ class ForgeHttp:
 def retry_point(headers: Mapping[str, str], now: datetime | None = None) -> datetime | None:
     """When a rate-limited host says to come back, or None when it is not rate limiting.
 
-    ``Retry-After`` (seconds) wins; else a used-up quota's reset time, which
+    ``Retry-After`` (seconds or an HTTP date) wins; else a used-up quota's reset time, which
     GitHub sends as ``x-ratelimit-reset`` and GitLab as ``RateLimit-Reset``
     (both epoch seconds).
     """
@@ -101,6 +105,11 @@ def retry_point(headers: Mapping[str, str], now: datetime | None = None) -> date
     after = headers.get("retry-after", "").strip()
     if after.isdigit():
         return now + timedelta(seconds=int(after))
+    if after:
+        try:  # the HTTP-date form
+            return parsedate_to_datetime(after).astimezone(UTC)
+        except (TypeError, ValueError):
+            pass
     for remaining, reset in (
         ("x-ratelimit-remaining", "x-ratelimit-reset"),
         ("ratelimit-remaining", "ratelimit-reset"),

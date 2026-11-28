@@ -227,7 +227,9 @@ def test_a_used_up_rate_limit_is_unavailable_with_its_reset_time() -> None:
 
     outcome = _outcome(handle)
     assert outcome.status == "unavailable"
-    assert outcome.error == "GitHub's rate limit is used up; sync again after 2026-11-28 09:02 UTC."
+    assert (
+        outcome.error == "GitHub's rate limit is used up; sync again after 2026-11-28 09:02:14 UTC."
+    )
 
 
 def test_a_graphql_rate_limit_error_is_unavailable() -> None:
@@ -241,7 +243,7 @@ def test_a_graphql_rate_limit_error_is_unavailable() -> None:
     outcome = _outcome(handle)
     assert (outcome.status, outcome.error) == (
         "unavailable",
-        "GitHub's rate limit is used up; sync again after 2026-11-28 09:02 UTC.",
+        "GitHub's rate limit is used up; sync again after 2026-11-28 09:02:14 UTC.",
     )
 
 
@@ -250,7 +252,7 @@ def test_a_graphql_rate_limit_error_is_unavailable() -> None:
     [
         (401, "refused", "rejected the token (401)"),
         (403, "refused", "needs read access"),
-        (502, "unavailable", "answered 502"),
+        (502, "unavailable", "answer was 502"),
     ],
 )
 def test_http_failures_map_to_the_seam_rules_without_the_token(status, state, text) -> None:
@@ -391,3 +393,47 @@ def test_sources_sync_lists_the_forge_source_until_a_token_is_set(
     assert [(p.seam.name, p.name, p.configured) for p in forge] == [
         ("issue-source", "forge", False)
     ]
+
+
+def test_a_secondary_rate_limit_without_headers_is_still_unavailable() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="You have exceeded a secondary rate limit.")
+
+    outcome = _outcome(handle)
+    assert (outcome.status, outcome.error) == (
+        "unavailable",
+        "GitHub's rate limit is used up; sync again later.",
+    )
+
+
+def test_a_401_is_refused_even_with_quota_headers() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, headers={"retry-after": "60"})
+
+    assert _outcome(handle).status == "refused"
+
+
+def test_a_hidden_merge_request_refuses_instead_of_dropping_links() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/merge_requests") and "/commits/" in path:
+            return httpx.Response(
+                200, json=[{"iid": 3, "state": "merged", "squash_commit_sha": "c" * 40}]
+            )
+        if path.endswith("closes_issues"):
+            return httpx.Response(404, json={"message": "404 Not found"})
+        return httpx.Response(200, json={"id": 1})
+
+    outcome = _outcome(handle, GITLAB)
+    assert outcome.status == "refused"
+    assert "merge request !3" in outcome.error
+
+
+def test_derived_api_urls_are_always_https() -> None:
+    lab = parse_remote("http://git.corp.com/group/app.git", hosts={"git.corp.com": "gitlab"})
+    assert gitlab.api_url(lab) == "https://git.corp.com/api/v4"
+
+
+def test_a_message_closing_a_whole_list_is_a_rollup() -> None:
+    body = "Closes #1, closes #2, closes #3, closes #4, closes #5"
+    assert closing_mentions(IssueCommit("a" * 40, "Merge dev", body), github.CLOSING_RE) == []

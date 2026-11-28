@@ -6,9 +6,10 @@ the commit came from and the issues that request closes, plus issues the
 commit message itself closes (``Fixes #12``). A bare ``#12`` is never read:
 it names a pull request as often as an issue.
 
-Types are precision first. ``bug`` or ``incident`` comes only from the
-issue's own type (GitHub issue types, GitLab's incident type) or, for an
-issue with none, from a label in ``plugins.forge.bug_labels``. Anything else
+``bug`` or ``incident`` comes only from the issue's own type (GitHub issue
+types, GitLab's incident type) or, when the type is missing or one this
+source does not know (an ``Epic``), from a label in
+``plugins.forge.bug_labels``. Anything else
 is ``feature``, ``task`` or ``other``, which change no count.
 
 Every forge fact (API URLs, queries, field names, closing keywords) lives in
@@ -70,7 +71,8 @@ def closing_mentions(commit: IssueCommit, pattern: Any) -> list[int]:
     text = f"{commit.subject}\n{commit.body}"
     found = dict.fromkeys(int(m.group(1)) for m in pattern.finditer(text))
     found.pop(commit.change, None)
-    return list(found)
+    # A message closing a whole list is a rollup too (a merge of a branch).
+    return list(found) if len(found) < ROLLUP else []
 
 
 def first_closers(candidates: Iterable[tuple[str, IssueLink]]) -> list[IssueLink]:
