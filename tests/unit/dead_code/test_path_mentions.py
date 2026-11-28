@@ -167,6 +167,11 @@ def test_a_dot_root_dir_is_the_configs_own_directory():
     assert _dropped("web/setup.ts", {"web/jest.config.js": config})
 
 
+def test_a_nested_configs_root_dir_resolves_against_the_configs_directory():
+    config = 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };\n'
+    assert _dropped("web/src/setup.ts", {"web/jest.config.js": config})
+
+
 def test_a_relative_path_from_a_doc_is_capped_not_dropped():
     finding = _clamp("pkg/run.py", {"pkg/README.md": "Run `./run.py` by hand.\n"})
     assert finding.confidence == RISK_CAP_CONFIDENCE
