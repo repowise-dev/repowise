@@ -10,7 +10,11 @@ User-facing behaviour is in [docs/layers/BUG_HISTORY.md](../layers/BUG_HISTORY.m
    `core/ingestion/git_indexer/_constants.py` applies the keyword include and
    exclude rules. The same rule feeds the health `prior_defect` marker and
    change-risk `fix_history`, so every fix count in the product counts the same
-   commits.
+   commits. The indexed walk (`prior_defects.py`) also takes the commits a
+   stored `bug` or `incident` issue link names (`issue_links`, written by an
+   `issue-source`), additive to the rule; the git-only `change_risk/fix_history.py`
+   record does not read links. When a link on an indexed commit comes or goes,
+   the next update re-walks history once (`GIT_HISTORY_ISSUE_LINKS_REWALK`).
 2. **Shape classification.** `classify_fix_shape` in
    `git_indexer/fix_shape.py` reads the candidate's `-U0` diff and assigns one
    of `SHAPE_KINDS` (`code_fix`, `test_only`, `doc_only`, `config_other`,

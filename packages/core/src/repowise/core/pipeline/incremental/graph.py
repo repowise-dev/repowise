@@ -906,6 +906,7 @@ async def _index_git_metadata(
     """Reindex changed-file history and restore complete co-change graph edges."""
     from repowise.core.ingestion.git_indexer import GitIndexer
     from repowise.core.ingestion.git_indexer.tiers import GitIndexTier
+    from repowise.core.issues.sync import stored_tracker_fixes
     from repowise.core.pipeline.phases.git import label_co_change_structure
 
     git_meta_map: dict[str, dict] = {}
@@ -922,6 +923,7 @@ async def _index_git_metadata(
             follow_renames=cfg.get("follow_renames", False),
             exclude_patterns=exclude_patterns or None,
             tier=tier,
+            tracker_fixes=await stored_tracker_fixes(repo_path),
         )
         if force_full_git:
             summary, updated_meta = await git_indexer.index_repo(

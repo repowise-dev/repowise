@@ -198,7 +198,7 @@ Per target, under `targets`:
 | `parent_page` | The concept page above this target: `title`, `target_path` |
 | `freshness` | Only when the page is stale or the file has uncommitted edits: `freshness_status`, `is_stale`, `confidence_score`, `working_tree` |
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
-| `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk`. Counted per file: on a symbol card it carries `scope: "file"` |
+| `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`, and `linked_issues` (up to 3, `"ENG-42 (bug): title"`) when a tracker issue backs a fix. A cue to call `get_risk`. Counted per file: on a symbol card it carries `scope: "file"` |
 | `episodes` | Count of dated records; `get_why` serves them |
 | `measured` | Symbol or file a stored profile run measured: one line with rank among repo code, workload class and name (`in tests` for a unit-test run; a production run adds its window and deploy, `in production "api" over 2026-10-30 to 2026-11-26, deployed 1a2b3c4d5e6f`), share of samples with its interval (`ordering only` for a tracer), how much of the run repo code explains, and age. A file names up to 3 functions from one run and counts the rest, with other runs and stale ones counted apart. A function's line then adds `why: ...` when its run measured what the time is and a rule names it (the action row's `next_step.why`), and `driven by: <symbol_id> 60%, ...` with up to 3 production callers the call graph lists that the run measured calling it, each with the share of the function's time it drove; each part only with its data, never on a file's or a stale line. `stale:` when the body changed since the run. Rows are per function, so a class card has none. Absent with no runtime evidence |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
@@ -573,7 +573,7 @@ Present when coverage is stored. With a gate set and coverage measured at head, 
 ### fix_history
 
 - `is_fix` is a keyword rule on the subject, not the conventional-commit type.
-- `overlap` (needs an index), per file: `fix_count`, `overlapping_lines` (`approximate`: past ranges use their own parent, so read "this area was patched before"), `last_fix_days_ago`, `changed_lines`, `share_of_change`.
+- `overlap` (needs an index), per file: `fix_count`, `overlapping_lines` (`approximate`: past ranges use their own parent, so read "this area was patched before"), `last_fix_days_ago`, `changed_lines`, `share_of_change`, and `linked_issues` (up to 3, `"ENG-42 (bug): title"`) when an [issue source](PLUGINS.md#writing-an-issue-source) linked a counted fix to a bug or incident.
 - `concentration` names a file holding at least half the changed lines.
 - Never names the commit that introduced a bug; absent without fix history.
 

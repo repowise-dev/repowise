@@ -229,7 +229,11 @@ def test_update_runs_the_sync_after_its_own_work_only(
     monkeypatch.setattr(
         command, "_update_single_repo", lambda opts, run: command.UpdateOutcome(outcome)
     )
-    monkeypatch.setattr(sources_cmd, "sync_after_update", calls.append)
+    monkeypatch.setattr(
+        sources_cmd,
+        "sync_after_update",
+        lambda path, before=False: calls.append(path) if not before else None,
+    )
     result = command.run_update(
         path=str(tmp_path),
         provider_name=None,

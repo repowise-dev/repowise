@@ -785,8 +785,12 @@ def _recompute_report(repo_path: Path, *, persist: bool) -> tuple[Any, set[str],
     git_meta_map: dict = {}
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.issues.sync import stored_tracker_fixes
 
-        _, metadata_list = run_async(GitIndexer(repo_path).index_repo(""))
+        tracker_fixes = run_async(stored_tracker_fixes(repo_path))
+        _, metadata_list = run_async(
+            GitIndexer(repo_path, tracker_fixes=tracker_fixes).index_repo("")
+        )
         git_meta_map = {m["file_path"]: m for m in metadata_list}
     except Exception:
         pass

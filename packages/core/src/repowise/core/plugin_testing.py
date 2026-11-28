@@ -48,6 +48,7 @@ CONTRACTS: dict[str, str] = {
     "evidence-source": "repowise.core.evidence.sources:EvidenceSource",
     "first-look-section": "repowise.core.report.first_look.model:FirstLookSection",
     "index-persistence": "repowise.core.pipeline.index_persistence:IndexPersistence",
+    "issue-source": "repowise.core.issues.sources:IssueSource",
     "profile-format": "repowise.core.evidence.profile_formats:ProfileFormat",
     "report-renderer": "repowise.core.report.render:Renderer",
     "report-section": "repowise.core.report.model:Section",
