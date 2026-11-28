@@ -119,9 +119,9 @@ def check_api_version(module: object, plugin: str) -> None:
 
     The message names both versions and what to change.
     """
-    needed = getattr(module, MIN_API_ATTR, None)
-    if needed is None:
+    if not hasattr(module, MIN_API_ATTR):
         return
+    needed = getattr(module, MIN_API_ATTR)
     if isinstance(needed, bool) or not isinstance(needed, int) or needed < 1:
         raise PluginAPIError(
             f"{MIN_API_ATTR} = {needed!r} is not a positive integer: set it to the plugin "

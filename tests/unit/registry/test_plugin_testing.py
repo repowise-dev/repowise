@@ -219,13 +219,14 @@ def test_check_plugin_reports_a_plugin_that_does_not_load(make_module):
             f"needs plugin API {plugins.PLUGIN_API_VERSION + 1}, this repowise has plugin API "
             f"{plugins.PLUGIN_API_VERSION}: upgrade repowise",
         ),
-        ("2", "failed", "MIN_PLUGIN_API_VERSION = '2' is not a positive integer"),
+        ("'2'", "failed", "MIN_PLUGIN_API_VERSION = '2' is not a positive integer"),
+        ("None", "failed", "MIN_PLUGIN_API_VERSION = None is not a positive integer"),
     ],
 )
 def test_a_plugin_that_needs_a_newer_api_is_failed_and_the_rest_load(
     make_module, monkeypatch, declared, status, error
 ):
-    line = "" if declared is None else f"MIN_PLUGIN_API_VERSION = {declared!r}\n"
+    line = "" if declared is None else f"MIN_PLUGIN_API_VERSION = {declared}\n"
     needy = make_module(line + "called = []\ndef register():\n    called.append(1)\n")
     other = make_module("def register():\n    pass\n")
     monkeypatch.setenv(plugins.ENV_VAR, f"{needy}:register,{other}:register")

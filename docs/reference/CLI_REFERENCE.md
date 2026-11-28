@@ -2567,8 +2567,8 @@ repowise plugins check [--format json]   # each plugin's implementations against
 |------|--------------|---------|
 | `--format` | `table` or `json`. | `table` |
 
-`check` prints pass, fail or skipped per registration, with the broken rule and its fix, and exits 1 on any
-failure or any plugin that did not load. See the [plugin author guide](PLUGINS.md#check-the-contracts).
+`check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
+exits 1 if a check fails or a plugin fails to load. See the [plugin author guide](PLUGINS.md#check-the-contracts).
 
 ### `repowise attribution`
 

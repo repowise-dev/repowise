@@ -156,13 +156,15 @@ lowest version it works with in its module, next to `register`:
 MIN_PLUGIN_API_VERSION = 1
 ```
 
-On a repowise whose `PLUGIN_API_VERSION` is lower, the plugin is `failed`
-with a message naming both versions and what to change (upgrade repowise, or
-install a plugin version built for the older API), and `register()` never
-runs. The check runs once the module imports, so keep imports of newer
-repowise APIs inside `register()`: an import that fails first is reported as
-that import error instead. An exception raised from `register()` (or at import) also marks the
-plugin `failed`. In both cases repowise records it and carries on without it.
+If the installed repowise has a lower `PLUGIN_API_VERSION`, the plugin is
+marked `failed` and `register()` is skipped. The error shows both versions:
+upgrade repowise, or install a version of the plugin built for the older API.
+repowise reads the attribute after importing your module, so import newer
+repowise APIs inside `register()`. Otherwise an older install reports the
+import error instead of the version mismatch.
+
+An exception raised from `register()` (or at import) also marks the plugin
+`failed`. Either way, repowise records it and carries on without it.
 
 ## Check the contracts
 
@@ -171,15 +173,17 @@ repowise plugins check
 repowise plugins check --format json
 ```
 
-`repowise plugins check` loads every plugin and checks each implementation it
-registered against its seam's contract: every method and attribute of the
-seam's protocol, each method's parameters and whether it is `async`, or the
-seam's own type for seams built from a repowise class such as `Section`. Each
-failure names the seam, the rule broken and the fix, and the command exits 1
-on any failure or any plugin that did not load. Registrations of the other
-kinds (`cli-command`, `mcp-tool` and the rest) are validated when they
-register and show as `skipped`. The check never calls your implementation, so
-it needs no service or credentials.
+`repowise plugins check` loads your plugins and inspects each seam
+implementation they registered. For a seam defined by a protocol, it checks
+that every method and attribute is there, that each method takes the
+parameters repowise passes, and that it is `async` when the protocol is. For a
+seam built from a repowise class, such as `Section`, it checks the type.
+
+A failure shows the rule that broke and how to fix it. The command exits 1 if
+any check fails or any plugin fails to load. Registrations such as
+`cli-command` and `mcp-tool` show as `skipped`, because repowise validates
+them when they register. The checks never call your methods, so they need no
+service or credentials.
 
 ```json
 {
@@ -320,8 +324,8 @@ module in the last column and call `.register(name, impl)`, for example
 | `first-look-section` | `first_look_sections` | every | `repowise report repo` collects its sections | `UnavailableError` marks the section unavailable with its message; any other exception is logged and the section reads "Could not be read from this index."; other sections run | `packages/core/src/repowise/core/report/first_look/model.py` |
 | `report-renderer` | `report_renderers` | one, chosen by `repowise report assessment --format` | when a report is written | propagates | `packages/core/src/repowise/core/report/render.py` |
 | `change-outcome` | `change_outcome_providers` | every | when a change record's outcomes are read | `OutcomeUnknownError` marks the outcome unknown; any other exception propagates, and in `repowise report` it marks the outcomes item unavailable | `packages/core/src/repowise/core/changes/outcomes.py` |
-| `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | when records are stored, a failing plugin source is logged (`change_metadata_failed`) and the built-in `git` source fills the records instead, marked `git`; a source name no implementation holds logs `changes_refresh_failed` and stores no new records; in the report, the section's failure rule applies | `packages/core/src/repowise/core/changes/source.py` |
-| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages rather than files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
+| `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | if a plugin source fails, repowise logs `change_metadata_failed` and stores the records with metadata from the built-in `git` source, marked `git`. If no implementation is registered under the configured name, it logs `changes_refresh_failed` and stores no new records. In the report, the `report-section` rule applies | `packages/core/src/repowise/core/changes/source.py` |
+| `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages, not files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
 | `evidence-source` | `evidence_sources` | every; the host chooses which source to fetch, when, and with which credentials | when a host calls `run_fetch` (repowise itself schedules no fetch) | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
@@ -600,8 +604,9 @@ for name, section in report_sections.all():
 ## Testing a plugin
 
 Test your implementations directly, then add one test that loads the plugin
-the way repowise does and checks it against every seam contract. That test
-is one call, running the same checks as `repowise plugins check`:
+the way repowise does and checks it against every seam contract. Pass your
+plugin's `module:register` target to `assert_plugin_passes`; it runs the same
+checks as `repowise plugins check`:
 
 ```python
 from repowise.core.plugin_testing import assert_plugin_passes
@@ -671,14 +676,15 @@ shows how to restore each registry afterwards.
 The plugin API is experimental and can change in a minor release.
 
 - A breaking change to a registry or seam contract bumps `PLUGIN_API_VERSION`
-  and is named in [CHANGELOG.md](../CHANGELOG.md). Breaking means a protocol
-  method or required attribute added, removed or renamed, a parameter
-  changed, or a failure rule that changes what reaches your code's caller.
+  and is named in [CHANGELOG.md](../CHANGELOG.md). Breaking changes include
+  adding, removing or renaming a protocol method or required attribute,
+  changing a method's parameters, and changing which exceptions reach the
+  caller.
 - Additive changes (a new seam, a new optional field) keep the version.
-- Set `MIN_PLUGIN_API_VERSION` when you rely on a contract added in a later
-  version, and run `repowise plugins check` after upgrading repowise: a plugin
-  written for an older API still loads, and the check says whether its
-  implementations still meet the contracts.
+- Set `MIN_PLUGIN_API_VERSION` to the oldest API version your plugin works
+  with. A plugin written for an older API still loads, so after upgrading
+  repowise, run `repowise plugins check` to see whether it still meets the
+  contracts.
 
 ## Proposing a new seam
 
