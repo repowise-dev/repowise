@@ -187,6 +187,114 @@ def test_stacked_when_selections_each_count() -> None:
     assert rows["P1"][2] == 4
 
 
+def test_a_handler_body_nests_like_an_if_body() -> None:
+    in_handler = _rows(
+        _program(
+            "       READ-P.",
+            "           READ F",
+            "             AT END",
+            "               IF WS-A = 1",
+            "                 MOVE 2 TO WS-A",
+            "               END-IF",
+            "           END-READ.",
+        )
+    )
+    in_if = _rows(
+        _program(
+            "       READ-P.",
+            "           IF WS-A = 0",
+            "               IF WS-A = 1",
+            "                 MOVE 2 TO WS-A",
+            "               END-IF",
+            "           END-IF.",
+        )
+    )
+    # The handler keeps its +1 CCN and flat +1 cognitive; the IF in it is one
+    # level down, as it is inside the outer IF.
+    assert in_handler["READ-P"][2:5] == (3, 2, 3)
+    assert in_if["READ-P"][2:5] == (3, 2, 3)
+
+
+def test_a_not_side_replaces_its_handler_and_the_terminator_closes_it() -> None:
+    rows = _rows(
+        _program(
+            "       P1.",
+            "           WRITE R",
+            "             INVALID KEY",
+            "               IF WS-A = 1 MOVE 2 TO WS-A END-IF",
+            "             NOT INVALID KEY",
+            "               IF WS-A = 2 MOVE 3 TO WS-A END-IF",
+            "           END-WRITE",
+            "           IF WS-A = 3 MOVE 4 TO WS-A END-IF.",
+        )
+    )
+    # INVALID KEY (+1, flat); each IF under a side is at depth 1; NOT INVALID
+    # KEY adds nothing; after END-WRITE the last IF is back at depth 0.
+    assert rows["P1"][2:5] == (5, 2, 1 + 2 + 2 + 1)
+
+
+def test_nested_handlers_close_in_order_and_a_period_closes_all() -> None:
+    rows = _rows(
+        _program(
+            "       P1.",
+            "           READ F",
+            "             AT END",
+            "               COMPUTE WS-A = WS-A + 1",
+            "                 ON SIZE ERROR",
+            "                   IF WS-A = 1 MOVE 0 TO WS-A END-IF",
+            "               END-COMPUTE",
+            "               IF WS-A = 2 MOVE 0 TO WS-A END-IF",
+            "           END-READ",
+            "           CALL 'X' ON EXCEPTION MOVE 1 TO WS-A.",
+            "       P2.",
+            "           IF WS-A = 3 MOVE 0 TO WS-A END-IF.",
+        )
+    )
+    # AT END 1, ON SIZE ERROR 1, IF at depth 2 (3), IF at depth 1 (2),
+    # ON EXCEPTION 1: depth three at the deepest IF.
+    assert rows["P1"][2:5] == (6, 3, 1 + 1 + 3 + 2 + 1)
+    assert rows["P2"][2:5] == (2, 1, 1)
+
+
+def test_another_verbs_terminator_leaves_the_handler_open() -> None:
+    rows = _rows(
+        _program(
+            "       P1.",
+            "           READ F",
+            "             AT END",
+            "               ADD 1 TO WS-A END-ADD",
+            "               IF WS-A = 1 MOVE 0 TO WS-A END-IF",
+            "           END-READ",
+            "           IF WS-A = 2 MOVE 0 TO WS-A END-IF.",
+        )
+    )
+    # END-ADD closes nothing (the ADD has no handler), so the first IF is still
+    # inside AT END at depth 1 (2); END-READ closes it and the last IF is at 0.
+    assert rows["P1"][2:5] == (4, 2, 1 + 2 + 1)
+
+
+def test_an_unterminated_handler_ends_with_its_when_arm() -> None:
+    fn = walk_file(
+        "DEMO.cbl",
+        "cobol",
+        _program(
+            "       P1.",
+            "           EVALUATE WS-A",
+            "              WHEN 1 READ F AT END MOVE 1 TO WS-A",
+            "              WHEN 2 DISPLAY 'B'",
+            "              WHEN 3 DISPLAY 'C'",
+            "              WHEN OTHER",
+            "                 IF WS-A = 3 DISPLAY 'D' END-IF",
+            "           END-EVALUATE.",
+        ),
+    ).functions[0]
+    # The AT END (no END-READ) closes at WHEN 2, so every arm sits at depth 1
+    # and the IF under WHEN OTHER at depth 2: EVALUATE 1, arms 2 each, AT END 1,
+    # IF 3. All four arms count for the dispatch.
+    assert (fn.ccn, fn.max_nesting, fn.cognitive) == (7, 3, 1 + 2 + 1 + 2 + 2 + 2 + 3)
+    assert (fn.dispatch_share, fn.dispatch_arm) == (1.0, 1)
+
+
 def test_multi_target_goto() -> None:
     rows = _rows(
         _program(
