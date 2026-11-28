@@ -1,6 +1,6 @@
 <!-- mcp-name: dev.repowise/repowise -->
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+[English](README.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
 <div align="center">
 
