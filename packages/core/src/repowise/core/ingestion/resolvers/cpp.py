@@ -161,24 +161,23 @@ def _stem_fallback(module_path: str, importer_dir: str, ctx: ResolverContext) ->
     An include with a directory part (``"storage/x.h"``) names a file whose
     path ends with that written path; when several do, the one nearest the
     importer wins, and when none does there is no edge: a same-named file
-    elsewhere is a different header. A bare name keeps the stem rules below.
+    elsewhere is a different header. ``"../x.h"`` counts as path-qualified,
+    so it takes the nearest ``x.h``.
 
-    The stem map holds every file of every kind, so ``"data/Clump.hpp"``
-    finds ``Clump.cpp`` beside ``Clump.hpp``. The exact file name wins; an
-    include of a header otherwise takes only another header, never a
+    A bare name keeps the stem rules: the stem map holds every file of every
+    kind, so ``"Clump.hpp"`` also sees ``Clump.cpp``. The exact file name
+    wins; an include of a header otherwise takes only another header, never a
     translation unit or a non-C file that happens to share the stem. An
     include with no extension (``<format>``, ``<QString>``) names that exact
     file or nothing in the repo.
     """
     # An angle include can still arrive wrapped (``<core/Logger.hpp>``).
-    written = module_path.strip("<>").replace("\\", "/").lower()
-    # Leading ``./`` and ``../`` already failed the importer-relative join.
-    parts = [p for p in written.split("/") if p]
-    while parts and parts[0] in (".", ".."):
-        parts.pop(0)
+    written = posixpath.normpath(module_path.strip("<>").replace("\\", "/").lower())
+    # Leading ``../`` segments already failed the importer-relative join.
+    parts = [p for p in written.split("/") if p not in ("", ".", "..")]
     name = parts[-1] if parts else ""
     candidates = ctx.stem_map.get(Path(name).stem) or ()
-    if len(parts) > 1:
+    if "/" in written:
         suffix = "/" + "/".join(parts)
         matches = [c for c in candidates if ("/" + c.lower()).endswith(suffix)]
         # ``min`` keeps the stem map's order among equally near files.

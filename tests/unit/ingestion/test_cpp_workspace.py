@@ -184,6 +184,17 @@ def test_path_qualified_include_with_no_suffix_match_has_no_edge(tmp_path):
     assert resolve_cpp_import("../b/storage/x.h", "c/deep/user.cpp", ctx) == "b/storage/x.h"
 
 
+def test_path_qualified_include_spellings_normalise_before_matching(tmp_path):
+    paths = ["a/storage/x.h", "b/storage/Util.h", "b/storage/x.h", "b/deep/user.cpp"]
+    ctx = _stem_ctx(tmp_path, paths)
+    assert resolve_cpp_import("net/../b/storage/x.h", "b/deep/user.cpp", ctx) == "b/storage/x.h"
+    assert resolve_cpp_import("b\\storage\\x.h", "b/deep/user.cpp", ctx) == "b/storage/x.h"
+    assert resolve_cpp_import("Storage/util.h", "b/deep/user.cpp", ctx) == "b/storage/Util.h"
+    # ``../x.h`` that missed the join is still path-qualified: nearest ``x.h``.
+    ctx = _stem_ctx(tmp_path, ["a/x.h", "b/x.h", "b/deep/user.cpp"])
+    assert resolve_cpp_import("../x.h", "b/deep/user.cpp", ctx) == "b/x.h"
+
+
 def test_bare_include_keeps_the_stem_rules(tmp_path):
     paths = ["a/storage/x.h", "b/storage/x.h", "c/user.cpp"]
     ctx = _stem_ctx(tmp_path, paths)
