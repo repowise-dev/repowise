@@ -58,10 +58,14 @@ def strip_type_arguments(raw: str) -> str:
     for opener, closer in _TYPE_ARGUMENT_BRACKETS:
         out: list[str] = []
         depth = 0
+        previous = ""
         for char in text:
+            # The ``>`` of ``->`` and of ``=>`` is an arrow, and closes no ``<``.
+            arrow = char == ">" and previous in ("-", "=")
+            previous = char
             if char == opener:
                 depth += 1
-            elif char == closer:
+            elif char == closer and not arrow:
                 # An unbalanced closer means the text was already truncated
                 # upstream; dropping it is better than keeping a stray bracket.
                 depth = max(0, depth - 1)
