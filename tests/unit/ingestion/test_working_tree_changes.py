@@ -363,9 +363,7 @@ class TestIsCandidateSourcePath:
 
         # Also via extra_exclude_patterns.
         assert (
-            is_candidate_source_path(
-                "dist/tool.js", tmp_path, extra_exclude_patterns=["!dist/"]
-            )
+            is_candidate_source_path("dist/tool.js", tmp_path, extra_exclude_patterns=["!dist/"])
             is True
         )
 
@@ -378,3 +376,122 @@ class TestIsCandidateSourcePath:
             )
             is True
         )
+
+    @pytest.mark.parametrize(
+        "shebang",
+        [
+            "#!/usr/bin/env python3\n",
+            "#!/usr/bin/env node\n",
+            "#!/usr/bin/env php\n",
+            "#!/usr/bin/env perl\n",
+            "#!/bin/bash\n",
+        ],
+    )
+    def test_extensionless_shebang_script_is_a_candidate(
+        self, tmp_path: Path, shebang: str
+    ) -> None:
+        # #5787: the traverser indexes an extensionless script from its
+        # shebang, so the path-only filter must not drop it.
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "tool").write_text(f"{shebang}print(1)\n", encoding="utf-8")
+
+        assert is_candidate_source_path("bin/tool", tmp_path) is True
+
+    def test_extensionless_non_script_stays_out(self, tmp_path: Path) -> None:
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "notes").write_text("just some text\n", encoding="utf-8")
+
+        assert is_candidate_source_path("bin/notes", tmp_path) is False
+
+    def test_extensionless_script_without_a_root_has_nowhere_to_read(self, tmp_path: Path) -> None:
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "tool").write_text(
+            "#!/usr/bin/env python3\nprint(1)\n", encoding="utf-8"
+        )
+
+        assert is_candidate_source_path("bin/tool") is False
+
+    def test_extensionless_script_from_supplied_bytes(self, tmp_path: Path) -> None:
+        # A deleted file has no bytes on disk; its committed bytes decide.
+        assert (
+            is_candidate_source_path(
+                "bin/tool", tmp_path, source=b"#!/usr/bin/env python3\nprint(1)\n"
+            )
+            is True
+        )
+        assert is_candidate_source_path("bin/tool", tmp_path, source=b"plain text\n") is False
+
+    def test_extensionless_script_in_a_blocked_dir_stays_out(self, tmp_path: Path) -> None:
+        (tmp_path / "node_modules" / "bin").mkdir(parents=True)
+        (tmp_path / "node_modules" / "bin" / "tool").write_text(
+            "#!/usr/bin/env python3\nprint(1)\n", encoding="utf-8"
+        )
+
+        assert is_candidate_source_path("node_modules/bin/tool", tmp_path) is False
+
+
+class TestExtensionlessShebangScripts:
+    """#5787: edits and deletes of an indexed extensionless script count."""
+
+    @pytest.fixture
+    def script_repo(self, tmp_path: Path) -> Path:
+        """A one-commit git repo with app.py and an extensionless bin/tool."""
+        r = gitpython.Repo.init(tmp_path)
+        with r.config_writer() as cw:
+            cw.set_value("user", "name", "Alice")
+            cw.set_value("user", "email", "alice@example.com")
+        (tmp_path / "app.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "tool").write_text(
+            "#!/usr/bin/env python3\ndef run():\n    return 1\n", encoding="utf-8"
+        )
+        r.index.add(["app.py", "bin/tool"])
+        r.index.commit("init")
+        r.close()
+        return tmp_path
+
+    def test_edit_to_indexed_extensionless_script_is_a_change(self, script_repo: Path) -> None:
+        (script_repo / "bin" / "tool").write_text(
+            "#!/usr/bin/env python3\ndef run():\n    return 1\n\n\ndef extra():\n    return 2\n",
+            encoding="utf-8",
+        )
+
+        diffs = _by_path(ChangeDetector(script_repo).get_working_tree_changes())
+
+        assert diffs["bin/tool"].status == "modified"
+        assert diffs["bin/tool"].new_parsed is not None
+        assert {s.name for s in diffs["bin/tool"].new_parsed.symbols} == {
+            "run",
+            "extra",
+        }
+
+    def test_delete_of_indexed_extensionless_script_is_a_change(self, script_repo: Path) -> None:
+        (script_repo / "bin" / "tool").unlink()
+
+        diffs = _by_path(ChangeDetector(script_repo).get_working_tree_changes())
+
+        assert diffs["bin/tool"].status == "deleted"
+        assert diffs["bin/tool"].new_parsed is None
+
+    def test_delete_of_indexed_extensionless_script_marks_tree_dirty(
+        self, script_repo: Path
+    ) -> None:
+        (script_repo / "bin" / "tool").unlink()
+
+        assert has_working_tree_changes(script_repo) is True
+
+    def test_untracked_extensionless_script_is_an_addition(self, script_repo: Path) -> None:
+        (script_repo / "bin" / "helper").write_text(
+            "#!/usr/bin/env python3\ndef help_():\n    return 3\n", encoding="utf-8"
+        )
+
+        diffs = _by_path(ChangeDetector(script_repo).get_working_tree_changes())
+
+        assert diffs["bin/helper"].status == "added"
+
+    def test_untracked_extensionless_non_script_is_dropped(self, script_repo: Path) -> None:
+        (script_repo / "bin" / "notes").write_text("just some text\n", encoding="utf-8")
+
+        paths = {d.path for d in ChangeDetector(script_repo).get_working_tree_changes()}
+
+        assert "bin/notes" not in paths
