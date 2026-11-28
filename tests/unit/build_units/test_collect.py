@@ -19,6 +19,7 @@ from repowise.core.build_units.adapters import maven as maven_adapter
 from repowise.core.build_units.adapters import pascal as pascal_adapter
 from repowise.core.build_units.adapters import php as php_adapter
 from repowise.core.build_units.adapters import python as python_adapter
+from repowise.core.build_units.adapters import scala as scala_adapter
 from repowise.core.build_units.adapters import swift as swift_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.graph import build_stem_map
@@ -332,6 +333,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(scala_adapter, "get_or_build_scala_index", boom)
     monkeypatch.setattr(dart_adapter, "package_manifests", boom)
     monkeypatch.setattr(swift_adapter, "package_manifests", boom)
     monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
@@ -835,6 +837,277 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+def test_sbt_projects_with_depends_on(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:core": (), "scala:app": ("scala:core",)}
+    app = index.unit("scala:app")
+    assert (app.root, app.manifest, app.name, app.source) == ("app", "build.sbt", "app", "sbt")
+    assert _owners(index, "app/src/main/scala/App.scala") == ["scala:app"]
+    assert _owners(index, "core/src/main/scala/Core.scala") == ["scala:core"]
+
+
+def test_sbt_depends_on_multiple_dependencies(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val util = project.in(file("util"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core, util)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "util/src/main/scala/Util.scala": "package util; class Util {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {
+        "manifest:.": (),
+        "scala:core": (),
+        "scala:util": (),
+        "scala:app": ("scala:core", "scala:util"),
+    }
+    assert [u.id for u in index.dependents("scala:core")] == ["scala:app"]
+
+
+def test_sbt_depends_on_with_configuration_mapping(tmp_path):
+    """Test dependsOn with configuration mappings like core % Test."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core % "test->test")\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:core": (), "scala:app": ("scala:core",)}
+
+
+def test_sbt_aggregate_from_issue_5807(tmp_path):
+    """Root aggregate without own sources gives no scala:root; with sources it does."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val root = project.in(file(".")).aggregate(core, app)\n'
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:app": ("scala:core",), "scala:core": ()}
+    assert "scala:root" not in index.units  # aggregate-only root without sources
+    # The aggregate-only root keeps a manifest:. unit so root-level files have an owner.
+    assert set(index.units) == {"scala:core", "scala:app", "manifest:."}
+    assert index.unit("scala:app") is not None
+
+
+def test_sbt_aggregate_root_owns_root_level_files(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val root = project.in(file(".")).aggregate(core)\n'
+            'lazy val core = project.in(file("core"))\n'
+        ),
+        "project/Deps.scala": "object Deps",
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+    })
+    assert _owners(index, "project/Deps.scala") == ["manifest:."]
+    assert _owners(index, "core/src/main/scala/Core.scala") == ["scala:core"]
+
+
+def test_sbt_root_project_with_own_sources_is_a_unit(tmp_path):
+    """Root project with src/main/scala files gives scala:root."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val root = project.in(file("."))\n'
+        ),
+        "src/main/scala/R.scala": "package r\nclass R",
+    })
+    assert "scala:root" in index.units
+    root = index.unit("scala:root")
+    assert root.root == ""
+    assert root.manifest == "build.sbt"
+
+
+def test_sbt_single_project_build_falls_back(tmp_path):
+    """Single-project build falls back to manifest:. when no subprojects."""
+    index = _collect(tmp_path, {
+        "build.sbt": "ThisBuild / scalaVersion := \"3.3.0\"\n",  # No subproject definitions
+        "src/main/scala/x/X.scala": "package x; class X {}",
+    })
+    assert set(index.units) == {"manifest:."}
+    assert _owners(index, "src/main/scala/x/X.scala") == ["manifest:."]
+
+
+def test_sbt_depends_on_self_not_included(tmp_path):
+    """A project's self-dependency is not included in its deps."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val app = project.in(file("app")).dependsOn(app)\n'
+        ),
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:app": ()}
+
+
+def test_sbt_depends_on_missing_project_not_included(tmp_path):
+    """dependsOn to a project not in the repo doesn't create a missing dep."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val app = project.in(file("app")).dependsOn(missing)\n'
+        ),
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:app": ()}
+
+
+def test_sbt_multiple_depends_on_calls(tmp_path):
+    """Test multiple dependsOn calls in the same project."""
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val util = project.in(file("util"))\n'
+            'lazy val app = project.in(file("app"))'
+            '.dependsOn(core)'
+            '.dependsOn(util)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "util/src/main/scala/Util.scala": "package util; class Util {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {"manifest:.": (), "scala:core": (), "scala:util": (), "scala:app": ("scala:core", "scala:util")}
+
+
+_SBT_THREE = (
+    'lazy val core = project.in(file("core"))\n'
+    'lazy val util = project.in(file("util"))\n'
+)
+
+
+def _sbt_app_deps(tmp_path, tail: str):
+    index = _collect(tmp_path, {
+        "build.sbt": _SBT_THREE + tail,
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "util/src/main/scala/Util.scala": "package util; class Util {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    return index.unit("scala:app").deps
+
+
+def test_sbt_depends_on_seq_keeps_every_dependency(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path, 'lazy val app = project.in(file("app")).dependsOn(Seq(core, util): _*)\n'
+    )
+    assert deps == ("scala:core", "scala:util")
+
+
+def test_sbt_depends_on_seq_with_configuration_mapping(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path,
+        'lazy val app = project.in(file("app"))\n'
+        '  .dependsOn(Seq(core % "test->test", util): _*)\n',
+    )
+    assert deps == ("scala:core", "scala:util")
+
+
+def test_sbt_depends_on_of_unmatched_declaration_is_not_attributed(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path,
+        'lazy val app = project.in(file("app"))\n'
+        'lazy val other = (project in file("other")).dependsOn(core)\n',
+    )
+    assert deps == ()
+
+
+def test_sbt_modifier_prefixed_declaration_ends_the_previous_project(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app"))\n'
+            'private lazy val util = project.in(file("util"))\n'
+            '  .dependsOn(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "util/src/main/scala/Util.scala": "package util; class Util {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert _deps(index) == {
+        "manifest:.": (),
+        "scala:core": (),
+        "scala:app": (),
+        "scala:util": ("scala:core",),
+    }
+
+
+def test_sbt_infix_depends_on(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path, 'lazy val app = project.in(file("app")) dependsOn core dependsOn (util)\n'
+    )
+    assert deps == ("scala:core", "scala:util")
+
+
+def test_sbt_commented_out_depends_on_adds_no_edge(tmp_path):
+    deps = _sbt_app_deps(
+        tmp_path,
+        'lazy val app = project.in(file("app"))\n'
+        '  // .dependsOn(core)\n'
+        '  /* .dependsOn(util) */\n',
+    )
+    assert deps == ()
+
+
+def test_sbt_parent_relative_project_claims_nothing_in_the_repo(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val common = project.in(file("../common"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(common)\n'
+        ),
+        "common/src/main/scala/C.scala": "package c; class C {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    assert "scala:common" not in index.units
+    assert index.unit("scala:app").deps == ()
+    assert _owners(index, "common/src/main/scala/C.scala") == ["manifest:."]
+
+
+def test_sbt_implicit_root_sources_keep_an_owner(tmp_path):
+    index = _collect(tmp_path, {
+        "build.sbt": 'lazy val core = project.in(file("core"))\n',
+        "src/main/scala/R.scala": "package r; class R {}",
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+    })
+    assert _owners(index, "src/main/scala/R.scala") == ["manifest:."]
+    assert _owners(index, "core/src/main/scala/Core.scala") == ["scala:core"]
+
+
+def test_sbt_unreadable_build_sbt_falls_back(tmp_path, monkeypatch):
+    """Unreadable build.sbt falls back to manifest:."""
+    # Monkeypatch Path.read_text to raise OSError for build.sbt files
+    original_read = Path.read_text
+
+    def mock_read(self, *args, **kwargs):
+        if self.name == "build.sbt":
+            raise OSError("Permission denied")
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", mock_read)
+
+    index = _collect(tmp_path, {
+        "build.sbt": (
+            'lazy val core = project.in(file("core"))\n'
+            'lazy val app = project.in(file("app")).dependsOn(core)\n'
+        ),
+        "core/src/main/scala/Core.scala": "package core; class Core {}",
+        "app/src/main/scala/App.scala": "package app; class App {}",
+    })
+    # Unreadable build.sbt falls back to manifest:.
+    assert set(index.units) == {"manifest:."}
+    assert _owners(index, "core/src/main/scala/Core.scala") == ["manifest:."]
+    assert _owners(index, "app/src/main/scala/App.scala") == ["manifest:."]
 
 
 def test_dart_path_deps_and_dev_deps_linked(tmp_path):

@@ -31,12 +31,12 @@ Paths are relative to `packages/core/src/repowise/core/`.
 
 | Field | Meaning |
 |---|---|
-| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `php:<composer name>` / `php:<dir>` when unnamed, `manifest:<root>` (`manifest:.` at the repo root) |
-| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `dart`, `swift`, `php`, `pascal` or `manifest` |
+| `id` | Ecosystem-prefixed and stable across runs: `dotnet:<manifest>`, `cargo:<crate>`, `npm:<package>`, `gradle:<project path>` (`gradle::` for the root project), `go:<module path>`, `maven:<groupId>:<artifactId>`, `python:<PEP 503 name>`, `swift:<package name>`, `pascal:<project name>` (`pascal:<manifest>` when several projects share the name), `dart:<package name>`, `php:<composer name>` / `php:<dir>` when unnamed, `scala:<project name>`, `manifest:<root>` (`manifest:.` at the repo root) |
+| `ecosystem` | `dotnet`, `cargo`, `npm`, `gradle`, `go`, `maven`, `python`, `dart`, `swift`, `php`, `pascal`, `scala` or `manifest` |
 | `name` | The name the build tool uses (assembly, crate, package, module path, artifactId) |
 | `root` | Repo-relative POSIX directory, `""` at the repo root |
 | `manifest` | Repo-relative path of the file that declares the unit |
-| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `pubspec`, `swiftpm`, `composer`, `pascal`, `manifest-root` |
+| `source` | The reader that produced it: `msbuild`, `cargo`, `gradle`, `npm-workspace`, `go-mod`, `maven`, `pyproject`, `pubspec`, `swiftpm`, `composer`, `pascal`, `sbt`, `manifest-root` |
 | `deps` | Sorted ids of the in-repo units this one depends on. Third-party dependencies are not units |
 
 `BuildUnitIndex` holds every unit by id and the owners of each file:
@@ -113,6 +113,7 @@ Which units exist is decided per manifest:
 | Python | `pyproject.toml` read with `read_toml_or_none`, names normalised as PyPI does | One unit per `pyproject.toml` naming a distribution (`[project] name`, else `[tool.poetry] name`) | `[project]` dependencies and optional dependencies, Poetry dependencies, uv `workspace = true` sources, matched by name; uv and Poetry `path` sources matched by the directory they point at |
 | Dart | `pubspec.yaml` read with `yaml.safe_load`, name from top-level `name` | One unit per `pubspec.yaml` naming a package (`name:`) | `path:` dependencies in `dependencies` and `dev_dependencies`, resolved against the package root and matched by directory |
 | Swift | `Package.swift` read with `parse_package_manifest` | One unit per `Package.swift` naming a package (`Package(name: "...")`) | `.package(path: "...")` calls matched by the directory they point at |
+| Scala | `ScalaProjectIndex` (`ingestion/resolvers/scala_build.py`) | One unit per `project.in(file(...))` definition in `build.sbt` | `dependsOn` arguments matching other subprojects by identifier |
 | Delphi, Lazarus | `PascalProjectIndex` (`ingestion/resolvers/pascal.py`) | One unit per readable `.dpr`, `.dpk`, `.lpr` and `.lpk`, listing the files its `uses` and `contains` clauses reach | `.dpk` `requires`, `.lpk` `RequiredPkgs`, `.lpi` `RequiredPackages`, and `.dproj` `DCC_UsePackage` under `UsePackages`, matched by name to packages of the same toolchain, the requiring project's directory first |
 | Fallback | `scan_package_manifests` over the language registry's package manifest names | One `manifest:` unit per undecided package root (Ruby and the rest) | None |
 
@@ -145,6 +146,12 @@ answer:
   `.package(url: ...)` and registry deps (`.package(id: ...)`) are external;
   a local package reached by `file://` is not linked. Upgrade path:
   `swift package dump-package` / `Package.resolved`.
+- **sbt subprojects must be written `project.in(file(...))`.** Other forms (`project in file(...)`,
+  a bare `lazy val x = project`), `LocalProject`/`ProjectRef` arguments and cross-projects are not
+  read; Mill builds and single-project builds fall back to a `manifest:` unit. Only the leading
+  identifier of each `dependsOn` argument is read, so `core % "test->test"` links `core`, and
+  `Seq(a, b): _*` is unwrapped. Comments are ignored. An aggregate-only root (no `src/`) gets a
+  `manifest:.` unit, so root-level files such as `project/*.scala` keep an owner.
 - **PHP only reads path repositories.** A `composer.json` requiring a package
   by name without a `{"type": "path"}` repository pointing at it links nothing;
   reading `composer show --tree` / `composer.lock` is the upgrade path.
@@ -218,9 +225,8 @@ adapter fails on any of them.
 ## Adding an adapter
 
 Open adapter requests: Ruby
-([#5802](https://github.com/repowise-dev/repowise/issues/5802)), Elixir
-([#5806](https://github.com/repowise-dev/repowise/issues/5806)) and Scala
-([#5807](https://github.com/repowise-dev/repowise/issues/5807)). C and C++
+([#5802](https://github.com/repowise-dev/repowise/issues/5802)) and Elixir
+([#5806](https://github.com/repowise-dev/repowise/issues/5806)). C and C++
 targets (CMake, Bazel) are tracked with the build-graph partitioner in
 [#5775](https://github.com/repowise-dev/repowise/issues/5775).
 

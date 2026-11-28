@@ -11,6 +11,7 @@ declarations to build a ``{fully.qualified.Name → [path, ...]}`` map.
 
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,18 @@ _SBT_PROJECT_RE = re.compile(
     r'(?:project|Project)\b[^\n]*?\.in\(\s*file\(\s*"([^"]+)"\s*\)\s*\)',
     re.DOTALL,
 )
+# A dotted or infix dependsOn: an argument list is read balanced, a bare infix argument is captured.
+_DEPENDS_ON_RE = re.compile(r'\bdependsOn\b\s*(?:\(|(\w+))')
+# Strings first so a "//" inside one is not taken for a comment.
+_STRING_OR_COMMENT_RE = re.compile(
+    r'"""[\s\S]*?"""|"(?:\\.|[^"\\\n])*"|//[^\n]*|/\*[\s\S]*?\*/'
+)
+# A top-level val declaration, modifiers included, ends the previous project's text.
+_VAL_DECL_RE = re.compile(
+    r'^(?:(?:private|protected|final|implicit|override)(?:\[\w+\])?\s+)*(?:lazy\s+)?val\s',
+    re.MULTILINE,
+)
+_SEQ_ARG_RE = re.compile(r'(?:Seq|List|Vector)\s*\((.*)\)\s*$', re.DOTALL)
 _MILL_OBJECT_RE = re.compile(
     r'object\s+(\w+)\s+extends\s+([\w.]+(?:\s*with\s+[\w.]+)*)',
 )
@@ -38,6 +51,7 @@ class ScalaProjectIndex:
     build_tool: str = "none"  # "sbt" | "mill" | "none"
     projects: dict[str, str] = field(default_factory=dict)  # name -> dir_posix
     package_to_files: dict[str, list[str]] = field(default_factory=dict)
+    depends_on: dict[str, tuple[str, ...]] = field(default_factory=dict)  # name -> dependency project names
 
     def lookup_class(self, fqn: str) -> list[str]:
         if "." not in fqn:
@@ -51,18 +65,86 @@ class ScalaProjectIndex:
         ]
 
 
-def _parse_build_sbt(repo_path: Path) -> dict[str, str]:
+def _strip_comments(text: str) -> str:
+    """*text* without ``//`` and ``/* */`` comments (nested block comments are not tracked)."""
+    return _STRING_OR_COMMENT_RE.sub(
+        lambda m: m.group(0) if m.group(0).startswith('"') else " ", text
+    )
+
+
+def _balanced_args(text: str, start: int) -> str:
+    """The text after the ``(`` before *start* up to its matching ``)``; parens inside strings are not skipped."""
+    depth = 1
+    for i in range(start, len(text)):
+        depth += (text[i] == "(") - (text[i] == ")")
+        if depth == 0:
+            return text[start:i]
+    return text[start:]
+
+
+def _split_top_level(args_text: str) -> list[str]:
+    """Split *args_text* on commas outside parentheses."""
+    pieces: list[str] = []
+    depth = 0
+    last = 0
+    for i, ch in enumerate(args_text):
+        depth += (ch == "(") - (ch == ")")
+        if ch == "," and depth == 0:
+            pieces.append(args_text[last:i])
+            last = i + 1
+    pieces.append(args_text[last:])
+    return pieces
+
+
+def _parse_depends_on_args(args_text: str) -> list[str]:
+    """Parse dependsOn arguments, extracting project names by leading identifier.
+
+    ``Seq(a, b): _*`` is unwrapped; ``a % "test->test"`` yields ``a``.
+    """
+    result: list[str] = []
+    for piece in _split_top_level(args_text):
+        piece = re.sub(r":\s*_\*\s*$", "", piece.strip())
+        if seq := _SEQ_ARG_RE.match(piece):
+            result.extend(_parse_depends_on_args(seq.group(1)))
+        elif match := re.match(r"\w+", piece):
+            result.append(match.group(0))
+    return result
+
+
+def _project_deps(project_text: str) -> tuple[str, ...]:
+    """The project names every ``dependsOn`` call in *project_text* names, deduped in order."""
+    deps: list[str] = []
+    for call in _DEPENDS_ON_RE.finditer(project_text):
+        args = call.group(1) or _balanced_args(project_text, call.end())
+        deps.extend(_parse_depends_on_args(args))
+    return tuple(dict.fromkeys(deps))
+
+
+def _parse_build_sbt(repo_path: Path) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """Parse build.sbt, returning (projects dict, depends_on dict).
+
+    The depends_on dict maps project names to tuples of dependency project names.
+    """
     build = repo_path / "build.sbt"
     if not build.is_file():
-        return {}
+        return {}, {}
     try:
-        text = build.read_text(encoding="utf-8", errors="ignore")
+        text = _strip_comments(build.read_text(encoding="utf-8", errors="ignore"))
     except Exception:
-        return {}
-    result: dict[str, str] = {}
+        return {}, {}
+    projects: dict[str, str] = {}
+    depends_on: dict[str, tuple[str, ...]] = {}
+    decl_starts = [m.start() for m in _VAL_DECL_RE.finditer(text)]
     for match in _SBT_PROJECT_RE.finditer(text):
-        result[match.group(1)] = match.group(2).strip("./")
-    return result
+        name = match.group(1)
+        project_dir = posixpath.normpath(match.group(2).replace("\\", "/"))
+        if project_dir == ".." or project_dir.startswith(("../", "/")):
+            continue  # a project outside the repo owns nothing in it
+        projects[name] = "" if project_dir == "." else project_dir
+        # The project's text ends at the next val declaration, matched or not.
+        end = next((pos for pos in decl_starts if pos > match.start()), len(text))
+        depends_on[name] = _project_deps(text[match.end() : end])
+    return projects, depends_on
 
 
 def _parse_build_sc(repo_path: Path) -> dict[str, str]:
@@ -132,10 +214,10 @@ def build_scala_index(
 ) -> ScalaProjectIndex:
     if repo_path is None or not repo_path.is_dir():
         return ScalaProjectIndex()
-    sbt_projects = _parse_build_sbt(repo_path)
+    sbt_projects, sbt_depends_on = _parse_build_sbt(repo_path)
     mill_projects = _parse_build_sc(repo_path)
     if sbt_projects:
-        index = ScalaProjectIndex(build_tool="sbt", projects=sbt_projects)
+        index = ScalaProjectIndex(build_tool="sbt", projects=sbt_projects, depends_on=sbt_depends_on)
     elif mill_projects:
         index = ScalaProjectIndex(build_tool="mill", projects=mill_projects)
     else:
