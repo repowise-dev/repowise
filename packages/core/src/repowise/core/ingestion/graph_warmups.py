@@ -817,6 +817,13 @@ def run_warmups(
                 done(phase_name)
 
 
+def _stamp_header_only_target(graph: Any, tid: str, target: Any) -> None:
+    for hdr in (*target.public_headers, *target.private_headers):
+        if hdr in graph.nodes:
+            node = graph.nodes[hdr]
+            node["cpp_header_only_targets"] = (*node.get("cpp_header_only_targets", ()), tid)
+
+
 def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
     """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed.
 
@@ -839,11 +846,7 @@ def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> Non
             if src in graph.nodes:
                 graph.nodes[src]["build_listed"] = True
         if not getattr(target, "sources", ()):
-            for hdr in (*target.public_headers, *target.private_headers):
-                if hdr in graph.nodes:
-                    node = graph.nodes[hdr]
-                    owners = node.get("cpp_header_only_targets", ())
-                    node["cpp_header_only_targets"] = (*owners, tid)
+            _stamp_header_only_target(graph, tid, target)
 
     # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
     item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)
