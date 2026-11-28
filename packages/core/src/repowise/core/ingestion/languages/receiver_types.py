@@ -1339,11 +1339,7 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                 continue
             raw = match.group("type")
             if raw not in resolved:
-                resolved[raw] = _usable_type_name(raw, language)
-                if resolved[raw][0] is None and (
-                    language in _MARKED_BUILTIN_LANGUAGES or _is_csharp_array(raw, language)
-                ):
-                    resolved[raw] = (_builtin_type_name(raw, language), False)
+                resolved[raw] = _declared_type_name(raw, language)
             type_name, unwrapped = resolved[raw]
             if type_name is None:
                 continue
@@ -1357,28 +1353,52 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                 closer = ""
             if in_type_body is not None and not in_type_body(match.start()):
                 closer = ""
-            later = _cpp_later_declarators(cleaned, match) if pattern is _CPP_DECLARATION else ()
-            if later and closer == ",":
-                closer = ";"
-            found.append(
-                Declaration(
-                    bisect_right(starts, match.start()),
-                    # Pascal is case-insensitive: its variable receivers arrive
-                    # folded too (languages/pascal_names.py).
-                    match.group("name").lower() if language == "pascal" else match.group("name"),
-                    type_name,
-                    closer,
-                    unwrapped,
-                    bool(groups.get("member")),
-                )
+            first = Declaration(
+                bisect_right(starts, match.start()),
+                # Pascal is case-insensitive: its variable receivers arrive
+                # folded too (languages/pascal_names.py).
+                match.group("name").lower() if language == "pascal" else match.group("name"),
+                type_name,
+                closer,
+                unwrapped,
+                bool(groups.get("member")),
             )
-            found.extend(
-                Declaration(bisect_right(starts, at), name, type_name, closer and ";", unwrapped)
-                for at, name in later
-            )
+            if pattern is _CPP_DECLARATION:
+                found.extend(_cpp_declarator_list(cleaned, match, first, starts))
+            else:
+                found.append(first)
 
     found.sort()
     return tuple(found)
+
+
+def _declared_type_name(raw: str, language: str) -> tuple[str | None, bool]:
+    """``_usable_type_name``, else the marked builtin a builtin-keeping language reads."""
+    usable = _usable_type_name(raw, language)
+    if usable[0] is None and (
+        language in _MARKED_BUILTIN_LANGUAGES or _is_csharp_array(raw, language)
+    ):
+        return _builtin_type_name(raw, language), False
+    return usable
+
+
+def _cpp_declarator_list(
+    cleaned: str, match: re.Match[str], first: Declaration, starts: list[int]
+) -> list[Declaration]:
+    """*first*, and each later declarator of its ``T a, *b;`` list, all closed by ``;``."""
+    later = _cpp_later_declarators(cleaned, match)
+    if not later:
+        return [first]
+    closer = ";" if first.closer == "," else first.closer
+    return [
+        first._replace(closer=closer),
+        *(
+            Declaration(
+                bisect_right(starts, at), name, first.type_name, closer and ";", first.unwrapped
+            )
+            for at, name in later
+        ),
+    ]
 
 
 def _builtin_type_name(raw: str, language: str) -> str | None:
