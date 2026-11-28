@@ -25,22 +25,40 @@ matching a webhook to a registered repository. This page says what works where.
 
 ## Support
 
-| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync | Gate summary on the PR / MR |
-|------|-------------------|-------------|------------------------------|-------------------|-----------------------------|
-| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) |
-| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) |
-| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) |
-| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) |
-| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No | No |
-| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No | No |
-| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No | No |
-| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` | No |
-| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No | No |
+| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync | Gate summary on the PR / MR | [Issue links](#issue-links) |
+|------|-------------------|-------------|------------------------------|-------------------|-----------------------------|-----------------------------|
+| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) | Yes |
+| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) | Yes |
+| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) | Yes |
+| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) | Yes |
+| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No | No | No |
+| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No | No | No |
+| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No | No | No |
+| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` | No | No |
+| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No | No | No |
 
 Azure DevOps Server needs an override too. Bot accounts and noreply addresses
 from every host are recognised on every repository, since history can predate
 a move between hosts. Remote URLs shown in the dashboard and returned by the
 server have their credentials removed.
+
+## Issue links
+
+repowise can read which issues each commit closed from GitHub and GitLab, so
+a commit linked to a bug counts as a fix even when its message does not say
+so. This is the built-in `forge` issue source. It runs only once you set a
+read token:
+
+```bash
+export REPOWISE_PLUGIN_FORGE_TOKEN=$(gh auth token)
+repowise sources sync --source forge
+```
+
+After that, `repowise update` syncs it first. GitHub Enterprise and
+self-managed GitLab work once their host is mapped below. Azure Boards
+(`AB#12`) and Bitbucket issues are not read. Details, including which labels
+count as bugs, are in
+[PLUGINS.md](../reference/PLUGINS.md#issues-from-github-and-gitlab).
 
 ## Self-managed hosts
 
@@ -77,7 +95,7 @@ remote's host is still unknown, the CI running the job decides: a GitLab runner
 | GitHub Actions | `GITHUB_ACTIONS` | `GITHUB_BASE_REF` | `GITHUB_REF` (`refs/pull/N/merge`) |
 | GitLab CI | `GITLAB_CI` | `CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | `CI_MERGE_REQUEST_IID` |
 | Azure Pipelines | `TF_BUILD` or `SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` | `SYSTEM_PULLREQUEST_TARGETBRANCHNAME`, else `SYSTEM_PULLREQUEST_TARGETBRANCH` | `SYSTEM_PULLREQUEST_PULLREQUESTNUMBER`, else `SYSTEM_PULLREQUEST_PULLREQUESTID` |
-| Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | `BITBUCKET_PR_DESTINATION_BRANCH` | `BITBUCKET_PR_ID` |
+| Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | `BITBUCKET_PR_DESTINATION_BRANCH` | `BITBUCKET_PR_ID` | No |
 | Jenkins | `JENKINS_URL` | `CHANGE_TARGET` (multibranch) | `CHANGE_ID` |
 | Buildkite, TeamCity, any CI setting `CI` | `BUILDKITE`, `TEAMCITY_VERSION`, `CI` (known as CI only) | none: pass a range | none |
 
@@ -96,7 +114,7 @@ it is that change:
 | GitHub and generic hosts | Subject `Merge pull request #12 ...`; a subject ending `(#12)` or `(gh-12)` |
 | GitLab | Body trailer `See merge request group/proj!12` (or its URL form); on GitLab repos, a subject ending `(!12)` |
 | Azure DevOps | Subject `Merged PR 12: ...` or `Merge pull request 12 from ...` |
-| Bitbucket | A subject ending `(pull request #12)`; subject `Merge pull request #12 in PROJ/repo ...` |
+| Bitbucket | A subject ending `(pull request #12)`; subject `Merge pull request #12 in PROJ/repo ...` | No |
 
 Every host's forms are read on every repository, the repository's own host
 first. A bare `#12` never sets a number: it names an issue as often as a pull

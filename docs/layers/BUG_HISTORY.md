@@ -139,6 +139,8 @@ never more. To turn hooks off, see [HOOKS.md](../agent/HOOKS.md).
   for naming a commit and an author on screen.
 - **Recall is keyword bound** unless an issue source links your tracker. A fix
   whose subject does not name it as one, and that no bug issue names, is invisible.
+  GitHub and GitLab issues need no plugin: set `REPOWISE_PLUGIN_FORGE_TOKEN`
+  ([how](../reference/PLUGINS.md#issues-from-github-and-gitlab)).
   The shape filter improves precision only.
 - **The window is fixed.** A file fixed heavily two years ago and quiet since
   reads as clean.

@@ -34,7 +34,7 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Local embedding model | `embedder` | Embeds pages with a model that runs on your machines |
 | LDAP or Okta teams | `team-directory` | Reads team membership from your directory for declared ownership |
 | SSO for `repowise serve` | `authenticator` | Accepts your identity provider's tokens on the HTTP API |
-| Jira or Linear issues | `issue-source` | Links commits to your tracker's issues, so a commit tied to a Bug counts as a fix in prior defects, change risk and health, and decisions and changes show the issue |
+| Jira or Linear issues | `issue-source` | Links commits to your tracker's issues (GitHub and GitLab issues are built in), so a commit tied to a Bug counts as a fix in prior defects, change risk and health, and decisions and changes show the issue |
 | Internal vulnerability feed | `advisory-source` | Reads advisories from your own feed for `repowise packages import` |
 | Compliance report section or format | `report-section`, `report-renderer` | Adds evidence your auditors ask for, or writes the report in their text format |
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
@@ -383,7 +383,7 @@ module in the last column and call `.register(name, impl)`, for example
 | `change-metadata` | `change_metadata_sources` | one | when change records are stored, and by the `changes` report section | if a plugin source fails, repowise logs `change_metadata_failed` and stores the records with metadata from the built-in `git` source, marked `git`. If no implementation is registered under the configured name, it logs `changes_refresh_failed` and stores no new records. In the report, the `report-section` rule applies | `packages/core/src/repowise/core/changes/source.py` |
 | `profile-format` | `profile_formats` | every, sniffed in registration order (built-in formats first); `evidence add --input-format` picks one | `repowise evidence add` reads a profile or benchmark results that are not `repowise-evidence-v1` | `EvidenceFormatError` refuses the file with its hint, and any other exception (including from `sniff`) propagates; a format gives `read` (a profile run) or `to_v1` (a v1 document of another kind, such as benchmark results, from the bytes; with `needs_checkout=True` it also gets the checkout the run used, for a tool that names packages, not files) | `packages/core/src/repowise/core/evidence/profile_formats/__init__.py` |
 | `evidence-source` | `evidence_sources` | every; repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host calls `run_fetch` | `repowise sources sync`, the end of `repowise update`, or a host calling `run_fetch` | `SourceUnavailable` keeps the cursor to retry from; `SourceRefused` returns its message for the user; any other exception fails that fetch. Batches stored before the failure stay, and a failing batch leaves nothing of itself | `packages/core/src/repowise/core/evidence/sources.py` |
-| `issue-source` | `issue_sources` | every; repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host fetches itself | `repowise sources sync`, the start of `repowise update`, or a host calling `run_issue_fetch` with its own store | `SourceUnavailable` and `SourceRefused` as for `evidence-source`; any other exception, or a link that breaks the contract, fails that fetch. Links read before a failure are stored; only a complete fetch removes links it no longer returns | `packages/core/src/repowise/core/issues/sources.py` |
+| `issue-source` | `issue_sources` | every (built in: `forge`, see [Issues from GitHub and GitLab](#issues-from-github-and-gitlab)); repowise syncs a source that declares `settings` once the required ones have values, and any other runs only when a host fetches itself | `repowise sources sync`, the start of `repowise update`, or a host calling `run_issue_fetch` with its own store | `SourceUnavailable` and `SourceRefused` as for `evidence-source`; any other exception, or a link that breaks the contract, fails that fetch. Links read before a failure are stored; only a complete fetch removes links it no longer returns | `packages/core/src/repowise/core/issues/sources.py` |
 | `suspect-signal` | `suspect_signals` | every | `repowise suspects` ranks candidate changes | that signal does not fire; the others still rank | `packages/core/src/repowise/core/suspects/rank.py` |
 | `advisory-source` | `advisory_sources` | one | `repowise packages import` reads an advisory file | propagates | `packages/core/src/repowise/core/inventory/advisories.py` |
 | `document-extractors` | `document_extractors` | every; later extension claim wins | During traversal and source reads for otherwise unsupported extensions | indexing propagates with plugin name and original path; optional previews omit unavailable content | `packages/core/src/repowise/core/ingestion/document_extractors.py` |
@@ -533,6 +533,51 @@ A source with `settings = ()` needs nothing, so it runs on every sync and
 every update. A source with no `settings` attribute is never run by repowise:
 it is left to a host that calls `run_fetch` with its own credentials.
 
+### Issues from GitHub and GitLab
+
+repowise ships one issue source, `forge`. It reads the issues of the
+repository's own GitHub or GitLab project, so you need no plugin when your
+bugs live there. It runs once you give it a token that can read the
+repository's pull or merge requests and issues:
+
+```bash
+export REPOWISE_PLUGIN_FORGE_TOKEN=$(gh auth token)   # or a GitLab token with read_api
+repowise sources sync --source forge
+```
+
+For each commit in the defect window it finds the merged pull or merge
+request the commit came from, then the issues that request closes (closing
+keywords in its description, or issues linked to it). A commit message that
+closes an issue itself (`Fixes #12`) counts too. A bare `#12` does not,
+since it names a pull request as often as an issue.
+
+An issue counts as a `bug` or `incident` only when its own type says so
+(GitHub issue types, GitLab's incident type) or, for an issue with no type,
+when it carries a label from `plugins.forge.bug_labels`. The default list is
+`bug`, `type: bug`, `type/bug`, `type::bug`, `kind/bug` and `incident`;
+setting the key replaces it:
+
+```bash
+repowise config set plugins.forge.bug_labels '["bug", "regression"]'
+```
+
+Two more rules keep links precise. An issue is linked only to the first
+change in the window that closes it, so a release pull request that lists it
+again is skipped. A pull or merge request that closes 5 issues or more is
+treated as a rollup and gives no links.
+
+The project comes from the `origin` remote. For GitHub Enterprise or a
+self-managed GitLab on a neutral host name, map the host in
+[`forges.hosts`](../start/GIT_HOSTS.md#self-managed-hosts); repowise then
+calls `https://<host>/api/graphql` or `https://<host>/api/v4`. Set
+`plugins.forge.api_url` when the API lives somewhere else. Other hosts
+(Azure DevOps, Bitbucket) are refused with a message that names the host.
+
+A rate limit stops the sync with the time to try again, and the next
+`repowise update` picks it up. GitHub is read in batched GraphQL queries,
+about 70 for 1,800 commits; GitLab takes one request per commit and one per
+merge request, a few at a time.
+
 ### Writing an issue source
 
 An `issue-source` tells repowise which tracker issue each commit belongs to.
@@ -618,6 +663,7 @@ What a source gets, in `IssueRequest`:
 |-------|---------|
 | `repository_id`, `repository_name` | The repository the commits belong to |
 | `commits` | Every commit in the defect window, each with `sha`, `subject`, `body` and `change` (the PR or MR number its message names, or `None`) |
+| `remote` | The repository's remote as a `RemoteRef` (forge, host, namespace, repo), read with `forges.hosts`, or `None` without one |
 | `settings` | Plain setting values, keyed by setting key |
 | `credentials` | Secret values, keyed by setting key. Never printed or stored |
 
