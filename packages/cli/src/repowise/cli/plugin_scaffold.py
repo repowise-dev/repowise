@@ -502,13 +502,42 @@ def _contract_notes(module_name: str) -> str:
     return _markdown("\n".join(lines).strip())
 
 
+class _Bare(str):
+    """Text that ``inspect`` prints without quotes, for a string annotation."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return str(self)
+
+
+def _bare(annotation: object) -> object:
+    return _Bare(annotation) if isinstance(annotation, str) else annotation
+
+
 def _source_of(obj: object, name: str) -> str:
     """A class's source, a function's signature and docstring, a constant's value."""
     if inspect.isclass(obj):
-        return textwrap.dedent(inspect.getsource(obj)).rstrip()
+        try:
+            return textwrap.dedent(inspect.getsource(obj)).rstrip()
+        except OSError:
+            # An install without .py files: name the class, the docstring
+            # notes above still state the rules.
+            return f"class {name}: ...  # source not installed, see {obj.__module__}"
     if inspect.isfunction(obj):
-        signature = str(inspect.signature(obj)).replace("'", "")
-        doc = textwrap.indent(f'"""{inspect.cleandoc(obj.__doc__ or "")}"""', "    ")
+        sig = inspect.signature(obj)
+        # Annotations are strings under `from __future__ import annotations`;
+        # show them bare and keep string defaults quoted.
+        signature = str(
+            sig.replace(
+                parameters=[
+                    p.replace(annotation=_bare(p.annotation)) for p in sig.parameters.values()
+                ],
+                return_annotation=_bare(sig.return_annotation),
+            )
+        )
+        body = f'"""{inspect.cleandoc(obj.__doc__)}"""' if obj.__doc__ else "..."
+        doc = textwrap.indent(body, "    ")
         return f"def {name}{signature}:\n{doc}"
     return f"{name} = {obj!r}"
 
