@@ -1635,3 +1635,32 @@ def test_an_objective_c_body_edit_is_patched(
     assert not patched.patch_plan.refresh
     assert patched.patch_plan.scope == (_VIEW_MM,)
     _assert_equals_full(tree, patched, tmp_path / "objcxx-oracle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        pytest.param(
+            _add("src/apple/extra.mm", "static int extra() { return 1; }\n"),
+            "src/apple/extra.mm: file added",
+            id="mm-added",
+        ),
+        pytest.param(
+            lambda t: (t / "src/apple/view.h").write_text(
+                _OBJCXX_TREE["src/apple/view.h"].replace("- (int)measure;\n", "- (int)measure;\n- (int)size;\n")
+            ),
+            "src/apple/view.h: its dependency surface changed",
+            id="objc-header-surface",
+        ),
+    ],
+)
+def test_objective_c_surface_changes_still_rebuild(
+    objcxx_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
+) -> None:
+    tree, seed = objcxx_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.reason == reason
+    _assert_equals_full(tree, patched, tmp_path / "objcxx-oracle")
