@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { RefreshCw, Sparkles } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Button } from "../ui/button";
@@ -206,6 +206,15 @@ export interface GenerateConfirmDialogProps {
    *  offering to launch. */
   noProvider?: boolean;
   settingsHref?: string;
+  /** The instruction the reader has typed for this regeneration only. The field
+   *  renders only when `onSteeringChange` is supplied, because a surface that
+   *  cannot carry an instruction should not offer one. */
+  steering?: string;
+  onSteeringChange?: (next: string) => void;
+  /** Field copy, so a host can translate it. */
+  steeringLabel?: string;
+  steeringHint?: string;
+  steeringPlaceholder?: string;
   onConfirm: () => void;
   /** True once the launch request is in flight. */
   launching?: boolean;
@@ -227,10 +236,18 @@ export function GenerateConfirmDialog({
   estimateError,
   noProvider = false,
   settingsHref,
+  steering,
+  onSteeringChange,
+  steeringLabel = "What should this page focus on?",
+  steeringHint = "Sent with this regeneration only. It does not change the page's notes.",
+  steeringPlaceholder = "e.g. focus on the deployment path and the host profiles; skip the editor plugins",
   onConfirm,
   launching = false,
 }: GenerateConfirmDialogProps) {
   const isWrite = mode === "write";
+  // Scoped per dialog instance: a reader that mounts one of these per page in a
+  // list would otherwise repeat the id and point every label at the first field.
+  const steeringId = useId();
   const cascadeOptions =
     cascadeScope === "selection" ? CASCADE_OPTIONS_SELECTION : CASCADE_OPTIONS_PAGE;
   const heading =
@@ -281,6 +298,31 @@ export function GenerateConfirmDialog({
                   with your configured model.
                 </p>
               )
+            )}
+
+            {onSteeringChange && (
+              <div className="space-y-1.5">
+                <label
+                  htmlFor={steeringId}
+                  className="block text-xs font-medium text-[var(--color-text-secondary)]"
+                >
+                  {steeringLabel}
+                </label>
+                <textarea
+                  id={steeringId}
+                  rows={3}
+                  // Mirrors MAX_STEERING_CHARS on the server, which rejects a
+                  // longer instruction with a 422.
+                  maxLength={2000}
+                  value={steering ?? ""}
+                  onChange={(e) => onSteeringChange(e.target.value)}
+                  placeholder={steeringPlaceholder}
+                  className="w-full resize-none rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2.5 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-model)]"
+                />
+                <p className="text-[11px] text-[var(--color-text-tertiary)]">
+                  {steeringHint}
+                </p>
+              </div>
             )}
 
             <fieldset className="space-y-1.5">

@@ -43,6 +43,9 @@ export function PageGenerateButton({
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cascade, setCascade] = useState<RegenerateCascade>("none");
+  // The reader's own instruction for this regeneration. It rides on the request
+  // only: the page's notes are a separate, display-only field.
+  const [steering, setSteering] = useState("");
   const [estimate, setEstimate] = useState<GenerateEstimate | null>(null);
   const [estimateLoading, setEstimateLoading] = useState(false);
   const [estimateError, setEstimateError] = useState<string | null>(null);
@@ -103,7 +106,11 @@ export function PageGenerateButton({
   async function confirm() {
     setLaunching(true);
     try {
-      const res = await regeneratePage(page.id, { cascade, repoId });
+      const res = await regeneratePage(page.id, {
+        cascade,
+        repoId,
+        ...(steering.trim() ? { steering } : {}),
+      });
       watch(res.job_id, "page");
       setConfirmOpen(false);
     } catch (e) {
@@ -166,6 +173,11 @@ export function PageGenerateButton({
         estimateError={estimateError}
         noProvider={noProvider}
         settingsHref={settingsHref}
+        steering={steering}
+        onSteeringChange={setSteering}
+        steeringLabel={t("pageGenerate.steeringLabel")}
+        steeringHint={t("pageGenerate.steeringHint")}
+        steeringPlaceholder={t("pageGenerate.steeringPlaceholder")}
         onConfirm={confirm}
         launching={launching}
       />
