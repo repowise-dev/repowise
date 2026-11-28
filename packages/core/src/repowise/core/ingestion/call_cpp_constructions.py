@@ -21,9 +21,9 @@ from __future__ import annotations
 import re
 from dataclasses import replace
 
+from .call_receiver_typing._shared import _FUNCTION_KINDS
 from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
-from .call_receiver_typing._shared import _FUNCTION_KINDS
 from .symbol_identity import id_segment_name
 from .type_names import bare_type_name, strip_type_arguments
 
@@ -42,9 +42,7 @@ _ALIAS_HOPS = 4
 class CppConstructionMixin:
     """The callee a C++ call through a type name binds to, or none for a conversion."""
 
-    def _cpp_type_name_callee(
-        self, resolved: ResolvedCall, call: CallSite
-    ) -> ResolvedCall | None:
+    def _cpp_type_name_callee(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """*resolved* settled for a receiver-less C++ call that names a type."""
         callee = self._symbols_by_id.get(resolved.callee_id)
         if callee is None or callee.language != "cpp" or call.receiver_name:
