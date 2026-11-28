@@ -689,6 +689,7 @@ class TestDecoratedAliases:
             ("using PeerArg = const Peer *;", "p->send(1)"),
             ("typedef const Peer &PeerArg;", "p.send(1)"),
             ("typedef Peer *PeerArg;", "p->send(1)"),
+            ("using PeerArg = Peer &&;", "p.send(1)"),
         ],
     )
     def test_a_namespace_alias_with_cv_or_indirection_binds_its_class(
@@ -702,6 +703,11 @@ class TestDecoratedAliases:
         [
             ("using PeerArg = const Peer **;", "int Run(PeerArg p) { return (*p)->send(1); }"),
             ("using PeerArg = const Peer[;", "int Run(PeerArg p) { return p.send(1); }"),
+            ("using PeerArg = const std::string &;", "int Run(PeerArg p) { return p.send(1); }"),
+            (
+                "template <class T = Peer> using PeerArg = const Peer *;",
+                "int Run(PeerArg<> p) { return p->send(1); }",
+            ),
             (
                 "template <class /* any */ Peer> using PeerArg = const Peer *;",
                 "struct Other { int send(int n) const; };\n"
