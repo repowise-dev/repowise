@@ -417,6 +417,8 @@ class CallResolver(
         # {C++ type alias id: whether it names a repository class}, {file: ids in function bodies}.
         self._cpp_alias_classes: dict[str, bool] = {}
         self._cpp_function_local_ids: dict[str, frozenset[str]] = {}
+        # {member function name: the C++ classes declaring one}, built on first use.
+        self._cpp_member_owners: dict[str, frozenset[str]] | None = None
         self._mros: dict[str, tuple[str, ...] | None] = {}
         # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
         self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
@@ -1268,6 +1270,8 @@ class CallResolver(
             return self._resolve_csharp_constructed_type(file_path, call, caller_id)
         if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
             return self._cpp_free_rival(file_path, call, caller_id)
+        if hit is not None and self._cpp_chain_is_guess(file_path, call, hit.callee_id):
+            return None
         if self._cpp_names_repo_namespace(file_path, call):
             hit = self._cpp_namespace_function(file_path, call, caller_id, hit)
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
@@ -1457,9 +1461,13 @@ class CallResolver(
         found = self._typed_receiver_target(file_path, call, caller_id, type_name)
         if found is None and language == "csharp":
             return self._csharp_chain_member(file_path, call, caller_id, type_name)
-        if language == "cpp" and not _admitted_cpp_chain(type_name, call.target_name):
-            # C++ admits only ``future.get()``; broader return-name matching
-            # is not admitted.
+        if (
+            language == "cpp"
+            and not _admitted_cpp_chain(type_name, call.target_name)
+            and (found is None or found[1] == "global")
+        ):
+            # A C++ return type binds only where the caller's file or its
+            # includes declare the method on it; refusing is ``future.get()``'s alone.
             return False, None
         if found is None or (found[1] == "global" and language in _BOUND_CHAIN_LANGUAGES):
             return self._chain_refusal_is_proven(language, type_name, from_table), None

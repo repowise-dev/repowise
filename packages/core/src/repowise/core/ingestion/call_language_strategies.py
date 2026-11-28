@@ -789,6 +789,41 @@ class LanguageStrategiesMixin:
             file_path, caller, bare_type_name(callee.parent_name or "")
         )
 
+    def _cpp_chain_is_guess(self, file_path: str, call: CallSite, callee_id: str) -> bool:
+        """Is *callee_id* only a name match for a C++ call on a returned value (``a().m()``)?
+
+        Such a call reaches the bare-name tiers when the inner call's return
+        type is unknown. ``m`` is then a member of that unknown type: never a
+        free function, and not *callee_id*'s class when another repository
+        class declares a member ``m`` too. Picking one of those is a guess, so
+        the call is left edgeless. Ceiling: a name one repository class
+        declares still binds, even when the value is a library type's.
+        """
+        if call.receiver_call is None or self._language_of(file_path) != "cpp":
+            return False
+        callee = self._symbols_by_id.get(callee_id)
+        if callee is None or callee.kind != "method" or not callee.parent_name:
+            return True
+        return len(self._cpp_member_owners_of(call.target_name)) > 1
+
+    def _cpp_member_owners_of(self, name: str) -> frozenset[str]:
+        """The bare names of the repository C++ classes declaring a member function *name*."""
+        if self._cpp_member_owners is None:
+            owners: dict[str, set[str]] = {}
+            for (parent, method), entries in self._global_methods.items():
+                if any(self._is_cpp_class_method(sym_id) for _, sym_id in entries):
+                    owners.setdefault(method, set()).add(bare_type_name(parent))
+            self._cpp_member_owners = {k: frozenset(v) for k, v in owners.items()}
+        return self._cpp_member_owners.get(name, frozenset())
+
+    def _is_cpp_class_method(self, sym_id: str) -> bool:
+        """A C++ member function, not a constructor, of a class the repository declares."""
+        symbol = self._symbols_by_id.get(sym_id)
+        if symbol is None or symbol.language != "cpp" or symbol.kind != "method":
+            return False
+        parent = bare_type_name(symbol.parent_name or "")
+        return symbol.name != parent and bool(self._declared_types_named(parent))
+
     def _cpp_class_reaches(self, file_path: str, caller: Symbol | None, owner: str) -> bool:
         """May a bare call in member *caller* name a member of class *owner*?
 
