@@ -388,7 +388,7 @@ class ReceiverTypingMixin(
         site = self._extension_methods.get(key)
         if site is None:
             return None
-        type_name, method_name = key
+        type_name, method_name = id_segment_name(key[0]), key[1]
         if not self._writes_one_type(file_path, site[0], type_name):
             return None
         if self._reaches_a_member(type_name, method_name, argument_count):
@@ -1387,10 +1387,15 @@ class ReceiverTypingMixin(
         return True, next(iter(hits.values())) if len(hits) == 1 else None
 
     def _ancestor_names(self, type_name: str, language: str) -> list[str]:
-        """The names of the repo ancestors of the one *language* type *type_name* names."""
+        """The names of the repo ancestors of the one *language* type *type_name* names.
+
+        A C# name keeps its generic arity (``IFoo`1``), as receiver lookups key it.
+        """
         type_id = self._unique_type_id(type_name, language)
         return [
-            symbol.name
+            f"{symbol.name}`{count}"
+            if language == "csharp" and (count := symbol.type_parameter_count)
+            else symbol.name
             for ancestor in (self._ancestors_of(type_id) if type_id is not None else ())
             if (symbol := self._symbols_by_id.get(ancestor)) is not None
         ]
@@ -1407,8 +1412,10 @@ class ReceiverTypingMixin(
             return None
         if language == "kotlin" and _kotlin_member_applies(type_name, call):
             return None
-        # Extensions are indexed by the type they name, written without arity.
-        key = (id_segment_name(type_name), call.target_name)
+        # A C# extension is keyed by its type's generic arity (``Foo`1``), a
+        # Kotlin one by the bare name.
+        spelled = type_name if language == "csharp" else id_segment_name(type_name)
+        key = (spelled, call.target_name)
         extension = self._extension_target(file_path, key, call.argument_count)
         if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None

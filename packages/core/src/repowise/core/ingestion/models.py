@@ -437,10 +437,12 @@ class CallSite:
     # Java: each argument's type where it is a literal (``"String"``, ``"int"``,
     # ``"null"``), a class literal (``"Class"``), a String concatenation or a
     # lambda (``"->0:value"``), else None; None overall when no argument is one.
-    # C# writes a lambda's or a construction's shape here (``"=>2"``, ``"new Foo"``).
+    # C# writes a lambda's or a construction's shape here (``"=>2"``, ``"async =>2"``,
+    # ``"new Foo"``), after the parameter a named argument names (``"onRetry:=>2"``).
     argument_types: tuple[str | None, ...] | None = None
-    # Java and C#: each argument that is a bare name (``start``), else None; None overall
-    # when no argument is one. The resolver reads its declared type.
+    # Java and C#: each argument that is a bare name (``start``), or in C# a member
+    # of one (``strategy.GetKey``), else None; None overall when no argument is one.
+    # The resolver reads its declared type.
     argument_names: tuple[str | None, ...] | None = None
     # Syntax records an object construction (e.g. C# ``new Foo()``): bare-name
     # resolution must not bind it to a same-named member method.

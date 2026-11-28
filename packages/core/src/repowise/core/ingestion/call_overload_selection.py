@@ -28,6 +28,7 @@ from .symbol_identity import (
     parameter_type_arity,
     split_symbol_id,
 )
+from .type_names import bare_type_name, csharp_extension_receiver
 
 # Languages whose prototypes and bodies pair member by member, and whose
 # ``static`` (or anonymous-namespace) symbols no other translation unit sees.
@@ -638,6 +639,10 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
         return True
     head = erased.rstrip("?")
     framework = shape_of(head) is None
+    if argument.startswith("async "):
+        if framework and _csharp_refuses_async(parameter, head):
+            return False
+        argument = argument.removeprefix("async ")
     if argument.startswith("=>") or "`" in argument:
         return framework and _csharp_delegate_fits(parameter, head, argument)
     written = argument.removeprefix("new ")
@@ -647,6 +652,91 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     if written == head or shape_of(written) not in ("interface", "value"):
         return True
     return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
+
+
+_CSHARP_TYPE_PARAMETER = re.compile(r"T(?:[A-Z]\w*)?")
+
+
+def _csharp_refuses_async(parameter: str, head: str) -> bool:
+    """Does framework delegate *head* refuse an ``async`` lambda?
+
+    ``async void`` converts to an ``Action``; any other delegate must return a task.
+    """
+    return head in _CSHARP_DELEGATES and head != "Action" and not _csharp_may_return_task(parameter, head)
+
+
+def _csharp_may_return_task(parameter: str, head: str) -> bool:
+    """Could *parameter*, a framework delegate, return a task, as an ``async`` lambda does?
+
+    Only a ``Func`` can, and only when its result, the last type argument, is a
+    task or a type parameter (``Func<T>``), which may be inferred as one.
+    Ceiling: a type parameter is told by its conventional name (``T``, ``TResult``).
+    """
+    if head != "Func":
+        return False
+    written = parameter.partition("=")[0]
+    inner = written[written.find("<") + 1 : written.rfind(">")]
+    depth, last = 0, 0
+    for index, char in enumerate(inner):
+        depth += (char == "<") - (char == ">")
+        if char == "," and depth == 0:
+            last = index + 1
+    result = bare_type_name(inner[last:])
+    return result in ("Task", "ValueTask") or _CSHARP_TYPE_PARAMETER.fullmatch(result) is not None
+
+
+def _csharp_exact(parameter: str, argument: str) -> bool:
+    """Does *argument* reach C# *parameter* by identity, the best conversion there is?
+
+    A named value, construction or literal of the parameter's own type, or a
+    delegate value of its own delegate type and arity.
+    """
+    head = erased_type(parameter)
+    kind, tick, arity = argument.partition("`")
+    if tick:
+        return kind in _CSHARP_LAMBDA_PARAMETERS and (head, parameter_type_arity(parameter)) == (
+            kind,
+            int(arity),
+        )
+    written = argument.removeprefix("new ")
+    return written == head or (written == CSHARP_INTEGER_CONSTANT and head == "int")
+
+
+_Conversion = tuple[str, bool | None]
+
+
+def _csharp_conversion(parameter: str, argument: str | None) -> _Conversion:
+    """*parameter*'s type, and whether *argument* reaches it best; None when unjudged.
+
+    An ``async`` lambda converts better to a ``Func`` that may return its task
+    than to an ``Action``. Any other lambda, and a method group, is unjudged:
+    which conversion is better depends on its body. Ceiling: an ``async`` lambda
+    returning a value (``Func<Task<int>>``) is not told from one that returns none.
+    """
+    written = clr_parameter_type(parameter)
+    if argument is not None and argument.startswith("async "):
+        head = erased_type(parameter).rstrip("?")
+        if head in ("Func", "Action"):
+            return written, _csharp_may_return_task(parameter, head)
+        return written, None
+    if argument is None or argument.startswith(("=>", "group`")):
+        return written, None
+    return written, _csharp_exact(parameter, argument)
+
+
+def _csharp_better(mine: list[_Conversion], theirs: list[_Conversion]) -> bool:
+    """Is a member converting its arguments as *mine* better than one converting them as *theirs*?
+
+    Better when no argument converts worse and at least one converts better.
+    Where an argument is unjudged the two must take it as one type, since it
+    may fit only one of them.
+    """
+    if len(mine) != len(theirs):
+        return False
+    pairs = list(zip(mine, theirs, strict=True))
+    if any((a is None or b is None) and ta != tb for (ta, a), (tb, b) in pairs):
+        return False
+    return all(a or not b for (_, a), (_, b) in pairs) and any(a and not b for (_, a), (_, b) in pairs)
 
 
 def _csharp_framework_reach(
@@ -689,12 +779,38 @@ def _csharp_count_fits(head: str, arity: int, count: int) -> bool:
     return count == arity + offset
 
 
-def _csharp_parameter_named(signature: str, name: str) -> str | None:
-    """The parameter of *signature* that declares *name*, as written, or None."""
-    for parameter in signature_parameters(signature) or []:
+def _csharp_filled(
+    parameters: list[str], arguments: list[str | None]
+) -> list[tuple[str, str | None]] | None:
+    """Each argument beside the parameter it fills, or None when one names no parameter.
+
+    A named argument (``onRetry:f``) fills the parameter of that name; a
+    positional one past the list (``params``) is left out.
+    """
+    pairs = []
+    for index, argument in enumerate(arguments):
+        label, colon, value = (argument or "").partition(":")
+        if colon:
+            named = _csharp_parameter_in(parameters, label)
+            if named is None:
+                return None
+            pairs.append((named, value or None))
+        elif index < len(parameters):
+            pairs.append((parameters[index], argument))
+    return pairs
+
+
+def _csharp_parameter_in(parameters: list[str], name: str) -> str | None:
+    """The parameter among *parameters* that declares *name*, as written, or None."""
+    for parameter in parameters:
         if parameter.partition("=")[0].split()[-1:] == [name]:
             return parameter
     return None
+
+
+def _csharp_parameter_named(signature: str, name: str) -> str | None:
+    """The parameter of *signature* that declares *name*, as written, or None."""
+    return _csharp_parameter_in(signature_parameters(signature) or [], name)
 
 
 class OverloadSelectionMixin:
@@ -867,10 +983,38 @@ class OverloadSelectionMixin:
         rep = self._overload_rep.get(resolved.callee_id)
         if rep is None:
             return self._inherited_overload(resolved, call)
+        call = self._csharp_receiver_filled(rep, call)
         target = self._overload_target(rep, call.argument_count, call.argument_types)
         if target == resolved.caller_id and not self._picks_itself(rep, target, call):
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
+
+    def _csharp_receiver_filled(self, rep: str, call: CallSite) -> CallSite:
+        """*call* with its receiver counted when it fills a C# extension's ``this``.
+
+        ``x.Ext(a)`` passes two arguments to ``Ext(this T x, A a)``, so it never
+        means ``Ext(this T x)``. Called through its class (``Exts.Ext(x, a)``) or
+        bare, the count stands.
+        """
+        symbol = self._symbols_by_id.get(rep)
+        if symbol is None or symbol.language != "csharp" or call.argument_count is None:
+            return call
+        receiver = call.receiver_name or ("" if call.receiver_call is not None else None)
+        if receiver is None or receiver == symbol.parent_name or not self._extends_one_type(rep):
+            return call
+        return replace(call, argument_count=call.argument_count + 1)
+
+    def _extends_one_type(self, rep: str) -> bool:
+        """Does every member of *rep*'s C# set extend one type?
+
+        A static sibling, or one extending another arity of the type, never
+        takes the receiver as an argument.
+        """
+        extended = {
+            csharp_extension_receiver(self._symbols_by_id[member].signature or "")
+            for member, _ in self._overload_members.get(rep, ())
+        }
+        return len(extended) == 1 and None not in extended
 
     def _partial_constructor(self, callee_id: str, call: CallSite) -> str | None:
         """The one constructor of a C# ``partial`` type, across its files, the call's arguments take.
@@ -1089,17 +1233,29 @@ class OverloadSelectionMixin:
         was: the evidence is then about a call this set may not hold.
         """
         receiver, receiver_type, *arguments = argument_types
+        filled = {
+            member: _csharp_filled(self._csharp_parameters(member, receiver), arguments)
+            for member in found
+        }
         takers = [
             member
-            for member in found
-            if all(
+            for member, pairs in filled.items()
+            if pairs is not None
+            and all(
                 argument is None or _csharp_may_take(parameter, argument, self._csharp_shape)
-                for parameter, argument in zip(
-                    self._csharp_parameters(member, receiver), arguments, strict=False
-                )
+                for parameter, argument in pairs
             )
         ]
-        return self._csharp_exact_this(takers, receiver_type) or found
+        conversions = {
+            member: [_csharp_conversion(p, a) for p, a in filled[member] or ()] for member in takers
+        }
+        # A member another one beats is out; what remains may still tie.
+        best = [
+            member
+            for member in takers
+            if not any(_csharp_better(conversions[other], conversions[member]) for other in takers)
+        ]
+        return self._csharp_exact_this(best, receiver_type) or found
 
     def _csharp_exact_this(self, members: list[str], receiver_type: str | None) -> list[str]:
         """*members* narrowed to the extensions whose ``this`` is the receiver's own type.
@@ -1278,13 +1434,37 @@ class OverloadSelectionMixin:
         names = call.argument_names or (None,) * len(call.argument_types or ())
         literals = call.argument_types or (None,) * len(names)
         caller_id = call.caller_symbol_id or ""
-        types = tuple(
-            literal or (self._argument_type(file_path, caller_id, name) if name else None)
+        types = [
+            self._csharp_argument(file_path, caller_id, literal, name)
             for literal, name in zip(literals, names, strict=True)
-        )
+        ]
         if not any(types):
             return None
         return (*self._csharp_receiver(file_path, call), *types)
+
+    def _csharp_argument(
+        self, file_path: str, caller_id: str, literal: str | None, name: str | None
+    ) -> str | None:
+        """One argument's shape, else its name's type; a named one keeps its ``label:``."""
+        label, colon, shape = (literal or "").partition(":")
+        found = (shape if colon else literal) or (
+            self._csharp_argument_type(file_path, caller_id, name) if name else None
+        )
+        return f"{label}:{found or ''}" if colon else found
+
+    def _csharp_argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
+        """``_argument_type`` for a C# argument; ``group`N`` for a method group ``owner.Method``.
+
+        The owner is a typed name or a repository type; its one method of that
+        name is the group. Ceiling: an inherited method is not read.
+        """
+        # An expression (value and member), not a type name: no type helper applies.
+        owner, dot, member = name.partition(".")
+        if not dot:
+            return self._argument_type(file_path, caller_id, name)
+        type_name = self._argument_type(file_path, caller_id, owner) or owner
+        type_id = self._unique_type_id(type_name, "csharp")
+        return self._csharp_group_in(type_id, member) if type_id is not None else None
 
     def _csharp_receiver(self, file_path: str, call: CallSite) -> tuple[str | None, str | None]:
         """A C# call's receiver (``""`` when chained, None when bare) and its declared type."""
@@ -1347,7 +1527,11 @@ class OverloadSelectionMixin:
 
     def _csharp_method_group(self, caller_id: str, name: str) -> str | None:
         """``group`N`` when *name* is the caller class's one method of that name, of N fixed parameters."""
-        method_id = self._declares(self._caller_class_id(caller_id), name)
+        return self._csharp_group_in(self._caller_class_id(caller_id), name)
+
+    def _csharp_group_in(self, type_id: str, name: str) -> str | None:
+        """``group`N`` when *name* is *type_id*'s one method of that name, of N fixed parameters."""
+        method_id = self._declares(type_id, name)
         method = self._symbols_by_id.get(method_id) if method_id else None
         if method is None or method.kind != "method" or method_id in self._overload_rep:
             return None

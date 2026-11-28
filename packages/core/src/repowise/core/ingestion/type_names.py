@@ -312,10 +312,11 @@ def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] 
 
 
 def csharp_extension_receiver(signature: str) -> str | None:
-    """The bare type a C# extension method extends, or None if it is not one.
+    """The type a C# extension method extends, or None if it is not one.
 
-    Shape only, in keeping with this module: whether the name could resolve is
-    the caller's policy, not this module's.
+    Spelled as receiver lookups key it, generic arity kept (``PolicyBuilder`1``),
+    so ``this Foo`` and ``this Foo<T>`` extend two types. Shape only, in keeping
+    with this module: whether the name could resolve is the caller's policy.
     """
     _, opened, params = (signature or "").partition("(")
     match = _CSHARP_EXTENSION_RECEIVER.match(params) if opened else None
@@ -324,4 +325,5 @@ def csharp_extension_receiver(signature: str) -> str | None:
     raw = match.group("type")
     if "[" in raw:
         return None
-    return bare_type_name(raw.rstrip("?")) or None
+    bare = bare_type_name(raw.rstrip("?"))
+    return written_type_key(bare, raw, "csharp") if bare else None

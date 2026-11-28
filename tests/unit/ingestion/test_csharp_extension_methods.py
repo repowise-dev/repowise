@@ -76,7 +76,8 @@ class TestExtensionReceiver:
         [
             ("NetTotal(this Order o, bool x = false) -> decimal", "Order"),
             ("Tail(this Acme.Domain.Order o) -> string", "Order"),
-            ("First(this IEnumerable<T> src) -> T", "IEnumerable"),
+            # A generic type keeps its arity, as receiver lookups key it.
+            ("First(this IEnumerable<T> src) -> T", "IEnumerable`1"),
             ("Use(this scoped ref readonly Order o) -> int", "Order"),
             ("Maybe(this Order? o) -> string", "Order"),
             # Not an extension method at all.
@@ -329,6 +330,54 @@ class TestRefusals:
             ),
         }
         assert "Dup" not in _resolve(tmp_path, files, "src/Consumer.cs")
+
+    def test_a_generic_sibling_type_is_another_type(self, tmp_path: Path) -> None:
+        """``this Builder`` and ``this Builder<T>`` extend two types, so neither pair is ambiguous."""
+        files = {
+            "src/Builder.cs": (
+                "namespace Acme;\npublic class Builder { }\npublic class Builder<T> { }\n"
+            ),
+            "src/Plain.cs": (
+                "namespace Acme;\npublic static class Plain {\n"
+                "  public static int Retry(this Builder b) { return 1; }\n}\n"
+            ),
+            "src/Typed.cs": (
+                "namespace Acme;\npublic static class Typed {\n"
+                "  public static int Retry<T>(this Builder<T> b) { return 2; }\n}\n"
+            ),
+            "src/Consumer.cs": (
+                "namespace Acme;\npublic class Consumer {\n"
+                "  public void Run(Builder b) { var z = b.Retry(); }\n"
+                "  public void RunTyped(Builder<int> b) { var z = b.Retry(); }\n"
+                "  public void RunNew() { var b = new Builder<int>(); var z = b.Retry(); }\n}\n"
+            ),
+        }
+        parser = ASTParser()
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        parsed = {
+            rel: parser.parse_file(
+                FileInfo(
+                    path=rel, abs_path=str(tmp_path / rel), language="csharp",
+                    size_bytes=len(text), git_hash="", last_modified=datetime.now(),
+                    is_test=False, is_config=False, is_api_contract=False, is_entry_point=False,
+                ),
+                text.encode(),
+            )
+            for rel, text in files.items()
+        }
+        resolver = CallResolver(parsed, {}, repo_path=str(tmp_path))
+        edges = {
+            (r.caller_id.rpartition("::")[2], r.callee_id)
+            for r in resolver.resolve_file("src/Consumer.cs", parsed["src/Consumer.cs"].calls)
+        }
+        assert edges == {
+            ("Run", "src/Plain.cs::Plain::Retry"),
+            ("RunTyped", "src/Typed.cs::Typed::Retry"),
+            ("RunNew", "src/Builder.cs::Builder`1"),
+            ("RunNew", "src/Typed.cs::Typed::Retry"),
+        }
 
     def test_an_overload_set_is_not_ambiguous(self, tmp_path: Path) -> None:
         """An overload set is indexed once, so the pair survives and the call

@@ -1261,11 +1261,159 @@ class TestCSharpArgumentShapes:
             "double", "float", "decimal", None, None,
         )
 
-    def test_a_named_argument_reads_no_position(self) -> None:
-        parsed = _parse("C.cs", "csharp", "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); } }")
-        shapes = {c.target_name: c.argument_types for c in parsed.calls}
-        assert shapes["F"] is None
+    def test_a_named_argument_keeps_its_name_and_an_async_lambda_its_mark(self) -> None:
+        source = "class C { void R() { F(on: x => 1, 2); G(x => 1, new Ttl()); H(async () => 1, k: n); } }"
+        shapes = {c.target_name: c.argument_types for c in _parse("C.cs", "csharp", source).calls}
+        assert shapes["F"] == ("on:=>1", "int constant")
         assert shapes["G"] == ("=>1", "new Ttl")
+        assert shapes["H"] == ("async =>0", "k:")
+
+
+_CS_RETRY = (
+    "using System;\nusing System.Threading.Tasks;\nnamespace App;\n"
+    "public interface IBag { }\npublic class Ctx : IBag { }\npublic class Order { }\n"
+    "public interface IKey { string Get(int n); }\n"
+    "public static class R {\n"
+    "  public static void Run(IBag bag, int n) { }\n"
+    "  public static void Run(Ctx ctx, int n) { }\n"
+    "  public static void On(int n, Action<Exception, int> onRetry) { }\n"
+    "  public static void On(int n, Func<Exception, int, Task> onRetryAsync) { }\n"
+    "  public static void Key(IKey key) { }\n"
+    "  public static void Key(Func<int, string> key) { }\n"
+    "  public static void Ext(this Order o) { }\n"
+    "  public static void Ext(this Order o, int n) { }\n"
+    "  public static void Ext(this Order o, int n, Action<int> a) { }\n"
+    "}\n"
+)
+
+
+class TestCSharpBetterConversion:
+    """Same-count C# overloads that only C#'s better-conversion rules tell apart."""
+
+    def _callees(self, tmp_path: Path, members: str) -> set[tuple[str, str]]:
+        caller = "using System;\nusing System.Threading.Tasks;\nnamespace App;\npublic class C {\n" + members + "}\n"
+        edges = _edges(tmp_path, {"R.cs": ("csharp", _CS_RETRY), "C.cs": ("csharp", caller)})
+        return {
+            (a.removeprefix("C.cs::C::"), c.removeprefix("R.cs::R::"))
+            for a, c in edges
+            if a.startswith("C.cs") and c.startswith("R.cs::R::")
+        }
+
+    def test_an_argument_of_the_parameters_own_type_beats_a_conversion(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Typed(Ctx ctx) { R.Run(ctx, 1); }\n"
+            "  public void Made() { R.Run(new Ctx(), 1); }\n"
+            "  public void Bag(IBag bag) { R.Run(bag, 1); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("Typed", "Run#2(Ctx,int)"),
+            ("Made", "Run#2(Ctx,int)"),
+            ("Bag", "Run#2(IBag,int)"),
+        }
+
+    def test_an_unread_argument_the_members_type_differently_ranks_neither(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(int a, string s) { }\n"
+            "  public static void M(long a, object o) { }\n"
+            "  public static object Get() => null;\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { H.M(1, H.Get()); }\n}\n"
+        # ``int`` matches exactly, but the second argument may fit only ``object``:
+        # neither member is ranked, so the tie keeps its first member either way.
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "H.cs::H::M#2(int,string)") in edges
+        swapped = holder.replace("int a, string s", "@").replace("long a, object o", "int a, string s")
+        swapped = swapped.replace("@", "long a, object o")
+        edges = _edges(tmp_path, {"H.cs": ("csharp", swapped), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "H.cs::H::M#2(long,object)") in edges
+
+    def test_an_async_lambda_may_take_a_func_of_a_type_parameter(self, tmp_path: Path) -> None:
+        holder = (
+            "using System;\nnamespace App;\npublic static class G {\n"
+            "  public static void Go(Action a) { }\n"
+            "  public static void Go<T>(Func<T> f) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { G.Go(async () => { }); }\n}\n"
+        edges = _edges(tmp_path, {"G.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "G.cs::G::Go#1(Func)") in edges
+
+    def test_an_async_lambda_never_takes_a_func_of_a_value_and_prefers_a_nullable_task_func(
+        self, tmp_path: Path
+    ) -> None:
+        holder = (
+            "using System;\nusing System.Threading.Tasks;\nnamespace App;\npublic static class G {\n"
+            "  public static void Obj(Action a) { }\n"
+            "  public static void Obj(Func<object> f) { }\n"
+            "  public static void Nul(Action a) { }\n"
+            "  public static void Nul(Func<Task>? f) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run() { G.Obj(async () => { }); G.Nul(async () => { }); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"G.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "G.cs::G::Obj#1(Action)") in edges
+        assert ("C.cs::C::Run", "G.cs::G::Nul#1(Func?)") in edges
+
+    def test_the_receiver_counts_only_when_every_member_extends_one_type(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Box { }\npublic class Box<T> { }\n"
+            "public static class Exts {\n"
+            "  public static void Ext(this Box x, int n = 0) { }\n"
+            "  public static void Ext(int n, int m) { }\n"
+            "  public static void Gen(this Box x, int n) { }\n"
+            "  public static void Gen<T>(this Box<T> x) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Static(Box x) { x.Ext(1); }\n"
+            "  public void Generic(Box<int> x) { x.Gen(); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"E.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Static", "E.cs::Exts::Ext#2(Box,int)") in edges
+        assert ("C.cs::C::Generic", "E.cs::Exts::Gen#1") in edges
+
+    def test_an_async_lambda_takes_only_the_task_returning_delegate(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Async() { R.On(1, async (e, i) => { await Task.Yield(); }); }\n"
+            "  public void Plain() { R.On(1, (e, i) => { }); }\n"
+        )
+        callees = self._callees(tmp_path, members)
+        assert ("Async", "On#2(int,Func)") in callees
+        # A plain lambda may return a task too: still a tie, which keeps the first.
+        assert ("Plain", "On#2(int,Action)") in callees
+
+    def test_a_named_argument_takes_the_member_declaring_that_parameter(self, tmp_path: Path) -> None:
+        members = "  public void Named() { R.On(1, onRetryAsync: null); }\n"
+        assert self._callees(tmp_path, members) == {("Named", "On#2(int,Func)")}
+
+    def test_a_method_group_on_a_typed_name_takes_the_delegate(self, tmp_path: Path) -> None:
+        members = (
+            "  public void Group(IKey strategy) { R.Key(strategy.Get); }\n"
+            "  public void Value(IKey strategy) { R.Key(strategy); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("Group", "Key#1(Func)"),
+            ("Value", "Key#1(IKey)"),
+        }
+
+    def test_an_extension_called_on_a_value_counts_its_receiver(self, tmp_path: Path) -> None:
+        members = (
+            "  public void One(Order o) { o.Ext(1); }\n"
+            "  public void Two(Order o) { o.Ext(1, x => { }); }\n"
+            "  public void Static(Order o) { R.Ext(o, 1); }\n"
+        )
+        assert self._callees(tmp_path, members) == {
+            ("One", "Ext#2"),
+            ("Two", "Ext#3"),
+            ("Static", "Ext#2"),
+        }
 
 
 class TestNarrowingShapes:
