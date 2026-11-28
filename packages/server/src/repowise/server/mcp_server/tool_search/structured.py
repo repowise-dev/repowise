@@ -13,7 +13,7 @@ from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server import tool_search as _pkg
 from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import _get_repo
-from repowise.server.mcp_server._hit_symbols import attach_hit_symbols
+from repowise.server.mcp_server._hit_symbols import attach_file_symbols, attach_hit_symbols
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._page_paths import (
@@ -30,6 +30,7 @@ from repowise.server.mcp_server._query_shape import (
     _looks_like_code_name,
     _mark_not_the_named_symbol,
     _names_a_path,
+    query_pattern,
 )
 from repowise.server.mcp_server._query_terms import content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
@@ -54,8 +55,8 @@ from .serve import (
     _result_paths,
     _serve_snippets,
     _slim_served_rows,
-    attach_unique_body,
-    unique_exact_row,
+    attach_definition_bodies,
+    definition_rows,
 )
 
 
@@ -481,6 +482,41 @@ def _attach_match_notes(
         response["grep_hint"] = grep_hint
 
 
+async def _attach_path_hits(
+    response: dict, plan: _SearchPlan, pools: _Pools, results: list[dict]
+) -> None:
+    """A path query naming a directory leads with it; one landing on a single
+    file lists that file's symbols."""
+    if folder := _directory_action(plan, pools):
+        _add_directory_hit(response, folder, plan.limit)
+        return
+    one_file = len(results) == 1 and results[0].get("type") == "file"
+    if plan.mode == "path" and not plan.multi and one_file:
+        await attach_file_symbols(pools.contexts[0], results[0])
+
+
+async def _attach_bodies(
+    response: dict, named: list[str], results: list[dict], pools: _Pools, repository: Any
+) -> None:
+    """Serve the bodies of the definitions the query's names find."""
+    rows = definition_rows(named, results, pools.symbols + pools.spare)
+    await attach_definition_bodies(response, rows, pools.contexts[0], repository)
+
+
+def _serves_bodies(plan: _SearchPlan) -> bool:
+    """Whether the plan's exact definitions get their bodies inline.
+
+    Symbol mode ranks every candidate, so its pool can tell one definition from
+    two. Hybrid fetches a window per name; an ``a|b|c`` of names searches each
+    name on its own, which is enough to tell. A question in prose names a topic,
+    and its window cannot.
+    """
+    if plan.mode == "symbol":
+        return True
+    shape = query_pattern(plan.query) if plan.mode == "hybrid" else None
+    return shape is not None and shape[0] == "alternation"
+
+
 async def _structured_search(
     query: str,
     limit: int,
@@ -531,8 +567,7 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    if folder := _directory_action(plan, pools):
-        _add_directory_hit(response, folder, limit)
+    await _attach_path_hits(response, plan, pools, results)
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands
@@ -546,12 +581,8 @@ async def _structured_search(
     _attach_match_notes(
         response, named, exact, missing, grep_hint, _filtered_names(plan, pools, named)
     )
-    # Symbol mode ranks every candidate, so its pool can tell one definition
-    # from two; hybrid fetches a window and cannot.
-    if plan.mode == "symbol" and repository is not None and response.get("exact_match"):
-        row = unique_exact_row(candidates, results, pools.symbols + pools.spare)
-        if row is not None:
-            await attach_unique_body(response, row, pools.contexts[0], repository)
+    if repository is not None and response.get("exact_match") and _serves_bodies(plan):
+        await _attach_bodies(response, named, results, pools, repository)
     if fed is not None:
         fed.annotate(response, results)
     # Last: slims fields the steps above still read.

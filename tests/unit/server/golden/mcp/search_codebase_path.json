@@ -5,6 +5,10 @@
       "page_id": "file_page:src/auth/service.py",
       "title": "Auth Service",
       "score": 119.981,
+      "symbols": [
+        "AuthService:10",
+        "AuthService.login:20"
+      ],
       "path": "src/auth/service.py"
     }
   ],

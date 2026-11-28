@@ -442,11 +442,11 @@ def _fan_out(
 
 
 def _line_cap(query: str) -> int:
-    from repowise.server.mcp_server._line_hits import MAX_LINES, MAX_LINES_MIXED, _literal
+    from repowise.server.mcp_server._line_hits import MAX_LINES_MIXED, MAX_LINES_SHOWN, _literal
 
     literal = _literal(query)
     mixed = not literal and len(query.split()) > 1
-    return MAX_LINES_MIXED if mixed else MAX_LINES
+    return MAX_LINES_MIXED if mixed else MAX_LINES_SHOWN
 
 
 def _fuse_lines(payloads: list[dict], query: str) -> dict[str, Any]:

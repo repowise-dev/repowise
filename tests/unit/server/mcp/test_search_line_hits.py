@@ -546,7 +546,9 @@ async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, sessio
 
 
 @pytest.mark.asyncio
-async def test_call_sites_are_never_collapsed(tree, session, setup_mcp):
+async def test_call_sites_are_never_collapsed(tree, session, setup_mcp, monkeypatch):
+    # The per-file collapse is under test, not the shown-lines cap.
+    monkeypatch.setattr(_line_hits, "MAX_LINES_SHOWN", _line_hits.MAX_LINES)
     for i in range(4):
         rel = f"svc/user{i}.py"
         (tree / "svc").mkdir(exist_ok=True)
@@ -672,7 +674,10 @@ async def test_mixed_typescript_query_bounds_lines_and_omitted_files(
 
 
 @pytest.mark.asyncio
-async def test_single_name_keeps_the_full_cap_and_counts_the_omitted(tree, session, setup_mcp):
+async def test_single_name_keeps_the_full_cap_and_counts_the_omitted(
+    tree, session, setup_mcp, monkeypatch
+):
+    monkeypatch.setattr(_line_hits, "MAX_LINES_SHOWN", _line_hits.MAX_LINES)
     await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
 
     out = await search_codebase("backend_of", mode="symbol")
@@ -1232,12 +1237,24 @@ async def test_a_cut_naming_where_the_rest_are_gets_no_hint(tree, session, setup
 async def test_a_cut_to_the_line_cap_gets_no_hint(tree, monkeypatch):
     # The edit set is whole; the lines past the cap are under _meta.omitted,
     # and the text search would stop at the same cap.
-    monkeypatch.setattr(_line_hits, "MAX_LINES", 1)
+    monkeypatch.setattr(_line_hits, "MAX_LINES_SHOWN", 1)
 
     out = await search_codebase("backend_of", mode="symbol")
 
-    assert out["reasons"] == [_line_hits.OVER_LINES]
+    assert out["reasons"] == [_line_hits.OVER_LINES_SHOWN]
     assert "hint" not in out
+
+
+async def test_a_shown_lines_cut_keeps_definitions_and_calls_before_imports(tree, monkeypatch):
+    monkeypatch.setattr(_line_hits, "MAX_LINES_SHOWN", 2)
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    # Kept in reading order; the import is the row cut, and it stays recoverable.
+    assert _rows(out) == [("pkg/catalog.py", 4, "definition"), ("app/widget.py", 6, "call")]
+    assert out["complete"] is False
+    assert out["lines_omitted"] == 1
+    assert out["_meta"]["omitted"]["refs"]
 
 
 @pytest.mark.parametrize(
@@ -1309,3 +1326,15 @@ def test_untracked_passes_lock_per_repo(tmp_path):
     assert _line_hits._untracked_lock(a) is _line_hits._untracked_lock(a)
     # Another repo's listing never waits on this one's.
     assert _line_hits._untracked_lock(a) is not _line_hits._untracked_lock(b)
+
+
+def test_a_shown_lines_cut_takes_each_files_first_site_before_a_seconds():
+    rows = [
+        {"path": "a.py", "line": 1, "kind": "call"},
+        {"path": "a.py", "line": 2, "kind": "call"},
+        {"path": "a.py", "line": 3, "kind": "call"},
+        {"path": "b.py", "line": 9, "kind": "call"},
+        {"path": "c.py", "line": 1, "kind": "import"},
+    ]
+    shown = _line_hits._shown(rows, 2)
+    assert [(r["path"], r["line"]) for r in shown] == [("a.py", 1), ("b.py", 9)]

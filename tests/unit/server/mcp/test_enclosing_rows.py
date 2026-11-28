@@ -29,6 +29,8 @@ def test_a_run_in_one_symbol_names_it_once():
     rows = [_row("a.py", 6), _row("a.py", 8), _row("a.py", 22), _row("b.py", 4)]
     mark_enclosing(rows, {None: RANGES})
     assert [r.get("in") for r in rows] == ["Store.put", None, "Store.get", "helper"]
+    # The range to Read for the row's context rides with each name.
+    assert [r.get("in_lines") for r in rows] == [[5, 12], None, [20, 30], [3, 9]]
 
 
 def test_definitions_are_skipped_and_end_a_run():
@@ -41,6 +43,7 @@ def test_module_level_lines_say_so_only_after_a_symbol():
     rows = [_row("b.py", 1), _row("b.py", 4), _row("b.py", 20)]
     mark_enclosing(rows, {None: RANGES})
     assert [r.get("in") for r in rows] == [None, "helper", MODULE_LEVEL]
+    assert "in_lines" not in rows[2]
 
 
 def test_each_repo_reads_its_own_index():

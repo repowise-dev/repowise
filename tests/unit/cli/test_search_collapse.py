@@ -859,11 +859,11 @@ def test_the_fan_out_caps_lines_for_mixed_and_literal_queries(monkeypatch, tmp_p
     assert out["lines_omitted"] == 10
     assert out["complete"] is False
 
-    # Literal/identifier query has cap = MAX_LINES (50)
+    # Literal/identifier query has cap = MAX_LINES_SHOWN (12)
     search_cmd._fan_out(paths, "user_order", 10, "auto", "concept", "json", False, notices)
     out2 = json.loads(capsys.readouterr().out)
-    assert len(out2["lines"]) == 20
-    assert out2["lines_omitted"] == 5
+    assert len(out2["lines"]) == 12
+    assert out2["lines_omitted"] == 13
     assert out2["complete"] is False
 
 

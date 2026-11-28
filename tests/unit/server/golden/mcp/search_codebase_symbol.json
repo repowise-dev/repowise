@@ -7,7 +7,8 @@
       "kind": "class",
       "start_line": 10,
       "end_line": 100,
-      "signature": "class AuthService",
+      "source": "    10\tclass AuthService:\n    11\t    \"\"\"Main authentication service.\"\"\"\n    12\t\n    13\t    def __init__(self, store):\n    14\t        self.store = store\n    15\t\n    16\t    def _hash(self, password: str) -> str:\n    17\t        return password[::-1]\n    18\t\n    19\t\n    20\t    async def login(self, username: str, password: str) -> Token:\n    21\t        \"\"\"Authenticate a user.\"\"\"\n    22\t        user = await self.store.get(User, username)\n    23\t        if user is None:\n    24\t            return None\n    25\t        return self._hash(password)\n    26\t    # line 26\n    27\t    # line 27\n    28\t    # line 28\n    29\t    # line 29\n    30\t    # line 30\n    31\t    # line 31\n    32\t    # line 32\n    33\t    # line 33\n    34\t    # line 34\n    35\t    # line 35\n    36\t    # line 36\n    37\t    # line 37\n    38\t    # line 38\n    39\t    # line 39\n    40\t    # line 40\n    41\t    # line 41\n    42\t    # line 42\n    43\t    # line 43\n    44\t    # line 44\n    45\t    # line 45\n    46\t    # line 46\n    47\t    # line 47\n    48\t    # line 48\n    49\t    # line 49",
+      "truncated": true,
       "path": "src/auth/service.py"
     }
   ],

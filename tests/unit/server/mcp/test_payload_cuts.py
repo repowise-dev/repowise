@@ -388,3 +388,51 @@ def test_another_repos_definition_line_keeps_the_signature():
     }
     _drop_echoed_signatures(response)
     assert row["signature"] == "f()"
+
+
+def test_snippets_that_restate_the_row_are_dropped():
+    from repowise.server.mcp_server.tool_search.serve import _serve_snippets
+
+    rows = [
+        {"snippet": "`models.py` defines `User`. It is imported by 4 files."},
+        {"snippet": "`filter_manager.h` defines `FilterManager`, `ActiveStream` and 16 more. It"},
+        {"snippet": "It imports 7 files from this repository."},
+        {"snippet": "/*\nCopyright 2015 The Authors.\n\nLicensed under the Apache License"},
+        {"snippet": "Validates a signup form and hashes the password."},
+        {"snippet": "It defines the retry policy for failed charges."},
+        {"snippet": "`retry.py` imports `backoff` to cap the delay."},
+        {"snippet": "It defines `Retry` to cap the delay."},
+        {"snippet": "It belongs to the payments team."},
+        {"snippet": "Copyright checks run before each release."},
+        {"snippet": "# SPDX-License-Identifier: MIT"},
+        {"snippet": "Checks each file is licensed under the Apache License."},
+    ]
+    _serve_snippets(rows)
+    assert [r.get("snippet") for r in rows] == [
+        None,
+        None,
+        None,
+        None,
+        "Validates a signup form and hashes the password.",
+        "It defines the retry policy for failed charges.",
+        "`retry.py` imports `backoff` to cap the delay.",
+        "It defines `Retry` to cap the delay.",
+        "It belongs to the payments team.",
+        "Copyright checks run before each release.",
+        None,
+        "Checks each file is licensed under the Apache License.",
+    ]
+
+
+def test_a_shed_body_is_no_longer_claimed_whole():
+    from repowise.server.mcp_server.tool_search.serve import _recount_whole_bodies
+
+    kept = {"type": "symbol", "source": "     1	def a(): ..."}
+    head = {"type": "symbol", "source": "     1	def b(): ...", "truncated": True}
+    response = {"results": [kept, head], "_meta": {"complete": "Complete: 2 symbol bodies ..."}}
+    _recount_whole_bodies(response)
+    assert response["_meta"]["complete"].startswith("Complete: 1 symbol body")
+
+    response["results"] = [head]
+    _recount_whole_bodies(response)
+    assert "complete" not in response["_meta"]
