@@ -129,6 +129,7 @@ from .type_names import (
     bare_type_name,
     builtin_type_spelling,
     csharp_extension_receiver,
+    is_csharp_extension,
     is_resolvable_type_name,
     strip_type_arguments,
 )
@@ -1597,8 +1598,7 @@ class CallResolver(
             by_name: dict[str, list[Symbol]] = defaultdict(list)
             for sym in self._symbols_by_id.values():
                 # An array extension (``this Foo[] xs``) has no key but still competes.
-                params = (sym.signature or "").partition("(")[2]
-                if sym.language == "csharp" and params.lstrip().startswith("this "):
+                if sym.language == "csharp" and is_csharp_extension(sym.signature):
                     by_name[sym.name].append(sym)
             self._csharp_extensions_by_name = by_name
         return self._csharp_extensions_by_name.get(name, [])

@@ -313,6 +313,12 @@ def kotlin_extension_receiver(header: str, name: str) -> tuple[str, str | None] 
     return bare + nullable, None if bare in declared else bare
 
 
+def is_csharp_extension(signature: str | None) -> bool:
+    """Is the first parameter in *signature* a C# ``this`` one? An array receiver counts."""
+    _, opened, params = (signature or "").partition("(")
+    return bool(opened) and re.match(r"\s*this\s", params) is not None
+
+
 def csharp_extension_receiver(signature: str) -> str | None:
     """The type a C# extension method extends, or None if it is not one.
 
