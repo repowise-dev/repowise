@@ -7,12 +7,24 @@ from typing import NamedTuple
 
 from tree_sitter import Node, Parser, Query
 
-from ..models import Symbol
-from ..type_names import strip_type_arguments
-from ._shared import _store_capped
+from ..models import CallSite, Symbol
+from ..type_names import bare_type_name, strip_type_arguments
+from ._shared import _FUNCTION_KINDS, _store_capped
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
 _PURE_VIRTUAL = re.compile(r"=\s*0\s*;")
+
+# What follows a parameter list up to a trailing return type: ``) const
+# noexcept -> T {``. Only a plain name is kept; the reader refuses the rest.
+_TRAILING_RETURN = re.compile(
+    r"(?:\s*(?:const|volatile|noexcept|override|final|&{1,2}))*\s*->\s*(?:const\s+)?"
+    r"(?P<type>[A-Za-z_]\w*)\s*[*&]{0,2}\s*(?=[{;=]|$)"
+)
+# How far above a declaration its ``template <..>`` list is looked for.
+_TEMPLATE_HEADER_LINES = 16
+# A ``template <..>`` list, one nesting level, and the names it declares.
+_TEMPLATE_LIST = re.compile(r"\btemplate\s*<((?:[^<>]|<[^<>]*>)*)>")
+_TEMPLATE_PARAMETER = re.compile(r"\b(?:typename|class)\s*(?:\.\.\.\s*)?(\w+)")
 
 # Alias facts are a few tuples per file, and a header is read again for every
 # file that includes it, so they outlive the four-file source caches.
@@ -192,6 +204,76 @@ class CppFieldOwners:
         class_id = self._only_type_in(path, name)
         symbol = self._symbols_by_id.get(class_id or "")
         return None if symbol is None or symbol.is_declaration else class_id
+
+    def _cpp_call_assigned_type(
+        self, file_path: str, site: CallSite | None, target: str, receiver: str | None
+    ) -> str | None:
+        """What ``auto x = target(..)`` makes ``x``, as a type id or a written name.
+
+        A call bound to a function yields the type that function declares, read
+        by ``_returned_type_id`` off its definition when a header declaration
+        was bound; a repository-wide guess at the function is no evidence of
+        it. Any other free call (a constructor, a class, a call nothing binds)
+        builds a ``target``, read by name as ``target x(..)`` is.
+        """
+        resolved = None if site is None else self._resolve_one(file_path, site)
+        callee = None if resolved is None else self._symbols_by_id.get(resolved.callee_id)
+        if (
+            callee is not None
+            and callee.kind in _FUNCTION_KINDS
+            and callee.name != bare_type_name(callee.parent_name or "")
+        ):
+            if "global" in resolved.origin:
+                return None
+            defined = self._decl_to_def.get(callee.id, callee.id)
+            return self._returned_type_id(defined, False, site.argument_count)
+        return target if receiver is None else None
+
+    def _cpp_written_return(self, symbol: Symbol, path: str, written: str) -> str:
+        """*written*, or for ``auto f(..) -> T`` the trailing ``T``, ``const``/``&``/``*`` dropped."""
+        if written != "auto":
+            return written
+        header = " ".join(self._lines_of(path)[symbol.start_line - 1 : symbol.start_line + 3])
+        opened = re.search(rf"\b{re.escape(symbol.name)}\s*\(", header)
+        if opened is None:
+            return written
+        depth, index = 1, opened.end()
+        while index < len(header) and depth:
+            depth += {"(": 1, ")": -1}.get(header[index], 0)
+            index += 1
+        trailing = _TRAILING_RETURN.match(header, index)
+        return trailing.group("type") if trailing else written
+
+    def _cpp_returned_class_name(self, symbol: Symbol, path: str, written: str) -> str | None:
+        """The class name *symbol*'s return type *written* means in its file, or None.
+
+        One plain name, read off a trailing return type for ``auto f() -> T``.
+        A template parameter of *symbol* or its class is none. A file-scope
+        alias is followed; one scoped to a class or namespace (a member
+        ``typedef``) is refused, since a same-named class elsewhere is not it.
+        """
+        name = self._cpp_written_return(symbol, path, written)
+        if not name.isidentifier():
+            return None
+        from . import _enclosing_id  # the package imports this module
+
+        lines = self._lines_of(path)
+        owner = self._symbols_by_id.get(_enclosing_id(symbol.id))
+        for declared in (symbol, owner):
+            if declared is None or declared.language != "cpp":
+                continue
+            # Ceiling: a parameter list opening more than this many lines up is unseen.
+            start = max(declared.start_line - _TEMPLATE_HEADER_LINES, 0)
+            header = " ".join(lines[start : declared.start_line])
+            if any(
+                name in _TEMPLATE_PARAMETER.findall(listed)
+                for listed in _TEMPLATE_LIST.findall(header)
+            ):
+                return None
+        aliases = self._cpp_type_facts(path).aliases
+        if any(alias.name == name and alias.scope is not None for alias in aliases):
+            return None
+        return self._cpp_aliased_type(path, name, 0)
 
     def _typed_callee(self, sym_id: str, caller_id: str) -> str | None:
         """The callee a typed receiver's method *sym_id* stands for, or None.
