@@ -21,6 +21,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 from repowise.core.analysis.health.refactoring.serving import validation_from_profile
 from repowise.core.analysis.test_reachability import ReachedBy
 from repowise.core.ingestion.package_roots import owning_package, scan_package_manifests
+from repowise.core.test_runners.packages import quote_arg
 from tests.unit.health.test_recommendations import _plan
 
 
@@ -118,6 +119,43 @@ def test_a_test_the_map_does_not_hold_gets_no_command() -> None:
 def test_suffixes_decide_the_runner_not_substrings() -> None:
     tests = ["fixtures/data.json", "fixtures/rows.jsonl", "stubs/mod.pyi", "tests/test_a.py"]
     assert commands_for_tests(tests, runs={}) == ["pytest tests/test_a.py"]
+
+
+@pytest.mark.parametrize("config, contents", [
+    ("pyproject.toml", "[tool.pytest.ini_options]\n"),
+    ("setup.cfg", "[tool:pytest]\n"),
+    ("pytest.ini", "[pytest]\n"),
+    ("pytest.ini", ""),
+    ("pytest.ini", "# Package-local defaults\n"),
+    ("tox.ini", "[pytest]\n"),
+])
+def test_python_tests_run_from_their_pytest_package(tmp_path: Path, config: str, contents: str) -> None:
+    for package in ("packages/core", "packages/cli"):
+        folder = tmp_path / package
+        folder.mkdir(parents=True)
+        (folder / "pyproject.toml").write_text("", encoding="utf-8")
+        (folder / config).write_text(contents, encoding="utf-8")
+    tests = [
+        "packages/core/tests/test_cart.py::test_total",
+        "packages/cli/tests/test_main.py::test_main",
+        "tests/test_root.py",
+    ]
+    assert commands_for_tests(tests, runs=_runs(tmp_path, tests)) == [
+        "pytest tests/test_root.py",
+        "cd packages/cli && pytest tests/test_main.py::test_main",
+        "cd packages/core && pytest tests/test_cart.py::test_total",
+    ]
+
+
+@pytest.mark.parametrize("config", ["pytest.ini", "tox.ini"])
+def test_standalone_pytest_config_keeps_the_root_fallback(tmp_path: Path, config: str) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / config).write_text("[pytest]\n", encoding="utf-8")
+    tests = ["package/tests/test_cart.py::test_total"]
+    assert commands_for_tests(tests, runs=_runs(tmp_path, tests)) == [
+        "pytest package/tests/test_cart.py::test_total"
+    ]
 
 
 def test_a_path_with_a_space_is_quoted(tmp_path: Path) -> None:
@@ -237,3 +275,75 @@ def test_the_owner_lookup_takes_any_manifest() -> None:
     assert owning_package("svc/web/a_test.go", manifests, "go.mod", lambda d: True) == "svc"
     assert owning_package("lib/a_test.go", manifests, "go.mod", lambda d: d == "") == ""
     assert owning_package("lib/a_test.go", manifests, "go.mod", lambda d: False) is None
+
+
+@pytest.mark.parametrize("package", ["pkg", "my package", "price$pkg"])
+def test_capped_python_commands_widen_within_the_owning_package(tmp_path: Path, package: str) -> None:
+    folder = tmp_path / package
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    tests = [f"{package}/tests/test cart.py::test_total", "tests/test_root.py::test_root"]
+    runs = _runs(tmp_path, tests)
+    assert commands_for_tests(tests, runs=runs) == [
+        "pytest tests/test_root.py::test_root",
+        f'cd {quote_arg(package)} && pytest "tests/test cart.py::test_total"',
+    ]
+    assert commands_for_tests(tests, total=5, runs=runs) == [
+        "pytest tests/test_root.py",
+        f'cd {quote_arg(package)} && pytest "tests/test cart.py"',
+    ]
+
+
+def test_python_file_runs_survive_plan_storage_and_batch_caps(tmp_path: Path) -> None:
+    folder = tmp_path / "pkg"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    tests = [f"pkg/tests/test_cart.py::test_{n}" for n in range(4)]
+    suggestion = _plan("total", file_path="pkg/src/cart.py")
+    plan = build_validation_plan(
+        suggestion, {}, {suggestion.file_path: ReachedBy(tests, "import-graph", 4)},
+        evidence=ValidationEvidence(test_runs=_runs(
+            tmp_path, [*tests, "pkg/tests/test_other.py::test_unselected"]
+        )),
+    )
+    stored = validation_from_profile(plan.as_dict()).as_dict()
+    assert set(stored["test_runs"]) == {*tests, "pkg/tests/test_cart.py"}
+    assert stored["test_runs"]["pkg/tests/test_cart.py"] == [
+        "cd pkg && pytest", "tests/test_cart.py",
+    ]
+    batches = stage_batches(
+        {"refactoring_type": "extract_method", "validation": stored},
+        [{"n": n, "action": "extract"} for n in range(1, 8)],
+    )
+    assert batches is not None
+    assert batches[0]["commands"] == ["cd pkg && pytest tests/test_cart.py"]
+
+
+async def test_capped_blast_commands_keep_python_package_ownership(tmp_path: Path) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from repowise.core.analysis.pr_blast import run_commands
+
+    folder = tmp_path / "pkg"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=MagicMock())
+    session.bind = None
+    session.execute.return_value.scalar_one_or_none.return_value = str(tmp_path)
+    session.execute.return_value.one.return_value = (None,) * 5
+    assert await run_commands(session, "pkg", ["pkg/tests/test_cart.py::test_total"], total=5) == [
+        "cd pkg && pytest tests/test_cart.py",
+    ]
+
+
+@pytest.mark.parametrize("contents", ["[project]\nname = 'pkg'\n", "broken toml ["])
+def test_python_package_without_pytest_config_keeps_root_fallback(tmp_path: Path, contents: str) -> None:
+    folder = tmp_path / "pkg"
+    folder.mkdir()
+    (folder / "pyproject.toml").write_text(contents, encoding="utf-8")
+    tests = ["pkg/tests/test_cart.py::test_total"]
+    assert _runs(tmp_path, tests) == {}
+    assert commands_for_tests(tests, runs=_runs(tmp_path, tests)) == [
+        "pytest pkg/tests/test_cart.py::test_total",
+    ]

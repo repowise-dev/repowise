@@ -28,6 +28,7 @@ from ..ingestion.workspace_members import (
     manifest_package_name,
     read_toml,
 )
+from ..pytest_roots import PYTEST_CONFIG_SECTIONS, pytest_options
 from . import LANGUAGE_SUFFIXES
 
 #: Each test (an id, or the file a capped list collapses to) of a language in
@@ -36,7 +37,8 @@ from . import LANGUAGE_SUFFIXES
 #: or None to run the whole package. Args of one run are joined with spaces,
 #: except ``--flag=value`` args, whose values merge into one ``--flag "a|b"``
 #: for a runner that keeps only its last such flag. A test the map does not hold
-#: gets no command.
+#: gets no command. Python selector entries from :func:`runs_for_tests` always
+#: have a file-keyed sibling whose argument selects the whole file.
 TestRuns = Mapping[str, Sequence[str | None]]
 
 #: One test's ``(run, arg)``.
@@ -159,6 +161,36 @@ def _js_run(repo: _Checkout, test: str) -> Run | None:
         path, "package.json", lambda d: repo.memo(_declares_test, repo.root / d / "package.json")
     )
     return None if owner is None else npm_test_run(path, owner)
+
+
+def _declares_pytest(folder: Path) -> bool:
+    """Whether *folder* configures pytest rather than merely packaging Python."""
+    for filename, _ in PYTEST_CONFIG_SECTIONS:
+        try:
+            text = (folder / filename).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        if pytest_options(filename, text) is not None:
+            return True
+    return False
+
+
+def _python_run(repo: _Checkout, test: str) -> Run | None:
+    """Run a Python test from its nearest pytest-configured package."""
+    path = file_of_test(test)
+    def configured(directory: str) -> bool:
+        return repo.memo(_declares_pytest, repo.root / directory)
+
+    owners = [
+        repo.owner(path, manifest, configured)
+        for manifest in ("pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini")
+    ]
+    # A root command remains the safe fallback for repositories without a
+    # package-local pytest configuration.
+    owner = max((candidate for candidate in owners if candidate is not None), key=len, default=None)
+    if owner is None:
+        return None
+    return (f"cd {quote_arg(owner)} && pytest" if owner else "pytest", quote_arg(relative_to(test, owner)))
 
 
 def js_root_runs(tests: Iterable[str]) -> dict[str, list[str | None]]:
@@ -459,6 +491,7 @@ def _dotnet_run(repo: _Checkout, test: str) -> Run | None:
 #: runner works per package. A runner gets the whole test id, ``::`` name
 #: included, so one that can select a single test can narrow to it.
 _RUNNERS: tuple[tuple[tuple[str, ...], Callable[[_Checkout, str], Run | None]], ...] = (
+    (LANGUAGE_SUFFIXES["python"], _python_run),
     (LANGUAGE_SUFFIXES["go"], _go_run),
     (LANGUAGE_SUFFIXES["rust"], _rust_run),
     (LANGUAGE_SUFFIXES["jvm"], _jvm_run),
@@ -473,7 +506,8 @@ def runs_for_tests(
 ) -> dict[str, list[str | None]]:
     """The run (:data:`TestRuns`) of each test in *tests* whose language is in
     :data:`_RUNNERS`, from the package roots in *manifests*. A test whose runner
-    or manifest the repository lacks is left out. Blocking file reads.
+    or manifest the repository lacks is left out. Python selectors also keep
+    their file-wide run for capped lists. Blocking file reads.
     """
     repo = _Checkout(root, manifests)
     runs: dict[str, list[str | None]] = {}
@@ -482,6 +516,12 @@ def runs_for_tests(
         runner = next((run for suffixes, run in _RUNNERS if lowered.endswith(suffixes)), None)
         if runner is not None and (found := runner(repo, test)) is not None:
             runs[test] = list(found)
+            # Capped commands and call-graph plans widen selectors to their
+            # files. Keep that target too, without discarding the exact run.
+            if runner is _python_run and test != file_of_test(test):
+                whole = _python_run(repo, file_of_test(test))
+                if whole is not None:
+                    runs[file_of_test(test)] = list(whole)
     return runs
 
 

@@ -58,7 +58,13 @@ def plan_runs(tests: Iterable[str], runs: TestRuns | None) -> dict[str, list[str
     read (batches, a served plan) needs no checkout."""
     if runs is None:
         return {}
+    tests = list(tests)
     keys = {key for test in tests if (key := _run_key(runs, test)) is not None}
+    # Later batches may cap a selector list and need its package's file run.
+    keys.update(
+        file_of_test(test) for test in tests
+        if file_of_test(test).endswith(PYTHON_SUFFIXES) and file_of_test(test) in runs
+    )
     return {key: list(runs[key]) for key in keys}
 
 
@@ -118,7 +124,10 @@ def commands_for_tests(
     """
     if total is not None and total > len(tests):
         tests = sorted({file_of_test(test) for test in tests})
-    python_tests = sorted(test for test in tests if file_of_test(test).endswith(PYTHON_SUFFIXES))
+    python_tests = sorted(
+        test for test in tests
+        if file_of_test(test).endswith(PYTHON_SUFFIXES) and (not runs or _run_key(runs, test) is None)
+    )
     commands: list[str] = []
     if python_tests:
         commands.append("pytest " + " ".join(map(quote_arg, python_tests)))
