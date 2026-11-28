@@ -37,6 +37,7 @@ export type FixExclusion =
   | "history_only"
   | "vendored"
   | "docs_example"
+  | "data"
   | "deprecated"
   | "gated_off"
   | "cold_path"
@@ -80,6 +81,8 @@ export interface FixStep {
   call?: string | null;
   /** The command that checks this step, when it differs from the item's. */
   command?: string | null;
+  /** What the helper's code cannot say: a type a guard narrows, a parameter object to declare. */
+  notes?: string[];
 }
 
 /** A due item's first edit, inline in the compact projection. */

@@ -1,7 +1,7 @@
 """set_finding_status (MCP) records dispositions through the shared writer.
 
 The CRUD lifecycle is pinned in test_refactoring_lifecycle.py; these tests
-cover the tool layer: it validates the vocabulary, resolves the plan by
+cover the tool layer: it answers a bad status or id with an error, not a fault, resolves the plan by
 storage id or display id, routes through update_refactoring_suggestion_status
 (the single writer), and surfaces the resulting status.
 """
@@ -59,20 +59,24 @@ def ctx():
         yield fake_session
 
 
-async def test_unknown_status_raises(ctx):
-    with pytest.raises(ValueError, match=r"unknown finding status: 'bogus'"):
-        await set_finding_status("row-1", "bogus")
+async def test_unknown_status_is_an_argument_error(ctx):
+    """A bad status names the valid ones; it is not an internal fault to retry."""
+    result = await set_finding_status("row-1", "bogus")
+    assert result["error"] == "unknown finding status: 'bogus'"
+    assert "false_positive" in result["remedy"]
 
 
-async def test_missing_plan_raises(ctx):
+async def test_missing_plan_is_not_found(ctx):
     with patch(
         "repowise.server.mcp_server.tool_findings.get_refactoring_suggestion",
         new=AsyncMock(return_value=None),
     ), patch(
         "repowise.server.mcp_server.tool_findings.get_refactoring_suggestions",
         new=AsyncMock(return_value=[]),
-    ), pytest.raises(ValueError, match="refactoring plan not found"):
-        await set_finding_status("absent", "resolved")
+    ):
+        result = await set_finding_status("absent", "resolved")
+    assert result["error"].startswith("refactoring plan not found: 'absent'")
+    assert "get_health" in result["remedy"]
 
 
 async def test_write_goes_through_the_shared_writer(ctx):

@@ -66,8 +66,11 @@ def keyless(monkeypatch: pytest.MonkeyPatch) -> dict:
             {
                 "git_history_coverage": None,
                 "file_pages": {"configured_cap": None, "eligible": 2, "generated": 2},
-                "search": {"full_text": "available", "semantic": "unavailable",
-                           "next_command": "repowise reindex --embedder ollama"},
+                "search": {
+                    "full_text": "available",
+                    "semantic": "unavailable",
+                    "next_command": "repowise reindex --embedder ollama",
+                },
                 "embedding_error": None,
             },
         )
@@ -120,9 +123,7 @@ def test_keyless_upgrade_builds_documentation_from_code(tmp_path: Path, keyless:
     assert "built from code" in printed
 
 
-def test_keyless_upgrade_keeps_an_embedder_the_user_chose(
-    tmp_path: Path, keyless: dict
-) -> None:
+def test_keyless_upgrade_keeps_an_embedder_the_user_chose(tmp_path: Path, keyless: dict) -> None:
     repo = _repo(tmp_path)
     (repo / ".repowise" / "config.yaml").write_text("embedder: ollama\n", encoding="utf-8")
     _upgrade(repo)
@@ -140,9 +141,7 @@ def test_keyless_upgrade_does_not_overwrite_documentation_a_model_wrote(
     assert "provider" not in keyless
 
 
-def test_a_named_provider_that_fails_is_still_the_answer(
-    tmp_path: Path, keyless: dict
-) -> None:
+def test_a_named_provider_that_fails_is_still_the_answer(tmp_path: Path, keyless: dict) -> None:
     repo = _repo(tmp_path)
     with pytest.raises(click.ClickException, match="No provider configured"):
         _upgrade(repo, provider_name="gemini")
@@ -172,11 +171,19 @@ def test_workspace_full_with_repo_alias_upgrades_that_repo(monkeypatch, tmp_path
         ws_config=SimpleNamespace(get_repo=lambda alias: SimpleNamespace(path="api")),
     )
     run = SimpleNamespace(repo_path=None)
-    command._update_workspace_target(SimpleNamespace(full=True, repo_alias="api"), run, target)
+    command._update_workspace_target(
+        SimpleNamespace(full=True, repo_alias="api", refresh_git=False, defer_docs=False),
+        run,
+        target,
+    )
     assert upgraded == [(tmp_path / "api").resolve()]
 
     with pytest.raises(click.ClickException, match="--repo <alias>"):
-        command._update_workspace_target(SimpleNamespace(full=True, repo_alias=None), run, target)
+        command._update_workspace_target(
+            SimpleNamespace(full=True, repo_alias=None, refresh_git=False, defer_docs=False),
+            run,
+            target,
+        )
 
 
 def test_reindex_on_an_index_only_repo_names_the_fast_to_full_command(tmp_path) -> None:

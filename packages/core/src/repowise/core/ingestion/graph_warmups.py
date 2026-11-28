@@ -446,6 +446,28 @@ def _warmup_dotnet(ctx: ResolverContext) -> None:
             node["package_export"] = True
 
 
+def _warmup_ruby(ctx: ResolverContext) -> None:
+    """Mark each gem's entry file as published, for the per-symbol public API
+    flag (``analysis.public_api``).
+
+    A gem's front door is ``lib/<name>.rb`` beside its gemspec. Only the entry
+    is stamped here, together with the ``lib`` root it sits in
+    (``ruby_gem_lib``): the files it requires are not resolved yet, so
+    ``stamp_public_api`` follows them once imports are. With no gemspec nothing
+    is stamped.
+    """
+    from .resolvers.ruby import gem_entry_files
+
+    graph = getattr(ctx, "graph", None)
+    if graph is None:
+        return
+    for path, lib_root in gem_entry_files(ctx).items():
+        node = graph.nodes.get(path)
+        if node is not None:
+            node["package_export"] = True
+            node["ruby_gem_lib"] = lib_root
+
+
 def _warmup_rust(ctx: ResolverContext) -> None:
     """Stamp Cargo ``[[bin]]``/``[[test]]``/``[[bench]]``/``[[example]]``
     targets that name an explicit ``path`` as live, so a file Cargo discovers
@@ -746,6 +768,7 @@ _WARMUPS: dict[str, tuple[str, Warmup]] = {
     "csharp": ("graph.dotnet_index", _warmup_dotnet),
     "go": ("graph.go_index", _warmup_go),
     "rust": ("graph.rust_targets", _warmup_rust),
+    "ruby": ("graph.ruby_gems", _warmup_ruby),
     "typescript": ("graph.ts_index", _warmup_typescript),
     "javascript": ("graph.ts_index", _warmup_typescript),
     "cpp": ("graph.cpp_index", _warmup_cpp),
@@ -774,18 +797,16 @@ def run_warmups(
     than dropping it into ``graph.imports``.
     """
     present_langs: set[str] = {pf.file_info.language for pf in parsed_files.values()}
-    fired_phases: set[str] = set()
+    # Languages that share an index (TS + JS, Java + Kotlin, C + C++) share
+    # one warmup, and a warmup's stamps depend only on the context: it runs
+    # once per context, however many of its languages are present or however
+    # many times this is called on that context.
+    done_warmups: set[Warmup] = getattr(ctx, "_warmups_run", None) or set()
+    ctx._warmups_run = done_warmups  # type: ignore[attr-defined]
     for lang, (phase_name, warmup) in _WARMUPS.items():
-        if lang not in present_langs:
+        if lang not in present_langs or warmup in done_warmups:
             continue
-        # Some warmups (TS + JS) share a phase event because they share the
-        # underlying index — only fire start/done once per phase name and
-        # rely on the warmup's own idempotency for the second invocation.
-        if phase_name in fired_phases:
-            with contextlib.suppress(Exception):
-                warmup(ctx)
-            continue
-        fired_phases.add(phase_name)
+        done_warmups.add(warmup)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
         with contextlib.suppress(Exception):  # warmup failures must not abort the build
@@ -796,11 +817,31 @@ def run_warmups(
                 done(phase_name)
 
 
+def _stamp_header_only_target(graph: Any, tid: str, target: Any) -> None:
+    for hdr in (*target.public_headers, *target.private_headers):
+        if hdr in graph.nodes:
+            owners = graph.nodes[hdr].get("cpp_header_only_targets", ())
+            if tid not in owners:
+                graph.nodes[hdr]["cpp_header_only_targets"] = (*owners, tid)
+
+
 def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
-    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed."""
+    """Stamp file nodes compiled by CMake, .vcxproj, or included by .rc as build_listed.
+
+    Headers of a target with no sources (a header-only library) get the
+    target's id under ``cpp_header_only_targets`` instead: no TU compiles
+    them, so reachability reads the target as one unit.
+    """
     import re
 
     from repowise.core.fs_walk import glob_via
+
+    # Stamped from scratch on every build: a patch build seeds untouched nodes
+    # from the last snapshot with every attribute, and a file that left a
+    # target or project must lose what it had.
+    for _node, data in graph.nodes(data=True):
+        data.pop("build_listed", None)
+        data.pop("cpp_header_only_targets", None)
 
     repo_path = ctx.repo_path
     if repo_path is None:
@@ -808,10 +849,12 @@ def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> Non
     root = repo_path.resolve()
 
     # 1. CMake targets from cpp_workspace index (sources only; headers are not compiled TUs)
-    for target in getattr(index, "targets", {}).values():
+    for tid, target in getattr(index, "targets", {}).items():
         for src in getattr(target, "sources", ()):
             if src in graph.nodes:
                 graph.nodes[src]["build_listed"] = True
+        if not getattr(target, "sources", ()):
+            _stamp_header_only_target(graph, tid, target)
 
     # 2. MSBuild .vcxproj files (ClCompile only; ClInclude headers are not compiled TUs)
     item_re = re.compile(r"""<ClCompile\s+Include=["']([^"']+)["']""", re.IGNORECASE)

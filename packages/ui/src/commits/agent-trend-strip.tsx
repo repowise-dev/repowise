@@ -74,7 +74,7 @@ export function AgentTrendStrip({ trend, className }: AgentTrendStripProps) {
               style={{ height: `${share(b.human_attested_commits, b.total_commits)}%` }}
             />
             <div
-              className="w-full bg-[var(--color-accent-primary)]/70"
+              className="w-full bg-[var(--color-progress-fill)]"
               style={{ height: `${share(b.agent_commits, b.total_commits)}%` }}
             />
           </div>

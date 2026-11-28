@@ -21,7 +21,6 @@ this module is the one ``hybrid_retrieve`` calls.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from typing import Any
 
@@ -41,7 +40,9 @@ from repowise.server.mcp_server._answer_pipeline.graph_expand import (
 from repowise.server.mcp_server._answer_pipeline.hydrate import (
     _PAGERANK_BIAS_MAX,
     apply_pagerank_bias,
+    drop_out_of_scope,
     hydrate_hits,
+    in_scope,
 )
 from repowise.server.mcp_server._answer_pipeline.leg_record import (
     _LEG_RECORD,
@@ -68,7 +69,11 @@ from repowise.server.mcp_server._answer_pipeline.vectors import (
     question_vector,
     vector_search,
 )
-from repowise.server.mcp_server._helpers import _VECTOR_TIMEOUT_ENV, vector_search_timeout_s
+from repowise.server.mcp_server._helpers import (
+    _VECTOR_TIMEOUT_ENV,
+    vector_search_timeout_s,
+    wait_for_vector_store,
+)
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._prose_symbols import filename_backed_pages, symbol_backed_pages
 
@@ -103,8 +108,11 @@ _SYMBOL_LEG_RRF_K = 180
 _FILENAME_LEG_RRF_K = _SYMBOL_LEG_RRF_K
 
 
-async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
+async def hybrid_retrieve(question: str, ctx: Any, *, scope: str | None = None) -> list[dict]:
     """Run the four legs in parallel and fuse them by RRF, best first.
+
+    A ``scope`` narrows the FTS, symbol and filename legs inside their own
+    search, so their whole window is spent under it.
 
     Hits are ``{page_id, title, score, snippet, page_type, _sources}`` plus each
     leg's rank (``_fts_rank``, ``_vec_rank``, ``_sym_rank``): RRF compresses
@@ -114,10 +122,14 @@ async def hybrid_retrieve(question: str, ctx: Any) -> list[dict]:
     """
     # Reset so the record describes this question, not one sharing the context.
     begin_leg_record()
-    fts_task = _safe_fts_search(ctx, question)
+    fts_task = _safe_fts_search(ctx, question, scope)
+    # Not scoped: the stores have no path filter, so a scope keeps only the
+    # in-scope rows of this window at hydration. Ceiling: a scope far from the
+    # question's nearest pages gets no vector hits; a store-side prefix filter
+    # is the upgrade.
     vec_task = _safe_vector_search(ctx, question)
-    sym_task = _safe_symbol_search(ctx, question, pageless=True)
-    name_task = _safe_filename_search(ctx, question)
+    sym_task = _safe_symbol_search(ctx, question, pageless=True, scope=scope)
+    name_task = _safe_filename_search(ctx, question, scope)
     fts_results, vec_results, sym_results, name_results = await asyncio.gather(
         fts_task, vec_task, sym_task, name_task
     )
@@ -172,14 +184,16 @@ def stamp_hybrid_rank(hits: list[dict]) -> None:
             h["_hybrid_rank"] = files.setdefault(path, len(files))
 
 
-async def _safe_fts_search(ctx: Any, question: str) -> list[Any]:
+async def _safe_fts_search(ctx: Any, question: str, scope: str | None = None) -> list[Any]:
     """FTS leg; [] on timeout or failure."""
     if ctx.fts is None:
         _record_leg("fts", "absent")
         return []
+    # Unscoped calls keep the plain call every search backend takes.
+    scoped = {"path_prefix": scope} if scope else {}
     try:
         results = await asyncio.wait_for(
-            ctx.fts.search(question, limit=_RETRIEVAL_FETCH_LIMIT), timeout=5.0
+            ctx.fts.search(question, limit=_RETRIEVAL_FETCH_LIMIT, **scoped), timeout=5.0
         )
     except TimeoutError:
         _record_leg("fts", "timeout")
@@ -224,16 +238,13 @@ async def _safe_vector_search(ctx: Any, question: str) -> list[Any]:
     Waits for a store still loading at startup, and checks for a keyless store
     before embedding anything.
     """
+    await wait_for_vector_store(ctx)
     if ctx.vector_store is None:
         _record_leg("vector", "absent")
         return []
     if not store_has_semantic_vectors(ctx.vector_store):
         _record_leg("vector", "keyless")
         return []
-    ready = getattr(ctx, "vector_store_ready", None)
-    if ready is not None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ready.wait(), timeout=30.0)
     vector = await question_vector(ctx, question)
     try:
         results = await asyncio.wait_for(
@@ -277,7 +288,7 @@ class _SymbolLegResult:
 
 
 async def _safe_symbol_search(
-    ctx: Any, question: str, *, pageless: bool = False
+    ctx: Any, question: str, *, pageless: bool = False, scope: str | None = None
 ) -> list[_SymbolLegResult]:
     """File pages whose symbols the question's words name; [] on any failure.
 
@@ -292,6 +303,7 @@ async def _safe_symbol_search(
                 max_files=_SYMBOL_LEG_MAX_PAGES,
                 symbol_limit=_SYMBOL_LEG_FETCH_LIMIT,
                 pageless=pageless,
+                scope=scope,
             ),
             timeout=5.0,
         )
@@ -316,11 +328,14 @@ async def _safe_symbol_search(
     ]
 
 
-async def _safe_filename_search(ctx: Any, question: str) -> list[tuple[_SymbolLegResult, bool]]:
+async def _safe_filename_search(
+    ctx: Any, question: str, scope: str | None = None
+) -> list[tuple[_SymbolLegResult, bool]]:
     """Files the question names, each with whether it spells the whole name; [] on failure."""
     try:
         pages = await asyncio.wait_for(
-            filename_backed_pages(ctx, question, max_files=_SYMBOL_LEG_MAX_PAGES), timeout=5.0
+            filename_backed_pages(ctx, question, max_files=_SYMBOL_LEG_MAX_PAGES, scope=scope),
+            timeout=5.0,
         )
     except TimeoutError:
         _record_leg("filename", "timeout")
@@ -406,11 +421,13 @@ __all__ = [
     "begin_leg_record",
     "degraded_legs",
     "demote_noise_hits",
+    "drop_out_of_scope",
     "expand_via_graph",
     "expand_via_parent_page",
     "filename_backed_pages",
     "hybrid_retrieve",
     "hydrate_hits",
+    "in_scope",
     "is_subsystem_query",
     "leg_ranks",
     "question_vector",

@@ -9,46 +9,40 @@ in core so the OSS server and hosted share it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, load_state
 from repowise.core.generation.cascade import CascadeMode
+from repowise.core.generation.models import (
+    MODEL_FREE_PAGE_TYPES,
+    MODEL_WRITTEN_PAGE_TYPES,
+    is_model_free,
+)
 from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.generation.scope import (
     ScopePlan,
-    build_cost_plans,
-    load_page_records,
+    narrow_to_model_written,
     resolve_scope,
+    unwritten_model_page_count,
 )
-
-# The page types a model writes. Everything else is structural and refreshes on
-# `repowise update`, so `generate` never writes one: it works on the concept
-# layer only. Its complement is the structural set in generate_cmd/command.py.
-_MODEL_WRITTEN_PAGE_TYPES = frozenset(
-    {"module_page", "repo_overview", "architecture_diagram", "onboarding"}
-)
-
-
-def _narrow_to_model_written(plan: ScopePlan) -> ScopePlan:
-    """Drop structural pages from a resolved plan, so generate writes only prose.
-
-    ``--unwritten`` / ``--all`` / ``--path`` resolve against every page type, but
-    a structural page has no model to write it: including it would re-render it
-    from templates (a no-op that leaves it "unwritten") and inflate the headline
-    count. Keep only the model-written pages, in both the generate set and the
-    cascade fallout marked stale, and re-price from what remains.
-    """
-    gen = {pid for pid in plan.generate_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
-    stale = {pid for pid in plan.stale_ids if pid.split(":", 1)[0] in _MODEL_WRITTEN_PAGE_TYPES}
-    return replace(plan, generate_ids=gen, stale_ids=stale, cost_plans=build_cost_plans(gen))
-
 
 NO_DOCUMENTATION_MESSAGE = (
     "[yellow]This repo has no documentation yet.[/yellow] "
     "Run `repowise init --no-prose` or `repowise update --full` first."
 )
+
+#: Why a run wrote nothing without failing, as ``generate`` reports it.
+REFUSAL_REASONS = frozenset({"no_documentation", "nothing_selected", "declined"})
+
+
+def record_refusal(reason: str) -> None:
+    """Report a run that stopped before writing, and the fixed reason why."""
+    from repowise.cli.platform import telemetry
+
+    if reason in REFUSAL_REASONS:
+        telemetry.add_command_outcome(outcome="refused", refusal_reason=reason)
 
 
 async def has_documentation(repo_path: Path) -> bool:
@@ -178,6 +172,7 @@ async def run_scoped_generation(
         )
         if rehydrated is None:
             console.print(NO_DOCUMENTATION_MESSAGE)
+            record_refusal("no_documentation")
             return None
 
         console.print(
@@ -196,6 +191,7 @@ async def run_scoped_generation(
                 deps=rehydrated.deps,
             )
             if choice is None:
+                record_refusal("declined")
                 return None
             cascade_mode = choice.cascade_mode
 
@@ -206,9 +202,9 @@ async def run_scoped_generation(
             deps=rehydrated.deps,
             ranked_seed=None,
         )
-        # generate writes the concept layer only; structural pages refresh on
-        # `repowise update`, so drop them from whatever the intent resolved to.
-        plan = _narrow_to_model_written(plan)
+        # generate writes the concept layer only; structural pages refresh on `repowise
+        # update`, model-free ones on `update --full`: drop both from what the intent resolved to.
+        plan = narrow_to_model_written(plan, rehydrated.records)
 
         if plan.unknown_page_ids:
             console.print(
@@ -219,6 +215,7 @@ async def run_scoped_generation(
         if not plan.generate_ids:
             console.print("[yellow]Nothing to generate for that selection.[/yellow]")
             if lane_plan is None:
+                record_refusal("nothing_selected")
                 return None
         else:
             _report_plan(plan, cascade_mode)
@@ -241,8 +238,8 @@ async def run_scoped_generation(
         embedder = None
         vector_store = None
         try:
-            embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
-            vector_store = build_vector_store(repo_path, embedder)
+            embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
+            vector_store = build_vector_store(repo_path, embedder, summaries=True)
         except Exception as exc:
             # Null BOTH on any failure. If the embedder built but the store did
             # not, a non-None embedder would make generation embed into a
@@ -317,8 +314,10 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
     would mean ``docs_mode`` could never flip to ``llm`` no matter how much
     prose was written. The remaining-stub count is scoped to the concept layer
     for exactly that reason. A ``model_free`` page is not a stub either: no
-    model is ever going to write it.
+    model is ever going to write it. Nor is a tombstone: generation never
+    schedules a retired page.
     """
+    from sqlalchemy import case
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
 
@@ -335,30 +334,18 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                 )
             ).scalar_one()
         )
-        stub_rows = (
-            await session.execute(
-                sa_select(Page).where(
-                    Page.repository_id == repo_id,
-                    Page.provider_name == "template",
-                    Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
-                )
+        stubs = await unwritten_model_page_count(session, repo_id)
+        # Metadata only where it decides: a module page's is the bulk of the row.
+        free_meta = case((Page.page_type.in_(MODEL_FREE_PAGE_TYPES), Page.metadata_json))
+        rows = await session.execute(
+            sa_select(Page.id, free_meta).where(
+                Page.repository_id == repo_id,
+                Page.freshness_status == "stale",
+                Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
             )
-        ).scalars()
-        # The planner's own predicate, so a ``model_free`` page (written by a
-        # deterministic subkind) is not reported as unwritten when ``generate
-        # --unwritten`` would never select it.
-        stubs = sum(1 for record in load_page_records(list(stub_rows)) if record.is_template)
-        stale_ids = set(
-            (
-                await session.execute(
-                    sa_select(Page.id).where(
-                        Page.repository_id == repo_id,
-                        Page.freshness_status == "stale",
-                        Page.page_type.in_(list(_MODEL_WRITTEN_PAGE_TYPES)),
-                    )
-                )
-            ).scalars()
         )
+        # A model-free page is left out of every plan: `generate --stale` cannot refresh it.
+        stale_ids = {page_id for page_id, meta in rows if not is_model_free(meta)}
     return total, stubs, stale_ids
 
 

@@ -6,6 +6,7 @@ The pattern mirrors the other embedder suites: mock the external SDK, run the re
 
 from __future__ import annotations
 
+import json
 import math
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -135,3 +136,113 @@ async def test_embed_width_check_not_triggered_on_empty():
     emb = GeminiEmbedder(api_key="k")
     assert await emb.embed([]) == []
 
+
+@pytest.mark.parametrize("model", ["gemini-embedding-2", "models/gemini-embedding-2", "gemini-embedding-2-preview"])
+@pytest.mark.parametrize("kind", ["document", "query"])
+async def test_embedding_2_formats_independent_inputs(monkeypatch, model, kind):
+    from google.genai.types import Content
+
+    client = _fake_client([[3.0, 4.0], [0.0, 1.0]])
+    monkeypatch.setattr("google.genai.Client", lambda **kw: client)
+    emb = GeminiEmbedder(api_key="k", model=model, output_dimensionality=2)
+    texts = ["Access control\nChecks route permissions", "Mail delivery"]
+
+    result = await emb.embed(texts, kind=kind)
+
+    kwargs = client.models.embed_content.call_args.kwargs
+    assert kwargs["model"] == model
+    assert kwargs["config"].task_type is None
+    assert kwargs["config"].output_dimensionality == 2
+    assert len(kwargs["contents"]) == len(texts)
+    assert all(isinstance(content, Content) for content in kwargs["contents"])
+    prefix = "task: code retrieval | query: " if kind == "query" else "title: none | text: "
+    assert [content.parts[0].text for content in kwargs["contents"]] == [prefix + text for text in texts]
+    assert texts == ["Access control\nChecks route permissions", "Mail delivery"]
+    assert result == [[0.6, 0.8], [0.0, 1.0]]
+
+
+@pytest.mark.parametrize("kind", ["document", "query"])
+async def test_embedding_001_preserves_task_type_and_input(monkeypatch, kind):
+    client = _fake_client([[1.0, 0.0]])
+    monkeypatch.setattr("google.genai.Client", lambda **kw: client)
+    emb = GeminiEmbedder(api_key="k", task_type="RETRIEVAL_DOCUMENT", output_dimensionality=2)
+
+    await emb.embed(["Access control"], kind=kind)
+
+    kwargs = client.models.embed_content.call_args.kwargs
+    assert kwargs["model"] == "gemini-embedding-001"
+    assert kwargs["contents"] == ["Access control"]
+    assert kwargs["config"].task_type == "RETRIEVAL_DOCUMENT"
+
+
+@pytest.mark.parametrize("model", ["gemini-embedding-001", "gemini-embedding-2"])
+@pytest.mark.parametrize("count", [0, 1, 3])
+async def test_embed_rejects_response_count_mismatch(monkeypatch, model, count):
+    client = _fake_client([[1.0, 0.0]] * count)
+    monkeypatch.setattr("google.genai.Client", lambda **kw: client)
+    emb = GeminiEmbedder(api_key="k", model=model, output_dimensionality=2)
+
+    with pytest.raises(ValueError, match="expected 2 embeddings"):
+        await emb.embed(["Access control", "Mail delivery"])
+
+
+async def test_embedding_2_rejects_invalid_kind_before_calling_sdk(monkeypatch):
+    constructor = MagicMock()
+    monkeypatch.setattr("google.genai.Client", constructor)
+    emb = GeminiEmbedder(api_key="k", model="gemini-embedding-2")
+
+    with pytest.raises(ValueError, match="kind must be"):
+        await emb.embed(["Access control"], kind="unknown")
+    constructor.assert_not_called()
+
+
+async def test_embedding_2_search_uses_query_instructions_through_cache(monkeypatch):
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.core.providers.embedding.caching import CachingEmbedder
+
+    client = _fake_client([[1.0, 0.0]])
+    monkeypatch.setattr("google.genai.Client", lambda **kw: client)
+    emb = GeminiEmbedder(api_key="k", model="gemini-embedding-2", output_dimensionality=2)
+    store = InMemoryVectorStore(CachingEmbedder(emb))
+    text = "Access control"
+    await store.embed_and_upsert("access", text, {"title": "Access control"})
+
+    results = await store.search(text)
+    assert results[0].page_id == "access"
+    await store.search_many([text])
+    await store.embed_texts([text], kind="query")
+
+    calls = client.models.embed_content.call_args_list
+    assert len(calls) == 2
+    assert calls[0].kwargs["contents"][0].parts[0].text == "title: none | text: Access control"
+    assert calls[1].kwargs["contents"][0].parts[0].text == "task: code retrieval | query: Access control"
+
+
+async def test_embedding_2_sdk_sends_separate_batch_requests():
+    import httpx
+    from google import genai
+    from google.genai.types import HttpOptions
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, json={"embeddings": [{"values": [3.0, 4.0]}, {"values": [0.0, 1.0]}]})
+
+    with genai.Client(
+        api_key="test-key",
+        http_options=HttpOptions(client_args={"transport": httpx.MockTransport(respond)}),
+    ) as client:
+        emb = GeminiEmbedder(api_key="test-key", model="gemini-embedding-2", output_dimensionality=2)
+        emb._client = client
+        result = await emb.embed(["Access control", "Mail delivery"])
+
+    assert len(requests) == 1
+    assert requests[0].url.path.endswith("/models/gemini-embedding-2:batchEmbedContents")
+    entries = json.loads(requests[0].content)["requests"]
+    assert [entry["content"]["parts"][0]["text"] for entry in entries] == [
+        "title: none | text: Access control",
+        "title: none | text: Mail delivery",
+    ]
+    assert all("taskType" not in entry and entry["outputDimensionality"] == 2 for entry in entries)
+    assert result == [[0.6, 0.8], [0.0, 1.0]]

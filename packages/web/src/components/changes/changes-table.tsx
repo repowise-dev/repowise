@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { ResponsiveTable, type ResponsiveColumn } from "@repowise-dev/ui/shared/responsive-table";
 import { HealthDeltaMark } from "@repowise-dev/ui/commits/health-delta-mark";
-import { formatLOC, formatRelativeTime } from "@repowise-dev/ui/lib/format";
+import { formatLOC } from "@repowise-dev/ui/lib/format";
 import type { ChangeEvidenceSummary, ChangeListItem } from "@/lib/api/changes";
 import { changeLabel, healthDeltaLabels } from "@/lib/changes";
+import { RelativeTime } from "@repowise-dev/ui/shared/relative-time";
 
 /**
  * The kept checklist, marked only when it flags something: a dot and a word
@@ -52,7 +53,7 @@ export function ChangesTable({ repoId, rows }: { repoId: string; rows: ChangeLis
           </span>
           <Link
             href={`/repos/${repoId}/changes/${encodeURIComponent(c.id)}`}
-            className="min-w-0 rounded-sm text-xs text-[var(--color-text-primary)] [text-wrap:pretty] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="min-w-0 rounded-sm text-xs text-[var(--color-text-primary)] [text-wrap:pretty] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {c.title}
           </Link>
@@ -82,7 +83,7 @@ export function ChangesTable({ repoId, rows }: { repoId: string; rows: ChangeLis
       priority: 2,
       render: (c) => (
         <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]" title={c.merged_at ?? undefined}>
-          {c.merged_at ? formatRelativeTime(c.merged_at) : ""}
+          {c.merged_at ? <RelativeTime date={c.merged_at} /> : ""}
         </span>
       ),
     },

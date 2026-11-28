@@ -11,8 +11,10 @@ from pathlib import PurePosixPath
 from typing import Any, TypeAlias
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.execution_graph import ExecutionGraphIndex
+from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 from .model import DEFAULT_CALL_DEPTH
@@ -93,7 +95,9 @@ def files_with_paired_tests(
     them although no name says so. A test *named* for a file
     (:func:`paired_test_names`) still pairs, but only when the graph agrees
     or cannot say: the named test imports the file directly or through a
-    re-export barrel, has no resolved dependency at all, or there is no graph.
+    re-export barrel, has no resolved dependency inside the repository (its
+    test framework, other third-party modules and framework anchors do not
+    count: :func:`~repowise.core.ids.is_external`), or there is no graph.
     Otherwise the name is a collision - ``distill/test_engine.py`` tests the
     distill engine, not ``health/engine.py`` - and does not pair.
 
@@ -105,6 +109,13 @@ def files_with_paired_tests(
     file have a test", and against this repository's stored line coverage
     direct-import pairing finds 71.6% of covered files at 98.9% precision
     where names alone found 34.6% at 100%.
+
+    Last, a file a test loads through its own package pairs too
+    (:func:`~.walk.package_walk`), and so does one a test reaches through
+    code that calls into it (:func:`~.walk.use_walk`): the same bar
+    ``pr_blast.file_tests`` clears before it calls a file untested, so the
+    health surfaces and the review surfaces agree about which files have no
+    test.
     """
     barrel_deps: dict[str, set[str]] = {}
 
@@ -134,7 +145,13 @@ def files_with_paired_tests(
         if graph is None:
             return True
         imported = deps[test] if test in deps else imports_of(test)
-        return not imported or path in imported
+        # Code the repository does not own (``is_external``: a third-party
+        # module such as ``external:vitest`` or ``external:node:fs``, or a
+        # framework anchor such as ``framework:angular``) says nothing about
+        # which of the repository's files the test exercises: only a
+        # dependency inside the repository can contradict the name.
+        inside = {dep for dep in imported if not is_external(dep)}
+        return not inside or path in inside
 
     for path in paths:
         if path in paired:
@@ -142,4 +159,30 @@ def files_with_paired_tests(
         candidates = (c for name in paired_test_names(path) for c in by_name.get(name, ()))
         if any(c != path and named_pair_holds(c, path) for c in candidates):
             paired.add(path)
+    rest = [p for p in paths if p not in paired]
+    if graph is not None and rest:
+        paired |= _package_reached(graph, rest, test_files)
     return paired
+
+
+def _package_reached(graph: Any, paths: list[str], test_files: Collection[str]) -> set[str]:
+    """The *paths* a test loads through their own package, or reaches through code calling into them.
+
+    The last two tiers ``pr_blast.file_tests`` runs before it calls a file
+    untested (:func:`~.walk.package_walk`, :func:`~.walk.use_walk`), over the
+    in-memory graph.
+    """
+    from dataclasses import replace
+
+    from .maps import build_walk_maps, run
+    from .walk import package_walk, use_walk
+
+    try:
+        maps = replace(build_walk_maps(graph), test_files=frozenset(test_files))
+    except Exception:
+        return set()
+    found = set(run(package_walk(paths, test_files, rank=False), maps))
+    rest = [p for p in paths if p not in found]
+    if rest:
+        found |= set(run(use_walk(rest, test_files, rank=False), maps))
+    return found

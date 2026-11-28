@@ -14,7 +14,7 @@ import structlog
 
 from repowise.core.co_change import parse_partners
 from repowise.core.ingestion.git_indexer import GitIndexTier
-from repowise.core.pipeline.progress import ProgressCallback, emit_warning
+from repowise.core.pipeline.progress import ProgressCallback, emit_phase_failed, emit_warning
 
 from ._common import _phase_done
 
@@ -24,7 +24,8 @@ logger = structlog.get_logger(__name__)
 def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """Strip in-memory-only signals from git metadata dicts.
 
-    The per-file ``BlameIndex`` (attached under ``"blame_index"``) is consumed
+    The per-file ``BlameIndex`` (attached under ``"blame_index"``, or
+    ``"history_blame_index"`` for a file blamed for function owners only) is consumed
     by the health biomarkers (``function_hotspot`` / ``code_age_volatility``)
     and is never meant to round-trip through the DB or JSON artifacts —
     serializing it raises "Object of type BlameIndex is not JSON serializable".
@@ -36,6 +37,7 @@ def drop_transient_git_signals(git_metadata_list: list[dict]) -> None:
     """
     for meta in git_metadata_list:
         meta.pop("blame_index", None)
+        meta.pop("history_blame_index", None)
 
 
 def label_co_change_structure(graph_builder: Any, git_meta_map: dict[str, dict]) -> int:
@@ -71,8 +73,14 @@ async def _run_git_indexing(
 
     Returns (git_summary, git_metadata_list, git_meta_map).
     """
+    # Announced before the repo-wide commit walk, which runs before the file
+    # count is known and can take minutes on a long history; ``_on_start``
+    # re-announces with the total.
+    if progress:
+        progress.on_phase_start("git", None)
     try:
         from repowise.core.ingestion.git_indexer import GitIndexer
+        from repowise.core.issues.sync import stored_tracker_fixes
 
         git_indexer = GitIndexer(
             repo_path,
@@ -83,9 +91,15 @@ async def _run_git_indexing(
             # The indexing pass proper, and the one that knows the repo's
             # excludes, so this is where a git episode may be recorded.
             record_episodes=True,
+            # Linked bug issues a re-index of an existing store already holds.
+            tracker_fixes=await stored_tracker_fixes(repo_path),
         )
 
+        started = False
+
         def _on_start(total: int) -> None:
+            nonlocal started
+            started = True
             if progress:
                 progress.on_phase_start("git", total)
 
@@ -119,8 +133,14 @@ async def _run_git_indexing(
             on_co_change_done=_on_co_change_done,
             on_warning=_on_warning,
             timings=getattr(progress, "table", None),
+            progress=progress,
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
+        # No repository or no tracked files: the early row closes without a
+        # done line claiming history was indexed. The done report still runs
+        # for the phase's timing and hooks.
+        if not started:
+            emit_phase_failed(progress, "git")
         _phase_done(progress, "git")
         # co_change phase already closed inside the done-callback above;
         # call again only as a safety-net in case the callback was never
@@ -131,6 +151,7 @@ async def _run_git_indexing(
     except Exception as exc:
         if progress:
             progress.on_message("warning", f"Git indexing skipped: {exc}")
+        emit_phase_failed(progress, "git")
         _phase_done(progress, "git")
         _phase_done(progress, "co_change")
         return None, [], {}

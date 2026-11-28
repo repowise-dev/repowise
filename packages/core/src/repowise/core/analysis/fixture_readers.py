@@ -22,10 +22,12 @@ the file or the tree, or when no test code does (a glob or a computed path).
 
 from __future__ import annotations
 
+import functools
 import io
+import posixpath
 import re
 import tokenize
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from pathlib import PurePosixPath
 
 from ..test_paths import is_test_related_path
@@ -106,6 +108,438 @@ def with_data_file_readers(
     return out
 
 
+#: File stems naming an entry point rather than the file; its directory carries the name.
+_ENTRY_STEMS = frozenset({"main", "index", "__init__", "__main__", "mod", "lib"})
+
+
+def helper_readers(
+    helpers: Collection[str],
+    test_files: Collection[str],
+    read: Callable[[str], str | None],
+) -> dict[str, list[str]]:
+    """``{helper: the test files that may start it by path}`` for each of *helpers*.
+
+    A test helper no test imports is used, if at all, by a test file naming it:
+    a subprocess, a fixture runner, a mock, a case list. Its readers are the test
+    files (code or data) naming its file name or its name up to the first dot
+    (a module path, a fixture runner adding ``.input.tsx``), comments aside, as
+    :func:`_names_helper` reads a name; those
+    writing its directory or the one above as a path (``"typing"``,
+    ``./cmd/tool``), a listing; the runnable tests under the directory above it,
+    which may list it unnamed; and code beside it that lists its directory. An
+    empty list means no test file can reach it.
+
+    A helper a runner or build config at or above its directory names (an
+    alias, a setup file, a plugin), or one at the repository root, is left out,
+    so its users stay unknown. Ceiling: a module outside the test trees that a
+    test imports and that starts the helper by path is not read. So is every
+    helper when a test file cannot be read: it may be the one naming it.
+    """
+    names = {
+        h: _helper_names(h)
+        for h in helpers
+        if str(PurePosixPath(h).parent) != "." and not _configured(h, read)
+    }
+    wanted = {n.lower() for words, dirs in names.values() for n in (*words, *dirs)}
+    texts = _naming_texts(test_files, wanted, read)
+    if texts is None:
+        return {}
+    out: dict[str, list[str]] = {h: [] for h in names}
+    pairs = _ReaderIndex(names)
+    for p in sorted(test_files):  # file by file, so its per-text reads are cached once
+        text = texts.get(p)
+        runs = None if text is None else _run_starts(text)
+        for h in pairs.helpers_for(p, text, runs):
+            if p != h and _reads(p, h, names[h], texts, runs):
+                out[h].append(p)
+    return out
+
+
+#: A run of the characters a name's edges are told apart by in :func:`_names_helper`
+#: and :func:`_writes_dir`.
+_RUN = re.compile(r"[\w\-]+")
+
+
+class _ReaderIndex:
+    """Which helpers a test file can reach at all, so :func:`_reads` runs only for those.
+
+    Checking every test file against every helper is tests x helpers regex scans
+    over whole texts, which dominated indexing on a large suite. A pair is skipped
+    only where :func:`_reads` must be false: the file is not under the helper's
+    directory or the one above, and its text lacks one of the ``[\\w-]`` runs of
+    every name the helper is written by. Each run of a name is bounded by the
+    name's own separators or by the match's ``(?<![\\w\\-])``/``(?![\\w\\-])``
+    edges, so a text naming it holds each run whole.
+    """
+
+    def __init__(self, names: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> None:
+        self.near: dict[str, list[str]] = {}
+        self.parent: dict[str, list[str]] = {}
+        self.by_run: dict[str, list[tuple[frozenset[str], str]]] = {}
+        self.always: list[str] = []
+        for h, (_, dirs) in names.items():
+            parent, near = _helper_dirs(h)
+            self.near.setdefault(str(near), []).append(h)
+            self.parent.setdefault(str(parent), []).append(h)
+            # The words as _names_helper and _writes_dir spell them: ``ΟΣ.py`` lowercased
+            # whole is ``οσ.py``, its stem alone ``ος``.
+            for name in {*_named_by(h)[2], *(d.lower() for d in dirs)}:
+                runs = _RUN.findall(name)
+                if runs:
+                    self.by_run.setdefault(runs[0], []).append((frozenset(runs), h))
+                else:
+                    self.always.append(h)
+
+    def helpers_for(
+        self, p: str, text: str | None, runs: Mapping[str, list[int]] | None
+    ) -> set[str]:
+        """The helpers test file *p* (code *text* and its :func:`_run_starts` *runs*,
+        ``None`` when unread) may reach."""
+        from .test_selection import is_runnable_test
+
+        dirs = [p[:i] for i, c in enumerate(p) if c == "/"]
+        found: set[str] = set()
+        near = [h for d in dirs for h in self.near.get(d, ())]
+        if near and is_runnable_test(p):
+            found.update(near)
+        if text is None or runs is None:
+            return found
+        beside = [h for d in dirs for h in self.parent.get(d, ())]
+        if beside and _LISTING.search(text):
+            found.update(beside)
+        return found | self._named_in(runs)
+
+    def _named_in(self, runs: Mapping[str, list[int]]) -> set[str]:
+        """The helpers a text holding *runs* may name: every run of one of its names is there."""
+        found = set(self.always)
+        for run in runs:
+            found.update(
+                h for needed, h in self.by_run.get(run, ()) if all(map(runs.__contains__, needed))
+            )
+        return found
+
+
+def _naming_texts(
+    test_files: Collection[str], wanted: Collection[str], read: Callable[[str], str | None]
+) -> dict[str, str] | None:
+    """``{test file: its code text}`` for each holding one of *wanted* or a listing;
+    ``None`` when one cannot be read. Python's dotted names are joined again."""
+    texts: dict[str, str] = {}
+    for p in sorted(test_files):
+        raw = read(p)
+        if raw is None:
+            return None
+        text = raw.lower()
+        if any(map(text.__contains__, wanted)) or _LISTING.search(text):
+            code = code_text(p, text)
+            texts[p] = _join_dots(code) if p.endswith(".py") else code
+    return texts
+
+
+def _reads(
+    p: str,
+    helper: str,
+    found: tuple[tuple[str, ...], tuple[str, ...]],
+    texts: Mapping[str, str],
+    runs: Mapping[str, list[int]] | None = None,
+) -> bool:
+    """Whether test file *p* (its text's :func:`_run_starts` *runs*, if held) may
+    reach *helper* (:func:`helper_readers`)."""
+    from .test_selection import is_runnable_test
+
+    parent, near = _helper_dirs(helper)
+    if p.startswith(f"{near}/") and is_runnable_test(p):
+        return True
+    text = texts.get(p)
+    if text is None:
+        return False
+    if p.startswith(f"{parent}/") and _LISTING.search(text):
+        return True
+    _, dirs = found
+    return _names_helper(text, helper, reader=p, runs=runs) or any(
+        _writes_dir(text, d, runs) for d in dirs
+    )
+
+
+@functools.lru_cache(maxsize=4096)
+def _helper_dirs(helper: str) -> tuple[PurePosixPath, PurePosixPath]:
+    """*helper*'s directory and the one above it (its own directory at the top level)."""
+    parent = PurePosixPath(helper).parent
+    return parent, parent.parent if str(parent.parent) != "." else parent
+
+
+#: Code listing a directory, which reaches a file it never names.
+_LISTING = re.compile(r"\b(?:glob|rglob|listdir|scandir|iterdir|walk|readdir(?:sync)?)\b")
+
+
+#: Configs that can hand a test a helper without an import: an alias, a setup
+#: file, a plugin. Ceiling: probed by name in each directory above the helper,
+#: so a config under another name (``tsconfig.e2e.json``) is not read; listing
+#: the checkout's configs is the upgrade.
+_CONFIG_NAMES = (
+    "package.json",
+    "tsconfig.json",
+    "tsconfig.spec.json",
+    "tsconfig.test.json",
+    "pytest.ini",
+    "pyproject.toml",
+    "setup.cfg",
+    "tox.ini",
+    "karma.conf.js",
+    *(
+        f"{tool}.{kind}.{ext}"
+        for tool in ("vitest", "vite", "jest", "playwright")
+        for kind in ("config", "workspace")
+        for ext in ("ts", "js", "mts", "mjs", "cts", "cjs", "json")
+    ),
+)
+
+
+def _configured(helper: str, read: Callable[[str], str | None]) -> bool:
+    """Whether a config at or above *helper*'s directory spells its file or its directory.
+
+    A bare word does not count: ``client`` in an ``aiohttp.client`` warning filter
+    or a project description names something else.
+    """
+    folder = PurePosixPath(helper).parent
+    for d in (folder, *folder.parents):
+        for name in _CONFIG_NAMES:
+            text = read(name if str(d) == "." else f"{d}/{name}")
+            if text and (
+                _names_helper(text := text.lower(), helper, reader=None, at=d)
+                or _spells_dir(text, folder, d)
+            ):
+                return True
+    return False
+
+
+#: Characters a written path is made of, up to the name it ends in.
+_PATH_TAIL = re.compile(r"[\w.\-/\\@~#$]*$")
+#: Characters a dotted module path is made of, up to the name it ends in.
+_MODULE_TAIL = re.compile(r"[\w.]*$")
+#: A written path holding at least one slash.
+_PATH_TOKEN = re.compile(r"(?<![\w.\-@~#$])[\w.\-@~#$]*(?:[/\\][\w.\-@~#$]*)+")
+
+
+def _names_helper(
+    text: str,
+    helper: str,
+    reader: str | None,
+    at: PurePosixPath | None = None,
+    runs: Mapping[str, list[int]] | None = None,
+) -> bool:
+    """Whether lowercased *text* names *helper* by its file name or stem.
+
+    A name counts when written as a path whose directories line up with the
+    helper's (``autobahn/client/client.py``, ``../client``), or as a module path
+    resolving to it (``tests.autobahn.client.client``, ``.client`` beside it). A
+    different dotted name (``aiohttp.client``, ``self.client``) does not, unless
+    its first name is an alias the text binds with ``as``. A bare stem may still be
+    an import of this exact file (``from . import client``), so it counts for a
+    test file *reader*; in a config (*reader* ``None``, in directory *at*) only a bare
+    file name does, and a relative path counts when it resolves to the helper from *at*.
+    *runs* is the text's :func:`_run_starts` when the caller holds it.
+    """
+    path, stem, words = _named_by(helper)
+    module = (*path.parts[:-1], stem)
+    for word in words:
+        target = path.parts if word == path.name else module
+        for start in _word_starts(text, word, runs):
+            before = text[max(0, start - _WINDOW) : start]
+            if before.endswith(("/", "\\")):
+                found = _path_refers(before, word, target, at)
+            elif before.endswith("."):
+                found = _module_refers(before, text, word, target, reader)
+            else:  # a bare word, or a file name in a config
+                found = reader is not None or (word == path.name and "." in word)
+            if found:
+                return True
+    return False
+
+
+def _word_starts(
+    text: str, word: str, runs: Mapping[str, list[int]] | None = None
+) -> Iterator[int]:
+    """Where *word* stands alone in *text*, in order, as ``re.finditer`` finds it (no overlaps).
+
+    With *runs*, the text's :func:`_run_starts`, they are read off it: the many
+    helpers asking one text about a common name (``models``, ``tests``) each pay
+    a lookup, not a scan.
+    """
+    first = _RUN.match(word)
+    if runs is None or first is None:
+        for m in re.finditer(rf"(?<![\w\-]){re.escape(word)}(?![\w\-])", text):
+            yield m.start()
+        return
+    resume = 0
+    for start in _alone(text, word, runs.get(first.group(), ())):
+        if start >= resume:
+            yield start
+            resume = start + len(word)
+
+
+def _alone(text: str, word: str, starts: Iterable[int]) -> Iterator[int]:
+    """Those of *starts*, where *word*'s first ``[\\w-]`` run opens a run of *text*,
+    at which *word* stands alone: no ``[\\w-]`` on either side, overlaps included.
+
+    Where the word stands alone its first run is a whole run of the text, so no
+    other start can hold it.
+    """
+    end = len(word)
+    return (s for s in starts if text.startswith(word, s) and not _RUN.match(text, s + end))
+
+
+def _run_starts(text: str) -> dict[str, list[int]]:
+    """``{[\\w-] run: where it starts}`` for every maximal run in *text*."""
+    out: dict[str, list[int]] = {}
+    for m in _RUN.finditer(text):
+        out.setdefault(m.group(), []).append(m.start())
+    return out
+
+
+def _named_by(helper: str) -> tuple[PurePosixPath, str, tuple[str, ...]]:
+    """*helper*'s lowercased path, stem, and the words :func:`_names_helper` looks for.
+
+    The whole path is lowercased before it is split, as a name in a text is.
+    """
+    path = PurePosixPath(helper.lower())
+    stem = path.name.split(".")[0]
+    words = (path.name,) if stem in _ENTRY_STEMS else (path.name, stem)
+    return path, stem, tuple(dict.fromkeys(w for w in words if w))
+
+
+#: How far back a path or module path written before a name is read.
+_WINDOW = 256
+
+
+def _join_dots(text: str) -> str:
+    """Python text :func:`code_text` tokenized, with its dotted names joined again.
+
+    ``aiohttp . client`` reads ``aiohttp.client``; ``from . . client`` reads
+    ``from ..client``, a relative import.
+    """
+    pieces = _STRING.split(text)
+    for i in range(0, len(pieces), 2):  # the code between string literals, which stay as written
+        code = re.sub(r"\.\s+(?=[\w.])", ".", pieces[i])
+        code = re.sub(r"([)\]])\s+(?=\.)", r"\1", code)
+        pieces[i] = re.sub(
+            r"\b(\w+)\s+(?=\.)", lambda m: m[0] if m[1] in ("from", "import") else m[1], code
+        )
+    return "".join(pieces)
+
+
+#: A one-line string literal: its text is as written, not tokens joined by spaces.
+_STRING = re.compile(r"""("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*')""")
+
+
+@functools.lru_cache(maxsize=8)
+def _aliases(text: str) -> frozenset[str]:
+    """The names *text* binds with ``as``."""
+    return frozenset(re.findall(r"\bas\s+(\w+)", text))
+
+
+def _path_refers(
+    before: str, word: str, target: tuple[str, ...], at: PurePosixPath | None
+) -> bool:
+    """Whether *word*, ending the path written at the end of *before*, is the file at *target*.
+
+    In a config in directory *at*, a relative path resolves from there.
+    """
+    written = _PATH_TAIL.findall(before)[0].replace("\\", "/")
+    if at is not None and written.startswith("."):
+        return posixpath.normpath(f"{at}/{written}{word}".lower()) == "/".join(target)
+    return _tail_matches((*_path_parts(written), word), target)
+
+
+def _module_refers(
+    before: str, text: str, word: str, target: tuple[str, ...], reader: str | None
+) -> bool:
+    """Whether *word*, ending the dotted name at the end of *before*, is the module at *target*."""
+    chain = _MODULE_TAIL.findall(before)[0]
+    names = [n for n in chain.split(".") if n]
+    dots = len(chain) - len(chain.lstrip("."))
+    if not dots:
+        # ``h.client`` after ``import tests.autobahn.client as h``: an alias may be the package.
+        return _tail_matches((*names, word), target) or names[0] in _aliases(text)
+    start = before[: len(before) - len(chain)]
+    if start and not start[-1].isspace() and start[-1] not in "\"'`(":
+        return False  # ``f().client``, ``x?.client``: an attribute, not a module path
+    if reader is None:
+        return False  # no runner reads a module path relative to its config
+    base = PurePosixPath(reader.lower()).parent
+    for _ in range(dots - 1):
+        base = base.parent
+    return (*(p for p in base.parts if p != "."), *names, word) == target
+
+
+def _path_parts(written: str) -> tuple[str, ...]:
+    """The directory names of a *written* path, without ``.``, ``..`` or a leading alias."""
+    parts = [c for c in re.split(r"[/\\]", written) if c not in ("", ".", "..")]
+    if parts and not (parts[0][0].isalnum() or parts[0][0] == "_"):
+        parts = parts[1:]  # an alias (``@/``, ``~/``, ``$lib/``) stands for some directory
+    return tuple(parts)
+
+
+def _tail_matches(parts: tuple[str, ...], target: tuple[str, ...]) -> bool:
+    """Whether *parts* and *target* agree over their common trailing length."""
+    k = min(len(parts), len(target))
+    return k > 0 and parts[-k:] == target[-k:]
+
+
+def _spells_dir(text: str, folder: PurePosixPath, at: PurePosixPath) -> bool:
+    """Whether lowercased *text*, a config in directory *at*, writes *folder* as a path.
+
+    ``src/test/helpers``, or a relative ``./test/helpers`` resolving to it from *at*
+    (an alias target), does. A lone ``tests/`` in a glob or a test path list does
+    not: it names where tests live. A path shorter than *folder* matches on its
+    trailing names, as it may be written from a root config or a base directory.
+    Ceiling: an alias target written as a lone name (tsconfig ``"helpers/*"``) is not
+    read, so a test importing through that alias by another name stays unseen.
+    """
+    target = tuple(p.lower() for p in folder.parts)
+    for m in _PATH_TOKEN.finditer(text):
+        written = m.group().replace("\\", "/")
+        if written.startswith("."):
+            if posixpath.normpath(f"{at}/{written}".lower()).strip("/") == "/".join(target):
+                return True
+        elif len(parts := _path_parts(written)) >= 2 and _tail_matches(parts, target):
+            return True
+    return False
+
+
+def _helper_names(helper: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """*helper*'s file name and stem (unless an entry-point stem), and the names of
+    its directory and the one above."""
+    path = PurePosixPath(helper)
+    stem = path.name.split(".")[0]
+    words = (path.name,) if stem.lower() in _ENTRY_STEMS else (path.name, stem)
+    dirs = (path.parent.name, path.parent.parent.name)
+    return tuple(dict.fromkeys(w for w in words if w)), tuple(d for d in dirs if d)
+
+
+def _writes_dir(text: str, name: str, runs: Mapping[str, list[int]] | None = None) -> bool:
+    """Whether *text* writes directory *name* as a path: next to a quote or a slash.
+
+    ``from typing import`` names a module, ``"typing"`` or ``tests/typing/`` a directory.
+    *runs* is the text's :func:`_run_starts` when the caller holds it.
+    """
+    if not name:
+        return False
+    first = _RUN.match(name := name.lower())
+    if runs is None or first is None:
+        n = re.escape(name)
+        return re.search(rf"[\"'/\\]{n}(?![\w\-])|(?<![\w\-]){n}[\"'/\\]", text) is not None
+    end = len(name)
+    return any(
+        (s > 0 and text[s - 1] in _PATH_EDGES) or text[s + end : s + end + 1] in _PATH_EDGES
+        for s in _alone(text, name, runs.get(first.group(), ()))
+    )
+
+
+#: The characters next to which a written name is a path (:func:`_writes_dir`).
+_PATH_EDGES = frozenset("\"'/\\")
+
+
 def _stand_ins(namer: str, readers: Mapping[str, list[str]]) -> list[str]:
     root = fixture_root(namer)
     return readers.get(root, [namer]) if root else [namer]
@@ -134,14 +568,27 @@ def _texts(
     read: Callable[[str], str | None],
     holding: Callable[[Collection[str]], Collection[str] | None] | None,
 ) -> dict[str, str]:
-    """The lowercased code text of each file that may name one of *roots*' trees."""
+    """The lowercased code text of each file that may name one of *roots*' trees.
+
+    Code outside the test trees counts only when it names a tree's whole path
+    (:func:`_tree_readers`), so one whose raw text holds no such path skips the
+    costly :func:`code_text` pass. That pass only drops text or spaces tokens
+    apart, so it cannot make a path without whitespace appear.
+    """
     names = {n for r in roots for n in _dir_names(r)}
     held = holding(names) if holding else None
-    return {
-        p: code_text(p, read(p) or "").lower()
-        for p in sorted({*test_code, *other_code})
-        if held is None or p in held
-    }
+    tests = set(test_code)
+    paths = [r.lower() for r in roots]
+    by_path = not any(c.isspace() for r in paths for c in r)
+    out: dict[str, str] = {}
+    for p in sorted({*tests, *other_code}):
+        if held is not None and p not in held:
+            continue
+        text = read(p) or ""
+        if by_path and p not in tests and not any(map(text.lower().__contains__, paths)):
+            continue
+        out[p] = code_text(p, text).lower()
+    return out
 
 
 def _tree_readers(

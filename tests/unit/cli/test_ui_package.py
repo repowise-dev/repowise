@@ -113,6 +113,7 @@ def test_advanced_config_default_keys_no_fast(monkeypatch: pytest.MonkeyPatch) -
         "concurrency": 10,
         "reasoning": "auto",
         "embedder": "mock",
+        "embedder_default": "mock",
         "test_run": False,
         "onboarding": True,
         "wiki_style": DEFAULT_STYLE,

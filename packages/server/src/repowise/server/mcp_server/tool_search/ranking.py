@@ -6,18 +6,27 @@ import asyncio
 import contextlib
 import logging
 import re
+from collections.abc import Container, Mapping
 
-from repowise.core.test_paths import is_test_path, is_test_related_path
+from repowise.core.ingestion.models import VALUE_SYMBOL_KINDS
+from repowise.core.test_paths import is_test_related_path
 
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_search as _pkg
 from repowise.server.mcp_server._helpers import vector_search_timeout_s
+from repowise.server.mcp_server._origin_rank import (
+    TEST_QUERY_RE,
+    demoted_origins,
+    is_demoted_row,
+    is_test_query,
+)
 from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
 from repowise.server.mcp_server._query_shape import (
     _DECISION_DOWNWEIGHT,
     _MIN_RELEVANCE_SCORE,
     _is_why_shaped,
 )
+from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 
 _log = logging.getLogger("repowise.mcp.search")
 
@@ -35,38 +44,50 @@ def _downweight_decisions(output: list[dict], query: str) -> None:
 # are rarely a better first Read: demote them unless the query is about tests.
 _TEST_DOWNWEIGHT = 0.6
 
-_TEST_QUERY_RE = re.compile(
-    r"\b(test|tests|testing|tested|unit[\s-]?test|integration[\s-]?test|pytest|fixture|mock|spec)\b",
-    re.IGNORECASE,
-)
+_TEST_QUERY_RE = TEST_QUERY_RE
 
 
 def _is_test_query(query: str) -> bool:
     """True when the query is explicitly about tests, so test pages rank naturally."""
-    return bool(_TEST_QUERY_RE.search(query))
+    return is_test_query(query)
 
 
-def _is_test_page(item: dict) -> bool:
-    """True when a hit is a whole-file row for a test file.
+_TEST_ORIGIN = frozenset({"test"})
 
-    Tests only, deliberately not test support: a ``conftest.py`` or a fixture
-    module is often exactly what the person searching wanted, so it keeps its
-    rank. The ``kind`` filter counts both (see :func:`_classify_hit_kind`) —
-    asking for tests and asking to rank tests lower are different questions.
+
+def _is_test_page(item: dict, origins: Mapping[str, str] | None = None) -> bool:
+    """True when a hit is a whole-file row for test code (``code_origin`` test).
+
+    Test support (a mock, a fixture module, ``conftest.py``) counts: a query
+    that wants one names it ("mock", "fixtures"), which makes it a test query
+    and ranks every test row naturally. *origins* holds the stored origins.
     """
-    return item.get("page_type") in FILE_ROW_TYPES and is_test_path(item.get("target_path") or "")
+    return is_demoted_row(item, _TEST_ORIGIN, origins)
 
 
-def _downweight_test_pages(output: list[dict], query: str) -> None:
-    """Scale test file_page relevance in place unless the query is about tests."""
-    if _is_test_query(query):
-        return
+
+def _downweight_test_pages(
+    output: list[dict], query: str, origins: Mapping[str, str] | None = None
+) -> None:
+    """Scale test, generated and vendored file rows in place unless the query asks for them."""
+    demoted = demoted_origins(query)
     for item in output:
-        if item.get("relevance_score") and _is_test_page(item):
+        if item.get("relevance_score") and is_demoted_row(item, demoted, origins):
             item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
-def _sort_demoting_noise(output: list[dict], query: str) -> None:
+_REPO_WIDE_PAGE_TYPES = frozenset({"repo_overview", "architecture_diagram", "onboarding"})
+_REPO_WIDE_QUERY = re.compile(
+    r"\b(?:overview|architecture|onboarding|getting\s+started|how\s+it\s+works)\b", re.IGNORECASE
+)
+
+
+def _sort_demoting_noise(
+    output: list[dict],
+    query: str,
+    minor: Container[str] = frozenset(),
+    origins: Mapping[str, str] | None = None,
+) -> None:
     """Sort by relevance, ranking retrieval noise below every real page.
 
     Two classes crowd the top ranks on a plain implementation query and are
@@ -76,19 +97,51 @@ def _sort_demoting_noise(output: list[dict], query: str) -> None:
     - decision records — short dense titles win cosine similarity by a margin
       wider than the multiplicative down-weight. Rationale questions are
       get_why's territory, so a why-shaped query ranks them naturally instead.
-    - test file pages — a test is rarely a better first Read than the code it
-      exercises. A query explicitly about tests ranks them naturally instead.
+    - test, generated and vendored file rows (``code_origin``) — rarely a
+      better first Read than the code that ships. A query asking for that kind
+      of file (tests, mocks, generated code) ranks them naturally instead.
+    - *minor* spotlight page ids (:func:`_minor_spotlights`) — a page about one
+      constant or one-line symbol that only full-text search matched shares the
+      query's words, not its subject.
+    - repo-wide pages (overview, getting started) on an index with no embedder:
+      they hold most of the repo's common words, so keyword matching ranks them
+      on any question (#5049). A query asking for an overview ranks them naturally.
     """
     why = _is_why_shaped(query)
-    test_focused = _is_test_query(query)
+    demoted = demoted_origins(query)
+    repo_wide_noise = _pkg.semantic_search_state() is False and not _REPO_WIDE_QUERY.search(query)
 
     def key(item: dict) -> tuple:
         pt = item.get("page_type")
         is_decision = (not why) and pt == "decision_record"
-        is_test = (not test_focused) and _is_test_page(item)
-        return (1 if (is_decision or is_test) else 0, -(item.get("relevance_score") or 0.0))
+        is_test = is_demoted_row(item, demoted, origins)
+        is_minor = item.get("page_id") in minor
+        is_repo_wide = repo_wide_noise and pt in _REPO_WIDE_PAGE_TYPES
+        noise = is_decision or is_test or is_minor or is_repo_wide
+        return (1 if noise else 0, -(item.get("relevance_score") or 0.0))
 
     output.sort(key=key)
+
+
+async def _minor_spotlights(session, output: list[dict], query: str, repo_id: str) -> set[str]:
+    """Page ids of full-text-only spotlights on a value or one-line symbol the query does not name."""
+    words = set(re.findall(r"[\w$]+", query.lower()))
+    pending: dict[tuple[str, str], str] = {}
+    for item in output:
+        if item.get("page_type") != "symbol_spotlight" or item.get("sources") != ["fts"]:
+            continue
+        path, _, name = item["page_id"].partition(":")[2].partition("::")
+        if name and name.lower() not in words:
+            pending[(path, name)] = item["page_id"]
+    owners = await spotlight_owners(session, repo_id, set(pending))
+    return {pending[key] for key, sym in owners.items() if _is_minor_symbol(sym)}
+
+
+def _is_minor_symbol(sym) -> bool:
+    """A stored value, or a body on one line."""
+    if sym.kind in VALUE_SYMBOL_KINDS:
+        return True
+    return sym.start_line is not None and sym.end_line is not None and sym.end_line <= sym.start_line
 
 
 def _norm_decision_title(title: str) -> str:

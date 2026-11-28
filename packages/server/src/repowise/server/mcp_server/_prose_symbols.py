@@ -47,6 +47,7 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud.tombstoned_pages import deleted_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.test_paths import is_test_path, is_test_related_path
@@ -56,7 +57,7 @@ from repowise.server.mcp_server._helpers import (
     _get_repo,
     is_excluded,
 )
-from repowise.server.mcp_server._page_paths import PAGELESS_FILE
+from repowise.server.mcp_server._page_paths import PAGELESS_FILE, in_scope
 from repowise.server.mcp_server._query_terms import _MAX_TERMS, STOPWORDS
 from repowise.server.mcp_server._query_terms import content_terms as content_terms
 from repowise.server.mcp_server.tool_search_symbols import (
@@ -64,7 +65,6 @@ from repowise.server.mcp_server.tool_search_symbols import (
     _symbol_kind_for_request_kind,
     _symbol_result,
     _tokens,
-    _tombstoned_paths,
     file_path_index,
 )
 
@@ -112,6 +112,7 @@ class _SymbolTextIndex(NamedTuple):
 
     symbol_ids: tuple[str, ...]
     names: tuple[str, ...]
+    paths: tuple[str, ...]
     # Lowercased name, qualified name and path, space-joined (no term has a
     # space, so none can match across two fields).
     haystacks: tuple[str, ...]
@@ -143,26 +144,34 @@ async def _symbol_text_index(session, repo_id: str) -> _SymbolTextIndex:
         return _SymbolTextIndex(
             tuple(row[0] for row in rows),
             tuple(row[1] or "" for row in rows),
+            tuple(row[3] or "" for row in rows),
             tuple(f"{row[1] or ''} {row[2] or ''} {row[3] or ''}".lower() for row in rows),
             {word: tuple(pos) for word, pos in postings.items()},
         )
 
-    return await per_index(session, repo_id, "prose_symbol_text", build)
+    return await per_index(session, repo_id, "prose_symbol_text", build, persist=True)
 
 
-def _candidates_for_term(index: _SymbolTextIndex, term: str) -> tuple[list[int], bool]:
+def _candidates_for_term(
+    index: _SymbolTextIndex, term: str, scope: str | None = None
+) -> tuple[list[int], bool]:
     """Up to :data:`_PER_TERM_CANDIDATES` symbols whose identity mentions *term*.
 
     Returns ``(positions, saturated)``. Shorter names first: a term is a larger
     share of a short name, so ``persist`` identifies ``persist_pages`` far
     more strongly than it identifies ``_persist_symbols_for_changed_files``,
-    and the window should not be spent on the latter.
+    and the window should not be spent on the latter. A ``scope`` spends the
+    window on symbols under it; whether the term is saturated (too common to
+    tell symbols apart) is still judged over the whole repository, so a small
+    scope never turns a common word into a strong one.
     """
     needle = term.lower()
     hits = [i for i, text in enumerate(index.haystacks) if needle in text]
+    saturated = len(hits) >= _PER_TERM_CANDIDATES
+    if scope:
+        hits = [i for i in hits if in_scope(index.paths[i], scope)]
     hits.sort(key=lambda i: len(index.names[i]))
-    window = hits[:_PER_TERM_CANDIDATES]
-    return window, len(window) >= _PER_TERM_CANDIDATES
+    return hits[:_PER_TERM_CANDIDATES], saturated
 
 
 def _covered_positions(
@@ -191,7 +200,9 @@ def _covered_positions(
     )
 
 
-def _name_cover_candidates(index: _SymbolTextIndex, terms: list[str]) -> list[int]:
+def _name_cover_candidates(
+    index: _SymbolTextIndex, terms: list[str], scope: str | None = None
+) -> list[int]:
     """Symbols whose name the query's words mostly spell (see :func:`_name_covered`).
 
     The per-term windows rank by name length, so a long name that combines two
@@ -199,6 +210,8 @@ def _name_cover_candidates(index: _SymbolTextIndex, terms: list[str]) -> list[in
     asks for the combination directly, from the inverted name words.
     """
     hits = _covered_positions(index.postings, lambda i: len(_name_words(index.names[i])), terms)
+    if scope:
+        hits = Counter({i: n for i, n in hits.items() if in_scope(index.paths[i], scope)})
     covered = sorted(hits, key=lambda i: (-hits[i], len(index.names[i]), index.symbol_ids[i]))
     return covered[:_PER_TERM_CANDIDATES]
 
@@ -296,6 +309,7 @@ async def search_symbols_by_terms(
     *,
     kind: str | None = None,
     max_terms: int | None = None,
+    scope: str | None = None,
 ) -> list[dict]:
     """Rank indexed symbols against the content words of a question.
 
@@ -303,7 +317,8 @@ async def search_symbols_by_terms(
     :func:`tool_search_symbols.search_symbols_single`, which needs the caller
     to have typed an identifier. Returns the same result shape, so a caller
     can interleave the two without special-casing either. ``max_terms`` keeps
-    only that many of *terms*, the rarest among symbol names.
+    only that many of *terms*, the rarest among symbol names. ``scope`` keeps
+    only symbols under that directory.
     """
     terms = [t for t in terms if t]
     if not terms:
@@ -317,12 +332,12 @@ async def search_symbols_by_terms(
         matched: dict[str, set[str]] = {}
         saturated: set[str] = set()
         for term in terms:
-            window, is_saturated = _candidates_for_term(index, term)
+            window, is_saturated = _candidates_for_term(index, term, scope)
             if is_saturated:
                 saturated.add(term)
             for i in window:
                 matched.setdefault(index.symbol_ids[i], set()).add(term)
-        for i in _name_cover_candidates(index, terms):
+        for i in _name_cover_candidates(index, terms, scope):
             matched.setdefault(index.symbol_ids[i], set())
         if not matched:
             return []
@@ -341,14 +356,14 @@ async def search_symbols_by_terms(
             )
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
-        tombstoned = await _tombstoned_paths(
+        deleted = await deleted_file_paths(
             session, repository.id, {r.file_path for r in by_id.values()}
         )
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, WikiSymbol]] = []
     for symbol_id, row in by_id.items():
-        if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
+        if is_excluded(row.file_path, spec) or row.file_path in deleted:
             continue
         gnode = gmap.get(symbol_id)
         is_test = (gnode is not None and gnode.is_test) or is_test_related_path(
@@ -386,6 +401,7 @@ async def symbol_backed_pages(
     max_files: int,
     symbol_limit: int = 20,
     pageless: bool = False,
+    scope: str | None = None,
 ) -> list[dict]:
     """File pages whose indexed symbols the words of *question* name.
 
@@ -407,7 +423,9 @@ async def symbol_backed_pages(
     if not terms or max_files <= 0:
         return []
     try:
-        symbols = await search_symbols_by_terms(ctx, terms, symbol_limit, max_terms=_MAX_TERMS)
+        symbols = await search_symbols_by_terms(
+            ctx, terms, symbol_limit, max_terms=_MAX_TERMS, scope=scope
+        )
     except Exception:
         return []
     if not symbols:
@@ -480,7 +498,6 @@ class _FilenameIndex(NamedTuple):
     """One repo's file names as stemmed words, paged or not, by position."""
 
     paths: tuple[str, ...]
-    paged: frozenset[str]  # paths with a file page, live or tombstoned
     sizes: tuple[int, ...]  # how many words each file name has
     postings: dict[str, tuple[int, ...]]  # file name word -> positions
 
@@ -518,21 +535,23 @@ async def _filename_index(session, repo_id: str) -> _FilenameIndex:
                 postings.setdefault(w, []).append(i)
         return _FilenameIndex(
             paths,
-            frozenset(paged),
             tuple(len(ws) for ws in words),
             {w: tuple(pos) for w, pos in postings.items()},
         )
 
-    return await per_index(session, repo_id, "prose_filename_words", build)
+    return await per_index(session, repo_id, "prose_filename_words", build, persist=True)
 
 
-async def filename_backed_pages(ctx: Any, question: str, *, max_files: int) -> list[dict]:
+async def filename_backed_pages(
+    ctx: Any, question: str, *, max_files: int, scope: str | None = None
+) -> list[dict]:
     """Files whose file name the words of *question* mostly spell, as page rows.
 
     The same cover rule as symbol names: ``exec command highlighting`` reaches
     ``exec-command-highlighting.ts``. A file with no page gets a pageless row,
     and ``full_cover`` says the question spells every word of the name.
-    Most-covered first, then shorter names.
+    Most-covered first, then shorter names. ``scope`` keeps only files under
+    that directory.
     """
     terms = content_terms(question)
     if not terms or max_files <= 0:
@@ -541,17 +560,21 @@ async def filename_backed_pages(ctx: Any, question: str, *, max_files: int) -> l
         repository = await _get_repo(session)
         index = await _filename_index(session, repository.id)
         hits = _covered_positions(index.postings, index.sizes.__getitem__, terms, _fold)
+        if scope:
+            hits = Counter({i: n for i, n in hits.items() if in_scope(index.paths[i], scope)})
         if not hits:
             return []
         ranked = sorted(hits, key=lambda i: (-hits[i], index.sizes[i], index.paths[i]))[
             :max_files
         ]
-        by_path = await _file_pages(session, [index.paths[i] for i in ranked])
+        ranked_paths = [index.paths[i] for i in ranked]
+        by_path = await _file_pages(session, ranked_paths)
+        deleted = await deleted_file_paths(session, repository.id, ranked_paths)
     rows = []
     for i in ranked:
         path = index.paths[i]
-        # A tombstoned page's file is gone, so it gets no pageless row either.
-        if path not in by_path and path in index.paged:
+        # A deleted file gets no pageless row either.
+        if path in deleted:
             continue
         row = by_path.get(path) or _pageless_row(path, "")
         row["full_cover"] = hits[i] >= max(index.sizes[i], _FULL_COVER_MIN_WORDS)

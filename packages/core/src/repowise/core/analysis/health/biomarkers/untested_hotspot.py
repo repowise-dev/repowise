@@ -59,7 +59,7 @@ class UntestedHotspotDetector:
         # A test file is not undertested. Coverage reports rarely instrument
         # the suite itself, so where coverage is ingested every test file reads
         # as 0% covered and a churning one would be accused of it.
-        if ctx.is_test_material:
+        if ctx.outside_coverage_scope:
             return []
         if not _has_something_to_test(ctx):
             return []

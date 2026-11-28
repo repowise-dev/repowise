@@ -107,27 +107,26 @@ class TestCapabilityGate:
         """
         result = _fire(opted_in, client="codex")
         assert result.replacement is None
-        assert result.context is not None, "Codex still gets the digest, appended"
-        assert "matches in" in result.context
+        assert result.context is None, "an unserved digest is never appended"
 
     def test_unknown_client_is_treated_as_claude(self, opted_in) -> None:
         assert _fire(opted_in, client=None).replacement is not None
 
-    def test_old_client_build_falls_back_to_appending(self, opted_in) -> None:
+    def test_old_client_build_gets_nothing_added(self, opted_in) -> None:
         """Protocol yes, installed build no. Both questions are the adapter's."""
         with patch.object(
             ClaudeCodeAdapter, "supports_updated_output", return_value=False
         ):
             result = _fire(opted_in)
         assert result.replacement is None
-        assert result.context is not None
+        assert result.context is None
 
 
 class TestOptIn:
-    def test_off_by_default_the_digest_still_appends(self, repo) -> None:
+    def test_off_by_default_nothing_is_added(self, repo) -> None:
         result = _fire(repo)
         assert result.replacement is None
-        assert result.context is not None
+        assert result.context is None
 
     def test_env_override_enables_it(self, repo, monkeypatch) -> None:
         monkeypatch.setenv("REPOWISE_HOOK_SEARCH_DIGEST", "1")
@@ -155,7 +154,7 @@ class TestWorthItGates:
         payload = dict(GREP_CONTENT_FLOOD, content=text)
         result = _fire(opted_in, tool_output=payload)
         assert result.replacement is None, "replacing here would be a detour, not a saving"
-        assert result.context is not None, "the digest still appends, as it always did"
+        assert result.context is None, "an unserved digest is never appended"
 
     def test_an_oversized_digest_is_skipped_not_truncated(self) -> None:
         """A cut digest loses the tail that says what was dropped."""

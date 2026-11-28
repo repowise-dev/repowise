@@ -16,6 +16,7 @@ const PAIR: WorkspaceCoChangeEntry = {
   strength: 0.69,
   frequency: 3,
   last_date: "2026-09-01",
+  evidence: null,
 };
 
 function history(sha: string, date: string): Loadable<CoChangeFileHistory> {

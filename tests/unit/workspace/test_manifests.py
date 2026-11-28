@@ -1,4 +1,4 @@
-"""The ecosystem table: package-name edges for npm and composer, and service markers."""
+"""The ecosystem table: package-name edges for npm, composer and Python, and service markers."""
 
 from __future__ import annotations
 
@@ -138,6 +138,103 @@ class TestComposer:
         _json(api / "composer.json", {"require": {"acme/money": "*", "acme/fixture": "*"}})
         assert _deps({"core": core, "api": api}) == [
             ("api", "core", "composer.json", "composer_package", "acme/money")
+        ]
+
+
+def _text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+class TestPythonNames:
+    def test_pinned_dependency_on_a_sibling_distribution(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "Acme.Core"\n')
+        _text(
+            api / "pyproject.toml",
+            '[project]\nname = "api"\ndependencies = ["acme-core==1.2.0", "httpx>=0.27"]\n',
+        )
+        deps = detect_package_dependencies({"lib": lib, "api": api})
+        assert [(d.source_repo, d.target_repo, d.kind, d.target_package) for d in deps] == [
+            ("api", "lib", "pip_package", "acme-core")
+        ]
+        assert deps[0].target_manifest == "pyproject.toml"
+        assert deps[0].requested_version == "==1.2.0"
+
+    def test_uv_members_publish_and_every_dependency_table_is_read(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(
+            lib / "pyproject.toml",
+            '[project]\nname = "lib-root"\n[tool.uv.workspace]\nmembers = ["packages/*"]\n',
+        )
+        _text(lib / "packages" / "money" / "pyproject.toml", '[project]\nname = "acme_money"\n')
+        _text(lib / "packages" / "tax" / "pyproject.toml", '[tool.poetry]\nname = "acme-tax"\n')
+        _text(
+            api / "pyproject.toml",
+            '[project]\nname = "api"\n'
+            '[project.optional-dependencies]\nbilling = ["Acme-Money[fast]>=2"]\n'
+            '[tool.poetry.group.dev.dependencies]\nlib-root = "*"\n',
+        )
+        _text(api / "requirements-prod.txt", "acme.tax==3 ; python_version >= '3.11'\n")
+        assert _deps({"lib": lib, "api": api}) == [
+            ("api", "lib", "pyproject.toml", "pip_package", "acme-money"),
+            ("api", "lib", "pyproject.toml", "pip_package", "lib-root"),
+            ("api", "lib", "requirements-prod.txt", "pip_package", "acme-tax"),
+        ]
+
+    def test_non_member_projects_publish_nothing(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')
+        _text(lib / "tests" / "fixtures" / "pyproject.toml", '[project]\nname = "fixture-app"\n')
+        _text(api / "requirements.txt", "fixture-app\n")
+        assert _deps({"lib": lib, "api": api}) == []
+
+    def test_a_name_two_repos_publish_links_neither(self, tmp_path: Path) -> None:
+        a, b, api = tmp_path / "a", tmp_path / "b", tmp_path / "api"
+        _text(a / "pyproject.toml", '[project]\nname = "shared"\n')
+        _text(b / "pyproject.toml", '[project]\nname = "Shared"\n')
+        _text(api / "requirements.txt", "shared\n")
+        assert _deps({"a": a, "b": b, "api": api}) == []
+
+    def test_a_requirements_only_repo_publishes_nothing(self, tmp_path: Path) -> None:
+        svc, api = tmp_path / "svc", tmp_path / "api"
+        _text(svc / "requirements.txt", "flask\n")
+        _text(api / "requirements.txt", "svc\nflask\n")
+        assert _deps({"svc": svc, "api": api}) == []
+
+    def test_a_url_line_names_no_distribution(self, tmp_path: Path) -> None:
+        git, api = tmp_path / "git", tmp_path / "api"
+        _text(git / "pyproject.toml", '[project]\nname = "git"\n')
+        _text(api / "requirements.txt", "git+https://example.com/lib.git#egg=lib\n")
+        assert _deps({"git": git, "api": api}) == []
+
+    def test_a_poetry_group_path_dependency_resolves_by_path(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')
+        _text(
+            api / "pyproject.toml",
+            '[tool.poetry]\nname = "api"\n'
+            '[tool.poetry.group.dev.dependencies]\nlib = { path = "../lib", develop = true }\n',
+        )
+        assert _deps({"lib": lib, "api": api}) == [("api", "lib", "pyproject.toml", "pip_path", "")]
+
+    def test_a_path_source_resolves_by_path_alone(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')
+        _text(
+            api / "pyproject.toml",
+            '[project]\nname = "api"\ndependencies = ["lib"]\n'
+            '[tool.uv.sources]\nlib = { path = "../lib", editable = true }\n',
+        )
+        assert _deps({"lib": lib, "api": api}) == [("api", "lib", "pyproject.toml", "pip_path", "")]
+
+    def test_a_malformed_manifest_yields_nothing_from_it(self, tmp_path: Path) -> None:
+        lib, api = tmp_path / "lib", tmp_path / "api"
+        _text(lib / "pyproject.toml", '[project]\nname = "lib"\n')
+        _text(api / "pyproject.toml", "[project\nname = ")
+        _text(api / "requirements.txt", "lib\n")
+        assert _deps({"lib": lib, "api": api}) == [
+            ("api", "lib", "requirements.txt", "pip_package", "lib")
         ]
 
 

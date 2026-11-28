@@ -43,17 +43,20 @@ CODEX_REWRITE_MIN_VERSION: tuple[int, int] = (0, 137)
 
 _REWRITE_HOOK_COMMAND = "repowise-rewrite"
 
-_REWRITE_HOOK_ENTRY = {
-    "matcher": SHELL_TOOL_MATCHER,
-    "hooks": [
-        {
-            "type": "command",
-            "command": f"{_REWRITE_HOOK_COMMAND} --agent codex",
-            "timeout": 5,
-            "statusMessage": "Distilling command output...",
-        }
-    ],
-}
+def _rewrite_hook_entry() -> dict:
+    from repowise.cli.mcp_config import hook_direct_command
+
+    return {
+        "matcher": SHELL_TOOL_MATCHER,
+        "hooks": [
+            {
+                "type": "command",
+                "command": hook_direct_command(_REWRITE_HOOK_COMMAND, "--agent codex"),
+                "timeout": 5,
+                "statusMessage": "Distilling command output...",
+            }
+        ],
+    }
 
 
 #: Matchers this entry has shipped with, current one excluded. An install
@@ -82,6 +85,26 @@ def _migrate_rewrite_matcher(hook_list: list) -> bool:
     return changed
 
 
+def _refresh_rewrite_command(hook_list: list, *, repin: bool) -> bool:
+    """Repoint our entry's command at a script that exists. True when it moved."""
+    from repowise.cli.mcp_config import refreshed_direct_command
+
+    changed = False
+    for entry in hook_list:
+        hooks = entry.get("hooks") if isinstance(entry, dict) else None
+        for hook in hooks if isinstance(hooks, list) else []:
+            command = hook.get("command") if isinstance(hook, dict) else None
+            if not isinstance(command, str):
+                continue
+            want = refreshed_direct_command(
+                command, _REWRITE_HOOK_COMMAND, "--agent codex", repin=repin
+            )
+            if want is not None:
+                hook["command"] = want
+                changed = True
+    return changed
+
+
 def migrate_codex_rewrite_hook() -> bool:
     """Repoint an already-installed rewrite hook at the current matcher.
 
@@ -105,7 +128,8 @@ def migrate_codex_rewrite_hook() -> bool:
         pre_hooks = hooks.get("PreToolUse")
         if not isinstance(pre_hooks, list):
             return False
-        if not _migrate_rewrite_matcher(pre_hooks):
+        moved = _migrate_rewrite_matcher(pre_hooks)
+        if not (_refresh_rewrite_command(pre_hooks, repin=False) or moved):
             return False
         hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return True
@@ -116,8 +140,10 @@ def migrate_codex_rewrite_hook() -> bool:
 
 
 def _codex_hooks_path() -> Path:
-    """The user-level Codex hooks file (~/.codex/hooks.json)."""
-    return Path.home() / ".codex" / "hooks.json"
+    """The user-level Codex hooks file (``$CODEX_HOME/hooks.json``)."""
+    from repowise.core.codex_home import codex_home
+
+    return codex_home() / "hooks.json"
 
 
 # ---------------------------------------------------------------------------
@@ -178,11 +204,12 @@ def install_codex_rewrite_hook() -> Path | None:
         hooks = existing.setdefault("hooks", {})
         pre_hooks = hooks.setdefault("PreToolUse", [])
         if not _has_rewrite_hook(pre_hooks):
-            pre_hooks.append(json.loads(json.dumps(_REWRITE_HOOK_ENTRY)))
+            pre_hooks.append(_rewrite_hook_entry())
             hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
-        elif _migrate_rewrite_matcher(pre_hooks):
-            # Present but pointed at a name Codex no longer uses. Reinstalling
-            # is the only repair path a user has, so it has to be one.
+        elif _migrate_rewrite_matcher(pre_hooks) | _refresh_rewrite_command(pre_hooks, repin=True):
+            # Present but pointed at a name Codex no longer uses, or at another
+            # install's script. Reinstalling is the only repair path a user
+            # has, so it has to be one.
             hooks_path.write_text(json.dumps(existing, indent=2) + "\n", encoding="utf-8")
         return hooks_path
     except Exception:
@@ -191,11 +218,11 @@ def install_codex_rewrite_hook() -> Path | None:
         return None
 
 
-def uninstall_codex_rewrite_hook() -> bool:
+def uninstall_codex_rewrite_hook(hooks_path: Path | None = None) -> bool:
     """Remove the distill rewrite entry; True when something was removed."""
     from repowise.cli.mcp_config import load_existing_config
 
-    hooks_path = _codex_hooks_path()
+    hooks_path = hooks_path or _codex_hooks_path()
     if not hooks_path.exists():
         return False
     try:
@@ -397,3 +424,19 @@ def agents_md_distill_section_installed(repo_path: Path) -> bool:
         # status`` calls. A file we cannot decode does not carry our section as
         # far as anyone can tell, and a status probe must not raise.
         return False
+
+
+def codex_project_hook_commands(repo_path: Path) -> list[str]:
+    """Commands of the repowise hooks in the repo's ``.codex/hooks.json``."""
+    from repowise.cli.mcp_config import read_hooks_block
+
+    hooks = read_hooks_block(Path(repo_path) / ".codex" / "hooks.json")
+    if not isinstance(hooks, dict):
+        return []
+    commands = [
+        h.get("command")
+        for group in hooks.values() if isinstance(group, list)
+        for entry in group if isinstance(entry, dict)
+        for h in entry.get("hooks") or [] if isinstance(h, dict)
+    ]
+    return [c for c in commands if isinstance(c, str) and "repowise-augment" in c]

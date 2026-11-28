@@ -123,7 +123,9 @@ class InProcessGraphStore(GraphStore):
             if file_subgraph.number_of_nodes() == 0:
                 self._pagerank_cache = {}
             else:
-                self._pagerank_cache = nx.pagerank(file_subgraph)
+                from repowise.core.ingestion.graph._pagerank import pagerank
+
+                self._pagerank_cache = pagerank(file_subgraph)
         return dict(self._pagerank_cache)
 
     def betweenness_centrality(self) -> dict[str, float]:
@@ -195,7 +197,7 @@ class InProcessGraphStore(GraphStore):
         ``repowise upgrade`` load a parser to read a ledger. The two existing
         persistence → ingestion imports are local for the same reason.
         """
-        from ...ingestion.models import TEMPORAL_EDGE_TYPES
+        from ...ingestion.models import NON_CODE_EDGE_TYPES
 
         file_nodes = [
             n
@@ -207,7 +209,7 @@ class InProcessGraphStore(GraphStore):
             [
                 (u, v)
                 for u, v, attrs in sub.edges(data=True)
-                if attrs.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if attrs.get("edge_type") in NON_CODE_EDGE_TYPES
             ]
         )
         return sub

@@ -148,6 +148,7 @@ async def _run_doc_drift_analysis(
             symbols=(
                 SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
             ),
+            cache_dir=Path(repo_path) / ".repowise" if repo_path else None,
         )
 
         def _step(_stage: str) -> None:
@@ -241,6 +242,8 @@ def _build_pipeline_coverage(
                 )
             for path, err in errors:
                 progress.on_message("warning", f"  ↳ coverage {path.name}: {err}")
+            if stale := resolved.alignment.warning():
+                progress.on_message("warning", f"  ↳ coverage: {stale}")
 
         return (
             resolved.coverage_map,

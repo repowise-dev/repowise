@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass
+from itertools import islice
 
 import pytest
 
+from repowise.core.analysis.health.complexity.languages import get_language_map
 from repowise.core.analysis.health.dataflow import analyze_file
 from repowise.core.analysis.health.refactoring.extract_method import ExtractMethodDetector
+from repowise.core.analysis.health.refactoring.helper_naming import ScopeNames, placeholder_names
 from repowise.core.analysis.health.refactoring.models import RefactoringContext
 
 
@@ -144,6 +147,24 @@ def test_the_host_functions_own_parameters_and_locals_take_the_name():
 # -- casing --------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("language", ["csharp", "razor"])
+def test_csharp_placeholders_use_pascal_case_and_numbered_suffixes(language):
+    assert list(islice(placeholder_names(language), 3)) == [
+        "ExtractedHelper",
+        "ExtractedHelper2",
+        "ExtractedHelper3",
+    ]
+
+
+@pytest.mark.parametrize("sibling", ["ExtractedHelper", "extractedHelper"])
+def test_csharp_placeholders_do_not_collide_with_a_sibling_method(sibling):
+    src = f"class Stats {{ int {sibling}() {{ return 0; }} int Process() {{ return 1; }} }}"
+    functions = _functions("csharp", "cs", src)
+    host = next(fn for fn in functions if fn.name == "Process")
+    scope = ScopeNames(get_language_map("csharp"))
+    assert scope.claim_first(host, placeholder_names("csharp")) == "ExtractedHelper2"
+
+
 _TS = """
 function process(records: number[], threshold: number): number {
     const results: number[] = [];
@@ -243,6 +264,10 @@ def test_the_placeholder_follows_the_files_casing():
     assert _name(_TS, "typescript", "ts") == "extractedHelper"
     assert _name(_GO, "go", "go") == "extractedHelper"
     assert _name(_RUST, "rust", "rs") == "extracted_helper"
+
+
+def test_an_astro_placeholder_is_camel_case_as_in_typescript():
+    assert _name(f"---{_TS}---\n<p>hi</p>\n", "astro", "astro") == "extractedHelper"
 
 
 def test_go_exported_and_unexported_spellings_collide():

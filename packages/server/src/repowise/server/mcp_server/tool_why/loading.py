@@ -8,7 +8,8 @@ from sqlalchemy import func, or_, select
 
 from repowise.core.persistence.crud.authority import accepted_decision_ids
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import DecisionEvidence, GitMetadata, GraphNode
+from repowise.core.persistence.models import DecisionEvidence, GitMetadata, GraphNode, WikiSymbol
+from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     _get_exclude_spec,
@@ -18,7 +19,8 @@ from repowise.server.mcp_server._helpers import (
     escape_like,
     is_excluded,
 )
-from repowise.server.mcp_server._query_shape import path_tokens
+from repowise.server.mcp_server._query_shape import _WORD_CHAIN_RE, _identifier_shaped, path_tokens
+from repowise.server.mcp_server._why_evidence import _decision_commits
 from repowise.server.mcp_server.tool_why.caps import _DECISION_CORPUS_LIMIT
 
 
@@ -68,6 +70,58 @@ async def _named_file(query: str, repo: str | None) -> str | None:
         if len(found) == 1:
             return found[0]
     return None
+
+
+#: Defining files a refusal names. More than this and the names are too common to anchor on.
+_MAX_DEFINING_FILES = 3
+
+
+def _code_names(query: str) -> list[str]:
+    """Identifier-shaped words of *query*, dotted paths split into their parts."""
+    names = {
+        c
+        for tok in _WORD_CHAIN_RE.findall(query)
+        for c in (tok, *tok.split("."))
+        if _identifier_shaped(c)
+    }
+    return sorted(names)
+
+
+async def _defining_files(ctx: Any, repository_id: Any, query: str) -> list[dict[str, Any]]:
+    """``{name, path, line}`` for each code name in *query* the index defines once.
+
+    For a question that named no file and found nothing: where the code it
+    names lives, so the refusal can say which file to ask about. A name defined
+    in several files anchors nothing; production files only.
+    """
+    names = _code_names(query)
+    if not names:
+        return []
+    spec = _get_exclude_spec(ctx.path)
+    async with get_session(ctx.session_factory) as session:
+        res = await session.execute(
+            select(WikiSymbol.name, WikiSymbol.file_path, WikiSymbol.start_line).where(
+                WikiSymbol.repository_id == repository_id,
+                WikiSymbol.name.in_(names),
+            )
+        )
+        rows = [
+            r for r in res.all() if not is_excluded(r[1], spec) and not is_test_related_path(r[1])
+        ]
+    out = _single_definitions(rows)
+    return out if len({o["path"] for o in out}) <= _MAX_DEFINING_FILES else []
+
+
+def _single_definitions(rows: list) -> list[dict[str, Any]]:
+    """The first definition of each name that only one file defines."""
+    paths_of: dict[str, set[str]] = {}
+    for name, path, _ in rows:
+        paths_of.setdefault(name, set()).add(path)
+    out: dict[str, dict[str, Any]] = {}
+    for name, path, line in sorted(rows, key=lambda r: (r[0], r[2] or 0)):
+        if len(paths_of[name]) == 1:
+            out.setdefault(name, {"name": name, "path": path, "line": line})
+    return list(out.values())
 
 
 async def _all_git_metadata(session: Any, repository_id: Any) -> list:
@@ -138,6 +192,25 @@ async def _attach_decision_evidence(session: Any, records: list) -> None:
         by_decision.setdefault(row.decision_id, []).append(row)
     for record in records:
         record._why_evidence_rows = by_decision.get(record.id, [])
+    await _attach_linked_issues(session, records)
+
+
+async def _attach_linked_issues(session: Any, records: list) -> None:
+    """Give each record the tracker issues its evidence commits link to.
+
+    Display only: read by the evidence annotation, never by ranking,
+    authority or staleness.
+    """
+    from repowise.core.persistence.crud.issue_links import decision_issues
+
+    by_repo: dict[str, dict[str, list]] = {}
+    for record in records:
+        by_repo.setdefault(record.repository_id, {})[record.id] = _decision_commits(record)
+    found: dict[str, list] = {}
+    for repository_id, commits in by_repo.items():
+        found.update(await decision_issues(session, repository_id, commits))
+    for record in records:
+        record._why_linked_issues = found.get(record.id, [])
 
 
 async def _attach_response_decision_evidence(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from .base import BasePerfDialect
@@ -10,10 +11,37 @@ from .python_lexicon import (
     _PY_BINDING_WRAPPERS,
     _PY_CONSTANT_RHS,
     _PY_DEF_KINDS,
+    _PY_SCHEMA_SQL_RE,
+    _PY_STRING_KINDS,
 )
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+
+def _first_arg(call: Node) -> Node | None:
+    args = call.child_by_field_name("arguments")
+    return next((c for c in args.children if c.is_named), None) if args is not None else None
+
+
+def _runs_schema_statement(call: Node, value_of: Callable[[Node, bytes], Node | None]) -> bool:
+    """*call*'s statement is DDL or a PRAGMA (``_PY_SCHEMA_SQL_RE``): its first
+    argument, the value *value_of* says that name holds, or the text in ``text(...)``.
+
+    Ceiling: Python only, and a module-level statement constant is not followed.
+    """
+    statement = _first_arg(call)
+    if statement is not None and statement.type == "identifier":
+        statement = value_of(call, statement.text or b"")
+    statement = _text_arg(statement) if statement is not None and statement.type == "call" else statement
+    return statement is not None and statement.type in _PY_STRING_KINDS and bool(
+        _PY_SCHEMA_SQL_RE.match(_text(statement))
+    )
+
+
+def _text_arg(call: Node) -> Node | None:
+    """The statement in ``text("...")``; any other call is no literal statement."""
+    return _first_arg(call) if _field_text(call, "function").rsplit(".", 1)[-1] == "text" else None
 
 
 def _binds(ident: Node) -> bool:
@@ -45,8 +73,32 @@ def _bindings(scope: Node, name: bytes) -> list[Node]:
     return found
 
 
+_SPLITS = frozenset({"split", "splitlines"})
+
+
 def _module_int_constant(name: Node) -> bool:
-    """An ALL_CAPS name its own module binds exactly once, to an integer literal
+    return _module_constant(name, lambda value: value.type == "integer")
+
+
+def _splits_constant(call: Node) -> bool:
+    """``"a b".split()`` or ``SCHEMA.split(";")`` with ``SCHEMA`` a module string
+    literal: the source fixes every piece."""
+    fn = call.child_by_field_name("function")
+    if fn is None or fn.type != "attribute" or _field_text(fn, "attribute") not in _SPLITS:
+        return False
+    text = fn.child_by_field_name("object")
+    return text is not None and (_plain_string(text) or _module_constant(text, _plain_string))
+
+
+def _plain_string(node: Node) -> bool:
+    """A string literal with no ``{...}`` interpolation, so its text is fixed."""
+    return node.type in _PY_STRING_KINDS and not any(
+        n.type == "interpolation" for n in BasePerfDialect._walk(node)
+    )
+
+
+def _module_constant(name: Node, is_literal: Callable[[Node], bool]) -> bool:
+    """An ALL_CAPS name its own module binds exactly once, to a value *is_literal* accepts
     (``MAX = 5``), and no enclosing function rebinds or shadows.
 
     The spelling alone proves nothing (``NUM_USERS`` grows), so a name rebound,
@@ -63,7 +115,7 @@ def _module_int_constant(name: Node) -> bool:
     if len(bound) != 1 or bound[0].parent is None or bound[0].parent.type != "assignment":
         return False
     right = bound[0].parent.child_by_field_name("right")
-    return right is not None and right.type == "integer"
+    return right is not None and is_literal(right)
 
 
 def _unshadowed_module(name: Node, text: bytes) -> Node | None:

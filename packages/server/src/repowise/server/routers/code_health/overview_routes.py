@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,25 +27,6 @@ from .counts import CountsQuery, project
 from .loaders import _attach_symbol_ids
 from .scope import ScopeQuery, narrow
 from .serializers import _finding_to_dict, _leads_by_file, _metric_to_dict, _round_opt
-
-
-def _resolve_last_indexed_at(
-    snapshot_taken_at: datetime | None, repo_updated_at: datetime | None
-) -> str | None:
-    """Newest "index brought current" time as an ISO string, or ``None``.
-
-    ``last_indexed_at`` should track the last time the index was synced to the
-    checkout, not just the last health snapshot. A no-change ``repowise update``
-    advances ``repositories.updated_at`` but takes no new snapshot, so a
-    snapshot-only value would report the index as hours stale right after a
-    refresh. Prefer whichever timestamp is newer (mirrors the overview router's
-    sync fallback). Both inputs come from the same DB, so their tz-awareness
-    matches and the comparison is safe.
-    """
-    newest = snapshot_taken_at
-    if repo_updated_at is not None and (newest is None or repo_updated_at > newest):
-        newest = repo_updated_at
-    return newest.isoformat() if newest else None
 
 
 @router.get("/api/repos/{repo_id}/health/overview")
@@ -107,12 +86,12 @@ async def health_overview(
     # come from the live rows, so reading it here would make one figure older
     # than its neighbours. It costs no query — ``metrics`` is in hand and the
     # hotspot path set is one scalar column. The snapshot is still read, for
-    # ``taken_at``, and for ``scope`` it would be the wrong population anyway.
+    # ``snapshot_count``, and for ``scope`` it would be the wrong population anyway.
     snapshot = await crud.get_health_snapshot_headline(session, repo_id)
     hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
     hotspot_health_value = hotspot_health(metrics, hotspot_paths)
 
-    last_indexed_at = _resolve_last_indexed_at(snapshot.taken_at, repo.updated_at)
+    indexed_at = crud.index_synced_at(repo)
 
     # The full row, and its lead, only for the files the response lists. The
     # distribution and the defect-accuracy stat read path, score and NLOC off
@@ -192,7 +171,7 @@ async def health_overview(
             include_unverified=include_unverified,
         ),
         "meta": {
-            "last_indexed_at": last_indexed_at,
+            "last_indexed_at": indexed_at.isoformat() if indexed_at else None,
             # The /api/repos overlay's indexed commit (state.json and the row
             # reconciled). This is the extension's primary indexed-commit source.
             "head_commit": (

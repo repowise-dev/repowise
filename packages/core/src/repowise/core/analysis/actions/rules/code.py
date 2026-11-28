@@ -16,6 +16,7 @@ from ..model import (
     ActionDetail,
     RuleOutcome,
     WhyFact,
+    evidence_severity,
     fingerprint,
     shared_priority,
 )
@@ -135,11 +136,12 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
     else:
         title = f"Fix what this week's changes added to {code(path)}"
     latest = max(commits.values(), key=lambda f: f.committed_at or ctx.anchor)
+    details = _regression_details(found)
     return Action(
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="high",
+        severity=_details_severity(details, "high"),
         title=title,
         impact=(
             f"{plural(len(commits), 'commit')} in the last 7 days added "
@@ -164,7 +166,7 @@ def _regression_file(path: str, found: list, ctx: RepoContext, weight: float) ->
         evidence_ids=tuple(sorted(commits)),
         evidence_total=len(found),
         fingerprint=fingerprint(len(found), *sorted(kinds)),
-        details=_regression_details(found),
+        details=details,
         commands=_regression_commands([path], latest.sha),
     )
 
@@ -186,6 +188,10 @@ def _regression_details(found: list) -> tuple[ActionDetail, ...]:
         )
         for f in ordered
     )
+
+
+def _details_severity(details: tuple[ActionDetail, ...], default: str) -> str:
+    return evidence_severity((d.severity for d in details), default)
 
 
 def _regression_commands(paths: list[str], sha: str) -> tuple[ActionCommand, ...]:
@@ -216,11 +222,15 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
     found = [f for _, fs in ranked for f in fs]
     commits = {f.sha for f in found}
     worst_path, worst = ranked[0]
+    # Evidence in the order the files are ranked, so it starts where the
+    # impact line says to start; the commit to inspect is the latest one
+    # that touched that same file.
+    details = tuple(d for _, fs in ranked for d in _regression_details(fs))
     return Action(
         rule="fresh_regressions",
         tier="act_now",
         horizons=("week",),
-        severity="high",
+        severity=_details_severity(details, "high"),
         title=(
             f"Fix what this week's commits added: {_kinds_text(found)} "
             f"in {len(ranked):,} files"
@@ -246,10 +256,7 @@ def _regression_rollup(ranked: list[tuple[str, list]]) -> Action:
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),
         fingerprint=fingerprint(len(found) // 10, *sorted({f.kind for f in found})),
-        # Evidence in the order the files are ranked, so it starts where the
-        # impact line says to start; the commit to inspect is the latest one
-        # that touched that same file.
-        details=tuple(d for _, fs in ranked for d in _regression_details(fs)),
+        details=details,
         details_total=len(found),
         commands=_regression_commands(
             [path for path, _ in ranked],
@@ -268,11 +275,12 @@ def _shape_rollup(ranked: list[tuple[str, list]]) -> Action:
     commits = {f.sha for f in found}
     worst_path, worst = ranked[0]
     where = code(worst_path) if len(ranked) == 1 else f"{len(ranked):,} files"
+    details = tuple(d for _, fs in ranked for d in _regression_details(fs))
     return Action(
         rule="fresh_regressions",
         tier="plan",
         horizons=("week",),
-        severity="medium",
+        severity=_details_severity(details, "medium"),
         title=(
             f"Tidy the code shape this week's commits left: "
             f"{plural(len(found), 'finding')} in {where}"
@@ -303,7 +311,7 @@ def _shape_rollup(ranked: list[tuple[str, list]]) -> Action:
         evidence_total=len(found),
         includes=tuple(path for path, _ in ranked[:10]),
         fingerprint=fingerprint("shape", len(found) // 10),
-        details=tuple(d for _, fs in ranked for d in _regression_details(fs)),
+        details=details,
         details_total=len(found),
         commands=_regression_commands(
             [path for path, _ in ranked],
@@ -317,7 +325,7 @@ def _coverage_fact(f: FileFacts, facts: RepoFacts) -> WhyFact:
         basis = "measured"
         value = f"{f.line_coverage_pct:.0f}%"
         if facts.coverage.status == "stale":
-            value += " (older report)"
+            value += " (measured at an earlier commit)"
         return WhyFact("line coverage", value, basis)
     if facts.coverage.status == "unknown":
         return WhyFact("line coverage", "Unknown, no report", "unknown")
@@ -348,7 +356,9 @@ def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
 
     Measured coverage decides first. Without it, "add tests" holds only when no
     test reaches the file in the code graph; a file tests do reach gets the
-    simplify step instead, as an inferred claim.
+    simplify step instead, as an inferred claim. "Simplify" names the lead only
+    when its function is worth breaking up by the shared rule; otherwise the
+    step is to review why fixes keep landing, which names no finding.
     """
     cov = f.line_coverage_pct
     if cov is not None and cov < COVERED_PCT:
@@ -362,20 +372,42 @@ def _fragile_step(f: FileFacts) -> tuple[str, str, str] | None:
         # tests" nor "tests reach it" is a claim the facts support.
         return None
     if cov is None and f.tests_reaching == 0:
+        if f.tests_reaching_via == MOCKED_ONLY_VIA:
+            # Tests reach it but replace it: that is a real gap, stated as one.
+            title = f"Add tests around {code(f.path)} before its next change"
+        else:
+            # The graph cannot see code a framework invokes (URL routes, CLI
+            # commands, registries), so an empty walk is absence of evidence,
+            # not proof the file is untested. Say what the graph found.
+            title = (
+                f"No test reaches {code(f.path)} in the code graph: "
+                "confirm it is tested before its next change"
+            )
         return (
-            f"Add tests around {code(f.path)} before its next change",
+            title,
             "A coverage report includes it at 80% or more.",
             "unknown",
         )
     if f.lead is None:
         return None
+    return _lead_step(f, measured=cov is not None)
+
+
+def _lead_step(f: FileFacts, *, measured: bool) -> tuple[str, str, str]:
+    """:func:`_fragile_step` for a tested file with a lead finding."""
+    tested = "it is tested" if measured else "tests reach it"
+    if not f.lead or not f.lead.worth:
+        return (
+            f"Review why fixes keep landing in {code(f.path)}: {tested}",
+            "Bug-fix commits slow down.",
+            "review" if measured else "review_reached",
+        )
     name = _lead_name(f)
     where = code(name) + " in " if name else ""
-    tested = "it is tested" if cov is not None else "tests reach it"
     return (
         f"Simplify {where}{code(f.path)}: {tested}, and fixes keep landing",
         "Its lead finding closes and bug-fix commits slow down.",
-        "simplify" if cov is not None else "reached",
+        "simplify" if measured else "reached",
     )
 
 
@@ -412,74 +444,88 @@ def fragile_file(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
     actions = []
     for f in fragile:
         step = _fragile_step(f)
-        if step is None:
-            continue
-        title, done, variant = step
-        why = [
-            WhyFact("commits in 90 days", str(f.commits_90d)),
-            WhyFact("bug-fix commits", str(f.fix_commits_90d)),
-            _coverage_fact(f, facts),
-        ]
-        if f.line_coverage_pct is None:
-            why.append(_reach_fact(f))
-        impact = (
-            f"Changed {f.commits_90d} times in 90 days, and {f.fix_commits_90d} "
-            "of those commits were bug fixes."
-        )
-        if f.dependents and f.dependents >= 5:
-            why.append(WhyFact("files that import it", str(f.dependents)))
-            impact += f" {f.dependents} files import it."
-        actions.append(
-            Action(
-                rule=rule,
-                tier="plan",
-                horizons=("week", "quarter") if f.path in week_rows else ("quarter",),
-                severity="high" if f.fix_commits_90d >= 10 else "medium",
-                title=title,
-                impact=impact,
-                why=tuple(why),
-                target_kind="file",
-                target_path=f.path,
-                target_symbol=_lead_name(f) if variant in ("simplify", "reached") else None,
-                identity=f.path,
-                surface="file",
-                effort="M" if (f.nloc or 0) < 600 else "L",
-                confidence="high" if variant in ("raise", "simplify") else "medium",
-                done_when=done,
-                marker=f.lead.biomarker if f.lead else None,
-                weight=float(f.fix_commits_90d * f.commits_90d),
-                fingerprint=fingerprint(variant, f.fix_commits_90d // 5),
-                details=(
-                    (
-                        ActionDetail(
-                            path=f.path,
-                            line=f.lead.line,
-                            symbol=f.lead.function,
-                            marker=f.lead.biomarker,
-                            severity=f.lead.severity,
-                            reason=f.lead.reason,
-                        ),
-                    )
-                    if f.lead
-                    else ()
-                ),
-                commands=(
-                    ActionCommand.call(
-                        "Its bug-fix history, co-change partners and test gaps",
-                        "get_risk",
-                        {"targets": [f.path]},
-                        cli=f"repowise risk -t {f.path}",
-                    ),
-                    ActionCommand.call(
-                        "Every open finding in the file",
-                        "get_health",
-                        {"targets": [f.path], "include": ["biomarkers"]},
-                        cli=f"repowise health --file {f.path}",
-                    ),
+        if step is not None:
+            actions.append(_fragile_action(f, step, facts, week=f.path in week_rows))
+    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+
+
+def _fragile_why(f: FileFacts, facts: RepoFacts) -> tuple[tuple[WhyFact, ...], str]:
+    """A fragile file's why facts and impact line."""
+    why = [
+        WhyFact("commits in 90 days", str(f.commits_90d)),
+        WhyFact("bug-fix commits in 90 days", str(f.fix_commits_90d)),
+        _coverage_fact(f, facts),
+    ]
+    if f.line_coverage_pct is None:
+        why.append(_reach_fact(f))
+    # Named for what ``build_files`` counts (fix commits whose diff changed this
+    # file's code), so it never reads as commit-subject prefixes or get_risk's
+    # 6-month ``fix_count``.
+    impact = (
+        f"Changed {f.commits_90d} times in 90 days; {f.fix_commits_90d} of those "
+        "were bug fixes that changed its code."
+    )
+    if f.dependents and f.dependents >= 5:
+        why.append(WhyFact("files that import it", str(f.dependents)))
+        impact += f" {f.dependents} files import it."
+    return tuple(why), impact
+
+
+def _fragile_action(
+    f: FileFacts, step: tuple[str, str, str], facts: RepoFacts, *, week: bool
+) -> Action:
+    title, done, variant = step
+    # A review step names no finding, so it shows none as its lead.
+    lead = None if variant.startswith("review") else f.lead
+    why, impact = _fragile_why(f, facts)
+    return Action(
+        rule="fragile_file",
+        tier="plan",
+        horizons=("week", "quarter") if week else ("quarter",),
+        severity="high" if f.fix_commits_90d >= 10 else "medium",
+        title=title,
+        impact=impact,
+        why=why,
+        target_kind="file",
+        target_path=f.path,
+        target_symbol=_lead_name(f) if variant in ("simplify", "reached") else None,
+        identity=f.path,
+        surface="file",
+        effort="M" if (f.nloc or 0) < 600 else "L",
+        confidence="high" if variant in ("raise", "simplify", "review") else "medium",
+        done_when=done,
+        marker=lead.biomarker if lead else None,
+        weight=float(f.fix_commits_90d * f.commits_90d),
+        fingerprint=fingerprint(variant, f.fix_commits_90d // 5),
+        details=(
+            (
+                ActionDetail(
+                    path=f.path,
+                    line=lead.line,
+                    symbol=lead.function,
+                    marker=lead.biomarker,
+                    severity=lead.severity,
+                    reason=lead.reason,
                 ),
             )
-        )
-    return RuleOutcome(rule, "evaluated", "", tuple(actions))
+            if lead
+            else ()
+        ),
+        commands=(
+            ActionCommand.call(
+                "Its bug-fix history, co-change partners and test gaps",
+                "get_risk",
+                {"targets": [f.path]},
+                cli=f"repowise risk -t {f.path}",
+            ),
+            ActionCommand.call(
+                "Every open finding in the file",
+                "get_health",
+                {"targets": [f.path], "include": ["biomarkers"]},
+                cli=f"repowise health --file {f.path}",
+            ),
+        ),
+    )
 
 
 def fix_concentration(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
@@ -642,7 +688,9 @@ def _first_step(includes: tuple[str, ...], production: dict[str, FileFacts]) -> 
     for path in includes:
         step = _fragile_step(production[path])
         if step is not None:
-            title = step[0].split(": ", 1)[0]
+            # The unknown variant's title carries its own ask after the colon,
+            # so it stays whole; the others drop their ": tests reach it" tail.
+            title = step[0] if step[2] == "unknown" else step[0].split(": ", 1)[0]
             return title[0].lower() + title[1:]
     return None
 
@@ -689,8 +737,13 @@ def fix_first(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             continue
         effort = _effort(item.effort.bucket)
         confidence = "high" if item.confidence.level == "high" else "medium"
-        severity = "high" if tier == "act_now" else "medium"
-        ceiling = min(ceiling, shared_priority(item.value, severity, confidence, effort))
+        tier_severity = "high" if tier == "act_now" else "medium"
+        # A finding item's severity fact is its evidence; a performance or
+        # refactoring item carries none and reads its tier. Order stays the tier's.
+        severity = evidence_severity(
+            (f.value for f in item.facts if f.label == "severity"), tier_severity
+        )
+        ceiling = min(ceiling, shared_priority(item.value, tier_severity, confidence, effort))
         target = item.target
         symbol = target.symbol
         actions.append(

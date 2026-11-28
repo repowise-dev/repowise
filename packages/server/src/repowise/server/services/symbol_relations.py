@@ -11,6 +11,7 @@ vocabulary, which is the failure mode this whole area keeps re-creating.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,6 +54,7 @@ async def load_symbol_relations(
     present: bool,
     call_row_cap: int = CALL_ROW_CAP,
     relation_row_cap: int = RELATION_ROW_CAP,
+    exclude_spec: Any = None,
 ) -> SymbolRelations:
     """Fetch this symbol's relations, each kind counted and capped on its own.
 
@@ -69,6 +71,10 @@ async def load_symbol_relations(
     Cost is unchanged for the common symbol. Only edge types the counts show
     are present get fetched, and most symbols have exactly one, so this is the
     same query count as the single-fetch version it replaces.
+
+    *exclude_spec* is the repo's query-time exclude rules: an edge with its
+    other end in an excluded file is left out of every total and dropped
+    before each cap, so a stale row neither counts nor takes a row's slot.
     """
     out = SymbolRelations()
     if not present:
@@ -78,7 +84,11 @@ async def load_symbol_relations(
     # exist at all, so nothing is fetched speculatively, and they are the
     # numbers the surface reports.
     totals = await crud.get_node_degree_by_edge_type(
-        session, repo_id, symbol_id, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
+        session,
+        repo_id,
+        symbol_id,
+        edge_types=sorted(SYMBOL_USE_EDGE_TYPES),
+        exclude_spec=exclude_spec,
     )
     if not totals:
         return out
@@ -94,6 +104,7 @@ async def load_symbol_relations(
             direction="both",
             edge_types=[edge_type],
             limit=call_row_cap if edge_type == "calls" else relation_row_cap,
+            exclude_spec=exclude_spec,
         )
 
     # Hydrated once for every edge type at once: the neighbour lookup is the

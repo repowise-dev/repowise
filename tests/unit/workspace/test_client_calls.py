@@ -15,6 +15,10 @@ from repowise.core.workspace.extractors.http.client_calls import (
     consumer_contracts,
     method_from_argument,
 )
+from repowise.core.workspace.extractors.http.dialect import (
+    build_consumer_contract,
+    method_from_callee,
+)
 from repowise.core.workspace.extractors.http.paths import (
     absolute_host,
     extract_path_from_url,
@@ -43,6 +47,7 @@ class TestLiterals:
         [
             (JS_SYNTAX, "'/api/users'", "/api/users"),
             (JS_SYNTAX, "`${BASE}/users/${id}`", "${BASE}/users/${id}"),
+            (JS_SYNTAX, '`/a/${id}${q ? `?${q}` : ""}`', '/a/${id}${q ? `?${q}` : ""}'),
             (PYTHON_SYNTAX, '"/api/users"', "/api/users"),
             (PYTHON_SYNTAX, 'f"{base}/users/{uid}"', "${base}/users/${uid}"),
             (PYTHON_SYNTAX, 'r"/raw"', "/raw"),
@@ -73,6 +78,7 @@ class TestLiterals:
             (JS_SYNTAX, "path"),
             (JS_SYNTAX, '"/a" + buildPath(id)'),
             (JS_SYNTAX, "buildPath(id)"),
+            (JS_SYNTAX, "`/a` || `/b`"),
             (PYTHON_SYNTAX, 'b"/bytes"'),
             (PYTHON_SYNTAX, 'f"/x/{{literal}}"'),
             (RUST_SYNTAX, "&url"),
@@ -117,6 +123,26 @@ class TestUnwrapAndConcat:
 
     def test_concat_with_a_call_is_refused(self):
         assert resolve_string('base + "/" + fmt(x)', GO_SYNTAX) is None
+
+    def test_a_converted_name_past_the_base_is_a_parameter(self):
+        expr = 'base + "/catalogue/" + req.body.id.toString()'
+        assert resolve_string(expr, JS_SYNTAX) == "${base}/catalogue/${req.body.id}"
+        assert resolve_string('getBase() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('base.trim() + "/x"', JS_SYNTAX) is None
+        assert resolve_string('"/a/" + cfg.getBasePath()', JS_SYNTAX) is None
+
+    def test_python_concat_and_format_method(self):
+        assert resolve_string('"/product/" + product', PYTHON_SYNTAX) == "/product/${product}"
+        expr = "'/api/rate/{}/{}'.format(item['sku'], randint(1, 5))"
+        assert resolve_string(expr, PYTHON_SYNTAX) == "/api/rate/${x}/${x}"
+        assert resolve_string("'/a/{}'.format(x).strip()", PYTHON_SYNTAX) is None
+        assert resolve_string("tmpl.format(x)", PYTHON_SYNTAX) is None
+        assert resolve_string('"/x/{{y}}".format(a)', PYTHON_SYNTAX) is None
+
+    def test_node_util_format(self):
+        expr = 'util.format("http://carts%s/carts", domain)'
+        assert resolve_string(expr, JS_SYNTAX) == "http://carts${x}/carts"
+        assert resolve_string('util.format("/a%20b/%s", x)', JS_SYNTAX) == "/a%20b/${x}"
 
     def test_a_concat_of_two_names_carries_no_path(self):
         assert resolve_string("c.InfoAPIURL + id.Name", GO_SYNTAX) == "${c.InfoAPIURL}${id.Name}"
@@ -261,13 +287,89 @@ class TestArgumentScanning:
 
 
 class TestLiteralSpan:
-    def test_a_capture_cut_at_an_inner_quote_keeps_its_prefix(self):
+    def test_a_capture_cut_at_an_inner_quote_reads_the_whole_template(self):
         from repowise.core.workspace.extractors.http.js_clients import fetch_calls
 
         content = "fetch(`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`)"
         (row,) = fetch_calls(content)
-        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: `"
-        assert resolve_string(row.url, JS_SYNTAX) == "https://h/v1/links?${new URLSearchParams({ a: "
+        assert row.url == "`https://h/v1/links?${new URLSearchParams({ a: 'x' })}`"
+        assert resolve_string(row.url, JS_SYNTAX) == row.url[1:-1]
+
+    def test_a_nested_template_keeps_the_fetch_method(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            'fetch(`${API}/repos${q ? `?${q}` : ""}`, { method: "POST" });\n'
+            'apiCall(`/wins${q ? `?${q}` : ""}`, { method: "DELETE" });\n'
+        )
+        (row,) = fetch_calls(content)
+        assert (row.url, row.method) == ('`${API}/repos${q ? `?${q}` : ""}`', "POST")
+        (row,) = wrapper_calls(content, frozenset())
+        assert (row.url, row.method) == ('`/wins${q ? `?${q}` : ""}`', "DELETE")
+
+
+class TestOptionsMethod:
+    def test_a_method_on_a_later_line_of_the_options_is_read(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls, wrapper_calls
+
+        content = (
+            "await apiRequest(`/api/sessions/${id}`, {\n"
+            "  headers: { 'Content-Type': 'application/json' },\n"
+            "  method: 'DELETE',\n"
+            "});\n"
+            "fetch('/api/events', {\n  headers: { a: 'b' },\n  method: 'POST',\n});\n"
+        )
+        (row,) = wrapper_calls(content, frozenset())
+        assert row.method == "DELETE"
+        (row,) = fetch_calls(content)
+        assert row.method == "POST"
+
+    def test_a_method_inside_the_body_is_not_the_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/rpc', { body: JSON.stringify({ method: 'DELETE' }) });"
+        (row,) = fetch_calls(content)
+        assert row.method is None
+
+    @pytest.mark.parametrize(
+        ("options", "method"),
+        [
+            ("{ method: 'DELETE' as const }", "DELETE"),
+            ("{ method: 'POST' } as RequestInit", "POST"),
+            ("{ method: 'POST' } as unknown as RequestInit", "POST"),
+            ("{ method: 'PATCH' as unknown as Method }", "PATCH"),
+            ("{ method: 'POST' } satisfies RequestInit", "POST"),
+            ("{ ...opts, method: 'PUT' }", "PUT"),
+            # A body passed as the second argument, with a field of its own.
+            ("{ method: 'card', amount: 10 }", None),
+            ("{ method }", None),
+        ],
+    )
+    def test_the_options_method_reads_through_casts_and_spreads(self, options, method):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        (row,) = fetch_calls(f"fetch('/api/a', {options});")
+        assert row.method == method
+
+    def test_one_url_fetched_twice_gives_a_row_per_call(self):
+        from repowise.core.workspace.extractors.http.js_clients import fetch_calls
+
+        content = "fetch('/api/a');\nfetch('/api/a', { method: 'POST' });\n"
+        assert [r.method for r in fetch_calls(content)] == [None, "POST"]
+
+    def test_a_typed_wrapper_call_is_read_with_its_name_verb(self):
+        from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+        content = (
+            "return apiGet<Paginated<CommitResponse>>(`/api/repos/${repoId}/commits`, {\n"
+            "  limit,\n});\n"
+            "return apiDelete<{ ok: boolean }>(`/api/repos/${repoId}`);\n"
+            'return apiPost<Paginated<Array<Commit>>>("/api/commits");\n'
+        )
+        rows = list(wrapper_calls(content, frozenset()))
+        assert [r.callee for r in rows] == ["apiGet", "apiDelete", "apiPost"]
+        assert {r.method for r in rows} == {None}
+        assert [method_from_callee(r.callee) for r in rows] == ["GET", "DELETE", "POST"]
 
 
 class TestConsumerContracts:
@@ -302,10 +404,49 @@ class TestConsumerContracts:
 
 
 class TestConsumerUrlShapes:
+    @pytest.mark.parametrize(("url", "host"), [
+        ("http://[::1]:8080/", "::1"),
+        ("http://[::1]/api", "::1"),
+        ("//[2001:DB8::1]:8080/api", "2001:db8::1"),
+        ("${proto}://[2001:DB8::1]/api", "2001:db8::1"),
+        ("http://[2001:DB8::1]/api/${id}", "2001:db8::1"),
+        ("https://BACKEND:8000/api", "backend"),
+        ("http://127.0.0.1:8080/", "127.0.0.1"),
+        ("//cdn.example.com/x", "cdn.example.com"),
+        ("${API_BASE}/users", None),
+        ("http://${HOST}:8080/api", None),
+        ("http://[::1]:${PORT}/api", None),
+        ("http://[::1/api", None),
+    ])
+    def test_absolute_host(self, url, host):
+        assert absolute_host(url) == host
+
+    @pytest.mark.parametrize("url", ["http://[::1]:8080/", "//[::1]/"])
+    def test_ipv6_loopback_root_names_no_service(self, url):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        assert build_consumer_contract(ctx, method="GET", url=url, client="fetch") is None
+
+    def test_nonlocal_ipv6_root_keeps_its_host(self):
+        ctx = ScanContext("svc", "client.ts", ".ts", "", {}, None)
+        contract = build_consumer_contract(
+            ctx, method="GET", url="http://[2001:DB8::1]:8080/", client="fetch"
+        )
+        assert contract is not None
+        assert contract.contract_id == "http::GET::/"
+        assert contract.meta["host"] == "2001:db8::1"
+
     def test_nested_braces_in_an_interpolation_stay_one_segment(self):
         assert flatten_interpolations("/rate/${format(d, F, { in: utc })}/x") == "/rate/${expr}/x"
         assert flatten_interpolations("/a/${id}/b") == "/a/${id}/b"
         assert flatten_interpolations("/a/${broken") == "/a/${broken"
+
+    def test_a_query_hole_ends_the_path(self):
+        assert flatten_interpolations('/a/${id}${q ? `?${q}` : ""}') == "/a/${id}"
+        assert flatten_interpolations("/a/${id}${qs ? '?' + qs : ''}") == "/a/${id}"
+        assert flatten_interpolations("/a/${b ? `/${c}` : ''}/d") == "/a/${expr}/d"
+        assert flatten_interpolations('/a/${k=="x"?id:0}/d') == '/a/${k=="x"?id:0}/d'
+        # Only a last hole is a query suffix; a mid-path one keeps the tail.
+        assert flatten_interpolations('/a/${c ? `?a` : `/b`}/z') == "/a/${c ? `?a` : `/b`}/z"
 
     def test_a_scheme_inside_an_interpolation_is_not_the_host(self):
         url = "${prod ? 'https://x.io' : ''}/api/status"
@@ -316,3 +457,111 @@ class TestConsumerUrlShapes:
     def test_a_scheme_after_a_leading_interpolation_is_the_urls(self):
         assert absolute_host("${proto}://h.com/api/u") == "h.com"
         assert extract_path_from_url("${proto}://h.com/api/u") == "/api/u"
+
+
+class TestLocust:
+    _FILE = (
+        "from locust import HttpUser, task\n"
+        "def browse(l):\n"
+        "    l.client.get('/product/' + product)\n"
+        "class U(HttpUser):\n"
+        "    @task\n"
+        "    def load(self):\n"
+        "        self.client.get('/')\n"
+        "        self.client.put('/api/rate/{}/{}'.format(sku, 5), headers=h)\n"
+        "        self.client.post('/cart', {'id': 1})\n"
+        "        # self.client.get('/api/commented')\n"
+        "        self.client.get('relative')\n"
+    )
+
+    def _ids(self, content: str) -> list[str]:
+        from repowise.core.workspace.extractors.http.python_clients import PythonClientsDialect
+
+        ctx = ScanContext("load", "locustfile.py", ".py", content, {}, None)
+        return sorted(c.contract_id for c in PythonClientsDialect().extract(ctx))
+
+    def test_user_client_calls_are_consumers(self):
+        assert self._ids(self._FILE) == [
+            "http::GET::/product/{param}",
+            "http::POST::/cart",
+            "http::PUT::/api/rate/{param}/{param}",
+        ]
+
+    def test_a_client_attribute_without_locust_is_not_read(self):
+        assert self._ids(self._FILE.replace("from locust import", "from mylib import")) == []
+
+
+def test_a_spaced_comparison_is_not_read_as_type_arguments():
+    from repowise.core.workspace.extractors.http.js_clients import wrapper_calls
+
+    assert list(wrapper_calls('if (api < limit && max > ("/api/x")) {}', frozenset())) == []
+
+
+class TestImportedUrlBuilders:
+    def _extract_paths(self, tmp_path, files: dict[str, str]) -> set[tuple[str, str, str]]:
+        from repowise.core.workspace.extractors.http import HttpExtractor
+
+        for rel, text in files.items():
+            p = tmp_path / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text, encoding="utf-8")
+        return {
+            (c.meta["client"], c.meta["method"], c.meta["path"])
+            for c in HttpExtractor().extract(tmp_path, "web")
+            if c.role == "consumer"
+        }
+
+    def test_namespace_import(self, tmp_path):
+        files = {
+            "src/endpoints.ts": "export const user = () => `/api/user`;\n",
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}
+
+    def test_named_import(self, tmp_path):
+        files = {
+            "src/endpoints.ts": "export const user = () => `/api/user`;\n",
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import { user } from './endpoints';\n"
+                "axios.get(user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}
+
+    def test_argument_hole(self, tmp_path):
+        files = {
+            "src/endpoints.ts": (
+                "export const conv = (id: string) => `/api/conv/${id}`;\n"
+                "export const userByOrg = (org: string, u: string) => `/api/orgs/${org}/users/${u}`;\n"
+            ),
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.conv(123));\n"
+                "axios.post(endpoints.userByOrg('org1', 'u1'), data);\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {
+            ("axios", "GET", "/api/conv/{param}"),
+            ("axios", "POST", "/api/orgs/{param}/users/{param}"),
+        }
+
+    def test_branching_builder_is_unresolved(self, tmp_path):
+        files = {
+            "src/endpoints.ts": (
+                "export const branching = (m: string) => m === 'admin' ? '/admin' : '/user';\n"
+                "export const user = () => '/api/user';\n"
+            ),
+            "src/svc.ts": (
+                "import axios from 'axios';\n"
+                "import * as endpoints from './endpoints';\n"
+                "axios.get(endpoints.branching('admin'));\n"
+                "axios.get(endpoints.user());\n"
+            ),
+        }
+        assert self._extract_paths(tmp_path, files) == {("axios", "GET", "/api/user")}

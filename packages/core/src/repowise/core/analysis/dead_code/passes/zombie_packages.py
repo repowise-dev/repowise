@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -104,7 +104,7 @@ class ZombiePackagePass:
         # and nothing is meant to import it.
         if not self._has_package_manifest(pkg, files):
             return False
-        # A package that ships a program (shebang CLI, JVM ``main``, a root
+        # A package that ships a program (shebang CLI, JVM or C# ``main``, a root
         # with a top-level ``main``) is run, never imported; one such file is
         # enough. A root alone is not (a Rust ``lib.rs`` is the library surface).
         # Test files, build-run source sets and symbol nodes are left out first.
@@ -189,7 +189,7 @@ class ZombiePackagePass:
             pkg_owner = max(owner_counts, key=lambda k: owner_counts[k])
         pkg_age_days: int | None = None
         if pkg_last_commit:
-            pkg_age_days = (datetime.now(UTC) - pkg_last_commit).days
+            pkg_age_days = self.ctx.days_since(pkg_last_commit)
         return {
             "last_commit_at": pkg_last_commit,
             "commit_count_90d": pkg_total_commits_90d,

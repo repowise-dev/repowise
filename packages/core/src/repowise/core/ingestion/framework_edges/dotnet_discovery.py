@@ -3,7 +3,9 @@
 ``modelBuilder.ApplyConfigurationsFromAssembly(...)`` makes EF Core
 instantiate every ``IEntityTypeConfiguration<T>`` in the assembly;
 ``AddFastEndpoints()`` does the same for every ``Endpoint<,>`` and
-``Validator<T>``, ``AddMediator()`` for every handler. No source names the
+``Validator<T>``, ``AddMediator()`` for every handler, MassTransit's
+``AddConsumers(...)`` for every consumer and an NServiceBus endpoint for every
+message handler. No source names the
 discovered class, so the import graph sees nothing and dead code called every
 one of them unused.
 
@@ -135,6 +137,46 @@ _DISCOVERIES: tuple[_Discovery, ...] = (
     _Discovery(frozenset({"IEndpoint"}), ("AddEndpoints",)),
     # AutoMapper profiles.
     _Discovery(frozenset({"Profile"}), ("AddAutoMapper",)),
+    # MassTransit consumers and their definitions. A ``...FromNamespaceContaining``
+    # call scans one namespace; it is read as the whole project (ceiling: a
+    # consumer outside that namespace is wired too, which can only hide a finding).
+    _Discovery(
+        frozenset({"IConsumer", "IJobConsumer", "ConsumerDefinition"}),
+        ("AddConsumers", "AddConsumersFromNamespaceContaining"),
+    ),
+    # MassTransit routing-slip activities.
+    _Discovery(
+        frozenset(
+            {"IActivity", "IExecuteActivity", "ActivityDefinition", "ExecuteActivityDefinition"}
+        ),
+        ("AddActivities", "AddActivitiesFromNamespaceContaining"),
+    ),
+    # MassTransit sagas and state machines.
+    _Discovery(
+        frozenset({"MassTransitStateMachine", "SagaDefinition", "ISaga"}),
+        (
+            "AddSagaStateMachines",
+            "AddSagaStateMachinesFromNamespaceContaining",
+            "AddSagas",
+            "AddSagasFromNamespaceContaining",
+        ),
+    ),
+    # NServiceBus: an endpoint scans every assembly it loads for these, so
+    # building the endpoint (or hosting it) is the registration.
+    _Discovery(
+        frozenset(
+            {
+                "IHandleMessages",
+                "IAmStartedByMessages",
+                "IHandleTimeouts",
+                "Saga",
+                "IHandleSagaNotFound",
+                "INeedInitialization",
+                "Feature",
+            }
+        ),
+        ("EndpointConfiguration", "UseNServiceBus"),
+    ),
 )
 
 _CALL_RE = re.compile(

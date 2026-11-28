@@ -64,6 +64,7 @@ def _metric_to_dict(
     perf_opportunities: int = 0,
     perf_analyzed: bool | None = None,
     summary: bool = False,
+    history_basis: str | None = None,
 ) -> dict:
     """One file row. ``summary=True`` omits the keys only the table and drawer read.
 
@@ -121,6 +122,11 @@ def _metric_to_dict(
         out["primary_biomarker"] = lead.get("primary_biomarker") if lead else None
         out["primary_reason"] = lead.get("primary_reason") if lead else None
         out["total_deduction"] = lead.get("total_deduction") if lead else None
+        # ``"short"``: too few recorded commits for most history markers to
+        # fire, so a high score here is an absent history, not a clean one.
+        # Omitted otherwise, like the MCP rows and the drawer's signals.
+        if history_basis:
+            out["history"] = history_basis
     return out
 
 

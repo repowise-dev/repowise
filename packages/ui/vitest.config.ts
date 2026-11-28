@@ -37,6 +37,7 @@ export default defineConfig({
       "@repowise-dev/types/events": path.resolve(__dirname, "../types/src/events.ts"),
       "@repowise-dev/types/views": path.resolve(__dirname, "../types/src/views.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
+      "@repowise-dev/types/estate": path.resolve(__dirname, "../types/src/estate.ts"),
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
       "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),
       "@repowise-dev/types/settings": path.resolve(__dirname, "../types/src/settings.ts"),
@@ -51,6 +52,7 @@ export default defineConfig({
         __dirname,
         "../types/src/agent-prompts.ts",
       ),
+      "@repowise-dev/types/first-look": path.resolve(__dirname, "../types/src/first-look.ts"),
       "@repowise-dev/types/files": path.resolve(__dirname, "../types/src/files.ts"),
       "@repowise-dev/types/external-systems": path.resolve(
         __dirname,
@@ -61,6 +63,10 @@ export default defineConfig({
       "@repowise-dev/types/refactoring": path.resolve(
         __dirname,
         "../types/src/refactoring.ts",
+      ),
+      "@repowise-dev/types/runtime-evidence": path.resolve(
+        __dirname,
+        "../types/src/runtime-evidence.ts",
       ),
       "@repowise-dev/types/coupling": path.resolve(__dirname, "../types/src/coupling.ts"),
       "@repowise-dev/types/stats": path.resolve(__dirname, "../types/src/stats.ts"),

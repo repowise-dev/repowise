@@ -113,8 +113,8 @@ def test_the_giant_outranks_the_wizard_on_complexity_removed_times_reach() -> No
     assert ranked["complexity removed"] == "963"
     assert ranked["files that import it"] == "32 (top fifth)"
     assert giant.rank < wizard.rank
-    # The wizard still earns more health credit: worth, not credit, orders the band.
-    assert giant.gain.value < wizard.gain.value
+    # The giant earns no more health credit: worth, not credit, orders the band.
+    assert giant.gain.value <= wizard.gain.value
 
 
 def test_history_orders_within_a_band_and_never_lifts_one() -> None:

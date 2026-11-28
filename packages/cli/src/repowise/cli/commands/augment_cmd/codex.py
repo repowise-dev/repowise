@@ -17,21 +17,48 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._shared import _find_repo_root
+from ._shared import _checkout_root, _find_repo_root, listed_tools
 from .decision_inject import (
     _edit_decision_notice,
     _edit_fix_history_notice,
     _session_decision_block,
 )
+from .fast_lookup import index_locked
 from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
     "[repowise] This repository has a local codebase wiki and graph index. "
-    "Use the repowise MCP tools for architecture overview, semantic search, "
-    "implementation context, risk/hotspot checks, decision history, and "
-    "dead-code analysis. After meaningful edits or git operations, run "
+    "Use the repowise MCP tools{uses}. After meaningful edits or git operations, run "
     "`repowise update` when refreshed context is needed."
 )
+
+#: A worktree reading its main checkout's index: same tools, no update advice,
+#: because updating here would build the worktree an index of its own.
+_MCP_CONTEXT_WORKTREE = (
+    "[repowise] This worktree reads its main checkout's codebase index. "
+    "Use the repowise MCP tools{uses}. Facts about files this branch changed describe the "
+    "main checkout's indexed version."
+)
+
+#: What each tool is used for, in the order the context names them. Only the
+#: tools Codex is listed here are named (:func:`listed_tools`).
+_TOOL_USES = {
+    "get_overview": "architecture overview",
+    "search_codebase": "semantic search",
+    "get_context": "implementation context",
+    "get_risk": "risk/hotspot checks",
+    "get_why": "decision history",
+    "get_dead_code": "dead-code analysis",
+}
+
+
+def _context(template: str, repo_path: Path) -> str:
+    """*template* naming what the tools Codex is listed here are for."""
+    listed = listed_tools(repo_path, "codex", _TOOL_USES)
+    uses = [use for name, use in _TOOL_USES.items() if name in listed]
+    if len(uses) > 2:
+        uses = [", ".join(uses[:-1]) + ",", uses[-1]]
+    return template.format(uses=f" for {' and '.join(uses)}" if uses else "")
 
 
 def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> str | None:
@@ -43,15 +70,21 @@ def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> s
     if repo_path is None:
         return None
 
+    checkout = _checkout_root(Path(cwd), repo_path)
+    context = _context(
+        _MCP_CONTEXT if checkout == repo_path else _MCP_CONTEXT_WORKTREE, repo_path
+    )
     if event == "UserPromptSubmit":
-        return _MCP_CONTEXT
+        return context
 
     # SessionStart: base context + relevance-ranked standing decisions.
-    try:
-        decisions = _session_decision_block(repo_path, session_id)
-    except Exception:
-        decisions = None
-    return f"{_MCP_CONTEXT}\n{decisions}" if decisions else _MCP_CONTEXT
+    decisions = None
+    if not index_locked(repo_path):
+        try:
+            decisions = _session_decision_block(repo_path, session_id, checkout)
+        except Exception:
+            decisions = None
+    return f"{context}\n{decisions}" if decisions else context
 
 
 def _handle_post_edit_use(
@@ -71,10 +104,18 @@ def _handle_post_edit_use(
     if not state_path.exists():
         return None
 
+    checkout = _checkout_root(Path(cwd), repo_path)
+    # A worktree reading its main checkout's index has nothing to update: the
+    # index describes the main checkout, and `repowise update` here would
+    # build this worktree an index of its own.
     staleness = (
-        "[repowise] Files were edited after the last indexed snapshot. "
-        "Run `repowise update` before relying on refreshed docs, graph context, "
-        "risk checks, or dead-code results."
+        None
+        if checkout != repo_path
+        else (
+            "[repowise] Files were edited after the last indexed snapshot. "
+            "Run `repowise update` before relying on refreshed docs, graph context, "
+            "risk checks, or dead-code results."
+        )
     )
 
     # Governing-decision and bug-history notices, from the same builders Claude
@@ -85,8 +126,8 @@ def _handle_post_edit_use(
         if isinstance(file_path, str) and file_path.strip():
             from repowise.core.fsutils import repo_relative
 
-            rel = repo_relative(file_path, repo_path, resolve=True)
-            if rel is not None:
+            rel = repo_relative(file_path, checkout, resolve=True)
+            if rel is not None and not index_locked(repo_path):
                 state = _load_session_state(repo_path, session_id)
                 for emit in (
                     lambda: _edit_decision_notice(repo_path, rel, session_id, state),
@@ -100,4 +141,4 @@ def _handle_post_edit_use(
                         notices.append(line)
                 _save_session_state(repo_path, state)
 
-    return "\n".join([staleness, *notices]) if notices else staleness
+    return "\n".join(line for line in (staleness, *notices) if line) or None

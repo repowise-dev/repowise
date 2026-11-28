@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 
+from repowise.core.analysis.decisions.provenance import normalize_text
 from repowise.core.analysis.decisions.scope import (
     SCOPE_BASIS_SELECTED,
     commit_scope_basis,
@@ -12,6 +14,7 @@ from repowise.core.analysis.decisions.scope import (
     selected_scope_files,
 )
 from repowise.core.forges import CHANGE_BODY_MARKERS, Forge
+from repowise.core.ingestion.git_indexer._constants import whole_body
 
 from .commit_signals import count_decision_signals
 from .records import ExtractedDecision
@@ -49,7 +52,7 @@ def _scope_from_selection(
 def _signal_commit_info(commit: dict) -> dict | None:
     """The prompt-ready record of a commit with decision signals, else None."""
     msg = commit.get("message", "")
-    body = commit.get("body", "")
+    body = whole_body(commit.get("body", ""))
     # Scan subject and body: squash-merge repos carry the rationale in the body.
     signal_count = count_decision_signals(f"{msg}\n{body}".lower())
     if signal_count <= 0:
@@ -95,6 +98,62 @@ def _attribute_to_commit(
     # the model's paths against.
     decision.proposed_files = None
     return sha
+
+
+#: A conventional-commit header (``fix(scope)!: ``). Limited to the standard
+#: types so prose such as ``Decision: use X`` is not read as one.
+_CONVENTIONAL_HEADER = re.compile(
+    r"^(?:feat|fix|refactor|perf|chore|docs|test|tests|build|ci|style|revert)"
+    r"(?:\([^)]*\))?!?:\s",
+    re.IGNORECASE,
+)
+_TRAILING_CHANGE_REF = re.compile(r"\s*\([#!]\d+\)$")
+_LIST_BULLET = re.compile(r"^\s*(?:[-*+]\s+)?")
+_NON_WORD = re.compile(r"[^\w\s]")
+
+
+def _subject_core(text: str) -> str:
+    """*text* without a conventional header, a trailing ``(#123)``, case or punctuation."""
+    text = _TRAILING_CHANGE_REF.sub("", _CONVENTIONAL_HEADER.sub("", text.strip()))
+    return normalize_text(_NON_WORD.sub("", text))
+
+
+def _commit_subjects(commit: dict, subject_key: str) -> set[str]:
+    """The cores of *commit*'s subject and of every squashed subject in its body.
+
+    A squash body lists each folded commit as ``* type(scope): subject``. Only
+    lines carrying a conventional header count, so body prose never does.
+    """
+    lines = [commit.get(subject_key) or ""]
+    for line in (commit.get("body") or "").splitlines():
+        line = _LIST_BULLET.sub("", line, count=1)
+        if _CONVENTIONAL_HEADER.match(line):
+            lines.append(line)
+    return {_subject_core(line) for line in lines} - {""}
+
+
+def drop_subject_restatements(
+    decisions: list[ExtractedDecision], batch: list[dict], subject_key: str
+) -> list[ExtractedDecision]:
+    """*decisions* without the ones whose ``decision`` is a commit subject line.
+
+    A subject announces what a commit changed; it is not a rule the code keeps
+    following. The substring gate grounds it anyway, because the subject is
+    part of the source text, so it is dropped here: a decision carrying a
+    conventional-commit header, or equal to a subject in *batch* (its own or a
+    squashed one in its body) once header, change number, case and
+    punctuation are set aside. Only exact restatements go; a decision that
+    adds to its subject is kept.
+    """
+    subjects = set().union(*(_commit_subjects(c, subject_key) for c in batch))
+    return [
+        d
+        for d in decisions
+        if not (
+            _CONVENTIONAL_HEADER.match((d.decision or "").strip())
+            or _subject_core(d.decision or "") in subjects
+        )
+    ]
 
 
 def _significant_commits(meta: dict) -> list[dict]:
@@ -145,6 +204,21 @@ def signal_commits(
     return commit_map, commit_files
 
 
+def restrict_to_commits(git_meta_map: dict[str, dict], shas: set[str]) -> dict[str, dict]:
+    """*git_meta_map* with each file's significant commits narrowed to *shas*.
+
+    *shas* are 8-character prefixes. Files left with no commit are dropped.
+    Both history miners read only this list, so an update hands them the
+    narrowed map to mine the commits it brought in and nothing older.
+    """
+    narrowed: dict[str, dict] = {}
+    for path, meta in git_meta_map.items():
+        kept = [c for c in _significant_commits(meta) if str(c.get("sha", ""))[:8] in shas]
+        if kept:
+            narrowed[path] = {**meta, "significant_commits_json": kept}
+    return narrowed
+
+
 def _pr_candidate(commit: dict, body: str) -> dict | None:
     """The prompt-ready record of a PR-shaped body with decision signals, else None."""
     low = body.lower()
@@ -156,6 +230,7 @@ def _pr_candidate(commit: dict, body: str) -> dict | None:
         "subject": commit.get("message", ""),
         "body": body,
         "pr": commit.get("pr_number"),
+        "date": commit.get("date", ""),
     }
 
 
@@ -174,7 +249,7 @@ def pr_candidates(
             if not sha:
                 continue
             files_by_sha.setdefault(sha, []).append(fp)
-            body = (c.get("body") or "").strip()
+            body = whole_body(c.get("body") or "").strip()
             if sha in candidates or not body:
                 continue
             candidate = _pr_candidate(c, body)

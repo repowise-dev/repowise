@@ -129,6 +129,50 @@ async def test_capture_new_commit_rows_bounds_by_since_ts(tmp_path) -> None:
     assert idx.capture_new_commit_rows(since_ts=int(newest_ts)) == []
 
 
+@pytest.mark.asyncio
+async def test_capture_new_commit_rows_retains_same_second_commits(tmp_path) -> None:
+    """Commits sharing the boundary timestamp with known_shas excluded are not dropped (#6150)."""
+    import os
+
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Test Author", "author@example.com")
+    env = os.environ.copy()
+    env["GIT_AUTHOR_DATE"] = "1700000000 +0000"
+    env["GIT_COMMITTER_DATE"] = "1700000000 +0000"
+    env["GIT_AUTHOR_NAME"] = "Test Author"
+    env["GIT_AUTHOR_EMAIL"] = "author@example.com"
+    env["GIT_COMMITTER_NAME"] = "Test Author"
+    env["GIT_COMMITTER_EMAIL"] = "author@example.com"
+
+    f = tmp_path / "a.py"
+    f.write_text("x = 1\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 1", env=env)
+    c1_sha = repo.head.commit.hexsha
+
+    f.write_text("x = 2\n")
+    repo.git.add("a.py")
+    repo.git.commit("-m", "commit 2", env=env)
+    c2_sha = repo.head.commit.hexsha
+
+    idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL)
+
+    # When since_ts is 1700000000 and c1_sha is known, c2_sha is captured
+    new_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha})
+    assert len(new_rows) == 1
+    assert new_rows[0]["sha"] == c2_sha
+
+    # When both c1_sha and c2_sha are in known_shas, idle update skips walk and captures 0 rows
+    idle_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas={c1_sha, c2_sha})
+    assert len(idle_rows) == 0
+
+    # When since_ts is 1700000000 and known_shas is empty set, both same-second commits are captured
+    empty_known_rows = idx.capture_new_commit_rows(since_ts=1700000000, known_shas=set())
+    assert len(empty_known_rows) == 2
+
+
 def _configure_author(repo, name: str, email: str) -> None:
     with repo.config_writer() as cw:
         cw.set_value("user", "name", name)
@@ -157,7 +201,6 @@ async def test_index_repo_captures_whole_history_totals(tmp_path) -> None:
     assert totals.total_contributor_count == 1
     assert totals.first_commit_author == "Ada Lovelace"
     assert totals.first_commit_at is not None
-
 
 
 @pytest.mark.asyncio
@@ -229,3 +272,45 @@ async def test_index_repo_commit_rows_empty_in_rename_mode(tmp_path) -> None:
     idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL, follow_renames=True)
     summary, _results = await idx.index_repo("repo1")
     assert summary.commit_rows == []
+
+
+class _Recorder:
+    """A progress callback that keeps every event it hears."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, int | None]] = []
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        self.events.append(("start", phase, total))
+
+    def on_item_done(self, phase: str) -> None:
+        self.events.append(("item", phase, None))
+
+    def on_phase_done(self, phase: str) -> None:
+        self.events.append(("done", phase, None))
+
+    def on_message(self, level: str, text: str) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_index_repo_shows_the_history_walk_as_it_reads(tmp_path) -> None:
+    """The commit walk counts its commits on a row of its own, and closes it."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Ada Lovelace", "ada@example.com")
+    # The readme's history lies below a window of 2, so the deep walk runs too.
+    _commit(repo, tmp_path / "README.md", "# a\n", "docs: add the readme")
+    for i in range(4):
+        _commit(repo, tmp_path / "a.py", f"x = {i}\n", f"feat: step {i}")
+    progress = _Recorder()
+
+    await GitIndexer(tmp_path, commit_limit=2).index_repo("repo1", progress=progress)
+
+    history = [e for e in progress.events if e[1] == "git.history"]
+    assert history[0] == ("start", "git.history", 5)
+    assert sum(1 for kind, _, _ in history if kind == "item") == 5
+    assert history[-1] == ("done", "git.history", None)
+    phases = {phase for _, phase, _ in progress.events}
+    assert phases <= {"git.history", "git.blame_index"}

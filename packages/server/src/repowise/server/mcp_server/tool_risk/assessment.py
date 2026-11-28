@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.pr_blast import untested_files
-from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS
+from repowise.core.analysis.security_scan import SYMBOL_NAME_KINDS, shown_snippet
 from repowise.core.co_change import confidence_ratio, parse_partners
+from repowise.core.code_origin import path_origin
+from repowise.core.ingestion.git_indexer.co_change import windowed_partners
+from repowise.core.persistence.crud.issue_links import fix_issue_quotes
 from repowise.core.persistence.models import (
     GitMetadata,
     Repository,
@@ -23,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
 )
 from repowise.server.mcp_server._meta import served_root
+from repowise.server.mcp_server._origin_rank import file_origins
 from repowise.server.mcp_server.tool_risk.history import (  # noqa: F401  re-exported
     _BUG_PRONE_FIXES,
     _TOP_FIX_SYMBOLS,
@@ -45,6 +51,32 @@ from repowise.server.repo_paths import missing_path_hint, normalize_target_path
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
+# Partner rows were the largest part of a card. The total stays on the card and
+# the tail stays recoverable, so three is enough to act on.
+_CO_CHANGE_LIMIT = 3
+
+
+@dataclass(frozen=True)
+class CoChangeWindow:
+    """A ``since`` window for co-change partners, resolved once per call.
+
+    ``git_since`` is the ``YYYY-MM-DD`` handed to git and echoed on the card;
+    ``indexed_files`` are the paths a partner may be, as for the stored walk.
+    """
+
+    git_since: str
+    indexed_files: frozenset[str]
+
+
+def _partner_rank(origin: str, target_origin: str) -> int:
+    """Shipped code first, then other non-test code, then tests.
+
+    A test target's test partners rank with shipped code, so the tests that
+    change with a test stay at the top of its card.
+    """
+    if origin == "production" or origin == target_origin == "test":
+        return 0
+    return 2 if origin == "test" else 1
 
 
 async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
@@ -183,28 +215,91 @@ async def _get_security_signals(session: AsyncSession, repo_id: str, target: str
             ),
             {"repo_id": repo_id, "fp": target},
         )
-        return [
-            {"kind": r[0], "severity": r[1], "snippet": r[2]}
-            for r in rows.all()
-            if r[0] not in SYMBOL_NAME_KINDS
-        ]
+        signals = []
+        for kind, severity, snippet in rows.all():
+            if kind in SYMBOL_NAME_KINDS:
+                continue
+            signal = {"kind": kind, "severity": severity}
+            if shown := shown_snippet(kind, snippet):
+                signal["snippet"] = shown
+            signals.append(signal)
+        return signals
     except Exception:
         return []
 
 
+def advisory_call_line(rows: list[Any]) -> str:
+    """One line naming the strongest advisory production code reaches through a file.
+
+    *rows* are one file's
+    :func:`~repowise.core.inventory.advisory_tiers.called_advisories_in_files`
+    rows, strongest first; their sites are calls in that file.
+    """
+    top = rows[0]
+    notes = ", ".join(n for n in (top.advisory.severity, top.fix and f"fixed in {top.fix}") if n)
+    head = f"{top.advisory.id}{f' ({notes})' if notes else ''}"
+    site = top.tier.sites[0]
+    where = f"{site.path}:{site.line}" if site.line else site.path
+    line = f"{head} in {top.package}: a production function calls into the package at {where}"
+    if len(rows) > 1:
+        key = (
+            f"package:{top.ecosystem}:{top.package}" if top.ecosystem else f"package:{top.package}"
+        )
+        line += f'; {len(rows) - 1} more advisory(ies): get_context(targets=["{key}"])'
+    return line
+
+
+async def attach_advisory_calls(
+    session: AsyncSession, repo_id: str, repo_root: str | None, cards: list[dict]
+) -> None:
+    """Add ``advisory_call`` to each card whose file calls, from production code,
+    a package with a stored advisory. Every other card is left untouched, and
+    with no stored package call in the targets this is one indexed read."""
+    from repowise.core.inventory.advisory_tiers import called_advisories_in_files
+
+    try:
+        by_path: dict[str, list[dict]] = {}
+        for card in cards:
+            if card.get("resolved") is not False:
+                path = normalize_target_path(card["target"], repo_root=repo_root)
+                by_path.setdefault(path, []).append(card)
+        if not by_path:
+            return
+        # A savepoint, so a failed read never aborts the transaction the rest
+        # of get_risk reads through.
+        async with session.begin_nested():
+            found = await called_advisories_in_files(session, repo_id, repo_root or ".", by_path)
+    except Exception:
+        # The card stands without the line; it is never worth failing the call.
+        return
+    for path, rows in found.items():
+        for card in by_path[path]:
+            card["advisory_call"] = advisory_call_line(rows)
+
+
 def _build_co_changes(
-    meta: Any, structural_related: Any, exclude_spec: Any
+    meta: Any,
+    structural_related: Any,
+    exclude_spec: Any,
+    origins: dict[str, str] | None = None,
+    target_origin: str = "production",
 ) -> tuple[list[dict], int]:
     """Historical co-change partners and their exact post-filter population.
 
-    Larger lists make MCP responses verbose without adding signal: top-5 captures
-    the bulk of the temporal-coupling mass and keeps tool output tight for agents.
-
-    Row order stays by recency-decayed ``weight``. Each row carries ``file_path``,
-    ``support`` (shared commit count, when known), ``conf_ab`` (share of target's
-    commits that touched partner, when known), and ``has_import_link``.
+    Rows lead with shipped code (``code_origin``: the stored origin in
+    *origins*, else the path's), so a target's tests do not crowd its source
+    partners out of the capped rows; within an origin, order stays by the
+    stored ``weight``. Each row carries ``file_path``, ``support`` (shared
+    commit count, when known), ``conf_ab`` (share of target's commits that
+    touched partner, when known), and ``has_import_link``.
     """
-    partners_sorted = parse_partners(meta.co_change_partners_json)
+    origins = origins or {}
+    partners_sorted = sorted(
+        parse_partners(meta.co_change_partners_json),
+        key=lambda p: _partner_rank(
+            origins.get(p.file_path) or path_origin(p.file_path), target_origin
+        ),
+    )
     relation_types = structural_related if isinstance(structural_related, dict) else {}
     related_paths = set(structural_related)
     rows = []
@@ -408,6 +503,58 @@ async def _no_metadata_card(
     return card
 
 
+async def _co_change_source(
+    session: AsyncSession,
+    repo_id: str,
+    meta: Any,
+    lookup_path: str,
+    repo_root: str | None,
+    window: CoChangeWindow | None,
+) -> tuple[Any, dict[str, str], dict[str, Any] | None]:
+    """The partner records to show, their origins, and the card's window note.
+
+    Without *window* the records are the stored ones. With it they come from a
+    walk of the checkout since the window's date; when that walk cannot run,
+    the stored records stay and the note says the window was not applied, so
+    all-history partners are never read as recent ones.
+    """
+    source: Any = meta
+    note: dict[str, Any] | None = None
+    if window is not None:
+        walked = (
+            await asyncio.to_thread(
+                windowed_partners,
+                repo_root,
+                lookup_path,
+                window.git_since,
+                set(window.indexed_files),
+            )
+            if repo_root
+            else None
+        )
+        if walked is None:
+            note = {
+                "since": window.git_since,
+                "applied": False,
+                "reason": (
+                    "git could not walk the checkout (missing, failed or timed out); "
+                    "partners span the indexed history"
+                ),
+            }
+        else:
+            records, commits = walked
+            source = SimpleNamespace(co_change_partners_json=records)
+            note = {"since": window.git_since, "target_commits": commits}
+    paths = [p.file_path for p in parse_partners(source.co_change_partners_json)]
+    origins = await file_origins(session, repo_id, [lookup_path, *paths]) if paths else {}
+    return source, origins, note
+
+
+def _applied_since(note: dict[str, Any] | None) -> str | None:
+    """The date a window counted partners from, when it was applied."""
+    return note["since"] if note and "target_commits" in note else None
+
+
 def _apply_co_changes(
     card: dict[str, Any],
     meta: Any,
@@ -415,10 +562,18 @@ def _apply_co_changes(
     structural_related: Any,
     exclude_spec: Any,
     collector: OmissionCollector | None,
+    origins: dict[str, str] | None = None,
+    target_origin: str = "production",
+    source: Any = None,
 ) -> int:
-    """Add the hotspot flags and co-change partners; return the partner total."""
-    population, total = _build_co_changes(meta, structural_related, exclude_spec)
-    co_changes = population[:_RELATIONSHIP_LIMIT]
+    """Add the hotspot flags and co-change partners; return the partner total.
+
+    *source* holds the partner records when they are not *meta*'s stored ones.
+    """
+    population, total = _build_co_changes(
+        meta if source is None else source, structural_related, exclude_spec, origins, target_origin
+    )
+    co_changes = population[:_CO_CHANGE_LIMIT]
     card["hotspot_score"] = meta.churn_percentile or 0.0
     # The stored flag already applies the absolute activity floors, which a
     # client thresholding the score alone cannot reproduce.
@@ -431,9 +586,9 @@ def _apply_co_changes(
         card,
         "co_change_partners",
         population,
-        _RELATIONSHIP_LIMIT,
+        _CO_CHANGE_LIMIT,
         collector,
-        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        label=f"{target} :: co_change_partners beyond cap={_CO_CHANGE_LIMIT}",
         preserve_counts=True,
     )
     card["relationship_analysis"]["co_change"] = {
@@ -458,12 +613,15 @@ async def _assess_one_target(
     include_graph: bool = False,
     as_of_ts: datetime | None = None,
     repo_root: str | None = None,
+    window: CoChangeWindow | None = None,
 ) -> dict:
     """Assess risk for a single target file.
 
     Enriches each result with:
-    - test_gap: bool — True when no test file matching this file's basename exists.
-    - security_signals: list of {kind, severity, snippet} from security_findings.
+    - test_gap: bool, True when nothing shows a test reaches this file
+      (``pr_blast.untested_files``: coverage, the reach walk, or a test named for it).
+    - security_signals: list of {kind, severity, snippet} from security_findings;
+      a secret has no snippet.
     """
     repo_id = repository.id
     repo_root = served_root(repository, repo_root)
@@ -505,17 +663,39 @@ async def _assess_one_target(
             result_data, session, repo_id, target, lookup_path, dep_count
         )
 
-    co_changes_total = _apply_co_changes(
-        result_data, meta, target, import_links.get(lookup_path, {}), exclude_spec, collector
+    source, origins, window_note = await _co_change_source(
+        session, repo_id, meta, lookup_path, repo_root, window
     )
+    co_changes_total = _apply_co_changes(
+        result_data,
+        meta,
+        target,
+        import_links.get(lookup_path, {}),
+        exclude_spec,
+        collector,
+        origins,
+        origins.get(lookup_path) or path_origin(lookup_path),
+        source,
+    )
+    if window_note is not None:
+        result_data["co_change_window"] = window_note
     result_data.update(history_fields(meta, dep_count, team_size))
     defect_profile = _defect_profile(meta, now=as_of_ts)
     if defect_profile is not None:
+        quotes = await fix_issue_quotes(session, repo_id, [lookup_path])
+        if quotes.get(lookup_path):
+            defect_profile["linked_issues"] = quotes[lookup_path]
         result_data["defect_profile"] = defect_profile
     result_data["test_gap"] = await _check_test_gap(session, repo_id, lookup_path)
     result_data["security_signals"] = await _get_security_signals(session, repo_id, lookup_path)
     result_data["commit_count_capped"] = getattr(meta, "commit_count_capped", False)
     result_data["risk_summary"] = risk_summary(
-        target, meta, result_data, defect_profile, dep_count, co_changes_total
+        target,
+        meta,
+        result_data,
+        defect_profile,
+        dep_count,
+        co_changes_total,
+        co_change_since=_applied_since(window_note),
     )
     return result_data

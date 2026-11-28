@@ -21,6 +21,7 @@ from .base import (
     RemoteRef,
     collect_refs,
     join_url,
+    line_anchor,
     looks_like_sha,
     quote_path,
     quote_segment,
@@ -104,15 +105,13 @@ class Azure(BaseForge):
     def change_url(self, ref: RemoteRef, number: int) -> str:
         return f"{ref.web_base}/pullrequest/{number}"
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         # The shape Azure's own "copy link to line" produces.
         url = f"{ref.web_base}?path=/{quote_path(path)}&version={_version(rev)}"
-        if line:
-            url += (
-                f"&line={line}&lineEnd={line + 1}"
-                "&lineStartColumn=1&lineEndColumn=1&lineStyle=plain"
-            )
-        return url + "&_a=contents"
+        lines = "&line={line}&lineEnd={after}&lineStartColumn=1&lineEndColumn=1&lineStyle=plain"
+        return url + line_anchor(line, end_line, lines, lines) + "&_a=contents"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:
         return (

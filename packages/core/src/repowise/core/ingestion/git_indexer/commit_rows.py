@@ -23,10 +23,11 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 from ._constants import classify_commit_category, is_fix_commit
-from .identity import author_identity_key
+from .identity import build_identity_resolver
 
 # Commit subjects are a headline (`%s`); cap defensively against a pathological
 # single-line subject so one row can't bloat the table.
@@ -47,18 +48,22 @@ def author_experience_by_sha(commits: Iterable[Mapping[str, Any]]) -> dict[str, 
 
     Walks *commits* oldest→newest (by ``ts``) and returns, per sha, the running
     tally for that author BEFORE the commit. Ties on the same timestamp are
-    ordered as-given, which is fine for a count. Identities are folded through
-    :func:`_author_key`, so ``noreply`` variants of one person share a tally.
+    ordered as-given, which is fine for a count. Authors are merged into people
+    by the identity resolver built over *commits*, so one person's noreply and
+    real emails, or two names on one email, share a tally.
 
     The count is only ever "prior commits **within this set**". Callers that
     persist it must therefore hand over the whole history they hold, not a
     trailing batch — a batch-local tally restarts every author at zero.
     """
     ordered = sorted(commits, key=lambda c: c.get("ts", 0) or 0)
+    resolve = build_identity_resolver(
+        (c.get("author_name", ""), c.get("author_email", "")) for c in ordered
+    )
     exp_by_sha: dict[str, int] = {}
     tally: dict[str, int] = {}
     for c in ordered:
-        key = author_identity_key(c.get("author_name", ""), c.get("author_email", ""))
+        key = resolve(c.get("author_name", ""), c.get("author_email", ""))
         exp_by_sha[c["sha"]] = tally.get(key, 0)
         tally[key] = tally.get(key, 0) + 1
     return exp_by_sha
@@ -144,10 +149,12 @@ def _file_rows_for(sha: str, changes: list) -> list[dict]:
     numstat can repeat a path (a split rename pair); (sha, path) is the natural
     key, so fold rather than let the upsert pick one arbitrarily.
     """
+    from ..traverser import _BLOCKED_EXTENSIONS
+
     seen: set[str] = set()
     rows: list[dict] = []
     for path, added, deleted in changes:
-        if not path or path in seen:
+        if not path or path in seen or PurePosixPath(path).suffix.lower() in _BLOCKED_EXTENSIONS:
             continue
         seen.add(path)
         rows.append(
@@ -161,15 +168,27 @@ def _file_rows_for(sha: str, changes: list) -> list[dict]:
     return rows
 
 
-def build_commit_file_rows(parsed_commits: list[dict]) -> list[dict]:
+def build_commit_file_rows(parsed_commits: list[dict], path_prefix: str = "") -> list[dict]:
     """Build ``git_commit_files`` rows from the same sunk records.
 
     The per-file detail ``build_commit_rows`` aggregates away. Same input, same
     walk, so the two must always be built from one batch.
+
+    *path_prefix* keeps only files under that git-root-relative directory. The
+    commit rows keep describing the whole commit; only the per-file detail is
+    narrowed, which is what stops a bulk commit of a large repository from
+    storing a row per file for a directory that indexes a handful of them.
+    Paths with an extension the index never reads (binaries, engine assets)
+    get no row either: an asset import can touch thousands of them at once.
     """
+    prefix = f"{path_prefix}/" if path_prefix else ""
+
+    def _scoped(changes: list) -> list:
+        return [c for c in changes if (c[0] or "").startswith(prefix)] if prefix else changes
+
     return [
         row
         for c in parsed_commits
         if c.get("sha")
-        for row in _file_rows_for(c["sha"], c.get("changes") or [])
+        for row in _file_rows_for(c["sha"], _scoped(c.get("changes") or []))
     ]

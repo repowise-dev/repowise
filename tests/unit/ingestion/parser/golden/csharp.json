@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -30,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": 0,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -53,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -78,6 +83,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -103,6 +109,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -128,6 +135,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -151,6 +159,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -174,6 +183,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -197,6 +207,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -222,6 +233,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -245,6 +257,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -270,6 +283,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -277,7 +291,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "using System.IO;",
@@ -295,6 +312,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -302,7 +320,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "using System.Net.Http;",
@@ -320,6 +341,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -327,7 +349,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "using System.Threading.Tasks;",
@@ -345,6 +370,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -352,7 +378,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       },
       {
         "raw_statement": "using Microsoft.EntityFrameworkCore;",
@@ -370,6 +399,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -377,12 +407,34 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
+      {
+        "target_name": "ToListAsync",
+        "receiver_name": "ctx.Users",
+        "caller_symbol_id": "lang_samples/csharp/PerfIoInLoop.cs::PerfIoInLoop::EfAsyncN1",
+        "line": 21,
+        "argument_count": 0,
+        "receiver_call": null,
+        "start_byte": 815,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null,
+        "is_construction": false
+      },
       {
         "target_name": "GetAsync",
         "receiver_name": "c",
@@ -390,13 +442,18 @@
         "line": 29,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1016,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "u"
+        ],
+        "is_construction": false
       },
       {
         "target_name": "SaveChangesAsync",
@@ -405,13 +462,16 @@
         "line": 37,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1205,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "ReadAllText",
@@ -420,13 +480,36 @@
         "line": 45,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1377,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": [
+          "p"
+        ],
+        "is_construction": false
+      },
+      {
+        "target_name": "ToList",
+        "receiver_name": "ctx.Users",
+        "caller_symbol_id": "lang_samples/csharp/PerfIoInLoop.cs::PerfIoInLoop::SyncLinqInLoop",
+        "line": 53,
+        "argument_count": 0,
+        "receiver_call": null,
+        "start_byte": 1570,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Wait",
@@ -435,13 +518,16 @@
         "line": 70,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2034,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -507,7 +593,9 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/assertions.cs": {
     "file_info": {
@@ -519,7 +607,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -540,6 +631,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": 0,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -563,6 +655,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -586,6 +679,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -594,6 +688,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -603,13 +698,19 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 164,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -618,13 +719,19 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 192,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -633,13 +740,19 @@
         "line": 10,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 220,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -648,13 +761,19 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 248,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -663,13 +782,19 @@
         "line": 12,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 276,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -678,13 +803,19 @@
         "line": 13,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 304,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -693,13 +824,19 @@
         "line": 14,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 332,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -708,13 +845,19 @@
         "line": 15,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 360,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -723,13 +866,19 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 388,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -738,13 +887,19 @@
         "line": 17,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 416,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -753,13 +908,19 @@
         "line": 18,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 444,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -768,13 +929,19 @@
         "line": 19,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 472,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -783,13 +950,19 @@
         "line": 20,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 500,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -798,13 +971,19 @@
         "line": 21,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 528,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -813,13 +992,19 @@
         "line": 22,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 556,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -828,13 +1013,19 @@
         "line": 23,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 584,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -843,13 +1034,19 @@
         "line": 28,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 651,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "int constant",
+          "int constant"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "Equal",
@@ -858,13 +1055,22 @@
         "line": 30,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 698,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          null,
+          "int constant"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ],
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -874,7 +1080,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/classes.cs": {
     "file_info": {
@@ -886,7 +1094,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -907,6 +1118,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": 0,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -917,7 +1129,7 @@
         "name": "total",
         "qualified_name": "lang_samples.csharp.classes.Cohesive.total",
         "kind": "variable",
-        "signature": "total",
+        "signature": "total -> int",
         "start_line": 6,
         "end_line": 6,
         "docstring": null,
@@ -930,6 +1142,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -940,7 +1153,7 @@
         "name": "count",
         "qualified_name": "lang_samples.csharp.classes.Cohesive.count",
         "kind": "variable",
-        "signature": "count",
+        "signature": "count -> int",
         "start_line": 7,
         "end_line": 7,
         "docstring": null,
@@ -953,6 +1166,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -976,6 +1190,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1001,6 +1216,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1026,6 +1242,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1051,6 +1268,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1076,6 +1294,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": 0,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1086,7 +1305,7 @@
         "name": "a",
         "qualified_name": "lang_samples.csharp.classes.Splintered.a",
         "kind": "variable",
-        "signature": "a",
+        "signature": "a -> int",
         "start_line": 34,
         "end_line": 34,
         "docstring": null,
@@ -1099,6 +1318,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1109,7 +1329,7 @@
         "name": "b",
         "qualified_name": "lang_samples.csharp.classes.Splintered.b",
         "kind": "variable",
-        "signature": "b",
+        "signature": "b -> int",
         "start_line": 35,
         "end_line": 35,
         "docstring": null,
@@ -1122,6 +1342,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1145,6 +1366,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1170,6 +1392,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1195,6 +1418,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1220,6 +1444,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1245,6 +1470,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [
@@ -1255,6 +1481,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1264,7 +1491,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "csharp/nested.cs": {
     "file_info": {
@@ -1276,7 +1505,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1297,6 +1529,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": 0,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1320,6 +1553,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1343,6 +1577,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1366,6 +1601,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1374,6 +1610,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1383,6 +1620,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

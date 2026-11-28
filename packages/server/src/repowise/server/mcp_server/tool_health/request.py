@@ -32,6 +32,11 @@ FIX_FIRST_CAP = 5
 """Items in the bare dashboard's ``fix_first`` block, however large ``limit`` is.
 The rest are one ``only=["fix_first"]`` page or ``get_health(fix_id=...)`` away."""
 
+TARGETED_FINDINGS_CAP = 5
+"""Findings a targeted call lists when no ``limit`` is passed: the highest-impact
+few, beside ``findings_total`` and a ``recovery`` call for the rest. A large file
+otherwise lists up to :data:`DEFAULT_LIMIT` findings (8 KB on one measured file)."""
+
 FIX_FIRST_PAGE_CAP = 25
 """Items one ``only=["fix_first"]`` page emits when ``limit`` is passed: up to
 this, ``cursor`` for the next page. With no ``limit`` a page is
@@ -163,6 +168,12 @@ class HealthRequest:
         if self.pages_fix_first and self.limit_explicit:
             return min(self.limit, FIX_FIRST_PAGE_CAP)
         return min(self.limit, FIX_FIRST_CAP)
+
+    @property
+    def targeted_findings_cap(self) -> int:
+        """Findings a targeted response lists: ``limit`` when passed, else
+        :data:`TARGETED_FINDINGS_CAP`."""
+        return self.limit if self.limit_explicit else min(self.limit, TARGETED_FINDINGS_CAP)
 
     @property
     def fix_first_cursor(self) -> int:

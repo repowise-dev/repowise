@@ -8,7 +8,7 @@ import {
   filePageId,
 } from "@repowise-dev/ui/shared/entity";
 import type { FileCardData, FileCardLinks } from "@repowise-dev/ui/shared/file-card";
-import { commitsViewHref } from "@/lib/changes";
+import { reviewHref } from "@/lib/changes";
 
 /**
  * Stateful host for FileCardDialog. Pages that have a list of files (hotspots,
@@ -38,7 +38,7 @@ export function useFileCardHost(repoId?: string) {
               // reader somewhere plausible and wrong.
               docs: docsPagePath(`/repos/${repoId}`, filePageId(next.file_path)),
               symbols: `/repos/${repoId}/architecture?view=symbols&q=${encodeURIComponent(next.file_path)}`,
-              blastRadius: `${commitsViewHref(repoId, "review")}&file=${encodeURIComponent(next.file_path)}`,
+              blastRadius: reviewHref(repoId, { file: [next.file_path] }),
               deadCode: `/repos/${repoId}/code-health?tab=dead-code`,
               decisions: `/repos/${repoId}/decisions?file=${encodeURIComponent(next.file_path)}`,
             }

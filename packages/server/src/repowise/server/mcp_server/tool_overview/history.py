@@ -10,15 +10,25 @@ from typing import Any
 _RISKIEST_FILES = 5
 
 
-def _build_git_health(all_git: list, repo_root: Path | str | None = None) -> dict[str, Any]:
-    """Repo-wide git health: hotspot count, churn trend and the riskiest files."""
+def _build_git_health(
+    all_git: list, repo_root: Path | str | None = None, hotspot_count: int | None = None
+) -> dict[str, Any]:
+    """Repo-wide git health: hotspot count, churn trend and the riskiest files.
+
+    *hotspot_count* is the count the web app quotes
+    (:func:`repowise.server.services.hotspots.count_hotspots`); without it the
+    flagged rows are counted.
+    """
     if not all_git:
         return {}
-    return {
-        "hotspot_count": sum(1 for g in all_git if g.is_hotspot),
+    health = {
+        "hotspot_count": (
+            hotspot_count if hotspot_count is not None else sum(1 for g in all_git if g.is_hotspot)
+        ),
         "churn_trend": _churn_trend(all_git),
-        "riskiest_files": _riskiest_files(all_git, repo_root),
     }
+    riskiest = _riskiest_files(all_git, repo_root)
+    return {**health, "riskiest_files": riskiest} if riskiest else health
 
 
 def _riskiest_files(all_git: list, repo_root: Path | str | None) -> list[str]:

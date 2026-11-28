@@ -276,7 +276,7 @@ async def test_kept_outcomes_follow_head(root):
 
     class _Session:
         async def execute(self, *_a, **_k):
-            return SimpleNamespace(scalar_one_or_none=lambda: None, scalars=lambda: SimpleNamespace(all=list))
+            return SimpleNamespace(scalar_one_or_none=lambda: None, scalars=lambda: SimpleNamespace(all=list), all=list)
 
     row = SimpleNamespace(
         change_id="pr-1",
@@ -393,7 +393,7 @@ class _Session:
         from types import SimpleNamespace
 
         return SimpleNamespace(
-            scalar_one_or_none=lambda: None, scalars=lambda: SimpleNamespace(all=list)
+            scalar_one_or_none=lambda: None, scalars=lambda: SimpleNamespace(all=list), all=list
         )
 
 
@@ -480,7 +480,9 @@ async def test_a_legacy_checklist_gains_outcomes_and_a_merge_keeps_a_newer_rebui
         async with get_session(factory) as session:
             row = await get_change(session, repo_id, "pr-7")
             got = await change_evidence(session, repo_id, root, row)
-        assert [i.kind for i in got.items] == ["health_delta", "outcomes"]
+        # Kept with no catalog digest, so its components and owners are resolved too.
+        kinds = ["components_touched", "owners", "health_delta", "outcomes"]
+        assert [i.kind for i in got.items] == kinds
         assert got.generated_at == legacy.generated_at
         async with get_session(factory) as session:
             stored = cached_evidence(await get_change(session, repo_id, "pr-7"))
@@ -504,3 +506,12 @@ async def test_a_legacy_checklist_gains_outcomes_and_a_merge_keeps_a_newer_rebui
         assert again.to_dict() == merged.to_dict()
     finally:
         await engine.dispose()
+
+
+def test_file_fix_rate_counts_a_commit_a_linked_bug_makes_a_fix(root):
+    change = _commit(root, {"src/a.py": "a = 1\n"}, "feat: a (#1)", T0 + DAY)
+    linked = _commit(root, {"src/a.py": "a = 2\n"}, "Handle empty carts (ENG-42)", T0 + 5 * DAY)
+    target = _target(root, change, files=("src/a.py",))
+    assert file_fix_rate(root, _head(root), target, 30)["files_fixed"] == 0
+    rate = file_fix_rate(root, _head(root), target, 30, frozenset({linked}))
+    assert rate["fixed"] == [{"path": "src/a.py", "fixes": [linked]}]

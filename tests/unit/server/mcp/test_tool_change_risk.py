@@ -117,9 +117,9 @@ def test_a_server_older_than_the_checkout_says_restart(monkeypatch):
     monkeypatch.setattr(tool, "_delta_service", _stale)
     delta = tool._compare_health("/repo", "HEAD", (), ())
     assert delta.status == "unavailable"
-    assert delta.explanation.startswith("The MCP server is running older repowise code")
+    assert delta.explanation.startswith("This MCP server runs older repowise code")
     assert "name_added_after_server_start" in delta.explanation
-    assert "Restart the MCP server" in delta.explanation
+    assert "restarting the server" in delta.explanation
 
 
 def test_a_missing_third_party_module_keeps_the_raw_failure(monkeypatch):
@@ -305,7 +305,9 @@ async def test_impacted_tests_degrade_on_an_unreadable_index(
 
     change = changed_lines.ChangeSet({}, set(), "HEAD", None, None)
     monkeypatch.setattr(changed_lines, "change_set", lambda *_a, **_k: change)
-    monkeypatch.setattr(tool, "select_change_tests", _raise)
+    from repowise.server.mcp_server import _test_selection
+
+    monkeypatch.setattr(_test_selection, "select_change_tests", _raise)
     block = await tool._impacted_tests_block(
         SimpleNamespace(session_factory=factory, path=str(tmp_path)),
         {"a.py": {1}},
@@ -803,13 +805,14 @@ def test_the_directive_names_the_scope_and_the_tests_to_extend():
         "1 changed executable line in the working tree is uncovered; "
         "add tests for them (patch_coverage.files)"
     )
-    # Files changed since the coverage was measured lead: they have no figure yet.
+    # Stale files are a status (freshness, file_counts), never an action; the
+    # measured lines still get theirs.
     stale = {**_patch_block(0, 1, hints, freshness="stale"), "file_counts": {"stale_file": 2}}
     assert patch_coverage_action(stale) == (
-        "Stored coverage predates this change: re-run the tests with coverage, then "
-        "`repowise coverage add` (the hook does it automatically) and call again "
-        "(2 changed files not measured until then)"
+        "1 changed executable line since origin/main is uncovered; "
+        "extend tests/test_a.py, tests/test_c.py"
     )
+    assert patch_coverage_action({**stale, "covered_line_count": 1}) is None
     # A file untouched since the measurement keeps real figures, stale or not.
     assert patch_coverage_action(_patch_block(0, 1, freshness="stale")).endswith(
         "is uncovered; add tests for them (patch_coverage.files)"
@@ -968,3 +971,31 @@ async def test_index_dependents_come_from_the_stored_graph(setup_mcp, factory):
     assert counts["src/auth/service.py"] == 2
     assert counts["src/db/models.py"] == 1
     assert await _index_dependents(SimpleNamespace(session_factory=None)) is None
+
+
+@pytest.mark.asyncio
+async def test_index_dependents_are_read_once_per_index_state(setup_mcp, factory, monkeypatch):
+    """Counting reads every graph edge, so an unchanged index reuses the count."""
+    from types import SimpleNamespace
+
+    from repowise.core.analysis.change_health import index_context
+    from repowise.server.mcp_server import _index_state
+    from repowise.server.mcp_server.tool_change_risk import health
+
+    monkeypatch.setattr(health, "_DEPENDENTS", type(health._DEPENDENTS)())
+    reads: list[str] = []
+    real = index_context.index_dependents
+
+    async def counted(session, repository_id):
+        reads.append(repository_id)
+        return await real(session, repository_id)
+
+    monkeypatch.setattr(index_context, "index_dependents", counted)
+    ctx = SimpleNamespace(session_factory=factory, path="/checkout")
+    first = await health._index_dependents(ctx)
+    assert await health._index_dependents(ctx) == first
+    assert len(reads) == 1
+    # A new index state (an update ran) reads again.
+    monkeypatch.setattr(_index_state, "index_state_key", lambda repository: "after-update")
+    assert await health._index_dependents(ctx) == first
+    assert len(reads) == 2

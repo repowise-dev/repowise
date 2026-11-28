@@ -23,6 +23,7 @@ from repowise.cli.ci import (
     ci_notices,
     ci_revspec,
     report_baseline_growth,
+    write_gate_summary,
 )
 from repowise.cli.helpers import console, repo_index_session, resolve_command_target, run_async
 from repowise.cli.output import emit_json, emit_refusal, format_option
@@ -52,8 +53,7 @@ def _repo_path(path: str | None, repo_alias: str | None, no_workspace: bool, fmt
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(ci_notices(fmt), command="doc-drift")
-    return target.single_repo_path().resolve()
+    return target.narrow(ci_notices(fmt), command="doc-drift").resolve()
 
 
 async def _read(root: Path, *, min_confidence: float | None, kinds: tuple[str, ...]) -> Any:
@@ -235,6 +235,8 @@ def _emit(
             for line in render.render_github_annotations(findings, gate=gate):
                 click.echo(line)
             append_step_summary(markdown)
+        if gate is not None:
+            write_gate_summary(render.gate_summary(gate))
     else:
         _render(payload)
         if gate is not None:

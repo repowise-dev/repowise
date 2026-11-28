@@ -42,27 +42,57 @@ def _is_valid_credential_value(val: str) -> bool:
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
 
+# Names matching keyword patterns that are public manifest attributes or
+# non-secret metadata rather than credentials.
+_KEYWORD_EXCLUDED_NAMES: frozenset[str] = frozenset(
+    {
+        "publickeytoken",
+    }
+)
+
 # A snake_case or kebab-case name (``x-api-key``, ``repowise-security-ignore``)
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
 # credential. Letters only: a digit or capital makes it look like a key.
-_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)")
+# ``{!Contact.Name}`` is a Salesforce merge field (Visualforce, formulas, flows,
+# email templates) and ``{#v.value}`` an Aura unbound expression.
+_TEMPLATE_VALUE = re.compile(r"\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\)|\{[!#].*?\}")
 _SCHEME_TEMPLATE_VALUE = re.compile(
     r"(?i:(?:bearer|basic|token))\s+(?:\{\{.*?\}\}|\$\{.*?\}|\$\(.*?\))"
 )
-_OWN_NAME_VALUE = re.compile(r"[A-Za-z_-]+")
+# A regular expression, not a key: a character range with a quantifier
+# (``(_D[0-9]+D_)``), or a pattern anchored at both ends around a group with an
+# alternation (``^(-?\\d{1,2}|null)$``). The anchors and the alternation together
+# keep a password that merely holds ``\s+``, ``^``, ``$`` or ``(...)`` reportable.
+_REGEX_VALUE = re.compile(
+    r"\[\^?[^\]]*\w-\w[^\]]*\][+*?{]"
+    r"|\A\^.*\([^()]*\|[^()]*\).*\$\Z"
+)
+# ``$`` joins a namespace to a key in JavaScript names (``SECRETS$ADD_SECRET``).
+_OWN_NAME_VALUE = re.compile(r"[A-Za-z_$-]+")
 _CONSTANT_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # Uppercase env-var names and sentinels can have short version numbers. Four
 # consecutive digits are credential-shaped, so keep those values reportable.
 _UPPER_KEY_NAME_VALUE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _LONG_DIGIT_RUN = re.compile(r"[0-9]{4,}")
+# Lookup/reference paths (``@group:reference:api``, ``secrets/db/password``):
+# either a leading ``@`` lookup, a leading ``/`` path, or 3+ slash/colon
+# segments with no mid-string ``@`` so embedded ``user:pass@host`` credentials
+# and lowercase dotted/colon-joined passwords stay flagged.
+_REFERENCE_PATH_VALUE = re.compile(
+    r"@[a-z]+(?:[:/.][a-z]+)+"
+    r"|/[a-z]+(?:/[a-z]+)+"
+    r"|[a-z]+(?:/[a-z]+){2,}"
+    r"|[a-z]+(?::[a-z]+){2,}"
+)
 
 
 def _is_own_name_value(value: str, name: str) -> bool:
     """Whether a letter-only constant holds its own name or a suffix of it."""
     if not _OWN_NAME_VALUE.fullmatch(value):
         return False
+    # ``$`` is kept: ``pass$word`` is not the name ``password``.
     normalized_name = re.sub(r"[_-]", "", name).lower()
     normalized_value = re.sub(r"[_-]", "", value).lower()
     return bool(normalized_name) and normalized_name.endswith(normalized_value)
@@ -70,7 +100,7 @@ def _is_own_name_value(value: str, name: str) -> bool:
 
 def _assignment_name(prefix: str) -> str:
     """Name assigned to the literal immediately following *prefix*."""
-    assignment = re.search(r"([A-Za-z_][A-Za-z0-9_-]*)\s*=\s*['\"]?$", prefix)
+    assignment = re.search(r"([A-Za-z_$][A-Za-z0-9_$-]*)\s*=\s*['\"]?$", prefix)
     return assignment.group(1) if assignment else ""
 
 
@@ -94,6 +124,8 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
+    if name.lower().rsplit("$", 1)[-1] in _KEYWORD_EXCLUDED_NAMES:
+        return False
     value = val.strip()
     if kind == "hardcoded_secret" and (
         _KEY_NAME_VALUE.fullmatch(value)
@@ -110,7 +142,9 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
     return not (
         _TEMPLATE_VALUE.search(value)
         or _SCHEME_TEMPLATE_VALUE.search(value)
+        or _REGEX_VALUE.search(value)
         or _is_plain_word(value)
+        or bool(_REFERENCE_PATH_VALUE.fullmatch(value))
         or value.startswith("--")
     )
 
@@ -131,8 +165,12 @@ def _is_plain_word(value: str) -> bool:
     )
 
 
+#: Characters of a value its redaction keeps, before the marker.
+_KEPT = 4
+
+
 def _redaction(val: str) -> str:
-    return (val[:4] + "****") if len(val) >= 4 else "****"
+    return (val[:_KEPT] + "****") if len(val) >= _KEPT else "****"
 
 
 # ``public_env_secret`` has no capture group, so its value is found here. In
@@ -141,6 +179,11 @@ def _redaction(val: str) -> str:
 # (``=``, ``:``, ``=>``, ``??``, ``||``) or plain whitespace (a Dockerfile
 # ``ENV NAME value``), then the value, quoted or not.
 _PUBLIC_VALUE = re.compile(r"""\A['"\]]*(?:\s*[:=>?|]+\s*|\s+)(['"`]?)(?=[^\s;,)])""")
+# Blank template lines (``VITE_API_TOKEN=``, ``NEXT_PUBLIC_KEY=""``, or with
+# trailing comment) in .env or config files carry no secret.
+_PUBLIC_EMPTY_ASSIGNMENT = re.compile(
+    r"""\A['"\]]*\s*(?:=(?!=)|:=|:|=>)\s*(?:""|'')?\s*(?:[,;])?\s*(?:#.*)?\Z"""
+)
 
 _SECRET_PATTERNS = [(p, kind) for p, kind, _ in _PATTERNS if kind in SECRET_KINDS]
 _PUBLIC_ENV_PATTERN = next(p for p, kind, _ in _PATTERNS if kind == "public_env_secret")
@@ -196,9 +239,15 @@ def _public_env_value(line: str, name_end: int) -> tuple[int, int] | None:
         return None
     start = name_end + value.end()
     if value.group(1):
-        return start, _string_end(line, start)
+        end = _string_end(line, start)
+        return (start, end) if end > start else None
     stop = next((i for i in range(start, len(line)) if line[i].isspace()), len(line))
-    return start, stop
+    return (start, stop) if stop > start else None
+
+
+def _is_empty_public_env_assignment(line: str, name_end: int) -> bool:
+    """Whether the public env name ending at *name_end* is followed by an empty assignment."""
+    return _PUBLIC_EMPTY_ASSIGNMENT.search(line[name_end:]) is not None
 
 
 def _secret_spans(line: str) -> list[tuple[int, int]]:
@@ -258,6 +307,35 @@ def masked_snippet(line: str, spans: Iterable[tuple[int, int]] = ()) -> str:
     return _snippet(line, spans)
 
 
+def holds_secret(text: str) -> bool:
+    """Whether any line of *text* holds a value :func:`masked_snippet` would mask.
+
+    For text written outside the scan (a model's prose) that must never carry one.
+    """
+    return any(
+        _PEM_BODY_LINE.search(line) or (_SECRET_PREFILTER.search(line) and _secret_spans(line))
+        for line in text.splitlines()
+    )
+
+
+#: Kinds whose snippet is a credential's own line. ``public_env_secret`` sits
+#: outside ``SECRET_KINDS`` only because its value is found differently.
+_CREDENTIAL_KINDS = SECRET_KINDS | {"public_env_secret"}
+
+
+def shown_snippet(kind: str, snippet: str | None) -> str:
+    """What any surface may show of a stored *snippet*: nothing of a secret's.
+
+    A masked value keeps its first characters and the rest of its line, so a
+    credential finding, or any snippet with a masked value on it, is shown by
+    kind and location only. The stored snippet stays for line checks and
+    fingerprints. A line with a literal ``****`` is hidden too: failing closed.
+    """
+    if not snippet or kind in _CREDENTIAL_KINDS or _MARKER in snippet:
+        return ""
+    return snippet
+
+
 def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     """*line* as stored: every secret on it masked, then stripped and trimmed.
 
@@ -266,8 +344,10 @@ def _snippet(line: str, extra: Iterable[tuple[int, int]] = ()) -> str:
     text = _mask_line(line, extra).strip()
     cut = _SNIPPET_MAX
     if len(text) > cut:
-        # Never end inside a marker: a bare ``*`` run defeats line verification.
-        marker = text.rfind(_MARKER, 0, cut + len(_MARKER) - 1)
-        if marker != -1 and marker < cut < marker + len(_MARKER):
-            cut = marker
+        # Never end inside a redaction: kept characters cut off from their
+        # marker read as plain text, and a bare ``*`` run defeats line
+        # verification. So a redaction the cut crosses is dropped whole.
+        marker = text.find(_MARKER, cut - _KEPT + 1, cut + _KEPT - 1 + len(_MARKER))
+        if marker != -1:
+            cut = max(0, marker - _KEPT)
     return text[:cut]

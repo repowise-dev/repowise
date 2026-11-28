@@ -13,7 +13,10 @@ vi.mock("@/lib/hooks/use-meta-version", () => ({
 }));
 vi.mock("next/navigation", () => ({ usePathname: () => "/" }));
 
-beforeEach(() => window.localStorage.clear());
+beforeEach(() => {
+  window.localStorage.clear();
+  window.sessionStorage.clear();
+});
 afterEach(cleanup);
 
 describe("ReleaseMoment", () => {

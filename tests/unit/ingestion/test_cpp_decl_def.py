@@ -111,6 +111,98 @@ class TestCallAttachesToDefinition:
         assert _callers_of(graph, "circle.cpp::Area") == set()
         assert _callers_of(graph, "square.cpp::Area") == set()
 
+    def test_definition_with_the_declared_parameters_is_chosen(self, tmp_path: Path) -> None:
+        # The body sits in an ``-inl.h`` that reaches the header through
+        # another, while a file including it directly defines an ``emit`` of
+        # other parameters, as a sibling namespace may.
+        (tmp_path / "base.h").write_text("void emit(const char* s);\n")
+        (tmp_path / "format.h").write_text('#include "base.h"\n')
+        (tmp_path / "format-inl.h").write_text(
+            '#include "format.h"\nvoid emit(const char* s) { }\n'
+        )
+        (tmp_path / "color.h").write_text('#include "base.h"\nvoid emit(int style) { }\n')
+        (tmp_path / "use.cpp").write_text('#include "base.h"\nvoid run() { emit("x"); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "format-inl.h::emit") == {"use.cpp::run"}
+        assert _callers_of(graph, "color.h::emit") == set()
+
+    def test_prototype_beside_an_inline_overload_reaches_its_body(self, tmp_path: Path) -> None:
+        (tmp_path / "api.h").write_text(
+            "void emit(const char* s);\ninline void emit(int n) { emit(\"n\"); }\n"
+        )
+        (tmp_path / "api.cc").write_text('#include "api.h"\nvoid emit(const char* s) { }\n')
+        (tmp_path / "use.cpp").write_text('#include "api.h"\nvoid run() { emit("x"); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "api.cc::emit") == {"use.cpp::run", _id_at(graph, "api.h", 2)}
+
+    def test_static_namesake_in_another_file_does_not_block_pairing(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "util.h").write_text("void canon(char* p);\n")
+        (tmp_path / "util.cc").write_text('#include "util.h"\nvoid canon(char* p) { }\n')
+        (tmp_path / "util_test.cc").write_text(
+            '#include "util.h"\nnamespace {\nvoid canon(char* p) { ::canon(p); }\n}\n'
+        )
+        (tmp_path / "app.cc").write_text('#include "util.h"\nvoid run(char* p) { canon(p); }\n')
+        graph = _build(tmp_path)
+        assert "app.cc::run" in _callers_of(graph, "util.cc::canon")
+
+    def test_platform_variants_of_a_method_stay_unlinked(self, tmp_path: Path) -> None:
+        (tmp_path / "sub.h").write_text("struct Sub { int Finish(); };\n")
+        for name in ("sub-posix.cc", "sub-win32.cc"):
+            (tmp_path / name).write_text('#include "sub.h"\nint Sub::Finish() { return 0; }\n')
+        (tmp_path / "run.cc").write_text(
+            '#include "sub.h"\nint run(Sub* s) { return s->Finish(); }\n'
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "sub-posix.cc::Sub::Finish") == set()
+        assert _callers_of(graph, "sub-win32.cc::Sub::Finish") == set()
+
+    def test_recursion_through_the_prototype_is_a_self_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "walk.h").write_text("int walk(int n);\n")
+        (tmp_path / "walk.c").write_text(
+            '#include "walk.h"\nint walk(int n) { return n ? walk(n - 1) : 0; }\n'
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "walk.h::walk") == set()
+        assert _callers_of(graph, "walk.c::walk") == {"walk.c::walk"}
+
+
+class TestHeaderDefaultsReachTheDefinition:
+    def test_a_header_default_is_admitted_by_the_definition(self, tmp_path: Path) -> None:
+        (tmp_path / "f.h").write_text("void f(int a, int b = 0);\n")
+        (tmp_path / "f.cc").write_text('#include "f.h"\nvoid f(int a, int b) { }\n')
+        (tmp_path / "use.cc").write_text('#include "f.h"\nvoid run() { f(1); }\n')
+        graph = _build(tmp_path)
+        assert _callers_of(graph, "f.cc::f") == {"use.cc::run"}
+
+    # A same-file call resolves on the definitions' set, whose default-bearing member is not
+    # the representative: only a carried floor reaches it.
+    def test_a_set_whose_first_member_is_undefined_still_lends_its_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "f.h").write_text(
+            "void f(double d, int b);\n"
+            "void f(int a, int b = 0);\n"
+            "void f(const char* s, int b);\n"
+        )
+        (tmp_path / "f.cc").write_text(
+            '#include "f.h"\nvoid f(const char* s, int b) { }\n'
+            "void f(int a, int b) { }\n"
+            "void run() { f(1); }\n"
+        )
+        graph = _build(tmp_path)
+        assert _callers_of(graph, _id_at(graph, "f.cc", 3)) == {"f.cc::run"}
+        assert _callers_of(graph, _id_at(graph, "f.cc", 2)) == set()
+
+
+def _id_at(graph, path: str, line: int) -> str:
+    return next(
+        node
+        for node, data in graph.nodes(data=True)
+        if data.get("file_path") == path and data.get("start_line") == line
+    )
+
 
 class TestTypeDeclarationFlag:
     """``class Env;`` is a declaration too, and only the ``body`` field says so.
@@ -193,3 +285,307 @@ class TestTypeDeclarationFlag:
         assert graph.nodes["t.hh::Multi"]["is_declaration"] is True
         assert graph.nodes["t.hh::Bar"]["is_declaration"] is False
         assert graph.nodes["t.hh::fn"]["is_declaration"] is False
+
+
+_DISK_HEADER = (
+    "#pragma once\n#include <string>\n"
+    "struct DiskInterface {\n  virtual int RemoveFile(const std::string& path) = 0;\n};\n"
+)
+_BUILDER_BODY = "struct Builder {\n  void Cleanup();\n  DiskInterface* disk_interface_;\n};\n"
+_CLEANUP = (
+    '#include "build.h"\n#include "disk.h"\n'
+    'void Builder::Cleanup() { disk_interface_->RemoveFile("x"); }\n'
+)
+
+
+class TestForwardDeclaredClassKeepsItsFields:
+    """A class declared ``struct Builder;`` beside its definition reads the definition's fields.
+
+    Both share one id, so an out-of-line body's field receiver is typed from
+    whichever the resolver takes for that id.
+    """
+
+    def _calls(self, tmp_path: Path, header: str) -> set[tuple[str, str]]:
+        (tmp_path / "disk.h").write_text(_DISK_HEADER)
+        (tmp_path / "build.h").write_text(header)
+        (tmp_path / "build.cc").write_text(_CLEANUP)
+        graph = _build(tmp_path)
+        return {(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+
+    def test_a_forward_declaration_above_the_class(self, tmp_path: Path) -> None:
+        header = (
+            "#pragma once\nstruct DiskInterface;\nstruct Builder;\n"
+            "struct Plan { Builder* b; };\n" + _BUILDER_BODY
+        )
+        assert ("build.cc::Builder::Cleanup", "disk.h::DiskInterface::RemoveFile") in self._calls(
+            tmp_path, header
+        )
+
+    def test_a_forward_declaration_below_the_class(self, tmp_path: Path) -> None:
+        header = "#pragma once\nstruct DiskInterface;\n" + _BUILDER_BODY + "struct Builder;\n"
+        assert ("build.cc::Builder::Cleanup", "disk.h::DiskInterface::RemoveFile") in self._calls(
+            tmp_path, header
+        )
+
+    def test_the_id_maps_to_the_definition_in_either_order(self) -> None:
+        from repowise.core.ingestion.models import Symbol
+        from repowise.core.ingestion.symbol_identity import symbols_by_id
+
+        def sym(line: int, *, declaration: bool, kind: str = "struct") -> Symbol:
+            return Symbol(
+                id="s.h::S",
+                name="S",
+                qualified_name="S",
+                kind=kind,
+                signature="S",
+                start_line=line,
+                end_line=line,
+                docstring=None,
+                language="cpp",
+                is_declaration=declaration,
+            )
+
+        decl, body = sym(1, declaration=True), sym(2, declaration=False)
+        twin = sym(3, declaration=False)
+        assert symbols_by_id([decl, body])["s.h::S"] is body
+        assert symbols_by_id([body, decl])["s.h::S"] is body
+        assert symbols_by_id([body, twin])["s.h::S"] is twin
+        # Only the type it names outranks a forward declaration; anything else
+        # keeps the plain last-listed rule.
+        function = sym(4, declaration=False, kind="function")
+        assert symbols_by_id([function, decl])["s.h::S"] is decl
+
+
+# A header that names third-party and sibling types without defining them, then
+# defines its own class: the shape of almost every large C++ header.
+_FORWARD_HEADER = """#pragma once
+class btCollisionDispatcher;
+struct btDbvtBroadphase;
+enum class Mode : int;
+template <class T> class Holder;
+namespace ai { class AIGraph; }
+class World {
+  class Impl;
+ public:
+  void tick(btCollisionDispatcher* d);
+};
+"""
+
+
+class TestTypeDeclarationIsNoSymbolOfItsFile:
+    """``class Env;`` keeps its graph node but is not what its file defines."""
+
+    _FORWARD = frozenset(
+        {"btCollisionDispatcher", "btDbvtBroadphase", "Mode", "Holder", "AIGraph", "Impl"}
+    )
+
+    def _parse(self, tmp_path: Path, files: dict[str, str]):
+        for name, text in files.items():
+            (tmp_path / name).write_text(text)
+        parser = ASTParser()
+        return {
+            fi.path: parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+            for fi in FileTraverser(tmp_path).traverse()
+        }
+
+    def test_only_the_defined_class_is_stored(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(tmp_path, {"world.hpp": _FORWARD_HEADER})["world.hpp"]
+        assert {s.name for s in parsed.symbols if s.is_declaration} >= self._FORWARD
+        stored = {s.name for s in id_holders(parsed.symbols)}
+        assert not stored & self._FORWARD
+        assert {"World", "tick", "ai"} <= stored
+
+    def test_the_definition_in_another_header_is_stored(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(
+            tmp_path,
+            {"world.hpp": _FORWARD_HEADER, "mode.hpp": "enum class Mode : int { A, B };\n"},
+        )
+        stored = {s.id for pf in parsed.values() for s in id_holders(pf.symbols)}
+        assert "mode.hpp::Mode" in stored
+        assert "world.hpp::Mode" not in stored
+
+    def test_the_graph_keeps_the_declaration(self, tmp_path: Path) -> None:
+        # Call resolution and dead code read it there, by ``is_declaration``.
+        (tmp_path / "world.hpp").write_text(_FORWARD_HEADER)
+        graph = _build(tmp_path)
+        assert graph.nodes["world.hpp::btCollisionDispatcher"]["is_declaration"] is True
+
+    def test_c_tag_declaration_is_not_stored_but_its_typedef_is(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(
+            tmp_path, {"h.c": "struct s;\ntypedef struct handle handle;\nstruct real { int x; };\n"}
+        )["h.c"]
+        assert {s.name for s in id_holders(parsed.symbols)} == {"handle", "real"}
+
+    def test_a_c_prototype_sharing_the_id_keeps_its_row(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        source = "int stat(const char *p);\nstruct stat;\n"
+        parsed = self._parse(tmp_path, {"f.c": source})["f.c"]
+        assert [(s.name, s.kind) for s in id_holders(parsed.symbols)] == [("stat", "function")]
+
+    def test_the_file_page_leads_with_the_defined_class(self, tmp_path: Path) -> None:
+        import networkx as nx
+
+        from repowise.core.generation.context_assembler import ContextAssembler
+        from repowise.core.generation.models import GenerationConfig
+        from repowise.core.generation.page_generator.file_facts import file_facts
+
+        parsed = self._parse(tmp_path, {"world.hpp": _FORWARD_HEADER})["world.hpp"]
+        graph = nx.DiGraph()
+        graph.add_node("world.hpp")
+        ctx = ContextAssembler(GenerationConfig()).assemble_file_page(
+            parsed, graph, {}, {}, {}, _FORWARD_HEADER.encode()
+        )
+        assert not {s["name"] for s in ctx.symbols} & self._FORWARD
+        assert file_facts(ctx)["defines"][0] == "`World`"
+
+
+def _resolver(tmp_path: Path, files: dict[str, str], includes: dict[str, set[str]]):
+    """A resolver over *files*, with the include map spelled out by hand."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    parser = ASTParser()
+    parsed = {
+        fi.path: parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+        for fi in FileTraverser(tmp_path).traverse()
+    }
+    targets = {**{path: set() for path in parsed}, **includes}
+    return CallResolver(parsed, targets, repo_path=str(tmp_path)), parsed
+
+
+def _symbol(parsed, path: str, name: str, *, declaration: bool):
+    return next(
+        s for s in parsed[path].symbols if s.name == name and s.is_declaration is declaration
+    )
+
+
+def _rows(parsed, name: str, paths: tuple[str, ...]):
+    """Definition rows ``(file, index id, symbol)`` as ``_link_declarations`` builds them."""
+    rows = []
+    for path in paths:
+        sym = _symbol(parsed, path, name, declaration=False)
+        rows.append((path, sym.id, sym))
+    return rows
+
+
+class TestDefiningSet:
+    """``_defining_set``: the one definition a declaration can mean, or None."""
+
+    def test_the_one_definition_including_the_header_wins(self, tmp_path: Path) -> None:
+        resolver, _ = _resolver(tmp_path, {}, {"a.cc": {"f.h"}})
+        candidates = [("a.cc", "a.cc::f"), ("b.cc", "b.cc::f")]
+        assert resolver._defining_set("f.h", None, candidates) == "a.cc::f"
+
+    def test_two_including_definitions_refuse(self, tmp_path: Path) -> None:
+        resolver, _ = _resolver(tmp_path, {}, {"a.cc": {"f.h"}, "b.cc": {"f.h"}})
+        candidates = [("a.cc", "a.cc::f"), ("b.cc", "b.cc::f")]
+        assert resolver._defining_set("f.h", None, candidates) is None
+
+    def test_a_lone_free_function_pairs_without_an_include(self, tmp_path: Path) -> None:
+        resolver, _ = _resolver(tmp_path, {}, {})
+        assert resolver._defining_set("f.h", None, [("x.cc", "x.cc::f")]) == "x.cc::f"
+
+    def test_a_lone_method_pairs_only_in_its_own_translation_unit(self, tmp_path: Path) -> None:
+        resolver, _ = _resolver(tmp_path, {}, {})
+        assert resolver._defining_set("f.h", "P", [("x.cc", "x.cc::P::f")]) is None
+        assert resolver._defining_set("f.h", "P", [("f.cc", "f.cc::P::f")]) == "f.cc::P::f"
+
+    def test_one_overload_set_is_one_definition(self, tmp_path: Path) -> None:
+        """Two rows sharing one id are one set, not an ambiguity."""
+        resolver, _ = _resolver(tmp_path, {}, {})
+        assert resolver._defining_set("f.h", None, [("x.cc", "x.cc::f")] * 2) == "x.cc::f"
+
+    def test_platform_variants_refuse(self, tmp_path: Path) -> None:
+        resolver, _ = _resolver(tmp_path, {}, {})
+        candidates = [("f-posix.cc", "f-posix.cc::f"), ("f-win32.cc", "f-win32.cc::f")]
+        assert resolver._defining_set("f.h", None, candidates) is None
+
+
+class TestCDefinitionOf:
+    """``_c_definition_of``: a C-family prototype's definition, member by member."""
+
+    def test_a_prototype_nothing_defines_pairs_with_nothing(self, tmp_path: Path) -> None:
+        resolver, parsed = _resolver(tmp_path, {"f.h": "void f(int n);\n"}, {})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        assert resolver._c_definition_of("f.h", decl, decl.id, []) is None
+        assert decl.id not in resolver.declaration_definitions
+
+    def test_the_lone_definition_is_paired(self, tmp_path: Path) -> None:
+        files = {"f.h": "void f(int n);\n", "f.cc": '#include "f.h"\nvoid f(int n) { }\n'}
+        resolver, parsed = _resolver(tmp_path, files, {"f.cc": {"f.h"}})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        rows = _rows(parsed, "f", ("f.cc",))
+        assert resolver._c_definition_of("f.h", decl, decl.id, rows) == "f.cc::f"
+
+    def test_a_static_body_in_another_file_is_no_candidate(self, tmp_path: Path) -> None:
+        files = {
+            "f.h": "void f(int n);\n",
+            "f.cc": '#include "f.h"\nvoid f(int n) { }\n',
+            "t.cc": '#include "f.h"\nstatic void f(int n) { }\n',
+        }
+        resolver, parsed = _resolver(tmp_path, files, {"f.cc": {"f.h"}, "t.cc": {"f.h"}})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        both = _rows(parsed, "f", ("f.cc", "t.cc"))
+        assert resolver._c_definition_of("f.h", decl, decl.id, both) == "f.cc::f"
+        alone = _rows(parsed, "f", ("t.cc",))
+        assert resolver._c_definition_of("f.h", decl, decl.id, alone) is None
+
+    def test_an_anonymous_namespace_body_is_no_candidate(self, tmp_path: Path) -> None:
+        files = {
+            "f.h": "void f(int n);\n",
+            "f.cc": '#include "f.h"\nvoid f(int n) { }\n',
+            "t.cc": '#include "f.h"\nnamespace {\nvoid f(int n) { }\n}\n',
+        }
+        resolver, parsed = _resolver(tmp_path, files, {"f.cc": {"f.h"}, "t.cc": {"f.h"}})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        rows = _rows(parsed, "f", ("f.cc", "t.cc"))
+        assert resolver._c_definition_of("f.h", decl, decl.id, rows) == "f.cc::f"
+
+    def test_a_member_of_its_own_overload_set_is_no_candidate(self, tmp_path: Path) -> None:
+        """A row under the prototype's own index id is another member of its set."""
+        files = {"f.h": "void f(int n);\n", "x.cc": "void f(int n) { }\n"}
+        resolver, parsed = _resolver(tmp_path, files, {})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        body = _symbol(parsed, "x.cc", "f", declaration=False)
+        assert resolver._c_definition_of("f.h", decl, decl.id, [("x.cc", decl.id, body)]) is None
+
+    def test_a_same_file_definition_is_already_the_prototype(self, tmp_path: Path) -> None:
+        resolver, parsed = _resolver(tmp_path, {"f.c": "void f(int n);\nvoid f(int n) { }\n"}, {})
+        decl = _symbol(parsed, "f.c", "f", declaration=True)
+        body = _symbol(parsed, "f.c", "f", declaration=False)
+        assert decl.id == body.id
+        assert resolver._c_definition_of("f.c", decl, decl.id, [("f.c", body.id, body)]) is None
+
+    def test_the_body_with_the_declared_parameters_that_sees_the_header_wins(
+        self, tmp_path: Path
+    ) -> None:
+        """Both bodies include the header; only one has its parameter list."""
+        files = {
+            "f.h": "void f(const char* s);\n",
+            "a.cc": '#include "f.h"\nvoid f(const char* s) { }\n',
+            "b.cc": '#include "f.h"\nvoid f(int style) { }\n',
+        }
+        resolver, parsed = _resolver(tmp_path, files, {"a.cc": {"f.h"}, "b.cc": {"f.h"}})
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        rows = _rows(parsed, "f", ("a.cc", "b.cc"))
+        assert resolver._c_definition_of("f.h", decl, decl.id, rows) == "a.cc::f"
+
+    def test_platform_variants_of_one_signature_stay_unpaired(self, tmp_path: Path) -> None:
+        files = {
+            "f.h": "void f(int n);\n",
+            "f-posix.cc": '#include "f.h"\nvoid f(int n) { }\n',
+            "f-win32.cc": '#include "f.h"\nvoid f(int n) { }\n',
+        }
+        includes = {"f-posix.cc": {"f.h"}, "f-win32.cc": {"f.h"}}
+        resolver, parsed = _resolver(tmp_path, files, includes)
+        decl = _symbol(parsed, "f.h", "f", declaration=True)
+        rows = _rows(parsed, "f", ("f-posix.cc", "f-win32.cc"))
+        assert resolver._c_definition_of("f.h", decl, decl.id, rows) is None

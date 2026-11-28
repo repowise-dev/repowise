@@ -31,7 +31,6 @@ TEMPLATE_DIR = (
 )
 
 STRUCTURAL_TEMPLATES = [
-    "_footer.j2",
     "api_contract.j2",
     "file_page.j2",
     "infra_page.j2",
@@ -42,6 +41,27 @@ STRUCTURAL_TEMPLATES = [
 
 def test_german_labels_are_used_where_they_exist() -> None:
     assert resolve_structural_labels("de")["overview"] == "Überblick"
+
+
+@pytest.mark.parametrize(
+    ("code", "count", "expected"),
+    [
+        (None, 12, "12 bug-fix commits in the last 6 months."),
+        (None, 1, "1 bug-fix commit in the last 6 months."),
+        ("de", 12, "12 Bugfix-Commits in den letzten 6 Monaten."),
+        ("de", 1, "1 Bugfix-Commit in den letzten 6 Monaten."),
+    ],
+)
+def test_the_fix_sentence_names_its_own_window(code: str | None, count: int, expected: str) -> None:
+    # The fix count spans the prior-defect window, so the sentence names it
+    # rather than reading as a share of the 90-day commit count before it.
+    labels = resolve_structural_labels(code)
+    sentence = labels["history_fixes"].format(
+        count=count,
+        fix_word=labels["fix_commit_plural" if count != 1 else "fix_commit_singular"],
+        window=labels["fix_window"],
+    )
+    assert sentence == expected
 
 
 @pytest.mark.parametrize("code", [None, "", "xx", "klingon", "  ", "de-DE"])
@@ -92,8 +112,12 @@ def test_no_catalog_key_is_unread_by_any_template() -> None:
     for name in STRUCTURAL_TEMPLATES:
         source = (TEMPLATE_DIR / name).read_text(encoding="utf-8")
         read.update(re.findall(r"\blabels\.([a-z_]+)", source))
-    # Titles are built in Python rather than in a template.
-    read.update({"file", "symbol", "circular_dependency", "api_contract", "infrastructure"})
+    # Titles are built in Python rather than in a template, and the digest
+    # finds a model page's questions section by its heading.
+    read.update(
+        {"file", "symbol", "circular_dependency", "api_contract", "infrastructure"}
+        | {"questions_heading"}
+    )
     assert ENGLISH_LABELS.keys() <= read, ENGLISH_LABELS.keys() - read
 
 

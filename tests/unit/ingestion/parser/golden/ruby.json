@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -30,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -53,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -76,6 +81,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -99,6 +105,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -106,12 +113,16 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
       "TestFoo"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -121,13 +132,16 @@
         "line": 6,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 108,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert",
@@ -136,13 +150,16 @@
         "line": 7,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 135,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_includes",
@@ -151,13 +168,16 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 153,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_equal",
@@ -166,13 +186,16 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 188,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_operator",
@@ -181,13 +204,16 @@
         "line": 10,
         "argument_count": 3,
         "receiver_call": null,
+        "start_byte": 219,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assert_equal",
@@ -196,13 +222,16 @@
         "line": 15,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 305,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "refute_nil",
@@ -211,13 +240,16 @@
         "line": 17,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 348,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [
@@ -231,10 +263,18 @@
     "docstring": null,
     "parse_errors": [],
     "content_hash": "f1fc1488093ce806dd8e8b6a04c8e92b26d64020a26f9f7ce12b82364b20287d",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Minitest::Test",
+        "line": 3,
+        "origin": "extends"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "ruby/classes.rb": {
     "file_info": {
@@ -246,7 +286,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -267,6 +310,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -290,6 +334,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -313,6 +358,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -336,6 +382,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -359,6 +406,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -382,6 +430,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -405,6 +454,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -428,6 +478,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -451,6 +502,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -474,6 +526,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -497,6 +550,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -520,6 +574,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -543,6 +598,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -555,6 +611,7 @@
       "Splintered",
       "Util"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -564,7 +621,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "ruby/nested.rb": {
     "file_info": {
@@ -576,7 +635,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -597,6 +659,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -620,6 +683,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -643,6 +707,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -666,6 +731,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -689,6 +755,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -712,6 +779,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -735,6 +803,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -758,6 +827,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -781,6 +851,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -804,6 +875,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -827,6 +899,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -847,6 +920,7 @@
       "implicit_rescue",
       "modifier_loops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -856,13 +930,16 @@
         "line": 17,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 247,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "zero?",
@@ -871,13 +948,16 @@
         "line": 22,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 317,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -886,13 +966,16 @@
         "line": 38,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 444,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "map",
@@ -901,13 +984,16 @@
         "line": 39,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 470,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "odd?",
@@ -916,13 +1002,16 @@
         "line": 54,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 632,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -931,23 +1020,54 @@
         "line": 73,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 834,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
     "docstring": "Control-flow fixture for the Ruby complexity walker.",
     "parse_errors": [],
     "content_hash": "2a38411f2e58f62b77150e98ac997dfd214c2389e0541f2b0ec714b8b0a432af",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Integer",
+        "line": 64,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 73,
+        "origin": "constant"
+      },
+      {
+        "type_name": "ArgumentError",
+        "line": 74,
+        "origin": "constant"
+      },
+      {
+        "type_name": "TypeError",
+        "line": 76,
+        "origin": "constant"
+      },
+      {
+        "type_name": "StandardError",
+        "line": 85,
+        "origin": "constant"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "ruby/perf_io_in_loop.rb": {
     "file_info": {
@@ -959,7 +1079,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -980,6 +1103,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1003,6 +1127,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1026,6 +1151,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1049,6 +1175,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1072,6 +1199,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1095,6 +1223,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1118,6 +1247,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1141,6 +1271,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1164,6 +1295,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1187,6 +1319,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1210,6 +1343,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1233,6 +1367,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -1256,6 +1391,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1263,7 +1399,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -1280,6 +1419,7 @@
       "locked_write",
       "helper_calls"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1289,13 +1429,16 @@
         "line": 7,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 199,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1304,13 +1447,16 @@
         "line": 8,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 227,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "map",
@@ -1319,13 +1465,16 @@
         "line": 13,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 282,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1334,13 +1483,16 @@
         "line": 13,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 297,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1349,13 +1501,16 @@
         "line": 17,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 341,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "glob",
@@ -1364,13 +1519,16 @@
         "line": 18,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 361,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "join",
@@ -1379,13 +1537,16 @@
         "line": 18,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 371,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1394,13 +1555,16 @@
         "line": 19,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 408,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1409,13 +1573,16 @@
         "line": 25,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 464,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "where",
@@ -1424,13 +1591,16 @@
         "line": 26,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 487,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1439,13 +1609,16 @@
         "line": 32,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 553,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "read",
@@ -1454,13 +1627,16 @@
         "line": 35,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 608,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1469,13 +1645,16 @@
         "line": 41,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 676,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1484,13 +1663,16 @@
         "line": 50,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 800,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "emit",
@@ -1499,13 +1681,16 @@
         "line": 53,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 856,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1514,13 +1699,16 @@
         "line": 58,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 926,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1529,13 +1717,16 @@
         "line": 59,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 946,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1544,13 +1735,16 @@
         "line": 60,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 976,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "match?",
@@ -1559,13 +1753,16 @@
         "line": 61,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 996,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "match?",
@@ -1574,13 +1771,16 @@
         "line": 61,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1019,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1589,13 +1789,16 @@
         "line": 66,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1075,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "new",
@@ -1604,13 +1807,16 @@
         "line": 67,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1106,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "get",
@@ -1619,13 +1825,16 @@
         "line": 68,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1127,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1634,13 +1843,16 @@
         "line": 73,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1182,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1649,13 +1861,16 @@
         "line": 79,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1269,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "synchronize",
@@ -1664,13 +1879,16 @@
         "line": 80,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1292,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "write",
@@ -1679,13 +1897,16 @@
         "line": 81,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1318,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "each",
@@ -1694,13 +1915,16 @@
         "line": 87,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 1390,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "transform",
@@ -1709,22 +1933,93 @@
         "line": 87,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1401,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
     "docstring": "Perf-dialect fixture: block-iteration loops, the sink lexicon, string\nconcat (+= flagged, << not), regex/resource construction, lock scopes.",
     "parse_errors": [],
     "content_hash": "44d4e6640bcfe0a0a50f76947c4eed318d8712f3a5f247d21efc890af234d0f7",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Net::HTTP",
+        "line": 8,
+        "origin": "constant"
+      },
+      {
+        "type_name": "URI",
+        "line": 8,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 13,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Dir",
+        "line": 18,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 18,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 19,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Order",
+        "line": 26,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 32,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 35,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Regexp",
+        "line": 58,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Regexp",
+        "line": 60,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Faraday",
+        "line": 67,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 81,
+        "origin": "constant"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

@@ -18,13 +18,18 @@ so an episode is never frozen into a cache row.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
+import threading
+from collections import OrderedDict
 from pathlib import Path
 
+from repowise.core.precedent.currency import GIT_UNASKED, episode_currency
 from repowise.core.precedent.store import EpisodeStore, default_store_path
 from repowise.server.mcp_server._budget import effective_char_budget
+from repowise.server.mcp_server._code_rationale import _head as _live_head
 from repowise.server.mcp_server._episodes import (
     SERVED_TIERS,
     quote_body,
@@ -65,12 +70,17 @@ async def attach_episode(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     """Append a scoped, still-true episode to *payload*. Never raises.
 
     Async only to keep the SQLite read and the git query off the event loop;
-    all the work happens in :func:`attach_episode_sync`.
+    all the work happens in :func:`attach_episode_sync`. *verdicts* is the
+    memo a :func:`prefetch_verdicts` started earlier in the call fills; the
+    attach waits only for the queries it needs, never for the whole prefetch.
     """
+    if not _may_attach(payload, repo_path):
+        return
     try:
         await asyncio.to_thread(
             attach_episode_sync,
@@ -78,9 +88,60 @@ async def attach_episode(
             question=question,
             repo_path=repo_path,
             repo_name=repo_name,
+            verdicts=verdicts,
         )
     except Exception:  # pragma: no cover - defensive; a disagreement is a bonus
         _log.warning("get_answer episode attach failed", exc_info=True)
+
+
+async def prefetch_verdicts(
+    *,
+    question: str,
+    paths: list[str],
+    repo_path: str | Path | None,
+    repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
+) -> None:
+    """Check the episodes scoped to *paths* or the question. Never raises.
+
+    Started before synthesis so the git queries run while the model writes:
+    each can take about a second on a long history, and the answer's own
+    citations mostly fall among the files retrieval already ranked. The
+    verdicts land in *verdicts*, which the attach reads.
+    """
+    try:
+        await asyncio.to_thread(
+            _prefetch,
+            question=question,
+            paths=paths,
+            repo_path=repo_path,
+            repo_name=repo_name,
+            verdicts=verdicts,
+        )
+    except Exception:  # defensive; a disagreement is a bonus
+        _log.warning("get_answer episode prefetch failed", exc_info=True)
+
+
+def _prefetch(
+    *,
+    question: str,
+    paths: list[str],
+    repo_path: str | Path | None,
+    repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
+) -> None:
+    if not repo_path:
+        return
+    root = Path(repo_path)
+    window = _candidate_window(
+        _ranked(_served_rows(root), question.casefold(), set(paths), repo_name)
+    )
+    if window:
+        head = _live_head(root)
+        # Stops where the attach stops: it emits the first still-true episode.
+        for row, _matched in window:
+            if _verdict(row, root=root, head=head, call=verdicts) is not None:
+                break
 
 
 def attach_episode_sync(
@@ -89,6 +150,7 @@ def attach_episode_sync(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     """Synchronous body of :func:`attach_episode`. Never raises."""
     try:
@@ -97,9 +159,51 @@ def attach_episode_sync(
             question=question,
             repo_path=repo_path,
             repo_name=repo_name,
+            verdicts=verdicts,
         )
     except Exception:
         _log.warning("get_answer episode attach failed", exc_info=True)
+
+
+def _may_attach(payload: dict, repo_path: str | Path | None) -> bool:
+    # Precondition 3 first: it is free, and a high-confidence answer is the one
+    # case where appending a disagreement is more likely to mislead than help.
+    if payload.get("confidence") == "high":
+        return False
+    return bool((payload.get("answer") or "").strip()) and bool(repo_path)
+
+
+def _served_rows(root: Path) -> list[dict]:
+    """The shareable episodes recorded for this checkout; none when there is no store."""
+    store_path = default_store_path(root)
+    # Opening the store would CREATE it. A repo that never derived episodes
+    # must not grow a database because someone called get_answer.
+    if not store_path.is_file():
+        return []
+    try:
+        with EpisodeStore(store_path) as store:
+            return store.list_episodes(tiers=_SERVED_TIERS)
+    except Exception:
+        _log.warning("episode store read failed", exc_info=True)
+        return []
+
+
+def _ranked(
+    rows: list[dict], haystack: str, answer_paths: set[str], repo_name: str | None
+) -> list[tuple[dict, list[str]]]:
+    """The episodes scoped to this answer, most specific first."""
+    scoped = []
+    for row in rows:
+        matched = _scope(row, haystack=haystack, answer_paths=answer_paths, repo_name=repo_name)
+        if matched is not None:
+            scoped.append((row, matched))
+    # Most specific first: a path match is stronger evidence of relevance than
+    # a subject phrase, and among equals the longer subject is the rarer term.
+    scoped.sort(
+        key=lambda pair: (len(pair[1]), len(pair[0]["subject"]), pair[0]["id"]),
+        reverse=True,
+    )
+    return scoped
 
 
 def _attach(
@@ -108,58 +212,29 @@ def _attach(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
-    # Precondition 3 first: it is free, and a high-confidence answer is the one
-    # case where appending a disagreement is more likely to mislead than help.
-    if payload.get("confidence") == "high":
+    if not _may_attach(payload, repo_path):
         return
-    answer_text = (payload.get("answer") or "").strip()
-    if not answer_text or not repo_path:
-        return
-
     root = Path(repo_path)
-    store_path = default_store_path(root)
-    # Opening the store would CREATE it. A repo that never derived episodes
-    # must not grow a database because someone called get_answer.
-    if not store_path.is_file():
-        return
-
-    try:
-        with EpisodeStore(store_path) as store:
-            rows = store.list_episodes(tiers=_SERVED_TIERS)
-    except Exception:
-        _log.warning("episode store read failed", exc_info=True)
-        return
+    rows = _served_rows(root)
     if not rows:
         return
 
+    answer_text = (payload.get("answer") or "").strip()
     haystack = f"{question}\n{answer_text}".casefold()
-    answer_paths = _answer_paths(payload)
+    scoped = _ranked(rows, haystack, _answer_paths(payload), repo_name)
 
-    scoped = []
-    for row in rows:
-        matched = _scope(row, haystack=haystack, answer_paths=answer_paths, repo_name=repo_name)
-        if matched is not None:
-            scoped.append((row, matched))
-    if not scoped:
-        return
-
-    # Most specific first: a path match is stronger evidence of relevance than
-    # a subject phrase, and among equals the longer subject is the rarer term.
-    scoped.sort(
-        key=lambda pair: (len(pair[1]), len(pair[0]["subject"]), pair[0]["id"]),
-        reverse=True,
-    )
-
-    # Staleness is evaluated in rank order and only until one episode passes,
-    # so the git query runs at most once on the common path. A stale top match
-    # falls through to the next rather than silencing a still-true one below
-    # it, but only _MAX_EPISODES are ever emitted.
+    # Staleness is evaluated in rank order and only until one episode passes.
+    # A stale top match falls through to the next rather than silencing a
+    # still-true one below it, but only _MAX_EPISODES are ever emitted.
+    window = _candidate_window(scoped)
+    head = _live_head(root) if window else None
     emitted = 0
-    for row, matched in _candidate_window(scoped):
+    for row, matched in window:
         if emitted >= _MAX_EPISODES:
             break
-        verdict = _still_true(row, root=root)
+        verdict = _verdict(row, root=root, head=head, call=verdicts)
         if verdict is None:
             continue  # precondition 2 failed outright — say nothing
         if _emit(payload, row, matched=matched, verdict=verdict, repo_root=root):
@@ -249,6 +324,82 @@ def _answer_paths(payload: dict) -> set[str]:
 #: sanctioned read-time git query lives behind it, bounded by a timeout and by
 #: this module's candidate window.
 _still_true = still_true
+
+#: Verdicts already reached, keyed on the checkout, its live HEAD and the
+#: record: a verdict is a function of those alone, and its git query can take
+#: about a second on a long history, so a repeated or cached answer would
+#: otherwise pay it on every serve. A moved HEAD is a new key.
+_VERDICTS: OrderedDict[tuple, str | None] = OrderedDict()
+_VERDICTS_MAX = 512
+#: The prefetch and the attach run in worker threads.
+_VERDICTS_LOCK = threading.Lock()
+
+
+def _git_unanswered(sentence: str) -> bool:
+    """True for the two verdicts :func:`episode_currency` gives when git failed."""
+    return sentence.endswith((GIT_UNASKED, "not re-checked since"))
+
+
+class CallVerdicts:
+    """The verdicts one ``get_answer`` call asked, answered or not.
+
+    Shared by the prefetch and the attach so each query runs once per call:
+    the attach takes over a query the prefetch has not reached, and waits on
+    one it is running. A query git could not answer (often the timeout, on a
+    long history) is reused within the call too; the next call asks again.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots: dict[tuple, concurrent.futures.Future] = {}
+
+    def get(self, key: tuple, ask) -> str | None:
+        with self._lock:
+            slot = self._slots.get(key)
+            owner = slot is None
+            if owner:
+                slot = self._slots[key] = concurrent.futures.Future()
+        if not owner:
+            try:
+                return slot.result()
+            except Exception:
+                return ask()
+        try:
+            verdict = ask()
+        except BaseException as exc:
+            slot.set_exception(exc)
+            raise
+        slot.set_result(verdict)
+        return verdict
+
+
+def _verdict(
+    row: dict, *, root: Path, head: str | None, call: CallVerdicts | None = None
+) -> str | None:
+    """:data:`_still_true` for *row*, asked of git once per HEAD (and once per *call*)."""
+    if head is None:
+        return _still_true(row, root=root)
+    key = (str(root), head, row.get("id"), row.get("birth_at"), row.get("last_seen_at"))
+    with _VERDICTS_LOCK:
+        if key in _VERDICTS:
+            _VERDICTS.move_to_end(key)
+            return _VERDICTS[key]
+    if call is not None:
+        return call.get(key, lambda: _ask_verdict(row, root=root, key=key))
+    return _ask_verdict(row, root=root, key=key)
+
+
+def _ask_verdict(row: dict, *, root: Path, key: tuple) -> str | None:
+    currency = episode_currency(row, root=root)
+    verdict = currency.sentence if currency.current else None
+    # A query git could not answer is asked again next time, not pinned.
+    if _git_unanswered(currency.sentence):
+        return verdict
+    with _VERDICTS_LOCK:
+        _VERDICTS[key] = verdict
+        while len(_VERDICTS) > _VERDICTS_MAX:
+            _VERDICTS.popitem(last=False)
+    return verdict
 
 
 # -- emission ----------------------------------------------------------------

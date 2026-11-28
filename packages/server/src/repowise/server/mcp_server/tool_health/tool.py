@@ -43,6 +43,8 @@ from repowise.server.mcp_server._workspace_routing import (
     single_repo,
 )
 from repowise.server.mcp_server.tool_health.analysis_meta import (
+    _attach_analyzer_version,
+    _attach_duplication_off,
     _attach_health_analysis_meta,
     _attach_repository_analysis_meta,
 )
@@ -50,6 +52,7 @@ from repowise.server.mcp_server.tool_health.blocks import add_optional_blocks
 from repowise.server.mcp_server.tool_health.dashboard import build_dashboard
 from repowise.server.mcp_server.tool_health.details import (
     _detail_response,
+    _hint_wrong_selector,
     _note_inapplicable_controls,
     _selector_conflict,
 )
@@ -129,8 +132,7 @@ __all__ = ["_ONLY_ALIASES", "get_health"]
         ),
         ToolRecipe(
             "health_performance_evidence",
-            'get_health(opportunity_id="perf...", '
-            'only=["performance_evidence"], cursor=0)',
+            'get_health(opportunity_id="perf...", only=["performance_evidence"], cursor=0)',
             ("get_health",),
         ),
     ),
@@ -162,34 +164,24 @@ async def get_health(
 ) -> dict:
     """Code-health scores and findings from stored analysis.
 
-    No ``targets``: a dashboard led by ``fix_first``, what to fix first;
-    targets rank files and findings.
-    Never recomputes: commit, then run ``repowise update``.
-    Every block and accepted value: docs/agent/MCP_TOOLS.md.
+    No ``targets``: a dashboard led by ``fix_first``. Never recomputes;
+    ``repowise update`` does. Blocks and values: docs/agent/MCP_TOOLS.md.
 
     Args:
-        targets: file paths or ``module:<name>``; misses land in ``unresolved``.
+        targets: file paths or ``module:<name>``.
         include: ``biomarkers``|``refactoring``|``trend``|``coverage``|
             ``accuracy``|``signals``|``churn_complexity``|``doc_drift``|
-            ``semantics``|``recipe``|``what_if``, or a dimension incl. ``advisory``;
-            ``performance`` and ``refactoring`` add queues.
-        only: keys to keep; identity, totals, recovery survive.
-            ``biomarkers``/``accuracy``/``refactoring`` alias their block key;
-            ``performance``/``defect``/``maintainability``/``advisory``
-            do not: they filter rows into ``unknown_only_keys``.
+            ``semantics``|``recipe``|``what_if``, or a dimension
+            (``performance`` adds measured costs).
+        only: keys to keep. ``biomarkers``/``accuracy``/``refactoring``
+            alias their block; ``performance``/``defect``/``maintainability``
+            do not.
+        limit: rows per ranked list (default 20, 0: none); cursor: offset.
+        fix_id/finding_id/plan_id/opportunity_id: open one item.
+        refactoring_*/performance_*: queue filters.
+        scope: ``production`` drops non-production code.
+        counts: ``code_shape`` drops the git half of the score.
         repo: usually omitted.
-        limit: max rows per ranked list (default 20), ``0`` for none.
-        cursor: offset into a ranked list.
-        fix_id/finding_id/plan_id: stable ``id``: item or ``act_``, finding, plan.
-        opportunity_id: ``perf...``/``refop...``: the unit, its steps or
-            plan, evidence paged by ``only=["*_evidence"]``.
-        refactoring_view: ``diversified`` (default)|``canonical``|
-            ``file_spread``; _type/_confidence/_effort/_scope filter.
-        performance_view/_context/_boundary/_confidence/_actionability/_sort:
-            queue filters.
-        scope / counts: default ``all``/``everything``. ``production`` drops
-            test files; ``code_shape`` drops git-derived score and findings.
-
     """
     started = perf_counter()
     conflict = _selector_conflict(
@@ -247,11 +239,17 @@ async def get_health(
             recipe="recipe" in req.include_set,
         )
         if detail is not None:
+            _hint_wrong_selector(
+                detail,
+                fix_id=fix_id,
+                finding_id=finding_id,
+                plan_id=plan_id,
+                opportunity_id=opportunity_id,
+            )
             _attach_semantics(detail, req)
+            await _cite_linked_issues(session, repository.id, detail)
             return _note_inapplicable_controls(detail, scope, counts)
-        data = await load_health_data(
-            session, repository, reference_repository, ctx.path, req
-        )
+        data = await load_health_data(session, repository, reference_repository, ctx.path, req)
         # The rest stays inside the session: the analysis meta queries it, and a
         # query on a closed session checks out a connection nothing returns.
         if data.pop.scoped:
@@ -264,6 +262,7 @@ async def get_health(
             result, mode_totals = build_dashboard(data, req, pager)
         add_optional_blocks(result, data, req, pager, str(ctx.path))
         result = _finish(result, data, req, pager, mode_totals)
+        await _cite_linked_issues(session, repository.id, result)
 
         # Targeted mode scopes the stale signal to the asked-about files.
         result["_meta"] = _build_meta(repository=repository, targets=targets if targets else None)
@@ -272,6 +271,8 @@ async def get_health(
             await _attach_repository_analysis_meta(session, repository, result["_meta"])
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
+            await _attach_analyzer_version(session, repository, result["_meta"])
+        _attach_duplication_off(result["_meta"], ctx.path)
         _attach_gated(result["_meta"], data)
         _attach_preview(result)
         _attach_withheld(result, data)
@@ -285,6 +286,24 @@ async def get_health(
                 result["repo"] = routed_repo
             hint_misses(result, routes)
         return result
+
+
+async def _cite_linked_issues(session: Any, repo_id: str, result: dict[str, Any]) -> None:
+    """Quote the tracker issues behind each ``prior_defect`` finding the response lists."""
+    from repowise.core.persistence.crud.issue_links import cite_prior_defect_issues
+
+    await cite_prior_defect_issues(session, repo_id, _finding_rows(result))
+
+
+def _finding_rows(value: Any) -> list[dict[str, Any]]:
+    """Every finding row in *value*, at any depth: the blocks nest them differently."""
+    if isinstance(value, list):
+        return [row for item in value for row in _finding_rows(item)]
+    if not isinstance(value, dict):
+        return []
+    if "biomarker_type" in value:
+        return [value]
+    return [row for item in value.values() for row in _finding_rows(item)]
 
 
 def _attach_gated(meta: dict[str, Any], data: HealthData) -> None:

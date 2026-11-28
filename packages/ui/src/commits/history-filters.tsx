@@ -6,6 +6,7 @@ import { Input } from "../ui/input";
 import { Segmented } from "../shared/segmented";
 import { ActiveFilterChips, MoreFilters, type ActiveFilterChip } from "../shared/more-filters";
 import { cn } from "../lib/cn";
+import { formatNumber } from "../lib/format";
 
 /** What a commit or change did to health, as the quick filter names it. */
 export type HealthImpact = "all" | "better" | "worse" | "none";
@@ -106,7 +107,10 @@ export function HistoryFilters({
   className,
 }: HistoryFiltersProps) {
   const l = { ...DEFAULT_LABELS, ...labels };
-  const count = (k: HealthImpact) => counts?.[k]?.toLocaleString();
+  const count = (k: HealthImpact) => {
+    const n = counts?.[k];
+    return n == null ? undefined : formatNumber(n);
+  };
   const pending = impactPending ? l.impactPending : undefined;
   return (
     <div className={cn("flex flex-col gap-2.5", className)}>
@@ -127,7 +131,7 @@ export function HistoryFilters({
           aria-pressed={value.hotspots}
           onClick={() => onChange({ hotspots: !value.hotspots })}
           className={cn(
-            "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+            "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
             value.hotspots
               ? "border-[var(--color-border-hover)] bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]"
               : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",

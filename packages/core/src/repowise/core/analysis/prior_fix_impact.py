@@ -60,6 +60,9 @@ class PriorFixFile:
     changed_lines: int
     share_of_change: float
     last_fix_days_ago: int | None = None
+    #: The tracker issues behind these fixes, quoted (``"ENG-42 (bug): title"``);
+    #: empty unless a stored bug or incident links to one of them.
+    linked_issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

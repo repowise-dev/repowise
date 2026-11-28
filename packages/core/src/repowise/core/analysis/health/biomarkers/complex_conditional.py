@@ -8,8 +8,8 @@ conditions are routinely cited in defect-mining studies as the noisy
 end of a branch's lifetime.
 
 A flat chain of one operator with no negation (``a || b || c || d``)
-reads as a list of alternatives, not a knot, so it stays LOW however
-long it runs; ``details.flat_chain`` says so.
+reads as a list of alternatives, not a knot, so it produces no finding
+however long it runs.
 
 Category: ``structural_complexity``.
 
@@ -46,23 +46,18 @@ class ComplexConditionalDetector:
         out: list[BiomarkerResult] = []
         for fc in ctx.all_functions:
             for cond in fc.complex_conditions or []:
-                if cond.operator_count < _LOW:
+                if cond.operator_count < _LOW or cond.flat_chain:
                     continue
                 out.append(
                     BiomarkerResult(
                         biomarker_type=self.name,
-                        severity=(
-                            Severity.LOW
-                            if cond.flat_chain
-                            else _severity_for(cond.operator_count)
-                        ),
+                        severity=_severity_for(cond.operator_count),
                         function_name=fc.name,
                         line_start=cond.line,
                         line_end=cond.line,
                         details={
                             "operator_count": cond.operator_count,
                             "enclosing_construct": cond.enclosing_construct,
-                            "flat_chain": cond.flat_chain,
                             "dispatch_share": fc.dispatch_share,
                         },
                         reason=(

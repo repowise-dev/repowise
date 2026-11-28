@@ -101,6 +101,8 @@ describe("Extract Method anchors", () => {
       ],
     });
     expect(staged.split(note).length - 1).toBe(1);
+    // C# writes the placeholder in PascalCase.
+    expect(named("ExtractedHelper2").split(note).length - 1).toBe(1);
     // A plan stored with a real name does not call it a placeholder.
     expect(named("_sum_rows")).not.toContain(note);
   });

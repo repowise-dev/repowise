@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -22,7 +25,7 @@
         "end_line": 46,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "pascal",
@@ -30,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -37,9 +41,8 @@
       }
     ],
     "imports": [],
-    "exports": [
-      "ManyBranches"
-    ],
+    "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -49,7 +52,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "pascal/nested.pas": {
     "file_info": {
@@ -61,7 +66,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -74,7 +82,7 @@
         "end_line": 30,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "pascal",
@@ -82,6 +90,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -97,7 +106,7 @@
         "end_line": 35,
         "docstring": null,
         "decorators": [],
-        "visibility": "public",
+        "visibility": "private",
         "is_async": false,
         "complexity_estimate": 1,
         "language": "pascal",
@@ -105,6 +114,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -112,10 +122,8 @@
       }
     ],
     "imports": [],
-    "exports": [
-      "DeeplyNested",
-      "Shallow"
-    ],
+    "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -125,13 +133,16 @@
         "line": 21,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 303,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
-        "argument_names": null
+        "argument_names": null,
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -141,6 +152,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

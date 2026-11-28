@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from functools import cache
 
 from tree_sitter import Node
 
 from ..extractors import fsharp_type_name, node_text
 from ..language_data import get_builtin_types
-from ..type_names import is_resolvable_type_name
+from ..type_names import is_resolvable_type_name, scoped_type_segments
 
 _PARAM_ORIGIN_BY_ANCESTOR: dict[str, str] = {
     "type_argument_list": "generic_argument",
@@ -428,6 +429,28 @@ def _java_head_step(node: Node, src: str) -> str | Node | None:
 
 
 # ---------------------------------------------------------------------------
+# Apex type-reference head extraction
+# ---------------------------------------------------------------------------
+
+
+@cache
+def _apex_builtin_types_folded() -> frozenset[str]:
+    return frozenset(name.lower() for name in get_builtin_types("apex"))
+
+
+def _apex_head_type_identifier(type_node: Node, src: str) -> str | None:
+    """The head of an Apex type, read with Java's walker.
+
+    Apex type names are case-insensitive (``string``, ``LIST<Account>``), so
+    the builtin filter compares them folded. The name keeps its written case.
+    """
+    head = _walk_to_head(type_node, src, _java_head_step, 8)
+    if head is None or head.lower() in _apex_builtin_types_folded():
+        return None
+    return _resolvable(head, "apex")
+
+
+# ---------------------------------------------------------------------------
 # Kotlin type-reference head extraction
 # ---------------------------------------------------------------------------
 
@@ -674,6 +697,61 @@ def _objc_head_step(node: Node, src: str) -> str | Node | None:
     return _first_named_child(node)
 
 
+# ---------------------------------------------------------------------------
+# Ruby
+# ---------------------------------------------------------------------------
+
+# Parents under which a constant is the name being defined, not a reference.
+_RUBY_DEFINING_PARENTS = ("class", "module")
+
+
+def _ruby_head_constant(type_node: Node, src: str) -> str | None:
+    """The full constant path a Ruby ``constant`` or ``scope_resolution`` names.
+
+    ``Foo::Bar.new`` yields ``Foo::Bar`` once: the inner nodes of a
+    ``scope_resolution`` yield nothing, so each path is reported by its
+    outermost node, and ``::Foo`` keeps its leading ``::`` (top level only).
+    The name a ``class``/``module`` defines and the target of a constant
+    assignment are definitions and yield nothing; a superclass, a mixin and
+    every other mention are references.
+    """
+    parent = type_node.parent
+    if parent is not None:
+        if parent.type == "scope_resolution":
+            return None
+        if parent.type in _RUBY_DEFINING_PARENTS and parent.child_by_field_name("name") == type_node:
+            return None
+        if parent.type == "assignment" and parent.child_by_field_name("left") == type_node:
+            return None
+    text = "".join(node_text(type_node, src).split())
+    segments = scoped_type_segments(text)
+    # ``self.class::FOO`` or ``foo::Bar``: a scope that is no constant path.
+    if not all(seg[:1].isupper() and seg.replace("_", "").isalnum() for seg in segments):
+        return None
+    return text
+
+
+_RUBY_MIXIN_METHODS = frozenset({b"include", b"extend", b"prepend"})
+
+
+def ruby_constant_origin(type_node: Node) -> str:
+    """``extends`` for a superclass, ``mixin`` for ``include``/``extend``/``prepend``, else ``constant``."""
+    parent = type_node.parent
+    if parent is not None and parent.type == "superclass":
+        return "extends"
+    if parent is not None and parent.type == "argument_list":
+        call = parent.parent
+        if (
+            call is not None
+            and call.type == "call"
+            and call.child_by_field_name("receiver") is None
+            and (method := call.child_by_field_name("method")) is not None
+            and method.text in _RUBY_MIXIN_METHODS
+        ):
+            return "mixin"
+    return "constant"
+
+
 # Per-language head-identifier extractor for ``@param.type`` captures.
 # Defaults to the C#-shaped extractor; languages with a differently-shaped
 # type grammar register their own here.
@@ -684,10 +762,12 @@ TYPE_HEAD_EXTRACTORS: dict[str, Callable[[Node, str], str | None]] = {
     "typescript": _ts_head_type_identifier,
     "javascript": _ts_head_type_identifier,
     "java": _java_head_type_identifier,
+    "apex": _apex_head_type_identifier,
     "kotlin": _kotlin_head_type_identifier,
     "rust": _rust_head_type_identifier,
     "pascal": _pascal_head_type_identifier,
     "elixir": _elixir_head_type_identifier,
     "fsharp": _fsharp_head_type_identifier,
     "objectivec": _objc_head_type_identifier,
+    "ruby": _ruby_head_constant,
 }

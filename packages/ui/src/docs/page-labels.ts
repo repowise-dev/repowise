@@ -1,7 +1,7 @@
 // Display labels for wiki pages — replace raw graph ids with derived names.
 //
 // Generation titles carry raw graph ids ("Module: community-207",
-// "Circular Dependency: scc-103"). The human-readable names live on the page
+// "Static Import Cycle: scc-103"). The human-readable names live on the page
 // itself — module titles already carry the derived path, and SCC members are
 // listed in the cycle description — so labels are derived client-side instead
 // of leaking ids. metadata.derived_label, when present, always wins
@@ -72,6 +72,10 @@ export function treeLabel(
 export function displayLabel(page: DocPageSummary): string {
   const metaLabel = page.metadata?.["derived_label"];
   if (typeof metaLabel === "string" && metaLabel) return metaLabel;
+  // The short, correctly cased label the server derives for outline pages
+  // ("CLI" for a page stored as "Cli Overview"). The page's heading keeps
+  // its full title.
+  if (page.nav_title) return page.nav_title;
 
   if (page.page_type === "module_page") {
     const name = page.title.replace(/^Module:\s*/i, "");

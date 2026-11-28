@@ -46,6 +46,7 @@ from repowise.core.analysis.decisions.semantic_match import (
     DEFAULT_DEDUP_TAU,
     find_related_decisions_many,
 )
+from repowise.core.ingestion.git_indexer._constants import whole_body
 
 logger = structlog.get_logger(__name__)
 
@@ -518,8 +519,10 @@ async def detect_supersessions_and_conflicts(
                 if edge is not None:
                     summary["supersedes"] += 1
                     if conf >= autoflip_confidence and older.status in ("active", "proposed"):
-                        await _retire(session, older, successor_id=newer.id)
-                        summary["flipped"] += 1
+                        # A pinned decision is left in force and not counted.
+                        summary["flipped"] += int(
+                            await _retire(session, older, successor_id=newer.id)
+                        )
             else:
                 # Two active decisions contradict, neither clearly reverses the
                 # other → a governance smell, surfaced in health.
@@ -623,6 +626,7 @@ def commits_in_range(repo_path: Any, base_ref: str, head: str | None) -> set[str
                 f"{base_ref}..{head or 'HEAD'}",
             ],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=60,
         )
@@ -663,7 +667,7 @@ def update_evidence_by_file(
                 if (c.get("sha") or "")[:8] not in range_shas:
                     continue
                 msg = c.get("message") or ""
-                body = c.get("body") or ""
+                body = whole_body(c.get("body") or "")
                 if msg or body:
                     parts.append(f"{msg}\n{body}")
         if parts:
@@ -891,8 +895,8 @@ async def run_update_evolution(
 
         kind = verdict["verdict"]
         if kind == "superseded":
-            if dec.status in ("active", "proposed"):
-                await _retire(session, dec)
+            if dec.status in ("active", "proposed") and not await _retire(session, dec):
+                continue
             regen.update(governed)
             result["superseded"] += 1
         elif kind == "amended":
@@ -914,13 +918,16 @@ async def run_update_evolution(
     return result
 
 
-async def _retire(session, record, *, successor_id: str | None = None) -> None:
+async def _retire(session, record, *, successor_id: str | None = None) -> bool:
     """Mark a record superseded, recording the withdrawal if it was accepted.
 
     An accepted decision's authority lives in the acceptance log, so retiring it
     by writing the status column alone would leave the log still saying it
     governs — and the tracked manifest would keep exporting it as current.
     A candidate has no authority to withdraw, so it only moves status.
+
+    A pinned decision is left alone and ``False`` returned: a person holds it
+    as law, and only a person retires it.
     """
     import contextlib
     from datetime import UTC, datetime
@@ -928,9 +935,12 @@ async def _retire(session, record, *, successor_id: str | None = None) -> None:
     from repowise.core.persistence.crud.authority import (
         AcceptanceRefusedError,
         is_accepted,
+        is_pinned,
         record_acceptance,
     )
 
+    if await is_pinned(session, record.id):
+        return False
     if await is_accepted(session, record.id):
         # A record that lost the evidence its acceptance rested on cannot log
         # the withdrawal; the retirement itself still applies.
@@ -949,3 +959,4 @@ async def _retire(session, record, *, successor_id: str | None = None) -> None:
     if successor_id is not None:
         record.superseded_by = successor_id
     record.updated_at = datetime.now(UTC)
+    return True

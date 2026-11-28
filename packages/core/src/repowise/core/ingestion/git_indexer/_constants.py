@@ -6,6 +6,8 @@ the commit-depth defaults, decay half-lives, and skip heuristics.
 
 from __future__ import annotations
 
+import math
+import os
 import re
 from typing import Any
 
@@ -50,6 +52,31 @@ _MIN_MESSAGE_LEN = 12
 # Default history window: the newest commits walked for per-file history and
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
+
+
+def parse_commit_limit(raw: object) -> int:
+    """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
+
+    No upper bound: a window deeper than the history reads the whole history.
+    Anything but a positive whole number is not a limit.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("must be a whole number")
+    if raw < 1:
+        raise ValueError("must be at least 1")
+    return raw
+
+
+def clamp_commit_limit(raw: object) -> int:
+    """:func:`parse_commit_limit`, with the default for unset or unusable values.
+
+    Every reader of ``commit_limit`` goes through this, so ``update`` walks the
+    same window ``init`` did for the same config.
+    """
+    try:
+        return parse_commit_limit(raw)
+    except ValueError:
+        return _DEFAULT_COMMIT_LIMIT
 
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
@@ -99,6 +126,43 @@ def _truncate_body(body: str) -> str:
     if len(encoded) <= _MAX_COMMIT_BODY_BYTES:
         return body
     return encoded[:_MAX_COMMIT_BODY_BYTES].decode("utf-8", errors="ignore")
+
+
+def body_was_cut(body: str) -> bool:
+    """Whether a stored *body* reached the byte ceiling, so its end is missing.
+
+    :func:`_truncate_body` drops at most three bytes of a split UTF-8
+    sequence, so a cut body keeps at least the ceiling less three bytes.
+    """
+    return len(body.encode("utf-8")) >= _MAX_COMMIT_BODY_BYTES - 3
+
+
+#: Where a cut body may end cleanly: after a sentence's closing mark (and any
+#: closing quote, bracket or emphasis), at a blank line, or before a list item.
+#: A lone newline is not one, so a hard-wrapped paragraph never ends at a wrap.
+#: A period that numbers a list item (``2.`` opening a line) or closes a
+#: dotted abbreviation (``e.g.``) is not a sentence end.
+_BODY_BREAK = re.compile(
+    r"(?<!\n\d)(?<!\n\d\d)(?<!^\d)(?<!^\d\d)(?<!\.\w)[.!?][\"')\]`*_]*(?=\s)"
+    r"|\n[ \t]*\r?\n"
+    r"|\n(?=[ \t]*(?:[-*+]|\d+[.)])[ \t])"
+)
+
+
+def whole_body(body: str) -> str:
+    """*body* without the partial sentence a cut at the byte ceiling left at its end.
+
+    The stored body is cut at a byte count, mid-sentence and often mid-word,
+    and the miners quote it verbatim, so a decision mined from that tail ended
+    mid-word. A body under the ceiling is returned unchanged, as is a cut body
+    with no clean end to fall back to. Applied where the body is read rather
+    than where it is stored, so existing indexes benefit and a stored body
+    still reads as cut by its length.
+    """
+    if not body or not body_was_cut(body):
+        return body
+    end = max((m.end() for m in _BODY_BREAK.finditer(body)), default=0)
+    return body[:end].rstrip() if end else body
 
 
 # Co-change pair extraction widens the window because individual files
@@ -184,6 +248,9 @@ _FIX_COMMIT_EXCLUDE: tuple[re.Pattern[str], ...] = (
 # prior-defects baseline — a wider window than the 90d activity signals because
 # defect history is a slower-moving cluster than recent churn.
 PRIOR_DEFECT_WINDOW_DAYS: int = 180
+# The window as a surface prints it beside a count: a bare fix total next to a
+# 90-day commit count reads as a 90-day figure.
+PRIOR_DEFECT_WINDOW_LABEL: str = f"{PRIOR_DEFECT_WINDOW_DAYS // 30} months"
 
 
 def is_fix_commit(subject: str) -> bool:
@@ -323,12 +390,24 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: than the change-entropy sweep cap.
 #: v3: commits carry their category, and changes are rebuilt from history; the
 #: default history window grew from 500 to 5,000 commits.
-GIT_HISTORY_VERSION: int = 3
+#: v4: a per-file walk widens a file's names only through its own renames, not
+#: those of other files in the same commit. A shallow clone's cut commit
+#: credits no author and counts as neither churn nor a file's origin.
+#: v5: one person counts once across names and emails (mailmap applied) in a
+#: file's owners, top authors, bus factor and blame owners (#6045), and bot
+#: accounts count toward neither ownership nor the contributor count (#6051).
+#: v6: a commit a coding agent authored counts, in a file's owners, top
+#: authors, bus factor and blame owners, for the human its ``Co-authored-by``
+#: trailer or its committer names; with neither it stays the agent's.
+GIT_HISTORY_VERSION: int = 6
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
 #: commits, and can say so instead of reporting a rules change.
 GIT_HISTORY_BACKFILL_REWALK = "attribution-backfill"
+#: Stored the same way when a stored bug or incident issue link came or went on
+#: a commit the index already holds, so its fix counts are read again.
+GIT_HISTORY_ISSUE_LINKS_REWALK = "issue-links"
 
 
 def git_history_stale(state: dict[str, Any]) -> bool:
@@ -340,6 +419,32 @@ def git_history_stale(state: dict[str, Any]) -> bool:
     do not change.
     """
     return state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION
+
+
+def request_history_rewalk(repo_path: Any, marker: str) -> bool:
+    """Make the next ``repowise update`` re-read git history once; False when there is no index.
+
+    Replaces a current stamp in ``.repowise/state.json`` with *marker*, which
+    the update reads as stale and names as the reason. A stamp already stale
+    is left alone: that walk reads everything again too.
+    """
+    import json
+    from pathlib import Path
+
+    from repowise.core.fsutils import atomic_write_text
+
+    state_path = Path(repo_path) / ".repowise" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(state, dict):
+        return False
+    if state.get(GIT_HISTORY_VERSION_KEY) != GIT_HISTORY_VERSION:
+        return True
+    state[GIT_HISTORY_VERSION_KEY] = marker
+    atomic_write_text(state_path, json.dumps(state, indent=2))
+    return True
 
 # Absolute activity floors for hotspot classification (issue #361). The
 # churn percentile is repo-relative, so on a quiet repo "top quartile"
@@ -371,12 +476,65 @@ HOTSPOT_HIGH_COMMITS_90D: int = 8
 # Derived from the centralised LanguageRegistry — all code language extensions.
 _CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
 
+# Pack memory each git process the indexer runs may map. Git maps pack files
+# in windows and, with its 64-bit defaults, never unmaps one: on a 15 GiB pack a
+# history walk or the commit-graph write touched every window and showed ~15 GiB
+# resident, and eight blame workers each held their own windows. Those pages are
+# file-backed (the machine's free memory barely moves) but they count toward a
+# process's resident size and a container's limit. These bounds keep a blame or
+# history walk well under 1 GiB; eight blames at once ran 2% slower with them.
+_PACK_WINDOW_OPTIONS: tuple[str, ...] = ("core.packedGitLimit=1g", "core.packedGitWindowSize=128m")
+# The commit-graph write reads every tree in the pack once, so remapping costs
+# it more: 17% at these bounds (1 GiB resident instead of 17), 28% at the ones above.
+_GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
+    "core.packedGitLimit=2g",
+    "core.packedGitWindowSize=256m",
+)
+
 # Files larger than this skip git blame.  blame is O(lines) and blocks the
 # executor thread — for large files the commit-based ownership estimate is
 # used as a fallback instead.
 _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
 
+# A production file up to this size is still blamed, for its functions' owner
+# and last change only (``git_function_blame.history_only``): the file owner
+# and the health biomarkers keep the cap above. Without it a function in a
+# large module has no owner at all.
+_MAX_FUNCTION_BLAME_SIZE_BYTES: int = 512 * 1024  # 512 KB
+
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the
 # semaphore slot is released so other files can proceed.
-_FILE_INDEX_TIMEOUT_SECS: float = 45.0
+#
+# The default is deliberately generous: a first full index of a large
+# repository can run several slow git subprocesses per file (log, blame,
+# renames), and a premature fire here would silently record partial data for
+# files that were simply still working. Override per-repo or per-machine
+# with ``REPOWISE_GIT_INDEX_TIMEOUT_S`` (a positive float, seconds).
+_FILE_INDEX_TIMEOUT_SECS_ENV = "REPOWISE_GIT_INDEX_TIMEOUT_S"
+_FILE_INDEX_TIMEOUT_SECS_DEFAULT: float = 120.0
+
+
+def _resolve_file_index_timeout() -> float:
+    """Seconds one file's git indexing may take, from env or the default.
+
+    An unparseable or non-positive value keeps the default rather than
+    silently dropping the budget (matching the other ``REPOWISE_*_TIMEOUT_S``
+    resolvers in the codebase).
+    """
+    raw = os.environ.get(_FILE_INDEX_TIMEOUT_SECS_ENV, "").strip()
+    if not raw:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = float("nan")
+    # NaN and inf both fail ``isfinite``/``> 0``, so they land on the default
+    # rather than on a budget asyncio.wait_for would treat as already expired
+    # (or one it would never fire at all).
+    if not math.isfinite(seconds) or not seconds > 0:
+        return _FILE_INDEX_TIMEOUT_SECS_DEFAULT
+    return seconds
+
+
+_FILE_INDEX_TIMEOUT_SECS: float = _resolve_file_index_timeout()

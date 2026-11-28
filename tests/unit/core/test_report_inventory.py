@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from repowise.core.components.resolve import repo_wide_when_flat
 from repowise.core.report.build import available_sections, collect_repo
 from repowise.core.report.model import ReportContext
 from tests.unit.core.inventory_fixture import REPO, session  # noqa: F401  (fixture)
@@ -24,6 +25,7 @@ async def test_inventory_report_section(session, tmp_path):  # noqa: F811
 
     # Only components with no declared owner team get an item of their own.
     assert "inventory:app" not in checks and "inventory:jobs" not in checks
-    src = checks["inventory:src"]
+    # src/ and tests/ are layout, so the rest of the repo is one derived component.
+    src = checks[f"inventory:{repo_wide_when_flat([], ['x.py'], tmp_path.name)[0].name}"]
     assert "no declared owner team" in src["reason"]
     assert "package: pypi:requests (1 file(s))" in src["details"]

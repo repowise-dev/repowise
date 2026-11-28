@@ -32,7 +32,7 @@ from repowise.core.analysis.health.counts import DEFAULT_COUNTS
 from repowise.core.analysis.health.counts import project as project_counts
 from repowise.core.analysis.health.perf.coverage import supported_perf_languages
 from repowise.core.analysis.health.perf.opportunity_rank import ACTIONABILITY_ORDER
-from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope
+from repowise.core.analysis.health.scope import DEFAULT_SCOPE, parse_scope, rows_in_scope
 from repowise.core.persistence import crud
 
 __all__ = [
@@ -71,6 +71,7 @@ _ORIGIN_TIER: dict[str, int] = {
     "build": 1,
     "test": 2,
     "docs_example": 3,
+    "data": 3,
     "vendored": 4,
     "generated": 4,
 }
@@ -175,7 +176,7 @@ class HealthMapService:
 
         scope_narrowed = parse_scope(scope) == "production"
         if scope_narrowed:
-            metrics = [m for m in metrics if not m.is_test]
+            metrics = rows_in_scope(scope, metrics)
             kept = {m.file_path for m in metrics}
             rollups = [r for r in rollups if r.file_path in kept]
 

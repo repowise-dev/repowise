@@ -132,11 +132,14 @@ export const GOOD_MIN = 7.0;
 export const FAIR_MIN = 5.5;
 export const NEEDS_WORK_MIN = 4.0;
 
-/**
- * The canonical three-band reading beside a health mark: Healthy at 8 or
- * above, Warning from 4, Alert below 4 (`NEEDS_WORK_MIN`).
- */
-export const HEALTHY_MIN = 8.0;
+/** The lower edge of each band, for keys and grounds that draw the ranges. */
+export const HEALTH_BAND_MIN: Record<HealthBand, number> = {
+  excellent: EXCELLENT_MIN,
+  good: GOOD_MIN,
+  fair: FAIR_MIN,
+  needs_work: NEEDS_WORK_MIN,
+  at_risk: 0,
+};
 
 /** Worst-first, matching how the surfaces list files. */
 export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
@@ -286,13 +289,19 @@ export interface HealthFileMetric {
   history_deduction?: number | null;
   unclamped_score?: number | null;
   /**
+   * `"short"`: too few recorded commits for most history markers to fire, so a
+   * high score is an absent history rather than a clean one. Omitted otherwise
+   * and on `fields=summary` rows.
+   */
+  history?: "short" | null;
+  /**
    * Test material, decided at ingestion. Drives the production/all scope
    * without re-deriving the answer from the path on every surface.
    */
   is_test?: boolean;
   /**
    * Where the file's code comes from (`production`, `test`, `vendored`,
-   * `generated`, `docs_example`, `tooling`, `build`). `null` on rows scored
+   * `generated`, `docs_example`, `tooling`, `build`, `data`). `null` on rows scored
    * before the column existed; absent on payloads that do not carry it.
    */
   code_origin?: string | null;
@@ -405,7 +414,8 @@ export interface PerformanceOpportunityFix {
 }
 
 export interface PerformanceOpportunityEvidence {
-  finding_id: string;
+  /** Null for a measured hotspot, which comes from runtime evidence, not a static finding. */
+  finding_id: string | null;
   file_path: string;
   biomarker_type: string;
   function_name: string | null;
@@ -457,6 +467,13 @@ export interface PerformanceOpportunityFacets {
   growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
+  /** The workload whose stored run measured the cause's function; absent when none did. */
+  measured?: string;
+  /** The unit-test workload that measured it, when no leading workload did. */
+  measured_in_tests?: string;
+  /** What confirmed the cause: a measured run, a measured test run, or query
+   *  counts that grow. Absent otherwise. */
+  confirmed?: "measured" | "measured_in_tests" | "query_count";
 }
 
 /**
@@ -505,6 +522,29 @@ export interface PerformanceOpportunityPlanEconomics {
   risk: number;
 }
 
+/** `confirmed` and `measured` lead the queue, except a cause measured
+ *  against its cold name (startup, migration), which keeps its static place
+ *  like the rest. `not_exercised` names the leading workloads that ran ("not
+ *  exercised in <workload>"). */
+export type PerformanceEvidenceState =
+  | "confirmed"
+  | "measured"
+  | "counter_evidence"
+  | "ran"
+  | "not_exercised";
+
+export interface PerformanceEvidenceMark {
+  state: PerformanceEvidenceState;
+  /** `query_count`, `measured` or `measured_in_tests` for `confirmed`;
+   *  `measured_in_tests` for `measured` when only a unit-test run ranks it;
+   *  `query_count` for `counter_evidence` and `ran`. */
+  basis?: "query_count" | "measured" | "measured_in_tests";
+  /** The workload that ranks the cause's loop owner (`measured`). */
+  workload?: string;
+  /** The leading workloads that ran and never reached it (`not_exercised`). */
+  workloads?: string[];
+}
+
 export interface PerformanceOpportunity {
   opportunity_id: string;
   /** Ids are stable within a model version and never translated across one. */
@@ -543,7 +583,9 @@ export interface PerformanceOpportunity {
   /** What fixing this cause buys, in the words Fix first uses. Absent on an older server. */
   gain_text?: string;
   actionability_state: PerformanceActionabilityState;
-  actionability_reason: string;
+  /** Why the cause sits in its state. The detail view only: a summary row
+   *  (the queue's list) leaves it out. */
+  actionability_reason?: string;
   prerequisites: string[];
   rank_score: number;
   /** 0-based place in the ranked list that served the row; another sort or a
@@ -561,6 +603,10 @@ export interface PerformanceOpportunity {
   /** The measurement note when the row's language cell is served as a preview;
    *  null or absent for a validated cell. */
   preview?: string | null;
+  /** What runtime evidence says about this cause (`perf.serving.evidence_mark`).
+   *  On the dashboard's rows only; absent when the repository has no runtime
+   *  evidence. */
+  runtime_evidence?: PerformanceEvidenceMark;
   /** Exact stored match. Never inferred from file, marker, or rank. */
   plan_id: string | null;
   plan_status: PerformancePlanStatus;
@@ -628,15 +674,33 @@ export type PerformanceFacetKey =
   | "actionability"
   | "plan_state"
   | "proof"
+  | "static_cost"
   | "role";
 
 /**
- * Whether anything measured that a cause's cost grows with the data
- * (`eligibility.QUEUE_PROOFS`). The queue holds `proven` causes unless asked
- * for another value. `background_unproven` is a scheduled job whose loop is
- * not shown to grow; neither unproven kind leads.
+ * Whether the code or a run shows a cause's cost (`eligibility.QUEUE_PROOFS`).
+ * The queue holds `proven` causes unless asked for another value. `unproven`
+ * is a loop whose size the code does not show and nothing measured;
+ * `background_unproven` is a scheduled job whose loop is not shown to grow;
+ * neither unproven kind leads. What the code alone shows is
+ * {@link PerformanceStaticCost}.
  */
 export type PerformanceCostProof = "proven" | "unproven" | "background_unproven";
+
+/**
+ * What the code alone shows about a cause's cost (`worth.STATIC_COSTS`),
+ * never what a run measured: a loop that grows with the data, a shape that
+ * grows by itself, a per-call cost an entry point does or does not reach, a
+ * bounded loop, or a loop whose size the code does not show. Counted only on
+ * the dashboard's scoped facets.
+ */
+export type PerformanceStaticCost =
+  | "grows_with_data"
+  | "grows_by_shape"
+  | "per_call_reached"
+  | "per_call_unreached"
+  | "bounded"
+  | "size_unknown";
 
 export type PerformanceFacets = Partial<Record<PerformanceFacetKey, PerformanceFacetCount[]>>;
 
@@ -663,6 +727,8 @@ export type PerformanceOpportunityQuery = {
   /** Absent means `proven`; `unproven` lists the causes the default queue leaves out;
    *  `all` lifts the proof filter. */
   proof?: PerformanceCostProof | "all";
+  /** Narrows to one static cost inside the chosen scope; absent is every value (REST only). */
+  static_cost?: PerformanceStaticCost;
   /** Keep to the default queue's stored verdict whatever state is chosen (REST only). */
   queue?: boolean;
   /** One area (a directory) at any depth (REST only). */
@@ -1367,6 +1433,11 @@ export type ReachedVia = "call-graph" | "import-graph" | "indirect-import" | "mo
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
+  /**
+   * Generated, vendored, build, tooling, docs example or migration code: no
+   * test is owed, so it is never listed as unreached. Absent means owed.
+   */
+  not_applicable?: boolean;
   health_score?: number | null;
   nloc?: number;
 }
@@ -1385,6 +1456,8 @@ export interface InferredTestMap {
   files_total: number;
   files_reached: number;
   files_not_reached: number;
+  /** Files that owe no test (see `ReachedFileRow.not_applicable`); counted in neither of the two above. */
+  files_not_applicable?: number;
   test_file_count: number;
   /**
    * Present only when `basis` is `measured` (the hybrid shape): how many files

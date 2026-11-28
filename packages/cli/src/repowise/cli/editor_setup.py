@@ -15,6 +15,7 @@ drift.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.agent_targets.types import InstallLifecycle
+from repowise.core.settings.model import flag
 
 # When set (truthy), `repowise init` skips registering MCP servers / hooks in
 # the user's *global* editor config (~/.claude/settings.json, Claude Desktop).
@@ -80,6 +82,88 @@ class EditorSetupOutcome:
     #: editor setup was turned off for this run — via --no-editor-setup or the
     #: REPOWISE_SKIP_EDITOR_SETUP env var (CI/benchmark) — so nothing was wired up.
     editor_setup_disabled: bool = False
+    #: ``{"id", "name", **surface}`` for each wired agent: the MCP tools its
+    #: local server lists (see :mod:`repowise.cli.agent_targets.tool_surface`).
+    tool_surfaces: tuple[dict[str, Any], ...] = ()
+    #: ``{"id", "name"}`` for each agent that loads its MCP config only at
+    #: startup and had it written or moved this run: restart these.
+    restart_hosts: tuple[dict[str, str], ...] = ()
+    #: ``{"id", "name"}`` for each agent installed here that repowise is not wired into.
+    unconnected: tuple[dict[str, str], ...] = ()
+
+
+def wired_tool_surfaces(repo_path: Path, rows: list[dict] | None = None) -> tuple[dict[str, Any], ...]:
+    """The tool surface of each agent ``init`` can wire that is wired to repowise now."""
+    from repowise.cli.agent_targets.registry import describe_agents
+    from repowise.cli.agent_targets.tool_surface import agent_tool_surface
+
+    installable, _ = _installable_rows(describe_agents(repo_path) if rows is None else rows)
+    out = []
+    for row in installable:
+        if not row["registrations"]:
+            continue
+        surface = agent_tool_surface(repo_path, row["id"])
+        if surface is not None:
+            out.append({"id": row["id"], "name": row["display_name"], **surface})
+    return tuple(out)
+
+
+def connect_command(agent_ids: Iterable[str]) -> str:
+    """The one command that wires repowise into these agents without a prompt."""
+    return f"repowise agents add --target={','.join(agent_ids)} --yes"
+
+
+#: Claude Code's restart is decided by its own rule (a first index or a moved
+#: global entry): its user config also changes for reasons of its own.
+_OWN_RESTART_RULE = frozenset({"claude-code"})
+
+
+def snapshot_agent_configs(repo_path: Path) -> dict[str, dict[str, bytes | None]]:
+    """The bytes of each init-writable agent's config files, to diff after setup.
+
+    Instruction files (``.md``) are left out: a regenerated stamp is not a
+    reason to restart. A missing file reads as ``None``.
+    """
+    from repowise.cli.agent_targets.registry import describe_agents
+
+    installable, _ = _installable_rows(describe_agents(repo_path))
+    snapshot: dict[str, dict[str, bytes | None]] = {}
+    for row in installable:
+        if row["id"] in _OWN_RESTART_RULE:
+            continue
+        files: dict[str, bytes | None] = {}
+        for paths in row["config_files"].values():
+            for raw in paths:
+                path = Path(raw)
+                if path.suffix == ".md" or path.is_dir():
+                    continue
+                files[raw] = path.read_bytes() if path.is_file() else None
+        snapshot[row["id"]] = files
+    return snapshot
+
+
+def _restart_hosts(
+    rows: list[dict],
+    before: dict[str, dict[str, bytes | None]] | None,
+    *,
+    claude_restart: bool,
+) -> tuple[dict[str, str], ...]:
+    """Wired agents whose MCP or hook config this run wrote or changed."""
+    hosts = []
+    for row in rows:
+        if not row["registrations"]:
+            continue
+        if row["id"] in _OWN_RESTART_RULE:
+            changed = claude_restart
+        else:
+            files = (before or {}).get(row["id"])
+            changed = files is not None and any(
+                (Path(raw).read_bytes() if Path(raw).is_file() else None) != old
+                for raw, old in files.items()
+            )
+        if changed:
+            hosts.append({"id": row["id"], "name": row["display_name"]})
+    return tuple(hosts)
 
 
 def detect_editor_setup_outcome(
@@ -88,10 +172,16 @@ def detect_editor_setup_outcome(
     interactive: bool,
     first_index: bool,
     no_editor_setup: bool = False,
+    configs_before: dict[str, dict[str, bytes | None]] | None = None,
+    claude_repointed: bool = False,
 ) -> EditorSetupOutcome:
     """Read the ground-truth editor-setup state for the completion panel.
 
     Called after registration and the hook offers, so what it reads is final.
+    *configs_before* is :func:`snapshot_agent_configs` from before setup ran;
+    without it (the workspace path takes none) only Claude Code can be named
+    for a restart. Another process editing an agent's config during the run
+    also names that agent, which errs toward one restart too many.
     Every probe is defensive: a failure degrades to "not set up" rather than
     crashing ``init``. All but one are local file reads; the autosync probe
     spawns ``git rev-parse`` once, because ``core.hooksPath`` and worktrees make
@@ -123,6 +213,24 @@ def detect_editor_setup_outcome(
     except Exception:
         pass
 
+    tool_surfaces: tuple[dict[str, Any], ...] = ()
+    restart_hosts: tuple[dict[str, str], ...] = ()
+    unconnected: tuple[dict[str, str], ...] = ()
+    if not disabled:
+        with contextlib.suppress(Exception):
+            from repowise.cli.agent_targets.registry import describe_agents
+
+            rows = describe_agents(repo_path)
+            tool_surfaces = wired_tool_surfaces(repo_path, rows)
+            restart_hosts = _restart_hosts(
+                rows, configs_before, claude_restart=first_index or claude_repointed
+            )
+            unconnected = tuple(
+                {"id": row["id"], "name": row["display_name"]}
+                for row in rows
+                if row["present"] and not row["registrations"]
+            )
+
     return EditorSetupOutcome(
         claude_code_connected=not disabled,
         autosync_hook_installed=autosync,
@@ -130,6 +238,9 @@ def detect_editor_setup_outcome(
         interactive=interactive,
         first_index=first_index,
         editor_setup_disabled=disabled,
+        tool_surfaces=tool_surfaces,
+        restart_hosts=restart_hosts,
+        unconnected=unconnected,
     )
 
 
@@ -223,7 +334,7 @@ def _resolve_configured_project_file_optouts(
     configured_disabled = {
         target.project_file_id
         for target in all_targets()
-        if editor_files.get(target.project_file_id) is False
+        if not flag(editor_files.get(target.project_file_id), True)
     }
     disabled_project_files = (
         options.disabled_project_files | frozenset(configured_disabled)
@@ -412,8 +523,12 @@ def write_editor_project_files(
 
     if is_editor_setup_disabled(no_editor_setup):
         _persist_project_file_optouts(repo_path, resolved_options)
+        # Only the flag is remembered: the env var describes the machine, not the repo.
+        if no_editor_setup:
+            _remember_editor_setup(repo_path, enabled=False)
         return []
 
+    _remember_editor_setup(repo_path, enabled=True)
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
 
     written: list[Path] = []
@@ -425,6 +540,26 @@ def write_editor_project_files(
             integration.write_project_files(console_obj, repo_path, resolved_options) or []
         )
     return written
+
+
+#: ``config.yaml`` key ``init --no-editor-setup`` sets to false. ``update`` reads it
+#: and leaves the editor files alone; a later ``init`` with editor setup turns it on.
+_EDITOR_SETUP_KEY = "editor_setup"
+
+
+def _editor_setup_declined(repo_path: Path) -> bool:
+    from repowise.cli.helpers import load_config
+
+    return not flag(load_config(repo_path).get(_EDITOR_SETUP_KEY), True)
+
+
+def _remember_editor_setup(repo_path: Path, *, enabled: bool) -> None:
+    """Record the repo's editor-setup choice, writing config only when it changes."""
+    from repowise.cli.helpers import save_config_partial
+
+    if _editor_setup_declined(repo_path) != enabled:
+        return
+    save_config_partial(repo_path, **{_EDITOR_SETUP_KEY: enabled})
 
 
 def _persist_project_file_optouts(repo_path: Path, options: EditorSetupOptions) -> None:
@@ -471,9 +606,73 @@ def refresh_editor_project_files(
     options: EditorSetupOptions | None = None,
     integrations: tuple[InstallLifecycle, ...] | None = None,
 ) -> None:
-    """Refresh editor-managed project files without rewriting common MCP config."""
+    """Refresh editor-managed project files without rewriting common MCP config.
 
+    Also re-pins an installed git post-commit hook that no live install owns
+    (``hooks.heal``). A repo initialised with ``--no-editor-setup`` gets
+    nothing written.
+    """
+    if _editor_setup_declined(repo_path):
+        return
     resolved_options = options or EditorSetupOptions()
     resolved_options = _resolve_configured_project_file_optouts(repo_path, resolved_options)
     for integration in _resolve_integrations(integrations):
         integration.refresh_project_files(console_obj, repo_path, resolved_options)
+    from repowise.cli.hooks import heal
+
+    with contextlib.suppress(Exception):
+        heal(repo_path)
+
+
+def unresolved_hook_scripts(repo_path: Path | None = None) -> list[tuple[str, str]]:
+    """``(script, where)`` for each repowise hook whose entry point would not be found.
+
+    Covers Claude Code's user settings, its plugin, and with *repo_path* the
+    repo's own Claude Code and Codex hook files. Those hooks exit quietly when
+    their script is missing, so this is the only place that says so.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_hook_commands
+    from repowise.cli.editor_integrations.codex_config import codex_project_hook_commands
+    from repowise.cli.mcp_config import hook_script_resolves
+
+    rows = claude_code_hook_commands(repo_path)
+    if repo_path is not None:
+        codex = f"{Path(repo_path).name}/.codex/hooks.json"
+        rows += [(codex, c) for c in codex_project_hook_commands(repo_path)]
+    missing: list[tuple[str, str]] = []
+    for where, command in rows:
+        script = "repowise-rewrite" if "repowise-rewrite" in command else "repowise-augment"
+        if not hook_script_resolves(command, script) and (script, where) not in missing:
+            missing.append((script, where))
+    return missing
+
+
+def unresolved_hooks_fix(missing: list[tuple[str, str]]) -> tuple[str | None, str | None]:
+    """``(command, advice)`` that repair *missing*, as :func:`unresolved_hook_scripts` returns it.
+
+    The command is one runnable line (doctor's ``fix``, the Setup page's copy
+    button): ``repowise agents refresh`` repins the user-settings hooks. The
+    plugin and repo-local hooks keep the bare name (a plugin ships without the
+    CLI, and repo files may be committed), so for those the advice is to put
+    the scripts on PATH, which no one command does on every platform.
+    """
+    from repowise.cli.editor_integrations.claude_config import CLAUDE_SETTINGS_LABEL
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    pinned = resolve_repowise_command("repowise-augment")
+    if pinned == "repowise-augment":
+        # This install has no scripts to point anything at.
+        return None, "Reinstall repowise so repowise-augment is on PATH."
+    in_settings = any(where == CLAUDE_SETTINGS_LABEL for _, where in missing)
+    elsewhere = any(where != CLAUDE_SETTINGS_LABEL for _, where in missing)
+    command = "repowise agents refresh" if in_settings else None
+    advice = f"Add {Path(pinned).parent.as_posix()} to PATH." if elsewhere else None
+    return command, advice
+
+
+def describe_unresolved_hooks(missing: list[tuple[str, str]]) -> str:
+    """``repowise-augment (where, where), repowise-rewrite (where)``."""
+    by_script: dict[str, list[str]] = {}
+    for script, where in missing:
+        by_script.setdefault(script, []).append(where)
+    return ", ".join(f"{s} ({', '.join(w)})" for s, w in by_script.items())

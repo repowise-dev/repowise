@@ -35,8 +35,11 @@ def test_dependency_fingerprints_classify_config_keys(tmp_path: Path) -> None:
         ("traversal", {"exclude_patterns": ["generated/**"]}),
         ("generation", {"provider": "openai"}),
         ("generation", {"enable_onboarding": False}),
+        ("generation", {"folder_coverage": ["src/core=1.0"]}),
         ("state_only", {"hooks": {"read_skeleton": False}}),
         ("state_only", {"editor_files": {"claude_md": False}}),
+        ("state_only", {"editor_setup": False}),
+        ("state_only", {"evidence": {"max_runs": 10}}),
         ("other", {"future_setting": True}),
     ]
     for expected, change in cases:

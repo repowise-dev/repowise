@@ -28,6 +28,14 @@ _EXAMPLES_PER_DIR = 4
 _MAX_DIRS = 60
 _MAX_FLAT_ENTRIES = 50
 
+#: Up to this many entries the compaction is lossless: every name survives and
+#: only repeated directory prefixes and ``ls -l`` columns go. The names are
+#: what a listing is asked for, and sampling a small one forces a second call
+#: that costs more than the few hundred tokens it saved (a 94-entry ``ls`` cut
+#: to four names did exactly that). Above it, a flood is sampled as before.
+#: A fixed ceiling, not tuned: raise it if agents re-list floods above it.
+_LOSSLESS_ENTRIES = 200
+
 
 @filter_registry.register
 class FileListingFilter(OutputFilter):
@@ -62,15 +70,17 @@ def _distill_paths(paths: list[str]) -> str:
         parent, _, name = normalized.rpartition("/")
         groups.setdefault(parent or ".", []).append(name)
 
+    lossless = len(paths) <= _LOSSLESS_ENTRIES
+    examples_per_dir = len(paths) if lossless else _EXAMPLES_PER_DIR
     out = [f"{len(paths)} entries in {len(groups)} directories:"]
     for i, (parent, names) in enumerate(groups.items()):
-        if i >= _MAX_DIRS:
+        if i >= _MAX_DIRS and not lossless:
             remaining = len(groups) - _MAX_DIRS
             files_left = sum(len(v) for v in list(groups.values())[_MAX_DIRS:])
             out.append(f"  ... ({remaining} more directories, {files_left} entries)")
             break
-        examples = ", ".join(names[:_EXAMPLES_PER_DIR])
-        more = f", +{len(names) - _EXAMPLES_PER_DIR} more" if len(names) > _EXAMPLES_PER_DIR else ""
+        examples = ", ".join(names[:examples_per_dir])
+        more = f", +{len(names) - examples_per_dir} more" if len(names) > examples_per_dir else ""
         out.append(f"  {parent}/  ({len(names)}: {examples}{more})")
     return "\n".join(out)
 
@@ -88,8 +98,9 @@ def _distill_ls_long(lines: list[str]) -> str:
         entries.append(f"{name}{suffix}  ({fields[4]})")
     if not entries:
         raise ValueError("not ls -l output")
+    keep = len(entries) if len(entries) <= _LOSSLESS_ENTRIES else _MAX_FLAT_ENTRIES
     out = [f"{len(entries)} entries:"]
-    out.extend(entries[:_MAX_FLAT_ENTRIES])
-    if len(entries) > _MAX_FLAT_ENTRIES:
-        out.append(f"  ... ({len(entries) - _MAX_FLAT_ENTRIES} more entries)")
+    out.extend(entries[:keep])
+    if len(entries) > keep:
+        out.append(f"  ... ({len(entries) - keep} more entries)")
     return "\n".join(out)

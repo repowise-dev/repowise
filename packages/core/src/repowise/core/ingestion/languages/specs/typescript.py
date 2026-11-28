@@ -1,6 +1,7 @@
 """LanguageSpec for typescript (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
+from ._lockfiles import NODE_LOCK_FILES
 
 #: Predeclared / lib.dom / lib.es type names that never resolve to a user-
 #: defined symbol in the workspace. Filtering them before the resolver
@@ -72,7 +73,7 @@ SPEC = LanguageSpec(
     ),
     entry_point_patterns=("index.ts", "main.ts", "app.ts", "server.ts"),
     manifest_files=("package.json",),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=NODE_LOCK_FILES,
     generated_suffixes=("_pb.ts",),
     shebang_tokens=(),
     blocked_dirs=("node_modules", ".next", "dist", "build"),

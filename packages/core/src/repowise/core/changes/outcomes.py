@@ -33,13 +33,15 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from repowise.core.registry.plugins import SeamRegistry, load_plugins
+from repowise.core.changelist import without_changelist_number
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
+from repowise.core.registry.plugins import SeamRegistry
 
 #: The window :func:`file_fix_rate` counts in, unless ``changes.outcome_fix_days`` says.
 DEFAULT_FIX_DAYS = 30
@@ -56,8 +58,9 @@ _SHARED_NUMBERING = frozenset({"github", "generic"})
 _FIELD = "\x1f"
 _RECORD = "\x1e"
 
-# ``#N``, GitLab's ``!N``, or a sha of 7 to 40 hex digits.
-_REF = r"(#\d{1,9}|!\d{1,9}|\b[0-9a-f]{7,40}\b)"
+# ``#N``, GitLab's ``!N``, or a sha. The rules match case-insensitively for
+# their words, so an uppercase sha matches too and is lowercased when read.
+_REF = rf"(#\d{{1,9}}|!\d{{1,9}}|\b{SHA_PREFIX_PATTERN}\b)"
 # Words may wrap onto the next line, never across a blank one: a phrase that
 # ends one paragraph says nothing about the reference opening the next.
 _S = r"(?:[ \t]+|[ \t]*\n[ \t]*)"
@@ -65,7 +68,7 @@ _NOUN = rf"(?:(?:commit|change|pr|pull request|merge request|mr){_S})?"
 _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     # The kernel convention: ``Fixes: <sha> ("subject")`` names the commit that
     # introduced the bug.
-    ("fixes_trailer", re.compile(r"^Fixes:[ \t]+([0-9a-f]{7,40})\b", re.I | re.M)),
+    ("fixes_trailer", re.compile(rf"^Fixes:[ \t]+({SHA_PREFIX_PATTERN})\b", re.I | re.M)),
     (
         "regression",
         re.compile(
@@ -238,7 +241,7 @@ def _revert_index(
             )
             for line in raw.splitlines():
                 sha, _, subject = line.partition(_FIELD)
-                subjects[sha.strip()] = subject
+                subjects[sha.strip()] = without_changelist_number(subject)
         return by_target, frozenset(reverted_at_head(links)), subjects
 
     return _once(("revert", repo_path, head, forge), build)
@@ -403,9 +406,8 @@ def outcome_links(repo_path: Path | str, head: str, change: OutcomeTarget) -> li
     """
     out: list[OutcomeLink] = []
     seen: set[tuple[str, str]] = set()
-    load_plugins()
-    for name in change_outcome_providers.names:
-        for link in change_outcome_providers.get(name).links(Path(repo_path), head, change):
+    for _name, provider in change_outcome_providers.all():
+        for link in provider.links(Path(repo_path), head, change):
             if (link.kind, link.sha) not in seen:
                 seen.add((link.kind, link.sha))
                 out.append(link)
@@ -437,6 +439,7 @@ def _fix_commits_touching(
     files: list[str],
     start: int,
     end: int,
+    tracker_fixes: Collection[str] = frozenset(),
 ) -> list[tuple[str, set[str]]]:
     """``(sha, paths)`` of fix commits with ``start < ts <= end`` touching *files*."""
     from repowise.core.ingestion.git_indexer._constants import is_fix_commit
@@ -467,7 +470,7 @@ def _fix_commits_touching(
             if len(parts) != 3 or not parts[1].isdigit():
                 continue
             sha, ts, subject = parts
-            if start < int(ts) <= end and is_fix_commit(subject):
+            if start < int(ts) <= end and (is_fix_commit(subject) or sha in tracker_fixes):
                 touched = wanted.intersection(names.splitlines())
                 if touched:
                     found.append((sha, touched))
@@ -475,12 +478,17 @@ def _fix_commits_touching(
 
 
 def file_fix_rate(
-    repo_path: Path | str, head: str, change: OutcomeTarget, days: int
+    repo_path: Path | str,
+    head: str,
+    change: OutcomeTarget,
+    days: int,
+    tracker_fixes: Collection[str] = frozenset(),
 ) -> dict[str, Any]:
     """How many of the change's files a later fix commit touched within *days*.
 
     A fix is a commit the fix category holds (``is_fix_commit``, the rule every
-    fix count uses) that descends from the change. Paths are matched as the
+    fix count uses), or one in *tracker_fixes* (a stored bug or incident issue
+    links to it), that descends from the change. Paths are matched as the
     change left them; a later rename is not followed. Raises
     :class:`OutcomeUnknownError` when there is nothing to count or git cannot answer.
 
@@ -499,7 +507,7 @@ def file_fix_rate(
     files = sorted(set(change.files))
     fixed: dict[str, list[str]] = {}
     commits: set[str] = set()
-    for sha, touched in _fix_commits_touching(repo_path, head, files, start, end):
+    for sha, touched in _fix_commits_touching(repo_path, head, files, start, end, tracker_fixes):
         if sha == change.head_sha or not refs.hist.is_ancestor(change.head_sha, sha):
             continue
         commits.add(sha)

@@ -8,11 +8,11 @@ from typing import Any
 from repowise.core.analysis.health.grading import band_for, distribution
 from repowise.core.analysis.health.ranking import sort_metrics_worst_first
 from repowise.core.analysis.health.rows import field
-from repowise.core.analysis.health.scoring import is_advisory
+from repowise.core.analysis.health.scoring import finding_is_advisory
 
 from .owners import owner_breakdown
 from .paths import in_area
-from .rollup import AreaIndex, coverage_rollup
+from .rollup import AreaIndex, coverage_rollup, is_counted_hotspot
 
 __all__ = ["DETAIL_LIMIT", "OWNER_LIMIT", "area_detail"]
 
@@ -40,15 +40,9 @@ def _top_findings(index: AreaIndex, area: str, limit: int) -> list[dict[str, Any
     for finding in index.findings:
         if len(out) >= limit:
             break
-        if in_area(finding["file_path"], area) and not is_advisory(
-            finding["biomarker_type"] or ""
-        ):
+        if in_area(finding["file_path"], area) and not finding_is_advisory(finding):
             out.append(finding)
     return out
-
-
-def _is_hotspot(index: AreaIndex, path: str) -> bool:
-    return bool(index.git_by_path.get(path, {}).get("is_hotspot"))
 
 
 def _test_reach(group: Sequence[Any]) -> dict[str, Any]:
@@ -82,7 +76,7 @@ def area_detail(
         return None
     group = index.members[area]
     ranked = sort_metrics_worst_first(group, index.deductions)
-    hotspots = [r for r in ranked if _is_hotspot(index, field(r, "file_path"))]
+    hotspots = [r for r in ranked if is_counted_hotspot(index, r)]
     owners = owner_breakdown((field(r, "file_path") for r in group), index.owners, len(group))
     return {
         "area": node,

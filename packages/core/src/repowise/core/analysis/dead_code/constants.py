@@ -16,9 +16,14 @@ import os
 import re
 from functools import lru_cache
 
-from repowise.core.code_origin import is_build_file, is_vendored_or_generated_path
+from repowise.core.code_origin import (
+    is_build_file,
+    is_migration_path,
+    is_vendored_or_generated_path,
+)
 from repowise.core.ingestion.languages.js_config_values import TEST_SETUP_KEYS
 from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
+from repowise.core.ingestion.ts_declarations import DECLARATION_SUFFIXES
 
 # Non-code languages (registry passthrough languages plus "unknown").
 _NON_CODE_LANGUAGES: frozenset[str] = _LANG_REGISTRY.unparseable_or_unknown_languages()
@@ -47,20 +52,24 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.sh",
     "*.bash",
     "*.zsh",
+    # An Apex trigger is run by the platform on DML, and an anonymous-Apex
+    # script by a person or a CI job; nothing names either.
+    "*.trigger",
+    "*.apex",
     "*__init__.py",
     "*__main__.py",
     "*conftest.py",
     "*alembic/env.py",
-    # Alembic loads version scripts reflectively; many setups use
-    # ``alembic/versions/``, which ``*migrations*`` does not match.
-    "*/alembic/versions/*.py",
     "*manage.py",
     "*wsgi.py",
     "*asgi.py",
+    # Any path naming ``migrations``. Migration directories under other names
+    # (``alembic/versions``, ``db/migrate``, a singular ``migration/``) are
+    # ``code_origin.is_migration_path``, asked by ``never_flag_path``.
     "*migrations*",
     "*schema*",
     "*seed*",
-    "*.d.ts",
+    *(f"*{suffix}" for suffix in DECLARATION_SUFFIXES),
     "*setup.py",
     "*setup.cfg",
     # JS tooling loads its config by file name: ``<tool>.config.<ext>`` (and
@@ -77,23 +86,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/sitecustomize.py",
     "usercustomize.py",
     "*/usercustomize.py",
-    # Next.js / Remix / SvelteKit framework route files â€” loaded by the
-    # framework at runtime, never imported via module imports.
-    "*/page.tsx",
-    "*/page.ts",
-    "*/page.jsx",
-    "*/page.js",
-    "*/layout.tsx",
-    "*/layout.ts",
-    "*/route.tsx",
-    "*/route.ts",
-    "*/loading.tsx",
-    "*/error.tsx",
-    "*/not-found.tsx",
-    "*/template.tsx",
-    "*/default.tsx",
-    # Nuxt route pages
-    "*/pages/*.vue",
     # ---- Qt / QML ---------------------------------------------------
     # Instantiated by type name and loaded by the runtime (qrc, Loader,
     # qmlRegisterType), so a QML file never has a static importer.
@@ -108,7 +100,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # ---- .NET / C# conventions --------------------------------------
     # Implicit / generated / framework-loaded files that have no
     # static importers by design.
-    "*GlobalUsings.cs",  # global usings â€” file-implicit, never imported by symbol
+    "*GlobalUsings.cs",  # global usings — file-implicit, never imported by symbol
     "*.xaml.cs",  # XAML code-behind, wired by the source generator
     "*.xaml",
     "*.razor",
@@ -132,7 +124,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     # the build packs as the public surface. Nothing imports them, and every
     # type they list is public API.
     "*/ref/*.cs",
-    "*MauiProgram.cs",  # MAUI app entry â€” invoked by host, not imported
+    "*MauiProgram.cs",  # MAUI app entry — invoked by host, not imported
     "*App.xaml.cs",
     "*AppShell.xaml.cs",
     # Aspire / ServiceDefaults host wiring is consumed by AppHost project graph,
@@ -377,7 +369,6 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*_example.hpp",
     "*_example.cc",
     # Build output roots, in case the walker lets them in.
-    "*/build/**",
     "build/**",
     "*/cmake-build-*/**",
     "cmake-build-*/**",
@@ -584,7 +575,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.spec.cts",
     "*/__tests__/*",
     "*/__mocks__/*",
-    # Storybook stories â€” loaded by Storybook indexer via glob.
+    # Storybook stories — loaded by Storybook indexer via glob.
     "*.stories.ts",
     "*.stories.tsx",
     "*.stories.js",
@@ -607,7 +598,7 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*.storybook/manager.js",
     "*.storybook/manager.jsx",
     "*.storybook/manager.mdx",
-    # Benchmarks â€” invoked by vitest/tinybench/bench scripts, not imported.
+    # Benchmarks — invoked by vitest/tinybench/bench scripts, not imported.
     "*.bench.ts",
     "*.bench.tsx",
     "*.bench.js",
@@ -629,64 +620,14 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/generated/*.tsx",
     "*/generated/*.js",
     "*/__generated__/*",
-    # More Next.js app router convention files. The ``*/foo.ts`` form requires
-    # the literal basename, so ``mymiddleware.ts`` is not exempt.
-    "*/instrumentation.ts",
-    "*/instrumentation-client.ts",
-    "*/middleware.ts",
-    "*/middleware.js",
-    # Next.js 16 renamed ``middleware`` to ``proxy``.
-    "*/proxy.ts",
-    "*/proxy.js",
-    "*/global-error.tsx",
-    "*/global-error.ts",
-    "*/forbidden.tsx",
-    "*/unauthorized.tsx",
-    "*/sitemap.ts",
-    "*/sitemap.tsx",
-    "*/robots.ts",
-    "*/robots.tsx",
-    "*/manifest.ts",
-    "*/manifest.tsx",
-    "*/icon.tsx",
-    "*/icon.ts",
-    "*/apple-icon.tsx",
-    "*/opengraph-image.tsx",
-    "*/opengraph-image.ts",
-    "*/twitter-image.tsx",
-    "*/twitter-image.ts",
-    # Repo-root variants (no leading directory) for monorepos where the
-    # app lives at root.
-    "instrumentation.ts",
-    "middleware.ts",
-    "proxy.ts",
-    "sitemap.ts",
-    "robots.ts",
-    # Remix root/entry files â€” invoked by the framework runtime.
+    # Remix / React Router entry files. Path-only on purpose: the name is the
+    # framework's alone, and a preview or sub-app is often run by a CLI whose
+    # dependency another workspace declares, so no package.json names it.
+    # Upgrade path: read app roots from ``react-router.config.*`` beside them.
     "*/entry.client.ts",
     "*/entry.client.tsx",
     "*/entry.server.ts",
     "*/entry.server.tsx",
-    "*/next-env.d.ts",
-    "next-env.d.ts",
-    # SvelteKit + Nuxt convention files.
-    "*/+page.svelte",
-    "*/+page.ts",
-    "*/+page.server.ts",
-    "*/+layout.svelte",
-    "*/+layout.ts",
-    "*/+layout.server.ts",
-    "*/+server.ts",
-    "*/+error.svelte",
-    # Astro file-based routes: every page under src/pages is a route, and a
-    # .ts/.js/.mjs file there is an endpoint (``robots.txt.ts``, ``api/[id].json.ts``).
-    "*src/pages/*.astro",
-    # shortcut: exempts src/pages/*.{ts,js,mjs} in every repo, not only Astro ones, and _-prefixed non-routes (fnmatch ``*`` crosses ``/``), gate on an Astro stack signal or filter in code if a repo reports hidden dead code.
-    "*src/pages/*.ts",
-    "*src/pages/*.js",
-    "*src/pages/*.mjs",
-    # ESM declaration outputs in dist trees.
-    "*/dist/*.d.ts",
     # ---- JVM (Java + Kotlin) conventions ---------------------------------
     # Module / package metadata files, which declare no importable symbols.
     "*/module-info.java",
@@ -767,13 +708,28 @@ _NEVER_FLAG_PATTERNS: tuple[str, ...] = (
     "*/benchmark/*.dart",
     # build_runner wires lib/builder.dart in via build.yaml, not imports.
     "*/lib/builder.dart",
+    # ---- Elixir / Mix conventions -----------------------------------------
+    # Read by path, never imported: the formatter and Credo read their config
+    # files, Mix evaluates ``config/*.exs`` at boot, and data files under
+    # ``priv/`` are loaded with ``Code.eval_file`` or ``File.read!``. A
+    # ``*/x/*`` glob misses a root-level ``x/``, so root and nested (umbrella
+    # ``apps/<app>/``) forms both need an entry. ``priv/repo/seeds.exs`` and
+    # migrations are already covered by ``*seed*`` and ``*migrations*``.
+    ".formatter.exs",
+    "*/.formatter.exs",
+    ".credo.exs",
+    "*/.credo.exs",
+    "config/*.exs",
+    "*/config/*.exs",
+    "priv/*.exs",
+    "*/priv/*.exs",
 )
 
 # Decorator patterns that indicate framework usage (route handlers, fixtures, etc.)
 _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "pytest.fixture",
     "pytest.mark",
-    # Unqualified ``from pytest import fixture`` form â€” the decorator text is
+    # Unqualified ``from pytest import fixture`` form — the decorator text is
     # bare ``fixture``, which the dotted prefixes above never match.
     "fixture",
     # Flask
@@ -799,7 +755,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "app.websocket",
     "app.middleware",
     "app.exception_handler",
-    # asynccontextmanager / contextmanager â€” used as values
+    # asynccontextmanager / contextmanager — used as values
     # (e.g. FastAPI(lifespan=...)) rather than imported by name.
     "asynccontextmanager",
     "contextmanager",
@@ -815,10 +771,10 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     # SQLAlchemy, imported bare: stored in the dialect compiler / event registry.
     "compiles",
     "listens_for",
-    # Click CLI commands â€” registered with the parent group/command.
+    # Click CLI commands — registered with the parent group/command.
     "click.command",
     "click.group",
-    # Typer â€” same shape.
+    # Typer — same shape.
     "typer.command",
     "typer.callback",
     # ---- JVM: Spring / Jakarta / Quarkus / Micronaut stereotypes ----
@@ -855,6 +811,8 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",  # JAX-WS
+    "WebServiceProvider",
     "ApplicationScoped",
     "RequestScoped",
     "SessionScoped",
@@ -897,6 +855,14 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "Module",
     "Provides",
     "Binds",
+    # Metro / Anvil: the generated graph constructs a contributed binding and
+    # loads a contributed binding container, so nothing names either.
+    "ContributesBinding",
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
     # Glide: its annotation processor generates ``GeneratedAppGlideModule``,
     # which instantiates the annotated class. Nothing in source names it.
     "GlideModule",
@@ -921,7 +887,7 @@ _FRAMEWORK_DECORATORS: tuple[str, ...] = (
     "ArchTest",
     "Container",  # Testcontainers
     "DynamicTest",
-    "JsonCreator",  # Jackson factory method â€” reflectively invoked
+    "JsonCreator",  # Jackson factory method — reflectively invoked
     "JsonProperty",
     "Mojo",  # Maven plugin entry
     "Goal",
@@ -1104,9 +1070,25 @@ _DELIBERATELY_UNUSED_ANNOTATIONS: tuple[tuple[str, str, bool], ...] = (
 # Inner class names a framework reads off the class that declares them, so no
 # code ever names them. Python: the ``class Meta`` options block that Django
 # models and forms, DRF serializers, marshmallow and factory_boy read through
-# their metaclass. Keyed by language; matched only on a nested class.
+# their metaclass, and the ``class Config`` block pydantic models and settings
+# read the same way (v1, still honoured by v2, and SQLModel). Keyed by
+# language; matched only on a nested class, whatever the outer class extends:
+# telling a pydantic model apart needs its bases, which the symbol does not
+# carry, so a plain class's unused inner ``Config`` goes unreported too.
 _FRAMEWORK_INNER_CLASS_NAMES: dict[str, frozenset[str]] = {
-    "python": frozenset({"Meta"}),
+    "python": frozenset({"Meta", "Config"}),
+}
+
+# Inner class names a framework reads only in a module that imports it, so the
+# name alone is not enough: Graphene's ``Mutation`` metaclass reads ``class
+# Arguments`` as the field's arguments, but ``Arguments`` is a common class
+# name elsewhere. Keyed by language, then inner name to the top-level packages
+# one of which the declaring file must import. Ceiling: a mutation module that
+# reaches Graphene only through a local base class, with no ``graphene``
+# import of its own, stays reported; reading the outer class's bases would
+# lift that.
+_IMPORT_GATED_INNER_CLASS_NAMES: dict[str, dict[str, frozenset[str]]] = {
+    "python": {"Arguments": frozenset({"graphene"})},
 }
 
 
@@ -1276,13 +1258,19 @@ def never_flag_match(path: str) -> bool:
 
 
 def never_flag_path(path: str) -> bool:
-    """The never-flag globs, plus vendored, generated and build files by path.
+    """The never-flag globs, plus vendored, generated, build and migration files by path.
 
     A copied library or a generator's output is not this repository's to
-    delete, whatever its importers look like, and a build tool runs a build
-    file by its name, so it has no importer by design.
+    delete, whatever its importers look like, a build tool runs a build file
+    by its name, and a migration runner loads its scripts from their
+    directory, so neither has an importer by design.
     """
-    return never_flag_match(path) or is_vendored_or_generated_path(path) or is_build_file(path)
+    return (
+        never_flag_match(path)
+        or is_vendored_or_generated_path(path)
+        or is_build_file(path)
+        or is_migration_path(path)
+    )
 
 
 def _is_fixture_path(path: str) -> bool:

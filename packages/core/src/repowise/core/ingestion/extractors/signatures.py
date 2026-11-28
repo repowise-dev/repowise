@@ -7,7 +7,15 @@ from tree_sitter import Node
 from .helpers import node_text
 
 
-def build_signature(node_type: str, name: str, params_text: str, def_node: Node, src: str) -> str:
+def build_signature(
+    node_type: str,
+    name: str,
+    params_text: str,
+    def_node: Node,
+    src: str,
+    *,
+    language: str | None = None,
+) -> str:
     """Build a human-readable signature string."""
 
     # Helper: try multiple field names for "return type", fall back gracefully.
@@ -24,6 +32,12 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
                     text = text[1:].lstrip()
                 return f" -> {text}"
         return ""
+
+    if (
+        language == "csharp"
+        and (member := _csharp_member_signature(node_type, name, def_node, src)) is not None
+    ):
+        return member
 
     if node_type == "function_definition":
         # C/C++ share this node name with Python but expose the declared type
@@ -54,6 +68,15 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
                 break
             returns += node_text(child, src)
         return f"{name}{params_text} -> {returns}" if returns else f"{name}{params_text}"
+    if node_type == "getter_signature":
+        # Dart: the return type is the nodes ahead of ``get``. A getter takes no
+        # parameters, so it reads ``name -> Type``, with no parameter list.
+        returns = ""
+        for child in def_node.children:
+            if child.type == "get":
+                break
+            returns += node_text(child, src)
+        return f"{name} -> {returns}" if returns else name
     if node_type in ("class_definition", "class_declaration", "abstract_class_declaration"):
         base = f"class {name}"
         if params_text:
@@ -74,6 +97,14 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"typealias {name} = {node_text(target, src)}"
     if node_type == "enum_declaration":
         return f"enum {name}"
+    if node_type == "trigger_declaration":
+        # Apex: the sObject and the DML events are the trigger's whole contract.
+        sobject = def_node.child_by_field_name("object")
+        events = ", ".join(
+            node_text(e, src) for e in def_node.children_by_field_name("events") if e.is_named
+        )
+        on = f" on {node_text(sobject, src)}" if sobject is not None else ""
+        return f"trigger {name}{on} ({events})"
     if node_type in ("method_definition", "method_signature"):
         # TypeScript/JavaScript class method
         return f"{name}{params_text}{_ret(('return_type',))}"
@@ -109,8 +140,9 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         if len(first_line) > 160:
             first_line = first_line[:157] + "..."
         return first_line
-    if node_type == "lexical_declaration":
-        # Arrow function assigned to const/let.
+    if node_type in ("lexical_declaration", "assignment_expression"):
+        # Arrow function assigned to const/let, or a function assigned to a
+        # property (``obj.f = (a) => ...``).
         # params_text is either "(a, b)" (formal_parameters) or a bare
         # identifier "x" (unparenthesized single-param arrow: x => ...).
         if params_text and not params_text.startswith("("):
@@ -118,6 +150,20 @@ def build_signature(node_type: str, name: str, params_text: str, def_node: Node,
         return f"{name}{params_text}"
     # Fallback
     return f"{name}{params_text}"
+
+
+def _csharp_member_signature(node_type: str, name: str, node: Node, src: str) -> str | None:
+    """Keep the declared type of a C# field or property without reading its body."""
+    if node_type == "property_declaration":
+        declared_type = node.child_by_field_name("type")
+    elif node_type == "field_declaration":
+        declaration = next(
+            (child for child in node.named_children if child.type == "variable_declaration"), None
+        )
+        declared_type = declaration.child_by_field_name("type") if declaration else None
+    else:
+        return None
+    return f"{name} -> {node_text(declared_type, src)}" if declared_type is not None else None
 
 
 def _kotlin_return(def_node: Node, src: str) -> str:

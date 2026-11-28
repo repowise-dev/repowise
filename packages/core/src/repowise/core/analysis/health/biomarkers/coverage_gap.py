@@ -5,8 +5,8 @@ Fires when a file has coverage data and:
 - line_coverage_pct < 60 **and** uncovered lines ≥ 25, OR
 - line_coverage_pct < 30 **and** total_coverable_lines ≥ 50.
 
-Test files themselves are exempt (we don't care that
-``test_foo.py`` has no coverage). Without coverage data the biomarker
+Test files and code that does not ship (tooling, build, vendored,
+generated, docs examples) are exempt. Without coverage data the biomarker
 does nothing — the absence-of-coverage case is the
 ``untested_hotspot`` biomarker's territory.
 """
@@ -32,7 +32,7 @@ class CoverageGapDetector:
             return []
         if ctx.total_coverable_lines <= 0:
             return []
-        if ctx.is_test_material or ctx.reexport_only:
+        if ctx.outside_coverage_scope or ctx.reexport_only:
             return []
 
         cov = ctx.line_coverage_pct

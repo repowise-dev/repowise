@@ -117,7 +117,7 @@ async def test_non_code_files_get_history_from_the_shared_walk(tmp_path, monkeyp
     assert meta["a.py"]["history_only"] is False
     assert meta["a.py"]["commit_count_total"] == _git_log_count(tmp_path, "a.py")
     assert meta["a.py"]["primary_owner_line_pct"] is not None
-    assert {meta["a.py"]["churn_percentile"], meta["b.py"]["churn_percentile"]} <= {0.0, 0.5}
+    assert {meta["a.py"]["churn_percentile"], meta["b.py"]["churn_percentile"]} <= {0.0, 1.0}
 
 
 async def test_update_writes_the_same_history_rows_as_a_full_index(tmp_path, monkeypatch) -> None:
@@ -172,6 +172,24 @@ def test_a_source_package_named_like_an_output_dir_keeps_its_history(tmp_path) -
     assert kept == {"pkg/coverage/README.md"}
 
 
+def test_history_tier_drops_engine_assets_without_opening_them(tmp_path, monkeypatch) -> None:
+    from repowise.core.ingestion import traverser
+    from repowise.core.ingestion.git_indexer.records import _history_tier_files
+
+    paths = ["Content/Hero.uasset", "Content/Hero.uexp", "Audio/Init.bnk", "docs/notes.md"]
+    for rel in paths:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n", encoding="utf-8")
+    sniffed: list[str] = []
+    real_is_binary = traverser._is_binary
+    monkeypatch.setattr(
+        traverser, "_is_binary", lambda p: sniffed.append(p.name) or real_is_binary(p)
+    )
+
+    assert _history_tier_files(tmp_path, paths) == {"docs/notes.md"}
+    assert sniffed == ["notes.md"]
+
+
 def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
     from repowise.core.ingestion.git_indexer.records import _history_tier_files
 
@@ -204,5 +222,25 @@ def test_history_tier_keeps_files_in_reincluded_dir(tmp_path: Path) -> None:
         extra_ignore_filename=".customIgnore",
     )
     assert kept_custom == {"src/build/README.md"}
+
+
+def test_two_code_files_plus_history_only_percentile_calculation():
+    from repowise.core.ingestion.git_indexer.enrich import compute_percentiles
+
+    metas = [
+        {"file_path": "a.py", "temporal_hotspot_score": 10.0, "commit_count_90d": 5},
+        {"file_path": "b.py", "temporal_hotspot_score": 2.0, "commit_count_90d": 1},
+        {"file_path": "README.md", "temporal_hotspot_score": 0.0, "commit_count_90d": 20, "history_only": True},
+        {"file_path": "config.json", "temporal_hotspot_score": 0.0, "commit_count_90d": 5, "history_only": True},
+    ]
+    compute_percentiles(metas)
+
+    # History-only files get 0.0 churn percentile and do not participate in code ranking
+    assert metas[2]["churn_percentile"] == 0.0
+    assert metas[3]["churn_percentile"] == 0.0
+
+    # Two code files: lower is 0.0, higher is 1.0
+    assert metas[0]["churn_percentile"] == 1.0
+    assert metas[1]["churn_percentile"] == 0.0
 
 

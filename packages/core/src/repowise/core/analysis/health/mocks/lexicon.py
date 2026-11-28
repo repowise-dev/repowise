@@ -93,6 +93,15 @@ class MockDialect:
     #: Runner methods that return a bare double (``vi.fn()``).
     double_callees: frozenset[str] = frozenset()
 
+    #: Double methods that configure what the double returns or runs
+    #: (``vi.fn().mockReturnValue(1)``). Chained on a bare double they keep it
+    #: free of the original, provided every argument is closed too.
+    double_configurers: frozenset[str] = frozenset()
+
+    #: Runner methods whose factory runs before the file's imports and hands
+    #: its value to a binding (``const { f } = vi.hoisted(() => ...)``).
+    hoist_callees: frozenset[str] = frozenset()
+
 
 _PYTHON = MockDialect(
     # ``unittest.mock`` members with no mock token in their names.
@@ -190,6 +199,19 @@ _JS_TS = MockDialect(
     runner_modules={"vi": frozenset({"vitest"}), "jest": frozenset({"@jest/globals"})},
     runner_globals=frozenset({"jest"}),
     double_callees=frozenset({"fn"}),
+    double_configurers=frozenset(
+        {
+            "mockReturnValue",
+            "mockReturnValueOnce",
+            "mockResolvedValue",
+            "mockResolvedValueOnce",
+            "mockRejectedValue",
+            "mockRejectedValueOnce",
+            "mockImplementation",
+            "mockImplementationOnce",
+        }
+    ),
+    hoist_callees=frozenset({"hoisted"}),
 )
 
 

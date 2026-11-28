@@ -21,6 +21,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -34,6 +35,7 @@ from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
 from .batches import chunked
+from .database import ReadOnlyStoreError, hold_schema_lock, is_read_only
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -51,6 +53,10 @@ class SearchResult:
 
 
 _SNIPPET_LEN = 200
+
+# How far a snippet edge may move inward to land on whitespace instead of
+# inside a word. Past this the word is a long token and the cut stays.
+_SNIPPET_EDGE_SLACK = 20
 
 # Markdown heading lines and blank lines at the start of a text.
 _LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
@@ -175,8 +181,10 @@ PG_FTS_EXPRESSION = (
 # vocabulary heavily, so a small cache removes almost all of the counting.
 _DF_CACHE_MAX = 2048
 
-# Keeps scores strictly decreasing when two MATCH expressions' results are
-# concatenated. Small enough not to disturb any threshold downstream.
+# How far below its predecessor a widened-pass hit is pulled when the two
+# MATCH expressions' results are concatenated out of score order. Relative, so
+# a term common enough that BM25 scores it near zero is pulled to a smaller
+# positive score rather than below zero.
 _SCORE_EPSILON = 1e-6
 
 # Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
@@ -189,6 +197,30 @@ _SCORE_EPSILON = 1e-6
 # is a bag of words, so it counts for less than prose written about the file.
 _BM25_COLUMN_WEIGHTS = (0.0, 4.0, 1.0, 1.0, 3.0, 0.5, 1.0)
 _BM25_SCORE = "bm25(page_fts, " + ", ".join(str(w) for w in _BM25_COLUMN_WEIGHTS) + ")"
+
+
+def _path_filter(column: str, path_prefix: str | None) -> tuple[str, dict[str, Any]]:
+    """SQL keeping rows whose *column* is *path_prefix* or a path under it.
+
+    A directory match: ``pkg/a`` holds ``pkg/a/x.py``, never ``pkg/ab/x.py``.
+    Several prefixes joined by a newline keep what any of them holds. ``substr``
+    rather than ``LIKE``: exact case and no wildcard escaping, on both
+    backends. Empty when there is no prefix.
+    """
+    scopes = [p.rstrip("/") for p in (path_prefix or "").split("\n")]
+    scopes = [p for p in scopes if p]
+    if not scopes:
+        return "", {}
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for i, scope in enumerate(scopes):
+        under = f"{scope}/"
+        clauses.append(
+            f"{column} = :scope{i} OR substr({column}, 1, :scope_len{i}) = :scope_dir{i}"
+        )
+        params.update({f"scope{i}": scope, f"scope_len{i}": len(under), f"scope_dir{i}": under})
+    return f" AND ({' OR '.join(clauses)})", params
+
 
 _log = logging.getLogger(__name__)
 
@@ -225,19 +257,50 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
 
     lowered = content.lower()
     position = -1
+    match_end = 0
     for term in _meaningful_terms(query):
         found = lowered.find(term)
         if found != -1 and (position == -1 or found < position):
             position = found
+            match_end = found + len(term)
     if position == -1:
-        return content[:length].rstrip()
+        start, end = _word_edges(content, 0, min(length, len(content)), 0, 0)
+        return content[start:end].rstrip()
 
     # Centre the window, then slide it back inside the page rather than
     # letting it run off an edge: a match in the first or last few characters
     # would otherwise return a window shorter than the budget for no reason.
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
-    return content[start : start + length].strip()
+    end = min(start + length, len(content))
+    start, end = _word_edges(content, start, end, position, match_end)
+    return content[start:end].strip()
+
+
+def _word_edges(
+    content: str, start: int, end: int, keep_from: int, keep_to: int
+) -> tuple[int, int]:
+    """Move a cut that falls inside a word inward to the nearest whitespace.
+
+    Edges only move inward, so the window never grows past its budget, and
+    never into ``content[keep_from:keep_to]``, the matched term (pass ``0, 0``
+    when there is none and the window starts at the page). A cut with no
+    whitespace within :data:`_SNIPPET_EDGE_SLACK` characters stays where it
+    is, so a page that is one long token still gives a non-empty window.
+    """
+    if 0 < start < end and not content[start - 1].isspace() and not content[start].isspace():
+        limit = min(start + _SNIPPET_EDGE_SLACK, keep_from)
+        for i in range(start, limit):
+            if content[i].isspace():
+                start = i + 1
+                break
+    if start < end < len(content) and not content[end - 1].isspace() and not content[end].isspace():
+        limit = max(end - _SNIPPET_EDGE_SLACK, keep_to, start + 1)
+        for i in range(end - 1, limit - 1, -1):
+            if content[i].isspace():
+                end = i
+                break
+    return start, end
 
 
 def strip_leading_headings(text: str) -> str:
@@ -253,11 +316,48 @@ def strip_leading_headings(text: str) -> str:
     return text[match.end() :]
 
 
+class PageFtsState(StrEnum):
+    """Whether a SQLite store's ``page_fts`` index can be searched as it stands."""
+
+    PRESENT = "present"  # on this version's column set
+    MISSING = "missing"  # never built in this store
+    STALE = "stale"  # another column set: only :meth:`FullTextSearch.ensure_index` repairs it
+
+
+async def page_fts_state(engine: AsyncEngine) -> PageFtsState:
+    """Read the state of ``page_fts`` without writing. SQLite only.
+
+    A writer repairs a missing or stale index with ``ensure_index``; a reader
+    that cannot write (a store opened read-only) checks this instead.
+    """
+    async with engine.connect() as conn:
+        info = await conn.execute(text("PRAGMA table_info(page_fts)"))
+        columns = [r[1] for r in info.fetchall()]
+    if not columns:
+        return PageFtsState.MISSING
+    if columns == list(PAGE_FTS_COLUMNS):
+        return PageFtsState.PRESENT
+    return PageFtsState.STALE
+
+
 class FullTextSearch:
     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        *,
+        repository_id: str | None = None,
+        page_fts: PageFtsState | None = None,
+    ) -> None:
+        """*page_fts* is the index state a read-only opener read; anything but
+        present makes :meth:`search` answer empty instead of erroring. None, the
+        default, is a writer that runs :meth:`ensure_index` itself."""
         self._engine = engine
+        self._page_fts = page_fts
+        # Set on a store several repositories share: search() reads this one's
+        # pages unless a call names another.
+        self._repository_id = repository_id
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
@@ -278,6 +378,10 @@ class FullTextSearch:
         recreates it when absent, which is what a store built before the
         migration existed needs.
         """
+        if is_read_only(self._engine):
+            raise ReadOnlyStoreError(
+                "ensure_index writes page_fts; this store was opened read-only"
+            )
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
                 await conn.execute(text(PAGE_FTS_DDL))
@@ -285,6 +389,8 @@ class FullTextSearch:
             await self.prune_orphans()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
+                # IF NOT EXISTS alone still races a concurrent creator.
+                await hold_schema_lock(conn)
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
@@ -641,14 +747,21 @@ class FullTextSearch:
             async with self._engine.connect() as conn:
                 rows = await conn.execute(text("SELECT page_id FROM page_fts"))
                 return {r[0] for r in rows.fetchall()}
-        # PostgreSQL: all wiki_pages rows are automatically indexed via GIN,
-        # so the set of "indexed" ids is all page ids in the table.
+        # PostgreSQL: all live wiki_pages rows are automatically indexed via GIN,
+        # excluding tombstones retained for stale-path tracking.
         async with self._engine.connect() as conn:
-            rows = await conn.execute(text("SELECT id FROM wiki_pages"))
+            rows = await conn.execute(
+                text("SELECT id FROM wiki_pages WHERE freshness_status != 'tombstone'")
+            )
             return {r[0] for r in rows.fetchall()}
 
     async def search(
-        self, query: str, limit: int = 10, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int = 10,
+        repository_id: str | None = None,
+        *,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """Search for pages matching *query*.
 
@@ -656,16 +769,26 @@ class FullTextSearch:
             query: Natural-language search query.
             limit: Maximum number of results to return.
             repository_id: Optional repository ID to narrow the search scope.
+            path_prefix: Only pages whose target path is this directory or
+                under it. Applied in the query, so all *limit* rows can match.
 
         Returns:
             List of SearchResult objects sorted by relevance (descending).
         """
         if not query.strip():
             return []
+        if self._page_fts not in (None, PageFtsState.PRESENT):
+            return []  # a read-only store without a usable index: nothing to match
+        if repository_id is None:
+            repository_id = self._repository_id
 
         if self._dialect == "sqlite":
-            return await self._search_sqlite(query, limit, repository_id=repository_id)
-        return await self._search_postgresql(query, limit, repository_id=repository_id)
+            return await self._search_sqlite(
+                query, limit, repository_id=repository_id, path_prefix=path_prefix
+            )
+        return await self._search_postgresql(
+            query, limit, repository_id=repository_id, path_prefix=path_prefix
+        )
 
     async def _document_frequency(self, conn, term: str) -> int:
         """How many indexed pages *term* matches. ``""`` is the corpus size.
@@ -716,35 +839,45 @@ class FullTextSearch:
         return _build_fts5_query(query, counts.__getitem__)
 
     async def _matching_rows(
-        self, conn, fts_query: str, limit: int, repository_id: str | None = None
+        self,
+        conn,
+        fts_query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list:
+        scoped, scope_params = _path_filter("f.target_path", path_prefix)
         if repository_id is not None:
             rows = await conn.execute(
                 text(
                     f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
                     "FROM page_fts f "
                     "JOIN wiki_pages p ON p.id = f.page_id "
-                    "WHERE page_fts MATCH :q AND p.repository_id = :repo_id "
+                    f"WHERE page_fts MATCH :q AND p.repository_id = :repo_id{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
                     "LIMIT :lim"
                 ),
-                {"q": fts_query, "lim": limit, "repo_id": repository_id},
+                {"q": fts_query, "lim": limit, "repo_id": repository_id, **scope_params},
             )
         else:
             rows = await conn.execute(
                 text(
                     f"SELECT f.page_id, f.title, f.content, {_BM25_SCORE} "
                     "FROM page_fts f "
-                    "WHERE page_fts MATCH :q "
+                    f"WHERE page_fts MATCH :q{scoped} "
                     f"ORDER BY {_BM25_SCORE} "
                     "LIMIT :lim"
                 ),
-                {"q": fts_query, "lim": limit},
+                {"q": fts_query, "lim": limit, **scope_params},
             )
         return list(rows.fetchall())
 
     async def _search_sqlite(
-        self, query: str, limit: int, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """FTS5 search.  bm25 is negative; we negate it to get a positive score."""
         async with self._engine.connect() as conn:
@@ -753,7 +886,9 @@ class FullTextSearch:
                 return await self._document_frequency(conn, term)
 
             fts_query = await self._build_selective_query(query, df)
-            raw = await self._matching_rows(conn, fts_query, limit, repository_id=repository_id)
+            raw = await self._matching_rows(
+                conn, fts_query, limit, repository_id=repository_id, path_prefix=path_prefix
+            )
 
             # The frequency ceiling can cut a question down to terms that
             # nothing carries together. Retrying with every term is the prior
@@ -766,7 +901,11 @@ class FullTextSearch:
                     extra = [
                         r
                         for r in await self._matching_rows(
-                            conn, widened, limit, repository_id=repository_id
+                            conn,
+                            widened,
+                            limit,
+                            repository_id=repository_id,
+                            path_prefix=path_prefix,
                         )
                         if r[0] not in seen
                     ]
@@ -806,13 +945,13 @@ class FullTextSearch:
         # the widened one — so scores are clamped to be non-increasing along it,
         # keeping a caller that sorts by score in agreement with one that reads
         # the list in order.
-        ceiling: float | None = None
+        previous: float | None = None
         for pid in page_ids:
             page_type, target_path = meta.get(pid, ("", ""))
             score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
-            if ceiling is not None and score > ceiling:
-                score = ceiling
-            ceiling = score - _SCORE_EPSILON
+            if previous is not None and score > previous:
+                score = previous * (1 - _SCORE_EPSILON)
+            previous = score
             results.append(
                 SearchResult(
                     page_id=pid,
@@ -839,11 +978,12 @@ class FullTextSearch:
         if term:
             sql = (
                 f"SELECT count(*) FROM wiki_pages "
-                f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q)"
+                f"WHERE freshness_status != 'tombstone' "
+                f"  AND {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q)"
             )
             params = {"q": _pg_term(term)}
         else:
-            sql = "SELECT count(*) FROM wiki_pages"
+            sql = "SELECT count(*) FROM wiki_pages WHERE freshness_status != 'tombstone'"
             params = {}
         try:
             row = await conn.execute(text(sql), params)
@@ -876,7 +1016,11 @@ class FullTextSearch:
         return " | ".join(_pg_term(t) for t in kept)
 
     async def _search_postgresql(
-        self, query: str, limit: int, repository_id: str | None = None
+        self,
+        query: str,
+        limit: int,
+        repository_id: str | None = None,
+        path_prefix: str | None = None,
     ) -> list[SearchResult]:
         """PostgreSQL tsvector search with ts_rank scoring.
 
@@ -897,6 +1041,7 @@ class FullTextSearch:
             ts_query = await self._build_ts_query(conn, query)
             if not ts_query:
                 return []
+            scoped, scope_params = _path_filter("target_path", path_prefix)
             if repository_id is not None:
                 rows = await conn.execute(
                     text(
@@ -904,11 +1049,12 @@ class FullTextSearch:
                         f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
-                        f"  AND repository_id = :repo_id "
+                        f"  AND freshness_status != 'tombstone' "
+                        f"  AND repository_id = :repo_id{scoped} "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
                     ),
-                    {"q": ts_query, "lim": limit, "repo_id": repository_id},
+                    {"q": ts_query, "lim": limit, "repo_id": repository_id, **scope_params},
                 )
             else:
                 rows = await conn.execute(
@@ -917,10 +1063,11 @@ class FullTextSearch:
                         f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"  AND freshness_status != 'tombstone'{scoped} "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
                     ),
-                    {"q": ts_query, "lim": limit},
+                    {"q": ts_query, "lim": limit, **scope_params},
                 )
             raw = rows.fetchall()
 

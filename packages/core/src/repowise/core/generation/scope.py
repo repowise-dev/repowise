@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any
 
+import structlog
+
 from repowise.core.cost_estimator.types import PageTypePlan
 from repowise.core.generation.cascade import (
     CascadeMode,
@@ -25,13 +27,19 @@ from repowise.core.generation.cascade import (
     build_page_dependencies,
     expand_cascade,
 )
-from repowise.core.generation.models import GENERATION_LEVELS, compute_page_id
+from repowise.core.generation.models import (
+    GENERATION_LEVELS,
+    MODEL_WRITTEN_PAGE_TYPES,
+    compute_page_id,
+)
 from repowise.core.generation.page_selection import (
     PageRecord,
     PageSelectionIntent,
     resolve_page_selection,
 )
 from repowise.core.generation.selection import Selection, SelectionInputs, select_pages
+
+log = structlog.get_logger(__name__)
 
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
@@ -78,7 +86,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
             meta = json.loads(getattr(p, "metadata_json", None) or "{}")
         except ValueError:
             meta = {}
-        is_template = not meta.get("model_free") and (
+        model_free = bool(meta.get("model_free"))
+        is_template = not model_free and (
             getattr(p, "provider_name", "") == "template" or bool(meta.get("deterministic"))
         )
         records.append(
@@ -88,9 +97,59 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
                 target_path=p.target_path,
                 is_template=is_template,
                 freshness_status=getattr(p, "freshness_status", "fresh"),
+                pinned=bool(getattr(p, "pinned", False)),
+                model_free=model_free,
             )
         )
     return records
+
+
+async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
+    """The stored pages of the types a model writes, as the planner reads them.
+
+    Tombstones are left out because generation never schedules a retired page
+    (the same filter as ``_load_page_rows``).
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    rows = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).scalars()
+    return load_page_records(list(rows))
+
+
+async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
+    """Pages a model writes that are still on their stub: what ``generate`` writes by default.
+
+    Uses :func:`load_page_records`'s predicate, so a ``model_free`` page (written
+    by a deterministic subkind) is not counted when ``generate --unwritten``
+    would never select it.
+    """
+    return sum(1 for record in await _model_page_records(session, repo_id) if record.is_template)
+
+
+async def generate_model_calls(session: Any, repo_id: str, repo_path: Any) -> int:
+    """Model calls a default ``generate`` makes: its pages plus the pending decision lanes.
+
+    The pages are the unwritten ones and the pinned ones, which ``generate``
+    always rewrites. The count any "about N minutes" for that run is sized
+    by, so an estimate made before the run matches the one ``generate`` prints.
+    """
+    from pathlib import Path
+
+    from repowise.core.decision_lanes import planned_lane_calls
+
+    records = await _model_page_records(session, repo_id)
+    pages = sum(1 for record in records if record.is_template or record.pinned)
+    return pages + await planned_lane_calls(session, repo_id, Path(repo_path))
 
 
 def _selection_inputs(
@@ -126,6 +185,7 @@ def _selection_inputs(
         git_meta_map=None,
         config=config,
         kg_modules=kg_modules,
+        symbol_uses=graph_builder.symbol_uses(),
     )
 
 
@@ -170,7 +230,25 @@ def build_dependencies(
         module_groups=selection.module_groups,
         scc_groups=selection.scc_groups,
         repo_wide_ids=repo_wide_ids,
+        flow_pages_of=_flow_dependencies(parsed_files, graph_builder),
     )
+
+
+def _flow_dependencies(parsed_files: list[Any], graph_builder: Any) -> dict[str, tuple[str, ...]]:
+    """``file -> flow page ids`` from the same selection generation runs.
+
+    A graph that cannot be walked costs the flow pages their staleness signal,
+    not the update, and says so: a silent empty map would leave every flow page
+    looking current.
+    """
+    from repowise.core.generation.flow_pages import flow_pages_of_files, plans_for_index
+
+    try:
+        plans = plans_for_index(graph_builder, parsed_files)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        log.warning("cascade.flow_dependencies_failed", error=str(exc))
+        return {}
+    return flow_pages_of_files(plans)
 
 
 def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:
@@ -267,6 +345,32 @@ def build_cost_plans(generate_ids: set[str]) -> list[PageTypePlan]:
         PageTypePlan(page_type=ptype, count=n, level=GENERATION_LEVELS.get(ptype, 2))
         for ptype, n in sorted(counts.items(), key=lambda kv: GENERATION_LEVELS.get(kv[0], 2))
     ]
+
+
+def narrow_to_model_written(plan: ScopePlan, records: list[PageRecord]) -> ScopePlan:
+    """Keep the pages a model writes, in the generate set and the fallout, and re-price.
+
+    A structural page has no model to write it, and neither has a ``model_free``
+    one: ``repowise update`` refreshes the first from code, ``repowise update
+    --full`` the second. Kept, they would be counted and priced as model pages.
+    An id with no record yet is judged by its type alone.
+    """
+    model_free = {r.page_id for r in records if r.model_free}
+
+    def written(ids: set[str]) -> set[str]:
+        return {
+            pid
+            for pid in ids
+            if pid.split(":", 1)[0] in MODEL_WRITTEN_PAGE_TYPES and pid not in model_free
+        }
+
+    gen = written(plan.generate_ids)
+    return replace(
+        plan,
+        generate_ids=gen,
+        stale_ids=written(plan.stale_ids),
+        cost_plans=build_cost_plans(gen),
+    )
 
 
 def resolve_scope(

@@ -7,7 +7,7 @@ tests reach it, or neither), and the finding says so and never quotes a
 percentage. Severity: medium from 30, high from 50, critical from 100, the
 upper bands for measured coverage only. A function with complexity of 30 or
 more stays above the bar at full coverage, so its finding asks for a
-refactor rather than tests. Test files are exempt.
+refactor rather than tests. Test files and code that does not ship are exempt.
 """
 
 from __future__ import annotations
@@ -18,7 +18,15 @@ from ..crap import CRAP_THRESHOLD, coverage_tier, function_coverage, function_cr
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
+# Apex tests reach code through platform dispatch the graph does not see, so "no
+# test found" is no evidence there. Lift when Apex test reach models dispatch.
+_UNSEEN_TEST_REACH = frozenset({"apex"})
+
 _HIGH = 50.0
+
+
+def _unseen_reach(basis: str, tier: str, language: str) -> bool:
+    return basis != "measured" and tier == "none" and language in _UNSEEN_TEST_REACH
 _CRITICAL = 100.0
 
 _TIER_TEXT = {
@@ -56,7 +64,7 @@ class UntestedComplexityDetector:
     category = "test_coverage"
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
-        if ctx.is_test_material or ctx.reexport_only or not ctx.all_functions:
+        if ctx.outside_coverage_scope or ctx.reexport_only or not ctx.all_functions:
             return []
         out: list[BiomarkerResult] = []
         for fn, measured in zip(ctx.all_functions, _measured(ctx), strict=True):
@@ -67,6 +75,8 @@ class UntestedComplexityDetector:
             )
             result = function_crap(ccn, measured, tier)
             if result.crap < CRAP_THRESHOLD:
+                continue
+            if _unseen_reach(result.basis, tier, ctx.language):
                 continue
             is_measured = result.basis == "measured"
             refactor = ccn >= CRAP_THRESHOLD

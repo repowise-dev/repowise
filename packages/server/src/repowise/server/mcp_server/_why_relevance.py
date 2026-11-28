@@ -155,12 +155,82 @@ def relevance(text: Container[str], idf: dict[str, float]) -> float:
 
     Distinct terms only: a record repeating one word forty times is not more
     relevant than one answering the whole question, which is the failure the
-    occurrence count had.
+    occurrence count had. Against a string, terms are weighed by
+    :func:`term_groups`; a :func:`word_set` tests whole words, where ``#30``
+    and ``#300`` are two words, so each term there stands alone.
     """
-    total = sum(idf.values())
+    groups = term_groups(idf) if isinstance(text, str) else [[t] for t in idf]
+    return _carried_share(idf, groups, lambda t: 1.0 if t in text else 0.0)
+
+
+#: Credit for a question term a record carries only in its background: the
+#: rationale, context or consequences, not the title, decision or tags.
+#:
+#: A record's title, decision and tags say what it is about; the rest is how it
+#: got there, and names neighbouring things in passing. Counted in full, those
+#: passing names made answers: a record on startup schema reconciliation
+#: answered "why does the CLI require an explicit database migration" because
+#: its consequences say "explicit" and its context "database". Measured on
+#: fifty-seven labelled questions over this repo's records, every value from
+#: 0.3 to 0.7 kept every question's correct answer; this is the middle.
+BACKGROUND_CREDIT = 0.5
+
+
+def record_relevance(ruling: str, text: str, idf: dict[str, float]) -> float:
+    """:func:`relevance` of a decision record, its background counted at half.
+
+    *ruling* is what the record is about (its title, decision and tags), *text*
+    the whole record. Both lowercased by the caller.
+    """
+    return _carried_share(
+        idf,
+        term_groups(idf),
+        lambda t: 1.0 if t in ruling else BACKGROUND_CREDIT if t in text else 0.0,
+    )
+
+
+def term_groups(idf: dict[str, float]) -> list[list[str]]:
+    """The question's terms, each group one piece of evidence, longest term first.
+
+    A term inside a longer question term joins the longest such term's group:
+    ``lite`` with ``sqlite``, ``lance`` with ``lancedb``, ``config`` with
+    ``xdg_config_home``. Presence in text is a substring test, so a record
+    carrying ``sqlite`` always carries ``lite``, and scoring them apart counted
+    one word twice. "why store embeddings in LanceDB instead of Postgres" was
+    answered by a record on skip directories that names LanceDB once, because
+    the name and its fragment together outweighed "embeddings" and "Postgres".
+    """
+    terms = list(idf)
+    parent = {t: max((u for u in terms if u != t and t in u), key=len, default=t) for t in terms}
+    groups: dict[str, list[str]] = {}
+    for t in sorted(terms, key=len, reverse=True):
+        groups.setdefault(parent[t], []).append(t)
+    return list(groups.values())
+
+
+def _carried_share(
+    idf: dict[str, float], groups: list[list[str]], credit: Callable[[str], float]
+) -> float:
+    """Share of the question's weight carried, each group earning its best member.
+
+    A group weighs as its rarest member. One whose whole is absent still earns
+    what a fragment carries, so a record naming ``withManagedSignal`` as
+    "managed signal" is not refused for spelling it apart. A fragment that
+    another group's carried term contains is that term's evidence, not its own:
+    in "why SQLite or LiteDB", ``lite`` sits in ``litedb``'s group, and a record
+    naming only SQLite carries it inside ``sqlite``.
+    """
+    total = sum(max(idf[t] for t in g) for g in groups)
     if total <= 0:
         return 0.0
-    return sum(w for t, w in idf.items() if t in text) / total
+    carried = {t for g in groups for t in g if credit(t) > 0}
+
+    def earned(t: str, group: list[str]) -> float:
+        if any(t in u and u not in group for u in carried if u != t):
+            return 0.0
+        return idf[t] * credit(t)
+
+    return sum(max(earned(t, g) for t in g) for g in groups) / total
 
 
 def clears_floor(score: float) -> bool:
@@ -306,16 +376,16 @@ def redirect_when_served(lanes: list[str], recall: str | None) -> dict[str, Any]
 
 
 def redirect_when_governed() -> dict[str, Any]:
-    """The reason for a call that missed on its terms but names a governed file.
+    """The reason for a miss that names a governed file.
 
-    An accepted rule binds its files whatever the question, so the target card
-    serves it and ``answer_basis`` is ``decision``. Saying no record covers the
-    call beside it would contradict both.
+    The card lists the file's accepted rules by title because they bind it
+    whatever the question, but none of them answers it, so ``answer_basis``
+    stays unset and the redirect stands.
     """
     return {
         "reason": (
-            "No decision record carries this question's terms. The accepted "
-            "decision governing a named file binds it whatever the question; "
-            "anything else served is evidence, not a ruling."
+            "No decision record answers this question. The rules listed on the "
+            "named files govern them whatever the question; read them before "
+            "changing those files."
         )
     }

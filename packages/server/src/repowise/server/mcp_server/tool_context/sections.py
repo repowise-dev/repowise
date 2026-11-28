@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -16,9 +17,11 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.decisions.lifecycle import is_governing
+from repowise.core.analysis.decisions.lifecycle import RETIRED_STATUSES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.held_origins import counts_as_hotspot
 from repowise.core.attribution import attribution_enabled, file_share
+from repowise.core.generation.layers import is_fallback_layer
 from repowise.core.generation.page_selection import is_stale_status
 from repowise.core.persistence.crud import (
     accepted_predicate,
@@ -27,18 +30,34 @@ from repowise.core.persistence.crud import (
     get_kg_layers,
     get_kg_tour_steps,
 )
+from repowise.core.persistence.crud.issue_links import fix_issue_quotes
+from repowise.core.persistence.crud.tombstoned_pages import announces_deletion
 from repowise.core.persistence.decision_graph import get_governing_decisions
 from repowise.core.persistence.models import (
     DecisionRecord,
     GitMetadata,
     GraphEdge,
     GraphNode,
+    HealthFileMetric,
     Page,
 )
 from repowise.server.mcp_server._budget import cap_collection
-from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
-from repowise.server.mcp_server._edit_sites import reference_edit_set
-from repowise.server.mcp_server._helpers import _decision_body
+from repowise.server.mcp_server._changes import (
+    file_changes,
+    file_landing,
+    file_provenance,
+    load_file_meta,
+    symbol_changes,
+    symbol_last_change,
+)
+from repowise.server.mcp_server._directory import _git_rows_under
+from repowise.server.mcp_server._edit_sites import edit_set_block
+from repowise.server.mcp_server._helpers import (
+    _decision_body,
+    filter_edge_rows,
+    no_source_field,
+    serves_no_source,
+)
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
@@ -55,6 +74,7 @@ from repowise.server.mcp_server.tool_context.kg import (
     _find_layer_for_file,
     _find_tour_step_for_file,
 )
+from repowise.server.mcp_server.tool_context.measured import mark_measured_target
 from repowise.server.mcp_server.tool_context.resolution import ResolvedTarget, TargetQuery
 from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 
@@ -62,6 +82,18 @@ from repowise.server.mcp_server.tool_risk.assessment import fix_annotation
 #: and a withdrawn decision is context, neither worth the shared budget.
 _MAX_CANDIDATES = 3
 _MAX_DECISION_HISTORY = 2
+
+#: Owners a directory card names, by how many of its files each owns.
+_MAX_DIRECTORY_OWNERS = 3
+
+#: The per-file git columns a directory card reads.
+_DIRECTORY_COLUMNS = (
+    GitMetadata.file_path,
+    GitMetadata.primary_owner_name,
+    GitMetadata.last_commit_at,
+    GitMetadata.is_hotspot,
+    GitMetadata.top_authors_json,
+)
 
 
 @dataclass
@@ -71,6 +103,7 @@ class CardState:
     query: TargetQuery
     resolved: ResolvedTarget
     data: dict[str, Any] = field(default_factory=dict)
+    _dir_rows: list[Any] | None = field(default=None, init=False, repr=False)
 
     @property
     def session(self) -> AsyncSession:
@@ -102,10 +135,25 @@ class CardState:
 
     @property
     def git_path(self) -> str | None:
-        """The path git rows are keyed on: the module's directory for a module."""
-        if self.resolved.target_type == "module" and self.page:
-            return self.page.target_path
+        """The file git rows are keyed on; None for a module."""
         return self.resolved.file_path
+
+    @property
+    def dir_path(self) -> str | None:
+        """A module's directory, whose git facts come from the files under it."""
+        return self.resolved.dir_path if self.resolved.target_type == "module" else None
+
+    async def dir_rows(self) -> list[Any]:
+        """The git rows of the files under ``dir_path``, read once per card."""
+        if self._dir_rows is None:
+            self._dir_rows = await _git_rows_under(
+                self.session,
+                self.repo_id,
+                self.dir_path or "",
+                self.query.exclude_spec,
+                *_DIRECTORY_COLUMNS,
+            )
+        return self._dir_rows
 
     @property
     def skeleton_plus(self) -> bool:
@@ -126,6 +174,10 @@ def _identity_section(card: CardState) -> None:
     data["type"] = resolved.target_type
     if resolved.target_type == "file" and resolved.file_path:
         data["path"] = path_identity(resolved.file_path)
+    if resolved.target_type == "module" and card.page is None:
+        data["index_status"] = "directory_without_module_page"
+        if card.wants("full_doc"):
+            data["full_doc_basis"] = "no_module_page"
     meta = resolved.live_file_meta
     if meta is not None:
         data["index_status"] = "live_file_without_wiki_page"
@@ -143,7 +195,7 @@ def _tombstone_section(card: CardState) -> bool:
     """The file was deleted or renamed since indexing: write the redirect
     rather than a misleading card, and say the card ends here."""
     page = card.page
-    if page is None or getattr(page, "freshness_status", "") != "tombstone":
+    if page is None or not announces_deletion(page):
         return False
     try:
         successors = json.loads(page.metadata_json or "{}").get("successor_paths") or []
@@ -174,7 +226,6 @@ async def _parent_page_section(card: CardState) -> None:
         card.data["parent_page"] = {
             "title": parent.title,
             "target_path": parent.target_path,
-            "section": parent.section_number,
         }
 
 
@@ -187,7 +238,17 @@ async def _triage_section(card: CardState) -> None:
       omitted on files with no counted fixes.
     * ``decision_records``: titles only, pointing to ``get_why``; inlining
       rationale would bloat every cached response.
+    * ``measured``: one line when a stored profile run measured the symbol
+      or a function in the file (``measured.attach_measured``).
     """
+    if card.dir_path is not None:
+        await _directory_triage(card)
+        return
+    resolved = card.resolved
+    # Read after the gather, for every card at once: attach_measured.
+    mark_measured_target(
+        card.data, resolved.target_type, resolved.file_path, resolved.symbol_node_id
+    )
     triage_path = card.git_path
     if not triage_path:
         return
@@ -210,6 +271,10 @@ async def _triage_section(card: CardState) -> None:
         # shape fix_annotation reads off a full ORM row.
         fixes = fix_annotation(triage_meta, now=card.query.as_of_ts)
         if fixes is not None:
+            if card.resolved.target_type == "symbol":
+                # Counted per file: say so on a symbol card rather than pass it off as the symbol's.
+                fixes = {**fixes, "scope": "file"}
+            fixes = await _with_linked_issues(card, triage_path, fixes)
             card.data["fix_history"] = fixes
     # Governing decisions, opt-in only: the graph query is not worth its
     # latency on every card. Returns titles; get_why has the rationale.
@@ -217,7 +282,54 @@ async def _triage_section(card: CardState) -> None:
         await _governing_decision_titles(card, triage_path)
 
 
+async def _with_linked_issues(card: CardState, path: str, fixes: dict) -> dict:
+    """*fixes* plus the tracker issues behind them, when any bug or incident is linked."""
+    quotes = (await fix_issue_quotes(card.session, card.repo_id, [path])).get(path)
+    return {**fixes, "linked_issues": quotes} if quotes else fixes
+
+
+async def _directory_triage(card: CardState) -> None:
+    """A directory has no hotspot bit or fix history of its own; it names how
+    many files under it are hotspots, the cue to call get_risk on them."""
+    flagged = [r.file_path for r in await card.dir_rows() if r.is_hotspot]
+    hotspots = await _shown_hotspots(card, flagged) if flagged else 0
+    if hotspots:
+        card.data["hotspot_files"] = hotspots
+    if card.wants("decisions"):
+        await _governing_decision_titles(card, card.dir_path or card.target)
+
+
+#: Paths per ``IN`` read, under SQLite's bound-parameter limit.
+_PATH_BATCH = 500
+
+
+async def _shown_hotspots(card: CardState, flagged: list[str]) -> int:
+    """How many of the *flagged* hotspot paths the hotspot list shows: those
+    whose stored origin is not held (a file with no health row counts)."""
+    h = HealthFileMetric
+    origins: dict[str, tuple[Any, Any]] = {}
+    for start in range(0, len(flagged), _PATH_BATCH):
+        res = await card.session.execute(
+            select(h.file_path, h.code_origin, h.is_test).where(
+                h.repository_id == card.repo_id,
+                h.file_path.in_(flagged[start : start + _PATH_BATCH]),
+            )
+        )
+        origins.update((path, (origin, is_test)) for path, origin, is_test in res.all())
+    return sum(1 for p in flagged if counts_as_hotspot(True, *origins.get(p, (None, None))))
+
+
+def _decisions_off(card: CardState) -> bool:
+    """Whether ``decisions.mode`` is off for the repository this card reads."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    root = card.query.repo_root or getattr(card.query.repository, "local_path", None)
+    return layer_mode(root) == "off"
+
+
 async def _governing_decision_titles(card: CardState, triage_path: str) -> None:
+    if _decisions_off(card):
+        return
     target = card.target
     governing: list[DecisionRecord] = []
     seen_ids: set[str] = set()
@@ -253,6 +365,9 @@ async def _git_meta_row(card: CardState, git_path: str | None) -> GitMetadata | 
 async def _ownership_section(card: CardState) -> None:
     if not card.default_on("ownership"):
         return
+    if card.dir_path is not None:
+        card.data["ownership"] = _directory_ownership(await card.dir_rows())
+        return
     ownership: dict[str, Any] = {}
     meta = await _git_meta_row(card, card.git_path)
     if meta:
@@ -270,6 +385,9 @@ async def _ownership_section(card: CardState) -> None:
         if recent and recent != meta.primary_owner_name:
             ownership["recent_owner"] = recent
             ownership["recent_owner_pct"] = getattr(meta, "recent_owner_commit_pct", None)
+        commits = _commit_leaders(meta.top_authors_json, recent, ownership["contributor_count"])
+        if commits:
+            ownership["commits"] = commits
         _agent_provenance(card, meta, ownership)
     else:
         ownership["primary_owner"] = None
@@ -277,6 +395,77 @@ async def _ownership_section(card: CardState) -> None:
         ownership["contributor_count"] = 0
         ownership["bus_factor"] = 0
     card.data["ownership"] = ownership
+
+
+def _commit_leaders(
+    top_authors_json: str | None, recent_owner: str | None, contributors: int = 0
+) -> dict[str, str]:
+    """Who made the most commits to a file, all time and in the last 90 days.
+
+    ``primary_owner`` is the blame owner on a standard index, so it can rank
+    someone other than the top committer first, and ``recent_owner`` is only
+    shown when it differs. These two lines carry the counts behind both, so
+    "who should review" needs no ``git log``. The 90 days run back from the
+    newest indexed commit. Bots never reach ``top_authors_json``. Each file
+    keeps its top 50 authors, so a longer tail marks its total with ``+``.
+    Empty when the stored authors carry no commit counts; only the all-time
+    line when they carry no 90-day counts.
+    """
+    try:
+        authors = json.loads(top_authors_json or "[]")
+    except (TypeError, ValueError):
+        return {}
+    rows = [a for a in authors if isinstance(a, dict) and isinstance(a.get("commit_count"), int)]
+    if not rows:
+        return {}
+    more = "+" if contributors > len(rows) else ""
+    total = sum(a["commit_count"] for a in rows)
+    lead = rows[0]  # stored most-commits first
+    leaders = {"all_time": f"{lead.get('name')} {lead['commit_count']} of {total}{more}"}
+    recent = _recent_leader(rows, recent_owner, more)
+    if recent:
+        leaders["last_90d"] = recent
+    return leaders
+
+
+def _recent_leader(rows: list[dict], recent_owner: str | None, more: str) -> str | None:
+    """The 90-day line of :func:`_commit_leaders`; None when no count can be given."""
+    if any("recent_commit_count" not in a for a in rows):
+        return None  # indexed before per-author recent counts were stored
+    names = [a.get("name") for a in rows]
+    if more and recent_owner and recent_owner not in names:
+        return None  # the recent leader is outside the kept authors
+    counts = [a["recent_commit_count"] or 0 for a in rows]
+    total = sum(counts)
+    if not total:
+        return "no commits"
+    top = max(counts)
+    tied = [name for name, n in zip(names, counts, strict=True) if n == top]
+    # Ties go to the stored recent owner, so the two fields never disagree.
+    name = recent_owner if recent_owner in tied else tied[0]
+    return f"{name} {top} of {total}{more}"
+
+
+def _directory_ownership(rows: list[Any]) -> dict[str, Any]:
+    """Who owns the files under a directory, counted in files.
+
+    Each file stores only its own primary owner and shares, so a commit share,
+    contributor count or bus factor for the directory cannot be derived: an
+    author's commits on two files may be one commit.
+    """
+    counts = Counter(r.primary_owner_name for r in rows if r.primary_owner_name)
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ownership: dict[str, Any] = {
+        "files_with_history": len(rows),
+        "owners_by_files": [
+            {"name": name, "files": n} for name, n in ranked[:_MAX_DIRECTORY_OWNERS]
+        ],
+        "basis": "files each person is primary owner of; history is per file, so no "
+        "directory commit share, contributor count or bus factor",
+    }
+    if len(ranked) > _MAX_DIRECTORY_OWNERS:
+        ownership["owners_total"] = len(ranked)
+    return ownership
 
 
 def _agent_provenance(card: CardState, meta: GitMetadata, ownership: dict[str, Any]) -> None:
@@ -303,25 +492,121 @@ def _agent_provenance(card: CardState, meta: GitMetadata, ownership: dict[str, A
 async def _last_change_section(card: CardState) -> None:
     if not card.default_on("last_change"):
         return
-    last_change: dict[str, Any] = {}
+    if card.dir_path is not None:
+        card.data["last_change"] = await _directory_last_change(card)
+        return
+    if card.resolved.target_type == "symbol" and card.git_path:
+        own = await _symbol_last_change(card, card.git_path)
+        if own is not None:
+            card.data["last_change"] = own
+            return
     meta = await _git_meta_row(card, card.git_path)
-    if meta:
-        last_change["date"] = meta.last_commit_at.isoformat() if meta.last_commit_at else None
-        last_change["author"] = meta.primary_owner_name
-        last_change["days_ago"] = await _days_since_last_change(
-            card.session, card.repo_id, meta.last_commit_at, card.query.as_of_ts
-        )
-    else:
-        last_change["date"] = None
-        last_change["author"] = None
-        last_change["days_ago"] = None
-    card.data["last_change"] = last_change
+    change = await _change_of(card, meta)
+    if card.resolved.target_type == "symbol":
+        # Git could not walk the symbol's lines: never pass the file's off as its own.
+        change["scope"] = "file"
+    card.data["last_change"] = change
+
+
+async def _symbol_last_change(card: CardState, file_path: str) -> dict[str, Any] | None:
+    """The newest commit that edited the symbol's lines, in the file shape
+    plus ``ref``, the stored change that landed it."""
+    repository = card.query.repository
+    found = await symbol_last_change(
+        card.session,
+        repository,
+        served_root(repository, card.query.repo_root),
+        file_path,
+        _symbol_lines(card),
+    )
+    if found is None:
+        return None
+    moment = found["committed_at"]
+    change: dict[str, Any] = {
+        "date": moment.isoformat(),
+        "days_ago": await _days_since_last_change(
+            card.session, card.repo_id, moment, card.query.as_of_ts
+        ),
+        "author": found["author"],
+    }
+    if found["authored"]:
+        change["authored"] = found["authored"]
+    if found["ref"]:
+        change["ref"] = found["ref"]
+    return change
+
+
+async def _directory_last_change(card: CardState) -> dict[str, Any]:
+    """The newest commit under a directory, as a file's, plus the file it touched.
+
+    Ceiling: the file is picked by its newest commit, so an older branch merged
+    later into another file under the directory does not move the pick.
+    """
+    dated = [r for r in await card.dir_rows() if r.last_commit_at]
+    if not dated:
+        return await _change_of(card, None)
+    newest = max(dated, key=lambda r: (_as_utc(r.last_commit_at), r.file_path))
+    return {**await _change_of(card, newest), "path": newest.file_path}
+
+
+async def _change_of(card: CardState, row: Any) -> dict[str, Any]:
+    """A file's newest change: the day it landed, days since, and author.
+
+    The date is the file's newest commit's, unless a stored change touching
+    the file landed later (:func:`file_landing`, a merge of an older branch):
+    then it is that change's merge. No ``authored`` day: the stored history
+    keeps committer dates only, and a rebase moves those (a symbol's walk reads
+    the author date). ``author`` is the stored author whose own newest commit
+    is that change's newest commit on the file, and is absent when none
+    matches: the primary owner is not who made it.
+    """
+    if row is None or row.last_commit_at is None:
+        return {"date": None, "days_ago": None}
+    moment, written = row.last_commit_at, _as_utc(row.last_commit_at)
+    landing = await file_landing(card.session, card.repo_id, row.file_path, moment)
+    if landing is not None:
+        merged, written = landing
+        # Printed in the stored commit date's own form (naive or aware).
+        moment = merged if moment.tzinfo else merged.replace(tzinfo=None)
+    change: dict[str, Any] = {
+        "date": moment.isoformat(),
+        "days_ago": await _days_since_last_change(
+            card.session, card.repo_id, moment, card.query.as_of_ts
+        ),
+    }
+    author = _author_at(row.top_authors_json, written)
+    if author:
+        change["author"] = author
+    return change
+
+
+def _author_at(top_authors_json: str | None, moment: datetime) -> str | None:
+    """The one stored author whose newest commit on the file is at *moment*;
+    None when none or several match, since a tie cannot say which made it."""
+    with contextlib.suppress(TypeError, ValueError):
+        ts = int(moment.timestamp())
+        names = {
+            a.get("name")
+            for a in json.loads(top_authors_json or "[]")
+            if int(a.get("last_commit_ts") or -1) == ts
+        }
+        if len(names) == 1:
+            return names.pop()
+    return None
 
 
 async def _changes_section(card: CardState) -> None:
-    """Change Records and provenance (file targets, opt-in)."""
-    include = card.include
+    """Change Records and provenance (file targets, opt-in); a symbol target
+    gets the changes that edited its lines."""
     file_path = card.resolved.file_path
+    if card.resolved.target_type == "symbol" and file_path and card.wants("changes"):
+        await _symbol_changes_section(card, file_path)
+    else:
+        await _file_changes_section(card, file_path)
+
+
+async def _file_changes_section(card: CardState, file_path: str | None) -> None:
+    include = card.include
     if not (
         include
         and card.resolved.target_type == "file"
@@ -339,24 +624,46 @@ async def _changes_section(card: CardState) -> None:
         card.data["provenance"] = file_provenance(meta, attribution)
 
 
+def _symbol_lines(card: CardState) -> tuple[int, int] | None:
+    """The symbol's line range as indexed; None when the index has none."""
+    sym = card.resolved.sym_matches[0] if card.resolved.sym_matches else card.resolved.graph_symbol
+    start, end = getattr(sym, "start_line", None), getattr(sym, "end_line", None)
+    return (start, end) if start and end and end >= start else None
+
+
+async def _symbol_changes_section(card: CardState, file_path: str) -> None:
+    lines = _symbol_lines(card)
+    repository = card.query.repository
+    card.data.update(
+        await symbol_changes(
+            card.session,
+            repository,
+            served_root(repository, card.query.repo_root),
+            file_path,
+            lines,
+            attribution=attribution_enabled(repository.local_path),
+        )
+    )
+
+
 async def _decisions_section(card: CardState) -> None:
     """Decision lanes. Acceptance is authority, not the status column. The
     lanes match ``get_why`` path mode: ``decisions`` accepted and binding,
     ``candidates`` never accepted, ``history`` accepted then withdrawn.
     Ordering is ``decision_priority_order``, shared with the Decisions page.
 
-    The dismissed filter is ``count_decisions_by_lane``'s: "dismissed" marks
+    The retired filter is ``count_decisions_by_lane``'s: a retired status marks
     both a tombstoned candidate and a withdrawn decision, and only the
     acceptance row tells them apart, so a bare status filter would lose the
     withdrawn ones from the history lane.
     """
-    if not card.default_on("decisions"):
+    if not card.default_on("decisions") or _decisions_off(card):
         return
     res = await card.session.execute(
         select(DecisionRecord)
         .where(
             DecisionRecord.repository_id == card.repo_id,
-            or_(DecisionRecord.status != "dismissed", accepted_predicate()),
+            or_(DecisionRecord.status.notin_(sorted(RETIRED_STATUSES)), accepted_predicate()),
         )
         .order_by(*decision_priority_order())
     )
@@ -457,7 +764,9 @@ async def _freshness_section(card: CardState) -> None:
         served_root(card.query.repository, card.query.repo_root), [file_path]
     ):
         freshness["working_tree"] = "modified"
-    card.data["freshness"] = freshness
+    # A current page is the default, so only drift is sent.
+    if freshness.get("is_stale") or "working_tree" in freshness:
+        card.data["freshness"] = freshness
 
 
 async def _kg_section(card: CardState) -> None:
@@ -468,34 +777,48 @@ async def _kg_section(card: CardState) -> None:
     kg_layers = await get_kg_layers(card.session, card.repo_id)
     if not kg_layers:
         return
+    await _layer_block(card, file_path, kg_layers)
+    await _tour_block(card, file_path)
+
+
+async def _layer_block(card: CardState, file_path: str, kg_layers: list) -> None:
     for _l in kg_layers:
         _l._parsed_node_ids = json.loads(_l.node_ids_json) if _l.node_ids_json else []
     file_layer = _find_layer_for_file(file_path, kg_layers)
-    if file_layer:
-        edge_res = await card.session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == card.repo_id,
-                GraphEdge.target_node_id == file_path,
-                GraphEdge.edge_type == "imports",
-            )
+    # The fallback layer's name, model written or not, describes the bucket's
+    # majority, not this file.
+    ids = [layer.layer_id or "" for layer in kg_layers]
+    if not file_layer or is_fallback_layer(file_layer.layer_id or "", ids):
+        return
+    edge_res = await card.session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == card.repo_id,
+            GraphEdge.target_node_id == file_path,
+            GraphEdge.edge_type == "imports",
         )
-        incoming_edges = list(edge_res.scalars())
-        card.data["architectural_layer"] = {
-            "name": file_layer.name,
-            "description": (file_layer.description or "")[:200],
-            "role": _classify_file_role(file_path, file_layer, incoming_edges),
-        }
+    )
+    # An importer the repo rules exclude does not make this file a connector.
+    incoming_edges = filter_edge_rows(edge_res.scalars(), card.query.exclude_spec)
+    card.data["architectural_layer"] = {
+        "name": file_layer.name,
+        "description": (file_layer.description or "")[:200],
+        "role": _classify_file_role(file_path, file_layer, incoming_edges),
+    }
+
+
+async def _tour_block(card: CardState, file_path: str) -> None:
     kg_tour = await get_kg_tour_steps(card.session, card.repo_id)
-    if kg_tour:
-        for _s in kg_tour:
-            _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
-        file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
-        if file_tour_step:
-            card.data["tour_context"] = {
-                "step": file_tour_step.step_order,
-                "title": file_tour_step.title,
-                "why": (file_tour_step.description or "")[:200],
-            }
+    if not kg_tour:
+        return
+    for _s in kg_tour:
+        _s._parsed_node_ids = json.loads(_s.node_ids_json) if _s.node_ids_json else []
+    file_tour_step = _find_tour_step_for_file(file_path, kg_tour)
+    if file_tour_step:
+        card.data["tour_context"] = {
+            "step": file_tour_step.step_order,
+            "title": file_tour_step.title,
+            "why": (file_tour_step.description or "")[:200],
+        }
 
 
 async def _call_graph_section(card: CardState) -> None:
@@ -520,7 +843,8 @@ async def _call_graph_section(card: CardState) -> None:
 
 async def _references_section(card: CardState) -> None:
     """Reference edit set: every live site naming the symbol."""
-    if not card.wants("references"):
+    prose = card.wants("references+")
+    if not (prose or card.wants("references")):
         return
     resolved = card.resolved
     ref_node = resolved.graph_symbol
@@ -540,9 +864,17 @@ async def _references_section(card: CardState) -> None:
         )
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
-        card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector
+        card.data["references"] = await edit_set_block(
+            card.session,
+            card.repo_id,
+            root,
+            ref_node,
+            card.query.collector,
+            prose=prose,
+            exclude_spec=card.query.exclude_spec,
         )
+    elif ref_node is not None and serves_no_source():
+        card.data["references"] = no_source_field()
     else:
         card.data["references_note"] = "references require a symbol target in the graph"
 
@@ -554,6 +886,7 @@ async def _metrics_section(card: CardState) -> None:
             card.query.repository,
             card.resolved.symbol_node_id or card.target,
             card.data,
+            exclude_spec=card.query.exclude_spec,
         )
 
 
@@ -576,6 +909,7 @@ async def _health_section(card: CardState) -> None:
             card.target,
             card.resolved.target_type,
             card.data,
+            exclude_spec=card.query.exclude_spec,
         )
 
 

@@ -10,15 +10,25 @@ gains a discriminator:
   narrows to the member whose parameters admit its argument count. Members
   that share a count also carry their erased parameter types,
   ``StringUtil.java::StringUtil::append#1(String)``, so an inserted overload
-  never renames its siblings. A Kotlin extension's receiver leads its types,
-  as it leads the JVM signature it compiles to: ``Byte.toHexString()`` is
+  never renames its siblings. C# members those types still join spell each
+  generic type with its arity, ``When#2(Func`2)`` beside ``When#2(Func`3)``.
+  A Kotlin extension's receiver leads its types, as it leads the JVM
+  signature it compiles to: ``Byte.toHexString()`` is
   ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
+  C++ template definitions those types still join (SFINAE overloads that
+  differ only in their constraints) append their template parameters,
+  compacted: ``write#2(OutputIt,T)<Char,T,FMT_ENABLE_IF(is_integral<T>)>``.
+  Ones equal even there take ``~<n>``, their place among the equal ones,
+  the first keeping none.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
   mean any variant.
 - `` `<digits> `` on a type segment: the CLR generic arity that tells a C#
   ``IFoo<T>`` from a same-file ``IFoo``, ``IFoo.cs::IFoo`1``. Its members
   carry the suffix in ``parent_name`` and so in their own ids.
+- ``#setter`` / ``#deleter`` on a Python property's ``@x.setter`` or
+  ``@x.deleter`` def, ``m.py::C::x#setter``. The getter keeps the plain id,
+  and no call names the mutator, so the suffix is no payload to split off.
 
 ``Symbol.name``, ``qualified_name`` and the signature never change, and a name
 declared once keeps its plain id. Discriminators are registered per language
@@ -28,18 +38,24 @@ below, so a language without an entry is untouched by construction.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any
 
+from ..ids import SYMBOL_SEP
+from .decorator_names import property_mutator_role
 from .models import Symbol
 from .return_types import signature_parameter_count, signature_parameters
-from .type_names import strip_type_arguments
+from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
-_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?|[A-Za-z_]\w*\(.*\)")
+_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?|[A-Za-z_]\w*\(.*\)")
 _COUNT = re.compile(r"\d+")
 _GENERIC_ARITY = re.compile(r"`\d+$")
+
+#: The name of the synthetic per-file symbol that top-level calls hang off.
+MODULE_SYMBOL_NAME = "__module__"
 
 
 def split_symbol_id(symbol_id: str) -> tuple[str, str | None]:
@@ -72,6 +88,16 @@ def symbol_id_arity(symbol_id: str) -> str | None:
     return count.group() if count else payload
 
 
+def overload_signature(symbol_id: str) -> str | None:
+    """The payload's count and parameter types alone: ``write#2(T)<T>`` -> ``2(T)``."""
+    payload = symbol_id_discriminator(symbol_id)
+    count = _COUNT.match(payload) if payload else None
+    if payload is None or count is None:
+        return payload
+    rest = payload[count.end() :]
+    return count.group() + (rest[: rest.find(")") + 1] if rest.startswith("(") else "")
+
+
 def untyped_symbol_id(symbol_id: str) -> str:
     """*symbol_id* with its parameter types dropped: ``put#1(String)`` -> ``put#1``."""
     base, payload = split_symbol_id(symbol_id)
@@ -87,9 +113,30 @@ def id_segment_name(segment: str) -> str:
     return _GENERIC_ARITY.sub("", segment)
 
 
-def symbol_id_path(symbol_id: str) -> str:
-    """The file path an id starts with: ``A.java::A::m`` -> ``A.java``."""
-    return symbol_id.partition("::")[0]
+def make_symbol_id(path: str, *names: str) -> str:
+    """The id of a symbol in *path*: ``make_symbol_id("A.java", "A", "m")`` -> ``A.java::A::m``.
+
+    *names* are the id segments after the path, outermost first; each is
+    joined as given, so a name holding ``.`` or ``#`` keeps it. A path that
+    itself holds ``::`` (legal on POSIX) gives an id :func:`file_of_symbol`
+    cannot split back; ids assume no path does.
+    """
+    return SYMBOL_SEP.join((path, *names))
+
+
+def module_symbol_id(path: str) -> str:
+    """The synthetic symbol that owns *path*'s top-level code: ``a.py::__module__``."""
+    return make_symbol_id(path, MODULE_SYMBOL_NAME)
+
+
+def file_of_symbol(symbol_id: str) -> str:
+    """The file path an id starts with: ``A.java::A::m`` -> ``A.java``; a file id is itself."""
+    return symbol_id.partition(SYMBOL_SEP)[0]
+
+
+def local_symbol_id(symbol_id: str) -> str:
+    """The id after its file: ``m.py::C::m`` -> ``C::m``; a file id gives ``""``."""
+    return symbol_id.partition(SYMBOL_SEP)[2]
 
 
 def outer_scope(scope: str) -> str:
@@ -301,6 +348,7 @@ def _rust_cfg_predicate(symbol: Symbol) -> str | None:
 # variant (C ``#if`` branches, Rust ``cfg``) registers here as its own function.
 _DISCRIMINATORS: dict[str, Callable[[Symbol], str | None]] = {
     "java": _parameter_count,
+    "apex": _parameter_count,
     "csharp": _parameter_count,
     "cpp": _parameter_count,
     "kotlin": _parameter_count,
@@ -320,6 +368,95 @@ def symbol_discriminator(symbol: Symbol) -> str | None:
     """What would tell *symbol* apart from a same-id sibling, or None."""
     discriminator = _DISCRIMINATORS.get(symbol.language)
     return None if discriminator is None else discriminator(symbol)
+
+
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does the definition already holding *sym*'s id keep its node?
+
+    Where overloads get their own ids, two definitions still sharing one erase
+    to one signature: the first declared keeps the node, so its span does not
+    depend on how many follow it. A function sharing its id with a Kotlin
+    property takes the node: calls name it.
+    """
+    if existing is None or existing.get("is_declaration") is not False:
+        return False
+    if not has_overload_identity(sym.language):
+        return False
+    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
+
+
+def takes_shared_id(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does *sym* take its id from *existing*, the attributes of the symbol that holds it?
+
+    A declaration never displaces a definition. A definition displaces a
+    declaration, and another definition as :func:`_first_definition_keeps_node`
+    says. The graph's node and the stored symbol row of an id both follow this.
+    """
+    if sym.is_declaration:
+        return existing is None or existing.get("is_declaration") is not False
+    return not _first_definition_keeps_node(existing, sym)
+
+
+# C/C++ kinds a type forward declaration (``class Env;``) can carry.
+_FORWARD_DECLARED_TYPE_KINDS = frozenset({"class", "struct", "enum"})
+
+
+def is_type_forward_declaration(attrs: Mapping[str, Any]) -> bool:
+    """Is this ``class Env;``, a C/C++ type named without being defined?
+
+    *attrs* is a symbol's attributes (``vars(sym)`` or a graph node's data).
+    The graph keeps it, marked ``is_declaration``, for call resolution and dead
+    code; it is no symbol of its file, so it gets no stored row and no page
+    lists it among what the file defines.
+    """
+    return bool(
+        attrs.get("is_declaration")
+        and attrs.get("language") in ("c", "cpp")
+        and attrs.get("kind") in _FORWARD_DECLARED_TYPE_KINDS
+    )
+
+
+def id_holders(symbols: Iterable[Symbol]) -> list[Symbol]:
+    """One stored symbol for each id among *symbols*, in source order: the one that holds it.
+
+    The others keep no row and no node of their own: a field or property beside
+    a function of its name, a definition beside another of the same erasure, a
+    declaration beside its definition. A type forward declaration never holds a
+    row, so a C prototype sharing its id (``int stat(...);`` beside
+    ``struct stat;``) keeps its own.
+    """
+    holders: dict[str, Symbol] = {}
+    for sym in symbols:
+        if is_type_forward_declaration(vars(sym)):
+            continue
+        held = holders.get(sym.id)
+        if held is None or takes_shared_id(vars(held), sym):
+            holders[sym.id] = sym
+    return list(holders.values())
+
+
+def symbols_by_id(symbols: Iterable[Symbol]) -> dict[str, Symbol]:
+    """``{id: symbol}`` over *symbols*, the last listed holding each id.
+
+    Except that a type forward declaration never displaces the type it names:
+    a ``class Shape;`` written after ``class Shape {..}`` would otherwise take
+    the id, and with it the span and fields, from the definition.
+    """
+    held: dict[str, Symbol] = {}
+    for sym in symbols:
+        current = held.get(sym.id)
+        if (
+            current is not None
+            and current.kind in _FORWARD_DECLARED_TYPE_KINDS
+            and not current.is_declaration
+            and is_type_forward_declaration(vars(sym))
+        ):
+            continue
+        held[sym.id] = sym
+    return held
 
 
 def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
@@ -344,6 +481,8 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
         keyed = [(symbol, discriminator(symbol)) for symbol in members]
         if discriminator is _parameter_count:
             keyed = _split_same_counts(keyed)
+        if language == "cpp":
+            keyed = _split_template_overloads(keyed)
         if len({key for _, key in keyed if key is not None}) < 2:
             continue
         for symbol, key in keyed:
@@ -351,18 +490,170 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
                 symbol.id = f"{base}#{key}"
 
 
+def split_python_property_mutators(symbols: list[Symbol]) -> None:
+    """Give a property's setter and deleter their own ids beside its getter, in place.
+
+    All three share a name, so one graph node would hold all three bodies.
+    """
+    taken = Counter(symbol.id for symbol in symbols)
+    for symbol in symbols:
+        role = property_mutator_role(symbol.decorators)
+        if role is not None and taken[symbol.id] > 1:
+            symbol.id = f"{symbol.id}#{role}"
+
+
 def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
-    """Append parameter types to every count two members share, when they differ."""
+    """Append parameter types to every count two members share, when they differ.
+
+    A C# pair the erased types still join (``Func<T, bool>`` and ``Func<T,
+    Ctx<T>, bool>``) is told apart by each type's generic arity instead.
+    """
     typed: dict[str, dict[int, str]] = defaultdict(dict)
     for index, (symbol, key) in enumerate(keyed):
         if key is not None:
             typed[key][index] = f"{key}{_parameter_types(symbol)}"
     out = list(keyed)
-    for by_index in typed.values():
+    for count, by_index in typed.items():
+        if keyed[next(iter(by_index))][0].language == "csharp":
+            by_index = _split_by_generic_arity(keyed, count, by_index)
         if len(set(by_index.values())) > 1:
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
     return out
+
+
+# How a C++ template head is compacted for an id: comments, defaults (written
+# on a declaration, never repeated on its definition), ``typename`` and
+# ``class`` go, a qualified name keeps its last segment (``std::is_same<T,
+# U>::value`` -> ``is_same<T,U>``), and a pack reads as the array erased types
+# spell (``typename... Args`` -> ``Args[]``), so no separator survives.
+_HEAD_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_HEAD_KEYWORD = re.compile(r"\b(?:typename|class)\b")
+_HEAD_QUALIFIER = re.compile(r"\b\w+\s*::\s*|(?<=>)(?:\s*::\s*(?:template\s+)?\w+)+|::")
+_HEAD_PACK = re.compile(r"\.\.\.\s*(\w*)")
+_HEAD_SPACE = re.compile(r"\s*([^\w\s])\s*")
+
+
+def _is_operator(head: str, index: int) -> bool:
+    """Is ``head[index]`` part of ``>=``, ``==``, ``->`` and the like, neither a bracket nor a default?"""
+    char, before, after = head[index], head[index - 1 : index], head[index + 1 : index + 2]
+    if char not in "<>=":
+        return False
+    return "=" in (before, after) or (char == "=" and before in ("<", ">", "!")) or (
+        char == ">" and before == "-"
+    )
+
+
+def _without_defaults(head: str) -> str:
+    """``<typename T = int, int N = 0>`` -> ``<typename T , int N >``: each top-level ``= ...`` cut."""
+    out: list[str] = []
+    depth, skipping = 0, False
+    for index, char in enumerate(head):
+        if not _is_operator(head, index):
+            depth += (char in "<([{") - (char in ">)]}")
+            if depth == 1 and char in ",=":
+                skipping = char == "="
+            skipping = skipping and depth > 0
+        if not skipping:
+            out.append(char)
+    return "".join(out)
+
+
+def template_head(symbol: Symbol) -> str:
+    """``<typename T, FMT_ENABLE_IF(std::is_integral<T>::value)>`` -> ``<T,FMT_ENABLE_IF(is_integral<T>)>``."""
+    text = symbol.template_parameters
+    if not text:
+        return ""
+    text = _without_defaults(_HEAD_COMMENT.sub(" ", text))
+    text = _HEAD_QUALIFIER.sub("", _HEAD_KEYWORD.sub(" ", text))
+    text = re.sub(r"[./#]", "_", _HEAD_PACK.sub(r" \1[]", text))
+    return _HEAD_SPACE.sub(r"\1", " ".join(text.split()))
+
+
+def _split_template_overloads(
+    keyed: list[tuple[Symbol, str | None]],
+) -> list[tuple[Symbol, str | None]]:
+    """Tell apart the C++ template definitions that still share a key.
+
+    Where their template heads differ, every member of the key appends its
+    own head, so a declaration stays with the definition writing the same
+    head. Template definitions equal even there append ``~<n>``, their place
+    among the equal ones; the first keeps none.
+    """
+    by_key: dict[str, list[int]] = defaultdict(list)
+    for index, (_symbol, key) in enumerate(keyed):
+        if key is not None:
+            by_key[key].append(index)
+    out = list(keyed)
+    for key, indices in by_key.items():
+        for index, suffix in _template_suffixes([keyed[i][0] for i in indices]).items():
+            out[indices[index]] = (keyed[indices[index]][0], key + suffix)
+    return out
+
+
+def _template_suffixes(members: list[Symbol]) -> dict[int, str]:
+    """``{position: suffix}`` for the *members* of one key that need a head or ordinal."""
+    heads = [template_head(member) for member in members]
+    defined = [i for i, member in enumerate(members) if not member.is_declaration]
+    if len(defined) < 2:
+        return {}
+    split = len({heads[i] for i in defined}) > 1
+    seen: Counter[str] = Counter(heads[i] for i in defined if heads[i])
+    ordinals: dict[int, str] = {}
+    for i in reversed(defined):
+        if heads[i]:
+            ordinals[i] = f"~{seen[heads[i]]}" if seen[heads[i]] > 1 else ""
+            seen[heads[i]] -= 1
+    suffixes = {i: (heads[i] if split else "") + ordinals.get(i, "") for i in range(len(members))}
+    return {i: suffix for i, suffix in suffixes.items() if suffix}
+
+
+def _split_by_generic_arity(
+    keyed: list[tuple[Symbol, str | None]], count: str, by_index: dict[int, str]
+) -> dict[int, str]:
+    """*by_index* with each key two members share respelled with CLR arities.
+
+    Only the members that collide change; a sibling that does not keeps its id.
+    """
+    seen = Counter(by_index.values())
+    return {
+        index: f"{count}{_clr_parameter_types(keyed[index][0])}" if seen[key] > 1 else key
+        for index, key in by_index.items()
+    }
+
+
+# The array, pointer and nullable marks that may follow an erased type's name.
+_ERASED_MARKS = "[]*&?"
+
+
+def _clr_parameter_types(symbol: Symbol) -> str:
+    """``(Func`2,int)``: each erased type with its type argument count, as the CLR names it."""
+    parameters = signature_parameters(symbol.signature or "") or []
+    return "(" + ",".join(clr_parameter_type(p) for p in parameters) + ")"
+
+
+def clr_parameter_type(parameter: str) -> str:
+    """``Func<A, B> f`` -> ``Func`2``: the erased type with its type argument count."""
+    arity = parameter_type_arity(parameter)
+    erased = erased_type(parameter)
+    name = erased.rstrip(_ERASED_MARKS)
+    return f"{name}`{arity}{erased[len(name):]}" if arity else erased
+
+
+def parameter_type_arity(parameter: str) -> int:
+    """How many type arguments a C# parameter's type is given: ``Func<A, B> f`` -> 2."""
+    written = parameter.partition("=")[0].split()
+    return type_argument_count(" ".join(written[:-1]) or parameter)
+
+
+def same_parameters(declared: Symbol, defined: Symbol) -> bool:
+    """Do both declare one parameter list, by count and erased types?"""
+    count = _parameter_count(declared)
+    return (
+        count is not None
+        and count == _parameter_count(defined)
+        and _parameter_types(declared) == _parameter_types(defined)
+    )
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
@@ -435,18 +726,31 @@ def _reparent_members(symbols: list[Symbol], owner: Symbol, segment: str) -> Non
 
 
 __all__ = [
+    "MODULE_SYMBOL_NAME",
     "base_symbol_id",
+    "clr_parameter_type",
     "disambiguate_colliding_ids",
+    "file_of_symbol",
     "has_overload_identity",
+    "id_holders",
     "id_segment_name",
+    "is_type_forward_declaration",
     "kotlin_erased_type",
+    "local_symbol_id",
+    "make_symbol_id",
+    "module_symbol_id",
     "outer_scope",
     "overload_sets",
+    "overload_signature",
     "pair_overloads",
+    "parameter_type_arity",
+    "split_python_property_mutators",
     "split_symbol_id",
     "symbol_discriminator",
     "symbol_id_arity",
     "symbol_id_discriminator",
-    "symbol_id_path",
+    "symbols_by_id",
+    "takes_shared_id",
+    "template_head",
     "untyped_symbol_id",
 ]

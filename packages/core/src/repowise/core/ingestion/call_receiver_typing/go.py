@@ -5,7 +5,9 @@ from __future__ import annotations
 import posixpath
 
 from ..languages.go_interface_satisfaction import go_embedded_interfaces
-from ..models import Symbol
+from ..languages.go_selector_types import GoSelectorTypes
+from ..models import CallSite, Symbol
+from ..resolved_call import ResolvedCall
 from ..return_types import declared_return_type, go_first_result
 from ..type_names import bare_type_name
 from ._shared import _TYPE_KINDS
@@ -58,6 +60,52 @@ class GoReturnTypes:
         ]
         return found[0] if len(found) == 1 else None
 
+    def _resolve_go_package_var_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """Resolve ``v.M()`` and ``v.f.g.M()`` through a package variable's type.
+
+        ``skillsApi.GetTools()`` with ``var skillsApi = v1.ApiGroupApp.Group.SkillsApi``
+        in a sibling file, ``router.RouterGroupApp.System.InitBaseRouter()`` through
+        another package's variable, and ``r := router.RouterGroupApp.System;
+        r.InitBaseRouter()`` through a local bound once from such a chain. A
+        head the body declares with a type is left to the typed tiers, and any
+        other local binding of it refuses: it may shadow the package variable.
+        See :class:`GoSelectorTypes` for what each hop must prove.
+        """
+        chain = tuple((call.receiver_name or "").split("."))
+        if not all(part.isidentifier() for part in chain):
+            return None
+        head = chain[0]
+        parsed = self._parsed_files.get(file_path)
+        if len(chain) == 1 and any(
+            head in imp.local_names for imp in (parsed.imports if parsed else ())
+        ):
+            return None  # ``pkg.Func()``: the package tier's
+        if head in self._declared_types_in(file_path, caller_id, "go"):
+            return None
+        walker = self._go_selectors()
+        owner = walker.receiver_type(file_path, call.line, chain)
+        hit = None if owner is None else walker.promoted_method(owner, call.target_name)
+        if hit is None or self._refuses_recursion(hit[1], caller_id, call):
+            return None
+        return ResolvedCall(caller_id, hit[1], 0.88, call.line, "receiver_chain_import")
+
+    def _go_selectors(self) -> GoSelectorTypes[tuple[str, str]]:
+        """The selector walk over this resolver's parsed Go files, built once."""
+        if self._go_selector_walk is None:
+
+            def method_of(package: str, type_name: str, method: str) -> tuple[str, str] | None:
+                type_id = self._only_type_in_dir(type_name, package)
+                return None if type_id is None else self._package_method(type_id, method)
+
+            self._go_selector_walk = GoSelectorTypes(
+                self._go_package_files, self._text_of, self._imported_dir, method_of
+            )
+        return self._go_selector_walk
 
     def _go_embedded_method(
         self, file_path: str, type_name: str, method_name: str
@@ -124,9 +172,7 @@ class GoReturnTypes:
             embedded_id = next(iter(ids))
             hit = self._package_method(embedded_id, method_name)
             if hit is None:
-                hit = self._embedded_interface_method(
-                    embedded_id, method_name, seen, depth + 1
-                )
+                hit = self._embedded_interface_method(embedded_id, method_name, seen, depth + 1)
             if hit is not None:
                 return hit
         return None

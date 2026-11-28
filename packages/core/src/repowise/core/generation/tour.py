@@ -96,6 +96,8 @@ def score_entry_points(
     """Score code files as candidate tour entry points, descending.
 
     Scoring (additive):
+      * declared by a manifest or an application main .. +6 (code files only;
+        more than every guess below adds up to, as the orientation list ranks it)
       * ``is_entry_point`` ingestion flag .............. +3 (code files only)
       * filename stem in the entry-name set ............ +3 (code files only)
       * file at repo root or one level deep ............ +1
@@ -132,6 +134,10 @@ def score_entry_points(
             and infer_layer(path, language) not in ADJACENT_LAYERS
             and not is_support_path(path)
         )
+        if entry_eligible and (
+            getattr(fi, "is_manifest_entry", False) or getattr(fi, "is_application_main", False)
+        ):
+            score += 6.0
         if entry_eligible and getattr(fi, "is_entry_point", False):
             score += 3.0
         if entry_eligible and PurePosixPath(path).stem.lower() in _ENTRY_FILENAME_STEMS:

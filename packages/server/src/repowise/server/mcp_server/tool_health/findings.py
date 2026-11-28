@@ -65,6 +65,9 @@ class FindingSets:
     #: Set when the call prints no finding: ``emitted`` is then unranked and
     #: this is the set :meth:`head` measures shapes over, on demand.
     unranked_over: list[Any] | None = None
+    #: Targeted mode: rows a file or row hold kept off the list, which the
+    #: score still counts (history markers on a production file, for one).
+    held_rows: list[Any] = field(default_factory=list)
 
     def head(self) -> Any | None:
         """The first ranked finding, ranking now if the call skipped it."""
@@ -151,10 +154,10 @@ async def load_targeted_findings(
         ),
         "file_path",
     ))
-    emitted, labels = _tiered(
-        [f for f in _listed(finding_rows, pop, req) if _in_dimensions(f, req.ranked_dimensions)],
-        finding_rows,
-    )
+    dimensioned = [f for f in finding_rows if _in_dimensions(f, req.ranked_dimensions)]
+    listed = _listed(dimensioned, pop, req)
+    listed_ids = {f.id for f in listed}
+    emitted, labels = _tiered(listed, finding_rows)
     return FindingSets(
         finding_rows=emitted,
         lead_rows=finding_rows,
@@ -162,6 +165,7 @@ async def load_targeted_findings(
         emitted=emitted,
         findings_total=len(emitted),
         lower_priority=labels,
+        held_rows=[f for f in dimensioned if f.id not in listed_ids],
     )
 
 

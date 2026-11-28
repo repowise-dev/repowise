@@ -153,13 +153,15 @@ The file is sniffed unless `--format` or `coverage.format` names a parser:
 | Clover XML | `<coverage` plus `<project` |
 | JaCoCo XML | The JaCoCo doctype, or a `<report` root |
 | Go coverprofile | Leading `mode:` line |
+| Salesforce Apex JSON | `{` naming `orgWideCoverage`, `testRunCoverage` or `ApexClassOrTrigger`, or a `[` list with `totalLines` and `lines` |
 | coverage.py `.coverage` | SQLite file |
 | Normalized JSON (`repowise-coverage-v1`) | Leading `{` plus `repowise-coverage` or `line_coverage_pct` |
 
 With no path, `coverage add` looks for `coverage/lcov.info`, `lcov.info`,
 `coverage.lcov`, `coverage.xml`, `**/cobertura.xml`, `**/clover.xml`,
 `target/llvm-cov/**/*.lcov`, `coverage.out`, `cover.out`,
-`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`, a repo-root
+`**/target/site/jacoco*/jacoco.xml`, `build/reports/jacoco/**/*.xml`,
+`**/test-result-codecoverage.json` (Salesforce CLI and VS Code), a repo-root
 `.coverage` and a few more (`coverage.artifacts` overrides them). Multiple reports merge
 by unioning covered and coverable lines.
 
@@ -218,6 +220,69 @@ Statuses other than `selected` carry `run_all: true`: `run_all` (`reasons` says 
 `config_invalid` (`tests.*` does not parse), `timeout` (over 30 seconds;
 `repowise impacted-tests` gives the same answer), `busy` (a selection is still running),
 `no_source_line_changes`.
+
+## Matching changed lines
+
+The per-test map is keyed in the line numbers of the commit it was measured at
+(`query_lines` in `analysis/test_collection.py`):
+
+- At the change's head: the new side of the diff is looked up.
+- At its base: the old side.
+- At an earlier commit on the base's history (`git merge-base --is-ancestor`): one
+  `git diff --no-renames <map commit> <base>` over the changed files moves each base-side
+  line back to the map's numbering. A file with a touched line inside code edited
+  between the two commits, or right beside code removed there, is matched by file; so is
+  a file added or renamed in between, which reads as added.
+- Anywhere else (another branch, a commit missing from the clone, a failed git call):
+  every file is matched by file.
+
+Matching by file never selects fewer tests than matching by line. A changed file whose
+covering tests were matched by file is listed in `matched_by_file`, and the selection
+and the CLI name it. Function-scoped matching (a change wholly inside function bodies)
+and module-level matching (below) still need a map at the base or head.
+
+## Module-level changes
+
+pytest-cov records a module's top-level lines (imports, constants, class bodies,
+decorators, default values) while it collects tests, under no test's context, so the
+per-test map never credits them to a test. A module-level change cannot be matched by
+line. `analysis/module_hunks.py` matches it by the names it binds instead:
+
+1. `module_change` reads each touched top-level statement on its side of the diff. A
+   docstring or a `TYPE_CHECKING` block of imports binds nothing that runs. An import,
+   an assignment to plain names, and a `def` or `class` whose decorators only wrap
+   (`property`, `dataclass`, `lru_cache` and the like) bind their names. Anything else
+   keeps the graph's answer: a call anywhere outside a function body (an assignment's
+   value, a class body, a default or a decorator argument) other than a pure builder
+   (`frozenset`, `re.compile`, `Path`, `field`, a logger), a store into an attribute or an
+   item, control flow, a decorator that may register, a metaclass, a star import, or a
+   load-time import the change gained that leads back to the file (a cycle that fails
+   for some importers only).
+2. `readers` adds the names the file itself derives from a changed one at import
+   (`DOUBLE = LIMIT * 2`), then follows them through the index's import edges and the
+   names each importer takes. A test file importing one is a reader. A production module
+   importing one is a reader, and the names it binds at module level from it (a re-export,
+   a derived constant, to a fixpoint) are followed in turn; `from pkg import mod` and
+   `import pkg.mod as alias` count as importing the module whole, and a name read by its
+   string (`getattr(mod, "NAME")`) counts as read. A test helper passes the change to
+   every test importing it. It stops, keeping the graph's answer, at a conftest taking a
+   changed name, a removed name still imported, a module-level statement reading a
+   changed name for its effect, and a memo or once-per-process function
+   (`run_once_symbols`) that reads a changed name or whose body the change edits: its
+   later callers run none of its lines.
+3. The answer is the test files the map shows running any line of the file or of a
+   reader module, plus the reader test files (`module_covered`). Selection keeps of the
+   graph's tests those in the answer and those the map never ran (`module-readers` in
+   `selected.why`).
+
+A measured test outside the answer ran with the old value without reading it, so the
+new value cannot change what it does. One exception reads the source as text instead of
+running it: a test importing a test helper that lists and reads files under a source
+directory (the walk `always_run` detects in a test itself). For function-scoped and
+module-level matching alike, such a test counts as unmeasured and keeps the graph's
+answer. An import-time error the change brings (a builder that now raises) breaks every
+reader's import too, so the run fails all the same. Ceiling: Python only; a name built at
+run time (`getattr(module, prefix + "name")`, `globals()`) is not seen.
 
 ## Coverage re-ingest hook
 

@@ -127,6 +127,7 @@ describe("lookup helpers", () => {
 
 describe("the acceptance contract, mirrored", () => {
   const accepted = {
+    decision: "Keep sessions in Redis",
     rationale: "sessions did not survive a restart",
     affected_files: ["src/auth/service.py"],
     evidence_commits: ["abc1234"],
@@ -149,6 +150,29 @@ describe("the acceptance contract, mirrored", () => {
     expect(
       decisionAcceptanceBlockers({ ...accepted, affected_files: ["  ", ""] }),
     ).toContain("no scope: name the files or modules it governs");
+  });
+
+  it("refuses a record that never says what was chosen", () => {
+    expect(decisionAcceptanceBlockers({ ...accepted, decision: "  " })).toEqual([
+      "no decision text: state what was chosen",
+    ]);
+    // A typed record needs it too; only its evidence is exempt.
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, decision: "", source: "cli" }),
+    ).toEqual(["no decision text: state what was chosen"]);
+  });
+
+  it("reads the server's flag over a decision filled with the title", () => {
+    expect(
+      decisionAcceptanceBlockers({
+        ...accepted,
+        decision: "Keep sessions in Redis",
+        decision_text_missing: true,
+      }),
+    ).toEqual(["no decision text: state what was chosen"]);
+    expect(
+      decisionAcceptanceBlockers({ ...accepted, decision_text_missing: false }),
+    ).toEqual([]);
   });
 
   it("falls back to the context when there is no rationale", () => {
@@ -187,7 +211,7 @@ describe("the acceptance contract, mirrored", () => {
 
   it("names every gap at once rather than the first", () => {
     expect(
-      decisionAcceptanceBlockers({ source: "session" }).length,
-    ).toBe(3);
+      decisionAcceptanceBlockers({ decision: "", source: "session" }).length,
+    ).toBe(4);
   });
 });

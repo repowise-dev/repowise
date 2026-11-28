@@ -92,13 +92,30 @@ def _translate(pattern: str) -> re.Pattern[str] | None:
         return None
 
 
+def _normalize_pattern(repo_path: Path, pattern: str) -> str:
+    """Convert *pattern* to a repo-relative POSIX glob while keeping dot-directories."""
+    norm = pattern.replace("\\", "/")
+    try:
+        roots = (str(repo_path), str(repo_path.resolve()))
+    except OSError:
+        roots = (str(repo_path),)
+    for root in roots:
+        prefix = root.replace("\\", "/").rstrip("/")
+        if prefix and norm.startswith(prefix + "/"):
+            norm = norm[len(prefix) + 1 :]
+            break
+    while norm.startswith("./"):
+        norm = norm[2:]
+    return norm.lstrip("/")
+
+
 def matching_paths(repo_path: Path, pattern: str, limit: int = _MAX_LISTED) -> tuple[list[str], int]:
     """``(paths, total)`` indexed under *repo_path* matching *pattern*.
 
     ``total`` is the full match count, so the caller can say how many it is
     not showing. Any failure answers ``([], 0)`` — silence, never a guess.
     """
-    matcher = _translate(pattern.replace("\\", "/").lstrip("./"))
+    matcher = _translate(_normalize_pattern(repo_path, pattern))
     if matcher is None:
         return [], 0
     from . import fast_lookup

@@ -84,6 +84,28 @@
   )
 ) @symbol.def
 
+; Operator and destructor defined in place, in a class body or at namespace
+; scope: ``bool operator()(int x) const { }``, ``~Foo() { }``.
+(function_definition
+  declarator: (function_declarator
+    declarator: [
+      (operator_name)
+      (destructor_name)
+    ] @symbol.name
+    parameters: (parameter_list) @symbol.params
+  )
+) @symbol.def
+
+; Conversion operator defined in a class body: ``operator bool() const { }``.
+; The parser names it from the cast's type.
+(function_definition
+  declarator: (operator_cast
+    declarator: (abstract_function_declarator
+      parameters: (parameter_list) @symbol.params
+    )
+  ) @symbol.name
+) @symbol.def
+
 ; Qualified function definition: ReturnType ClassName::method(params) { }
 (function_definition
   declarator: (function_declarator
@@ -127,6 +149,7 @@
           (qualified_identifier name: (identifier) @symbol.name)
           (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
           (qualified_identifier name: (operator_name) @symbol.name)
+          (operator_name) @symbol.name
         ]
         parameters: (parameter_list) @symbol.params))
     (pointer_declarator
@@ -138,6 +161,7 @@
             (qualified_identifier name: (identifier) @symbol.name)
             (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
             (qualified_identifier name: (operator_name) @symbol.name)
+            (operator_name) @symbol.name
           ]
           parameters: (parameter_list) @symbol.params)))
     (reference_declarator
@@ -148,6 +172,7 @@
           (qualified_identifier name: (identifier) @symbol.name)
           (qualified_identifier name: (qualified_identifier name: (identifier) @symbol.name))
           (qualified_identifier name: (operator_name) @symbol.name)
+          (operator_name) @symbol.name
         ]
         parameters: (parameter_list) @symbol.params))
     (function_declarator
@@ -167,6 +192,17 @@
 ; Struct
 (struct_specifier
   name: (type_identifier) @symbol.name
+) @symbol.def
+
+; Specialization: template<typename C> struct formatter<std::tm, C> { ... }
+(class_specifier
+  name: (template_type) @symbol.name
+  body: (_)
+) @symbol.def
+
+(struct_specifier
+  name: (template_type) @symbol.name
+  body: (_)
 ) @symbol.def
 
 ; Enum (type_identifier is a direct child, not a named field in this grammar)
@@ -368,10 +404,23 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args) or obj->method(args)
+; Method call: obj.method(args) or obj->method(args), and the two ``this``
+; spellings. ``this->m()`` keeps ``this`` as the receiver, which the resolver
+; answers from the caller's own class. ``this->f_->m()`` captures ``f_`` alone,
+; as java.scm does for ``this.f.m()``: the field is the caller's own, so it is
+; typed exactly as a bare ``f_->m()`` is (ceiling: a same-named parameter
+; then shadows the field, as in Java). Any other nested receiver
+; (``a->b->m()``) stays uncaptured, since ``b`` is not the caller's field.
+; One alternation, so tree-sitter runs no extra match pass per call.
 (call_expression
   function: (field_expression
-    argument: (identifier) @call.receiver
+    argument: [
+      (identifier) @call.receiver
+      (this) @call.receiver
+      (field_expression
+        argument: (this)
+        field: (field_identifier) @call.receiver)
+    ]
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

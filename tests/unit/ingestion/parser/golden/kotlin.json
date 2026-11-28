@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -30,6 +33,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -53,6 +57,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -64,6 +69,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -73,13 +79,19 @@
         "line": 4,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 93,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -88,13 +100,19 @@
         "line": 5,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 116,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -103,13 +121,19 @@
         "line": 6,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 139,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -118,13 +142,19 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 162,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -133,13 +163,19 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 185,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -148,13 +184,19 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 208,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -163,13 +205,19 @@
         "line": 10,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 231,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -178,13 +226,19 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 254,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -193,13 +247,19 @@
         "line": 12,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 277,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -208,13 +268,19 @@
         "line": 13,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 300,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -223,13 +289,19 @@
         "line": 14,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 323,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -238,13 +310,19 @@
         "line": 15,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 346,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -253,13 +331,19 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 369,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -268,13 +352,19 @@
         "line": 17,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 392,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -283,13 +373,19 @@
         "line": 18,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 415,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -298,13 +394,19 @@
         "line": 19,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 438,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -313,13 +415,19 @@
         "line": 23,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 487,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
+        "argument_names": null,
+        "is_construction": false
       },
       {
         "target_name": "assertEquals",
@@ -328,13 +436,22 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 524,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          null,
+          "Int"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ],
+        "is_construction": false
       }
     ],
     "heritage": [],
@@ -344,7 +461,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/classes.kt": {
     "file_info": {
@@ -356,7 +475,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -377,6 +499,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -400,6 +523,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -423,6 +547,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -446,6 +571,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -469,6 +595,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -492,6 +619,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -515,6 +643,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -538,6 +667,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -561,6 +691,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -584,6 +715,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -607,6 +739,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -630,6 +763,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -653,6 +787,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -676,6 +811,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -699,6 +835,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -710,6 +847,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -719,7 +857,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/nested.kt": {
     "file_info": {
@@ -731,7 +871,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -752,6 +895,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -775,6 +919,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -798,6 +943,7 @@
         "is_exported_symbol": false,
         "is_declaration": false,
         "type_parameter_count": null,
+        "template_parameters": null,
         "extension_receiver": null,
         "written_receiver": null,
         "modifiers": [],
@@ -810,6 +956,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -819,6 +966,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

@@ -6,7 +6,12 @@ import pytest
 
 from repowise.core.analysis.doc_drift.extractor import extract
 from repowise.core.analysis.doc_drift.models import DocReference, DriftKind, DriftVerdict
-from repowise.core.analysis.doc_drift.resolver import RepoIndex, join_relative, resolve
+from repowise.core.analysis.doc_drift.resolver import (
+    RepoIndex,
+    anchor_host,
+    join_relative,
+    resolve,
+)
 
 TREE = frozenset(
     {
@@ -181,6 +186,55 @@ def test_an_earlier_sentences_reader_project_phrase_does_not_leak_forward():
     assert res.verdict is DriftVerdict.MISSING
 
 
+@pytest.mark.parametrize(
+    "context,raw",
+    [
+        ("To validate a rule, run that repository's `src/validate.py`.", "src/validate.py"),
+        ("The upstream repo keeps `src/check.py` for this.", "src/check.py"),
+        ("In the acme/scanner repository, `src/lint.py` does the rest.", "src/lint.py"),
+        ("Another project's `docs/setup.md` covers it.", "docs/setup.md"),
+        ("Run `src/validate.py` in that repository.", "src/validate.py"),
+        ("Copy `src/check.py` from the upstream repo.", "src/check.py"),
+        ("See `src/lint.py` in the acme/scanner repo.", "src/lint.py"),
+        ("In that repository, run `src/validate.py` and `src/lint.py`.", "src/lint.py"),
+        ("`src/validate.py` and `src/lint.py` in that repository do this.", "src/validate.py"),
+        ("The upstream projects keep `src/check.py`.", "src/check.py"),
+        ("Run the upstream repos' `src/check.py`.", "src/check.py"),
+    ],
+)
+def test_a_path_in_another_repository_is_uncheckable(context: str, raw: str):
+    """``src``/``docs`` exist here too, but the sentence puts these paths elsewhere."""
+    res = resolve(_index(), _sentence_ref(context, raw))
+    assert res.verdict is DriftVerdict.UNCHECKABLE
+    assert res.detail == "other-repository"
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "This repository keeps `src/gone.py` for this.",
+        "The upstream tool calls our `src/gone.py`.",
+        "Unlike other projects, we ship `src/gone.py`.",
+        "Like any other project, we keep `src/gone.py` here.",
+        "Their codebase review covers `src/gone.py`.",
+        "Our client/server repo ships `src/gone.py`.",
+        "The upstream repo is archived. Our `src/gone.py` replaced it.",
+        "Keep `src/gone.py` in this repository, not the upstream one.",
+        "See `src/gone.py`. In that repository, run it.",
+    ],
+)
+def test_a_missing_path_in_this_repository_still_reports(context: str):
+    res = resolve(_index(), _sentence_ref(context, "src/gone.py"))
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_path_climbing_out_of_the_repository_is_never_missing():
+    text = "See [it](../../other-repo/src/x.py) and `../other-repo/src/y.py`.\n"
+    refs = extract(text, "docs/guide.md")
+    assert {r.raw for r in refs} == {"../../other-repo/src/x.py", "../other-repo/src/y.py"}
+    assert {resolve(_index(), r).verdict for r in refs} == {DriftVerdict.UNCHECKABLE}
+
+
 def test_a_bare_your_with_no_recognised_phrase_is_still_checked():
     """'you can find it in ...' must not be swallowed by a bare 'your'."""
     context = "You can find it in `src/gone.py`."
@@ -204,6 +258,68 @@ def test_multiple_basename_matches_are_ambiguous():
     res = resolve(_index(), _ref("src/nested/dup.py"))
     assert res.verdict is DriftVerdict.AMBIGUOUS
     assert "basename-multi" in res.detail
+
+
+@pytest.mark.parametrize(
+    "destination, filename",
+    [
+        ("my%20guide.md", "my guide.md"),
+        ("caf%C3%A9.md", "café.md"),
+        ("my%23guide.md", "my#guide.md"),
+        ("my%2520guide.md", "my%20guide.md"),
+        ("literal+plus.md", "literal+plus.md"),
+    ],
+)
+def test_local_link_decodes_url_path_once(destination: str, filename: str):
+    doc = "docs/index.md"
+    ref = next(r for r in extract(f"[guide]({destination})", doc) if r.kind is DriftKind.LINK)
+    idx = _index(tree={doc, f"docs/{filename}"})
+
+    res = resolve(idx, ref)
+
+    assert ref.target == destination
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, f"docs/{filename}")
+
+
+def test_invalid_utf8_link_keeps_literal_target_without_crashing():
+    doc = "docs/index.md"
+    ref = next(r for r in extract("[guide](bad%FF.md)", doc) if r.kind is DriftKind.LINK)
+    idx = _index(tree={doc, "docs/bad%FF.md"})
+
+    res = resolve(idx, ref)
+
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, "docs/bad%FF.md")
+
+
+def test_prose_path_keeps_percent_escape_literal():
+    ref = _ref("src/my%20guide.py")
+    idx = _index(tree={"src/my%20guide.py", "src/my guide.py"})
+
+    res = resolve(idx, ref)
+
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, "src/my%20guide.py")
+
+
+def test_same_document_anchor_does_not_decode_literal_percent_in_document_path():
+    doc = "docs/my%20guide.md"
+    ref = next(r for r in extract("[top](#intro)", doc) if r.kind is DriftKind.ANCHOR)
+    idx = _index(tree={doc}, docs={doc: "# Intro\n"})
+
+    res = resolve(idx, ref)
+
+    assert anchor_host(ref) == doc
+    assert res.verdict is DriftVerdict.RESOLVED
+
+
+def test_encoded_hash_filename_and_fragment_resolve_to_same_document():
+    doc = "docs/index.md"
+    refs = extract("[guide](my%23guide.md#topic)", doc)
+    idx = _index(tree={doc, "docs/my#guide.md"}, docs={"docs/my#guide.md": "## Topic\n"})
+
+    link = next(r for r in refs if r.kind is DriftKind.LINK)
+    anchor = next(r for r in refs if r.kind is DriftKind.ANCHOR)
+    assert resolve(idx, link).resolved_target == "docs/my#guide.md"
+    assert resolve(idx, anchor).verdict is DriftVerdict.RESOLVED
 
 
 def test_relative_link_resolves_against_its_own_document():
@@ -260,6 +376,86 @@ def test_a_link_that_escapes_the_repository_root_is_uncheckable():
 
 
 # ---------------------------------------------------------------------------
+# A link reads like a renderer reads it: from its own document (#5473)
+# ---------------------------------------------------------------------------
+
+_SIBLINGS = frozenset({"setup.md", "docs/setup.md", "missing.md", "docs/guide.md", "src/app.py"})
+
+
+def _resolve_in_guide(text: str, kind: DriftKind = DriftKind.LINK, tree=_SIBLINGS):
+    ref = next(r for r in extract(text, "docs/guide.md") if r.kind is kind)
+    return resolve(_index(tree=tree), ref)
+
+
+def test_a_link_reads_the_sibling_over_the_root_file_of_the_same_name():
+    res = _resolve_in_guide("[setup](setup.md)")
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "relative-to-doc", "docs/setup.md"
+    )
+
+
+def test_a_link_only_the_root_file_could_satisfy_is_missing():
+    """GitHub serves a 404 here; the root ``missing.md`` sharing the basename
+    does not make it ambiguous."""
+    res = _resolve_in_guide("[x](missing.md)")
+    assert (res.verdict, res.detail) == (DriftVerdict.MISSING, "no-candidate")
+
+
+def test_a_slash_rooted_link_reads_the_root_only():
+    res = _resolve_in_guide("[s](/setup.md)")
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "setup.md"
+    )
+    # Never the document's own directory, even where that file exists.
+    res = _resolve_in_guide("[x](/src/x.py)", tree=_SIBLINGS | {"docs/src/x.py"})
+    assert res.verdict is DriftVerdict.MISSING
+
+
+def test_a_dot_relative_backticked_path_reads_the_document_directory_first():
+    """`./setup.md` in ``docs/`` is the sibling; `./missing.md`, with no sibling, the root file."""
+    res = _resolve_in_guide("See `./setup.md`.", DriftKind.PATH)
+    assert (res.detail, res.resolved_target) == ("relative-to-doc", "docs/setup.md")
+    res = _resolve_in_guide("See `./missing.md`.", DriftKind.PATH)
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "missing.md"
+    )
+
+
+def test_a_dot_relative_backticked_command_falls_back_to_the_root():
+    """Review split-a #1: "Run `./scripts/setup.sh`" in ``docs/`` means from the root."""
+    tree = _SIBLINGS | {"scripts/setup.sh"}
+    res = _resolve_in_guide("Run `./scripts/setup.sh`.", DriftKind.PATH, tree=tree)
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "scripts/setup.sh"
+    )
+
+
+def test_a_dot_relative_illustration_is_not_anchored_by_its_document_directory():
+    """Joined to ``docs/``, `./site.css` would pass anchoring and report MISSING."""
+    res = _resolve_in_guide("The `./site.css` fallback.", DriftKind.PATH)
+    assert (res.verdict, res.detail) == (DriftVerdict.UNCHECKABLE, "unanchored")
+
+
+def test_a_root_relative_backticked_path_still_resolves_from_the_root():
+    res = _resolve_in_guide("See `src/app.py`.", DriftKind.PATH)
+    assert (res.verdict, res.detail, res.resolved_target) == (
+        DriftVerdict.RESOLVED, "exact", "src/app.py"
+    )
+
+
+@pytest.mark.parametrize(
+    "tree", [_SIBLINGS | {"guide.md"}, _SIBLINGS - {"docs/guide.md"} | {"guide.md"}]
+)
+def test_anchor_host_and_the_link_verdict_read_the_same_file(tree):
+    refs = extract("[g](guide.md#h)", "docs/a.md")
+    anchor, link = (next(r for r in refs if r.kind is k) for k in (DriftKind.ANCHOR, DriftKind.LINK))
+    idx = _index(tree=tree)
+    host = anchor_host(anchor)
+    assert host == "docs/guide.md"
+    assert (host in idx.files) is (resolve(idx, link).verdict is DriftVerdict.RESOLVED)
+
+
+# ---------------------------------------------------------------------------
 # Anchors: rules 4 and 5
 # ---------------------------------------------------------------------------
 
@@ -274,7 +470,7 @@ def _anchor_index(readme: str, tree=None):
 
 def _anchor_ref(fragment: str):
     return DocReference(
-        DriftKind.ANCHOR, f"README.md#{fragment}", f"README.md#{fragment}",
+        DriftKind.ANCHOR, f"../README.md#{fragment}", f"../README.md#{fragment}",
         "docs/guide.md", 1, "ctx",
     )
 
@@ -407,7 +603,7 @@ def test_end_to_end_on_a_small_document():
     text = (
         "# Doc\n\n"
         "Real path `src/app.py`, gone path `src/util/gone.py`.\n"
-        "Run `make build`. See [readme](README.md#heading).\n"
+        "Run `make build`. See [readme](../README.md#heading).\n"
     )
     idx = RepoIndex.build(
         tracked_paths=TREE,

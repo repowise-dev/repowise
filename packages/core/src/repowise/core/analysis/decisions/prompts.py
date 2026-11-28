@@ -6,10 +6,14 @@ Extracted from the former decision_extractor.py; imported back into
 
 from __future__ import annotations
 
+# Every lane behind the substring gate asks for ``decision`` and ``rationale``
+# as verbatim quotes: the gate drops any field the source does not contain, so
+# a reworded decision or reason is stored blank.
 _SYSTEM_PROMPT = (
     "You are an architectural decision extractor. "
     "You extract structured decision records from code context. "
-    "Return only valid JSON. Never invent rationale not present in the source."
+    "Return only valid JSON. Never invent rationale not present in the source. "
+    "Copy the decision and rationale fields word for word from the source; never reword them."
 )
 
 INLINE_MARKER_PROMPT = """\
@@ -25,8 +29,8 @@ For each marker, return a JSON object:
   "marker_line": the line number of the marker this decision came from,
   "title": "short title of the decision",
   "context": "what situation forced this",
-  "decision": "what was chosen",
-  "rationale": "why",
+  "decision": "the words from the marker that state what was chosen, copied verbatim",
+  "rationale": "the words from the marker that state why, copied verbatim, or empty if none",
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": ["tradeoffs if mentioned"],
   "tags": ["relevant tags from: auth, database, api, performance, security, infra, testing"]
@@ -57,6 +61,15 @@ about is not in that commit's list; that is a correct answer and a common \
 one. Never write a path the commit does not list.\
 """
 
+#: Shared by both commit miners. A subject line or a changelog entry ("Add X")
+#: grounds against the commit text, so the gate cannot catch it; the subject
+#: case is also dropped in code, by ``commit_mining.drop_subject_restatements``.
+_NOT_A_CHANGELOG_RULE = """\
+A commit subject line, or a sentence that only reports what was added or \
+changed with no rule or choice the code keeps following afterwards, is not a \
+decision.\
+"""
+
 
 GIT_ARCHAEOLOGY_PROMPT = (
     """\
@@ -70,8 +83,8 @@ system structure, patterns, migrations, or technology), return a JSON object:
   "commit_sha": "the sha",
   "title": "short title",
   "context": "what situation forced this",
-  "decision": "what was chosen or changed",
-  "rationale": "why this approach (infer from message and files only)",
+  "decision": "the sentence or clause from the commit message that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the commit message that states why, copied verbatim, or empty if none",
   "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": [],
   "consequences": [],
@@ -83,7 +96,9 @@ system structure, patterns, migrations, or technology), return a JSON object:
     + """
 
 Return a JSON array. Skip commits that are just bug fixes or minor changes. \
-Return [] if none qualify. Do not hallucinate rationale.
+"""
+    + _NOT_A_CHANGELOG_RULE
+    + """ Return [] if none qualify. Do not hallucinate rationale.
 """
 )
 
@@ -104,8 +119,8 @@ Return a JSON array of decisions:
 {{
   "title": "short title",
   "context": "situation that forced it",
-  "decision": "what was chosen",
-  "rationale": "why",
+  "decision": "the sentence or clause from the document that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the document that states why, copied verbatim, or empty if none",
   "alternatives": [],
   "consequences": [],
   "tags": [],
@@ -128,8 +143,8 @@ For each decision return a JSON object:
   "commit_sha": "the sha shown",
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen or changed",
-  "rationale": "why (quote/paraphrase the body — never invent)",
+  "decision": "the sentence or clause from the body that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the body that states why, copied verbatim, or empty if none",
   "affected_files": ["which of that commit's files this decision is about"],
   "alternatives": ["rejected alternatives if mentioned"],
   "consequences": [],
@@ -142,7 +157,9 @@ For each decision return a JSON object:
     + """
 
 Return a JSON array. Skip bodies that are just checklists or release noise. \
-Return [] if none qualify.
+"""
+    + _NOT_A_CHANGELOG_RULE
+    + """ Return [] if none qualify.
 """
 )
 
@@ -157,8 +174,8 @@ For each decision return a JSON object:
 {{
   "title": "short title",
   "context": "what situation forced this (only if stated)",
-  "decision": "what was chosen",
-  "rationale": "why (quote/paraphrase the comment — never invent)",
+  "decision": "the sentence or clause from the comment that states what was chosen, copied verbatim",
+  "rationale": "the sentence or clause from the comment that states why, copied verbatim, or empty if none",
   "alternatives": [],
   "consequences": [],
   "tags": [],

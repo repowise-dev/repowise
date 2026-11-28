@@ -13,6 +13,7 @@ from .base import (
     RemoteRef,
     collect_refs,
     join_url,
+    line_anchor,
     quote_path,
     quote_segment,
 )
@@ -76,8 +77,10 @@ class GitLab(BaseForge):
     def change_url(self, ref: RemoteRef, number: int) -> str:
         return f"{ref.web_base}/-/merge_requests/{number}"
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
-        anchor = f"#L{line}" if line else ""
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
+        anchor = line_anchor(line, end_line, "#L{line}", "#L{line}-{end}")
         return f"{ref.web_base}/-/blob/{quote_path(rev)}/{quote_path(path)}{anchor}"
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:
@@ -95,6 +98,7 @@ register(
         kind=ForgeKind.GITLAB,
         label="GitLab",
         change_term="merge request",
+        change_head_ref="refs/merge-requests/{number}/head",
         noreply_re=_NOREPLY_RE,
         bot_name_re=_BOT_NAME_RE,
         bot_email_re=_BOT_EMAIL_RE,

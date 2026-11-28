@@ -73,7 +73,7 @@ const ELSEWHERE_NOTE = "Text repeats in the file: edit only inside this function
 export const RENAME_NOTE_TEXT =
   "The helper's name is a placeholder: rename it for what it returns or does, in its header and its call.";
 /** The placeholder core writes (`helper_naming.placeholder_names`), in any casing. */
-const HELPER_PLACEHOLDER = /^_?extracted_?[hH]elper_?\d*$/;
+const HELPER_PLACEHOLDER = /^_?[eE]xtracted_?[hH]elper_?\d*$/;
 
 interface SpanAnchors {
   first: string;

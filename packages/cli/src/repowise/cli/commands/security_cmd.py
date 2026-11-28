@@ -34,6 +34,7 @@ from repowise.cli.ci import (
     ci_revspec,
     repo_root,
     report_baseline_growth,
+    write_gate_summary,
 )
 from repowise.cli.helpers import (
     console,
@@ -143,6 +144,7 @@ def security_scan(
         create_engine,
         create_session_factory,
         get_session,
+        init_db,
     )
     from repowise.core.persistence.crud import (
         get_repository_by_path,
@@ -165,6 +167,9 @@ def security_scan(
 
     async def _do() -> dict:
         engine = create_engine(get_db_url_for_repo(repo_path))
+        # A repo that was never indexed has no tables yet; the scan stores its
+        # findings itself, so it creates them rather than requiring an init.
+        await init_db(engine)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
             row = await get_repository_by_path(session, str(repo_path))
@@ -536,15 +541,19 @@ def _markdown(v: _Verdict) -> str:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 def _emit_github(v: _Verdict) -> None:
-    from repowise.core.analysis.security_gate import github_annotations
+    from repowise.core.analysis.security_gate import gate_summary, github_annotations
 
     for line in github_annotations(v.scan.findings, v.gate):
         click.echo(line)
     append_step_summary(_markdown(v))
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 _SEVERITY_COLOUR = {"high": "red", "med": "yellow", "low": "dim"}
@@ -576,7 +585,7 @@ def _print_findings(v: _Verdict) -> None:
     if not rows:
         return
     table = Table(show_edge=False, pad_edge=False)
-    for column in ("Severity", "Kind", "Where", "Matched (secrets masked)"):
+    for column in ("Severity", "Kind", "Where", "Matched (secrets hidden)"):
         table.add_column(column)
     for f in rows:
         colour = _SEVERITY_COLOUR[f["severity"]]

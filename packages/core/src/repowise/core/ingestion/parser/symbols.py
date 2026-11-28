@@ -1,4 +1,8 @@
-"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to."""
+"""Symbol extraction: one query match to one ``Symbol``, and the parent it belongs to.
+
+Exception: a Python assignment that rebinds a ``def``/``class`` of its name yields
+no symbol (see ``_drop_python_rebindings``).
+"""
 
 from __future__ import annotations
 
@@ -19,13 +23,23 @@ from ..extractors import (
     extract_symbol_docstring,
     node_text,
 )
+from ..extractors.cobol import cobol_condition_parent
 from ..extractors.synthetic_symbols import extract_synthetic_symbols
 from ..extractors.synthetic_symbols.csharp_extension_blocks import drop_extension_block_symbols
 from ..extractors.visibility import py_module_all_names, ts_deferred_export_names
+from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
+from ..lang_helpers.source_prep import cpp_class_head_macros
+from ..lang_helpers.ts_js import ts_assignment_owner, ts_assignment_runs_at_load
 from ..language_configs import LanguageConfig
+from ..languages.perl_packages import (
+    is_perl_lexical_sub,
+    is_perl_package_sub,
+    perl_sub_owner,
+)
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
     _build_qualified_name,
+    _cpp_template_parameters,
     _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
     _dedupe_pascal_interface_symbols,
@@ -41,12 +55,18 @@ from ..parser_helpers import (
     _qualified_cpp_parent,
     _qualified_pascal_parent,
     _ts_nested_object_method_owner,
+    cpp_template_type_name,
     follow_renamed_hosts,
     in_anonymous_class,
     is_anonymous_member,
     scope_segment,
 )
-from ..symbol_identity import disambiguate_colliding_ids, symbol_discriminator
+from ..symbol_identity import (
+    disambiguate_colliding_ids,
+    make_symbol_id,
+    split_python_property_mutators,
+    symbol_discriminator,
+)
 from .symbol_rules import (
     _TS_JS_LANGUAGES,
     _attribute_decorators,
@@ -61,6 +81,7 @@ from .symbol_rules import (
     _refine_symbol_kind,
     _refine_visibility,
     _symbol_end_line,
+    cpp_local_type_member,
 )
 
 _node_text = node_text
@@ -161,6 +182,8 @@ def _parent_type_name(ancestor: Node, src: str) -> str | None:
     )
     if name_node is None:
         return None
+    if name_node.type == "template_type":
+        return cpp_template_type_name(name_node, src)
     # For Rust impl blocks with generic types (e.g. impl<T> Foo<T>),
     # extract only the base type name, not the full generic signature.
     if name_node.type in ("generic_type", "scoped_type_identifier"):
@@ -219,6 +242,7 @@ def _extract_symbols(
     config: LanguageConfig,
     file_info: FileInfo,
     src: str,
+    original_source: bytes = b"",
 ) -> list[Symbol]:
     language = file_info.language
     symbols: list[Symbol] = []
@@ -243,17 +267,29 @@ def _extract_symbols(
     if language == "python":
         py_all_names = py_module_all_names(src)
     cpp_exports = (
-        collect_cpp_export_types(matches, src) if language == "cpp" else CppExportTypes()
+        collect_cpp_export_types(matches, src, cpp_class_head_macros(original_source))
+        if language == "cpp"
+        else CppExportTypes()
     )
 
     file = _SymbolPass(config, file_info, src, cpp_exports, ts_deferred_exports, py_all_names)
+    # TS/JS: index of each ``Foo.prototype.m = ...`` / ``Foo.m = ...`` symbol -> ``Foo``.
+    assigned_owners: dict[int, str] = {}
     for capture_dict in matches:
         built = _symbol_from_match(capture_dict, file)
         if built is None:
             continue
         symbol, def_node = built
+        if language == "pascal":
+            # Per section, which the per-declaration visibility_fn cannot see.
+            symbol.visibility = _pascal_visibility(def_node)
         symbols.append(symbol)
         node_types.append(def_node.type)
+
+        if def_node.type == "assignment_expression" and symbol.parent_name is None:
+            owner = ts_assignment_owner(def_node, src)
+            if owner is not None:
+                assigned_owners[len(symbols) - 1] = owner
 
         if language == "python" and def_node.type == "assignment":
             for alias_symbol in _python_assignment_alias_symbols(
@@ -267,9 +303,13 @@ def _extract_symbols(
             objc_container_kinds.append(container.type if container else None)
 
     if language == "pascal":
+        _inherit_pascal_declared_visibility(symbols, node_types)
         symbols = _dedupe_pascal_interface_symbols(symbols, node_types)
 
     if language in _TS_JS_LANGUAGES:
+        symbols, node_types = _settle_assigned_functions(
+            symbols, node_types, assigned_owners, file_info.path
+        )
         symbols = _keep_ts_overloads_beside_a_body(symbols, node_types)
 
     if language == "swift":
@@ -282,6 +322,66 @@ def _extract_symbols(
         symbols = _dedupe_objc_interface_symbols(symbols, node_types, objc_container_kinds)
 
     return symbols
+
+
+# What a top-level binding must be to own ``Foo.m = ...``: a class or function,
+# or an object held in a const (``const api = {}``; ``api::get`` is how an
+# object-literal method of it is named already).
+_ASSIGNED_METHOD_OWNER_KINDS = frozenset({"class", "function", "variable", "constant"})
+
+
+def _settle_assigned_functions(
+    symbols: list[Symbol], node_types: list[str], owners: dict[int, str], path: str
+) -> tuple[list[Symbol], list[str]]:
+    """Give each function assigned to a property its owner and a unique id.
+
+    ``Foo.prototype.m = ...`` / ``Foo.m = ...`` becomes a method of ``Foo`` when
+    the file declares ``Foo`` as a top-level symbol: it takes the id a class
+    method gets (``path::Foo::m``), so a ``Foo.m()`` call resolves the same
+    way. A ``Foo`` the file does not declare (``Array.prototype.m``, a global)
+    leaves a top-level function named ``m``. *owners* maps a symbol's index to
+    its ``Foo``.
+
+    A property assigned again (a fallback, a polyfill, a class method patched
+    after the fact) is one name: an assignment whose id another symbol of the
+    file holds already is dropped, and of two assignments the first is kept.
+    """
+    if "assignment_expression" not in node_types:
+        return symbols, node_types
+    declared = {
+        s.name
+        for s, node_type in zip(symbols, node_types, strict=True)
+        if s.parent_name is None
+        and node_type != "assignment_expression"
+        and s.kind in _ASSIGNED_METHOD_OWNER_KINDS
+    }
+    for index, owner in owners.items():
+        if owner not in declared:
+            continue
+        symbol = symbols[index]
+        symbols[index] = replace(
+            symbol,
+            id=make_symbol_id(path, owner, symbol.name),
+            qualified_name=_build_qualified_name(path, owner, symbol.name),
+            kind="method",
+            parent_name=owner,
+        )
+    taken = {
+        s.id
+        for s, node_type in zip(symbols, node_types, strict=True)
+        if node_type != "assignment_expression"
+    }
+    kept_symbols: list[Symbol] = []
+    kept_types: list[str] = []
+    for symbol, node_type in zip(symbols, node_types, strict=True):
+        if node_type == "assignment_expression":
+            if symbol.id in taken:
+                continue
+            taken.add(symbol.id)
+        kept_symbols.append(symbol)
+        kept_types.append(node_type)
+    return kept_symbols, kept_types
+
 
 @dataclass
 class _SymbolPass:
@@ -358,14 +458,16 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
     params_nodes = capture_dict.get("symbol.params", [])
     params_text = _node_text(params_nodes[0], src) if params_nodes else ""
     scope = _id_scope(def_node, parent_name, config, language, src)
-    sym_id = f"{file_info.path}::{scope}::{name}" if scope else f"{file_info.path}::{name}"
+    sym_id = (
+        make_symbol_id(file_info.path, scope, name) if scope else make_symbol_id(file_info.path, name)
+    )
     symbol = Symbol(
         id=sym_id,
         name=name,
         qualified_name=_build_qualified_name(file_info.path, scope, name),
         kind=_method_or_kind(kind, parent_name, def_node, language),  # type: ignore[arg-type]
         signature=_normalize_newlines(
-            build_signature(node_type, name, params_text, def_node, src)
+            build_signature(node_type, name, params_text, def_node, src, language=language)
         ) or "",
         start_line=start_line,
         end_line=end_line,
@@ -385,6 +487,7 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         type_parameter_count=(
             _csharp_type_parameter_count(def_node) if language == "csharp" else None
         ),
+        template_parameters=_cpp_template_parameters(def_node, src, language),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
         modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
     )
@@ -407,8 +510,13 @@ def _kind_and_end_line(
         src,
         file.cpp_exports.container_ids,
         # An anonymous class member is a method of its own class, even
-        # inside another method's body; ``_find_parent`` names it.
-        keep_nested=has_object_owner or in_anonymous_class(def_node, config.anonymous_class_types),
+        # inside another method's body; ``_find_parent`` names it. So is a
+        # member of a C++ class declared in a function body.
+        keep_nested=(
+            has_object_owner
+            or in_anonymous_class(def_node, config.anonymous_class_types)
+            or (language == "cpp" and cpp_local_type_member(def_node, config.parent_class_types))
+        ),
     )
     if kind is None:
         return None
@@ -421,6 +529,12 @@ def _kind_and_end_line(
         kind = _module_binding_kind(def_node, name, language, src)
         if kind is None:
             return None
+    elif def_node.type == "assignment_expression":
+        # ``obj.f = function () {}``: the query matched a function value. One
+        # assigned per call (a constructor's ``self.f = ...``) declares nothing.
+        if not ts_assignment_runs_at_load(def_node):
+            return None
+        kind = "function"
     return kind, end_line
 
 
@@ -463,13 +577,19 @@ def _symbol_kind(
     if kind is None:
         return None
 
+    # A Perl ``my sub`` / ``state sub`` is lexical: no package owns it.
+    if language == "perl" and is_perl_lexical_sub(def_node):
+        return None
+
     # Only module-level and class-body members are symbols; the query is
     # recursive, so defs nested in a callable are dropped. Module-anchored
     # node types only match at module level and skip the check, as does a
-    # def the caller has placed already (``keep_nested``).
+    # def the caller has placed already (``keep_nested``) and a Perl named
+    # ``sub``, which is package-global wherever it is declared.
     if (
         not keep_nested
         and node_type not in _MODULE_ANCHORED_NODE_TYPES
+        and not (language == "perl" and is_perl_package_sub(def_node))
         and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
     ):
         return None
@@ -493,14 +613,13 @@ def _resolve_parent_name(
     export_type_parents: dict[int, str],
 ) -> str | None:
     """The enclosing type or module name, trying each language's own shape."""
+    if language == "cpp":
+        export_parents = export_type_parents if no_export_type else None
+        return _cpp_parent_name(def_node, config, name_nodes, src, export_parents)
+
     parent_name = _find_parent(def_node, config, receiver_nodes, src)
     if parent_name is not None:
         return parent_name
-
-    if language == "cpp" and no_export_type:
-        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
-        if parent_name is not None:
-            return parent_name
 
     # Dart mixin_declaration exposes no ``name`` field, so
     # ``_find_parent``'s field lookup misses mixin members.
@@ -513,8 +632,8 @@ def _resolve_parent_name(
     if language == "fsharp":
         return _fsharp_parent_name(def_node, src)
 
-    # C/C++ out-of-line ``void Foo::method()`` names its class in the scope.
-    if language in ("cpp", "c") and name_nodes:
+    # C out-of-line ``void Foo::method()`` names its class in the scope.
+    if language == "c" and name_nodes:
         return _qualified_cpp_parent(name_nodes[0], src)
 
     # Pascal out-of-line ``function TFoo.Bar`` names its class in the header.
@@ -528,7 +647,82 @@ def _resolve_parent_name(
     # Objective-C containers name themselves with a bare first identifier.
     if language == "objectivec":
         return _objc_container_parent(def_node, config.parent_class_types, src)
+
+    # COBOL: a level-88 condition name is a value of the item before it.
+    if language == "cobol":
+        return cobol_condition_parent(def_node)
+
+    # Perl: ``package X;`` scopes the subs after it as siblings, not children,
+    # and ``sub B::f`` names its package itself.
+    if language == "perl" and name_nodes:
+        return perl_sub_owner(def_node, _node_text(name_nodes[0], src))
     return None
+
+
+def _cpp_parent_name(
+    def_node: Node,
+    config: LanguageConfig,
+    name_nodes: list[Node],
+    src: str,
+    export_type_parents: dict[int, str] | None,
+) -> str | None:
+    """A C++ symbol's parent, by the first shape that names one.
+
+    A local class's scope, the enclosing class, an export-macro type, or the
+    class an out-of-line ``Foo::method`` names.
+    """
+    parent_name = _cpp_local_parent(def_node, config, src) or _nesting_parent(def_node, config, src)
+    if parent_name is None and export_type_parents is not None:
+        parent_name = _cpp_export_macro_parent(def_node, export_type_parents)
+    if parent_name is None and name_nodes:
+        parent_name = _qualified_cpp_parent(name_nodes[0], src)
+    return parent_name
+
+
+def _cpp_local_parent(def_node: Node, config: LanguageConfig, src: str) -> str | None:
+    """The parent of a class declared in a function body, or of a member of one.
+
+    It is the function's own id scope followed by every class between it and
+    *def_node* (``Plan::Compute::TopoSort``), so a local ``struct bytes`` never
+    shares an id with a namespace-scope ``bytes``. None when *def_node* is not
+    inside a local class (or is not one).
+    Ceiling: overloads of one function share the scope without their
+    discriminator, so same-named local classes in two overloads share ids.
+    """
+    classes: list[str] = []
+    child, node = def_node, def_node.parent
+    while node is not None:
+        if node.type in config.parent_class_types:
+            classes.append(_parent_type_name(node, src) or "")
+        elif node.type == "function_definition":
+            if not classes and def_node.type not in config.parent_class_types:
+                return None
+            # Only a class in the body is local. One the grammar recovered as
+            # a broken function's return type (an unexpanded macro before the
+            # next definition) is a namespace-scope class and keeps its own id.
+            body = node.child_by_field_name("body")
+            if body is None or body.id != child.id:
+                return None
+            owner = _cpp_function_scope(node, config, src)
+            return "::".join([owner, *reversed(classes)]) if owner else None
+        child, node = node, node.parent
+    return None
+
+
+def _cpp_function_scope(function: Node, config: LanguageConfig, src: str) -> str | None:
+    """``Class::name`` (or ``name``) of a C++ function definition, as its symbol id spells it."""
+    declarator = function.child_by_field_name("declarator")
+    while declarator is not None and declarator.type != "function_declarator":
+        declarator = declarator.child_by_field_name("declarator") or next(
+            iter(declarator.named_children), None
+        )
+    name = declarator.child_by_field_name("declarator") if declarator is not None else None
+    while name is not None and name.type == "qualified_identifier":
+        name = name.child_by_field_name("name")
+    if name is None:
+        return None
+    owner = _qualified_cpp_parent(name, src) or _nesting_parent(function, config, src)
+    return f"{owner}::{_node_text(name, src)}" if owner else _node_text(name, src)
 
 
 def _go_interface_owner(def_node: Node, src: str) -> str | None:
@@ -585,6 +779,9 @@ def _finalize_symbols(
         # The grammar reads a C# 14 extension block as a constructor
         # named ``extension``; its members were added above instead.
         symbols = drop_extension_block_symbols(symbols, root, src)
+    if lang == "python":
+        symbols = _drop_python_rebindings(symbols)
+        split_python_property_mutators(symbols)
     # Anonymous members go last, once the overloads holding them carry
     # their discriminators.
     anonymous = [s for s in symbols if is_anonymous_member(s)]
@@ -592,6 +789,21 @@ def _finalize_symbols(
     follow_renamed_hosts(symbols)
     disambiguate_colliding_ids(anonymous, lang)
     return symbols
+
+
+_PYTHON_ASSIGNMENT_KINDS = frozenset({"variable", "constant"})
+
+
+def _drop_python_rebindings(symbols: list[Symbol]) -> list[Symbol]:
+    """Drop a module-level assignment that rebinds a ``def`` or ``class`` of its name.
+
+    ``Factory = _add_hash(Factory)`` declares nothing new, yet it shares the
+    class's id, so the graph node took the assignment's line and every call to
+    ``Factory`` landed there.
+    """
+    defined = {s.id for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS}
+    return [s for s in symbols if s.kind not in _PYTHON_ASSIGNMENT_KINDS or s.id not in defined]
+
 
 def _python_name_alias_chain(def_node: Node, src: str) -> tuple[list[str], str | None]:
     """Every bare-identifier target of a Python assignment, and its terminal name.
@@ -652,7 +864,7 @@ def _python_assignment_alias_symbols(
         extra.append(
             replace(
                 symbol,
-                id=f"{file_path}::{target}::alias@{def_node.start_byte}",
+                id=make_symbol_id(file_path, target, f"alias@{def_node.start_byte}"),
                 name=target,
                 qualified_name=_build_qualified_name(file_path, None, target),
                 alias_of=terminal if target != terminal else None,

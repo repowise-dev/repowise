@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from collections.abc import Set as AbstractSet
 
-from .constants import _FRAMEWORK_INNER_CLASS_NAMES
+from repowise.core.ingestion.symbol_identity import is_type_forward_declaration
+
+from .constants import _FRAMEWORK_INNER_CLASS_NAMES, _IMPORT_GATED_INNER_CLASS_NAMES
 
 # Kinds no language imports by name: always reached through an enclosing
 # class or namespace (C# auto-properties land in the graph as ``variable``).
@@ -86,15 +89,6 @@ _UNCALLABLE_TYPE_KINDS: frozenset[str] = frozenset(
 #: namespace without an import.
 _TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
     {"class", "interface", "struct", "enum", "record", "trait", "object"}
-)
-
-#: C/C++ kinds a type forward declaration (``class Env;``) can carry.
-_CPP_TYPE_DECLARATION_KINDS: frozenset[str] = frozenset(
-    {
-        "class",
-        "struct",
-        "enum",
-    }
 )
 
 # Symbol names that are language-runtime entry points or compiler-implicit
@@ -258,11 +252,7 @@ def _is_declaration_only(sym: dict) -> bool:
         return True
     # A type forward declaration (``class Env;``) exists so its own file can
     # name the type, which makes that file its user.
-    return bool(
-        sym.get("is_declaration")
-        and sym.get("language") in ("cpp", "c")
-        and sym.get("kind") in _CPP_TYPE_DECLARATION_KINDS
-    )
+    return is_type_forward_declaration(sym)
 
 
 def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
@@ -271,17 +261,27 @@ def _is_public_top_level(sym: dict, kinds: AbstractSet[str] | None) -> bool:
     return kinds is None or sym.get("kind") in kinds
 
 
-def _nested_class_used(node_data: dict, sym: dict) -> bool:
+def _nested_class_used(
+    node_data: dict,
+    sym: dict,
+    imported_packages: Callable[[], AbstractSet[str]] = frozenset,
+) -> bool:
     """Whether a nested class is one a framework reads or its module names.
 
     ``ingestion/python_local_refs.py`` records a nested class its module reaches
     (``Outer.Inner``, or ``Inner`` inside ``Outer``) under its ``Outer.Inner``
     name, since a bare inner name like ``ErrorModel`` repeats across classes.
+    *imported_packages* returns the top-level packages the declaring file
+    imports; it is only called for a name a framework gates on its import.
     """
     parent = sym.get("parent_name")
     if not parent:
         return False
     name = sym.get("name", "")
-    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(sym.get("language", ""), ()):
+    language = sym.get("language", "")
+    if name in _FRAMEWORK_INNER_CLASS_NAMES.get(language, ()):
+        return True
+    gate = _IMPORT_GATED_INNER_CLASS_NAMES.get(language, {}).get(name)
+    if gate and not gate.isdisjoint(imported_packages()):
         return True
     return f"{parent}.{name}" in (node_data.get("local_refs") or ())

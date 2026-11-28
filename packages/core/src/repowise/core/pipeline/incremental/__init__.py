@@ -45,6 +45,7 @@ from .commits import (
     persist_incremental_fix_events,
     reconcile_commit_experience,
     reconcile_commit_offsets,
+    reconcile_issue_fix_flags,
 )
 from .external_systems import (
     refresh_external_systems,
@@ -82,6 +83,7 @@ from .persist_index import (
 from .prune import (
     prune_deleted_files,
 )
+from .routes import refresh_routes, refresh_sites
 
 __all__ = [
     "DocDriftUpdate",
@@ -116,8 +118,11 @@ __all__ = [
     "rebuild_graph_and_git",
     "reconcile_commit_experience",
     "reconcile_commit_offsets",
+    "reconcile_issue_fix_flags",
     "refresh_external_systems",
     "refresh_knowledge_graph",
+    "refresh_routes",
+    "refresh_sites",
     "refresh_unchanged_history",
     "run_doc_drift_partial",
     "run_partial_analysis",

@@ -20,6 +20,7 @@ from typing import Any
 from repowise.core.analysis.health.aggregation import module_label
 from repowise.core.analysis.health.rows import field as row_field
 from repowise.core.analysis.health.rows import json_field
+from repowise.core.analysis.held_origins import counts_as_hotspot
 
 
 def module_health_score(
@@ -58,9 +59,20 @@ class ModuleAccumulator:
     top_hotspot_paths: list[tuple[float, str]] = field(default_factory=list)
 
 
+def _counted_hotspot(row: Any) -> bool:
+    """A hotspot the hotspot list shows: flagged, and its origin not held.
+
+    Rows carry ``code_origin`` and ``is_test`` from the file's health row; a
+    row without them reads as production, as the list's outer join does.
+    """
+    return counts_as_hotspot(
+        row_field(row, "is_hotspot"), row_field(row, "code_origin"), row_field(row, "is_test")
+    )
+
+
 def _score(acc: ModuleAccumulator) -> dict:
     file_count = len(acc.files)
-    hotspot_count = sum(1 for m in acc.files if row_field(m, "is_hotspot"))
+    hotspot_count = sum(1 for m in acc.files if _counted_hotspot(m))
     # Rows include whole-file and package findings, so this is a bounded
     # finding-density proxy rather than a one-to-one count of dead symbols.
     dead_pct = (
@@ -120,7 +132,8 @@ def aggregate_modules(
 ) -> dict[str, ModuleAccumulator]:
     """Single pass over each input. O(files + symbols + dead + decisions).
 
-    ``git_rows`` are full ``git_metadata`` rows and define the modules: symbols,
+    ``git_rows`` are full ``git_metadata`` rows, each with its file's stored
+    ``code_origin`` and ``is_test`` beside it, and define the modules: symbols,
     dead code (``file_path``, ``lines``) and decisions (``id``,
     ``affected_modules_json``) that land outside them are dropped.
     """
@@ -140,7 +153,7 @@ def aggregate_modules(
         for a in json_field(m, "top_authors_json", []):
             if a.get("name"):
                 acc.contributors.add(a["name"])
-        if row_field(m, "is_hotspot"):
+        if _counted_hotspot(m):
             acc.top_hotspot_paths.append(
                 ((row_field(m, "temporal_hotspot_score") or 0.0), file_path)
             )

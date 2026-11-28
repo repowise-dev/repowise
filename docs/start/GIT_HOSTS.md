@@ -25,22 +25,40 @@ matching a webhook to a registered repository. This page says what works where.
 
 ## Support
 
-| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync |
-|------|-------------------|-------------|------------------------------|-------------------|
-| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` |
-| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` |
-| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` |
-| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` |
-| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No |
-| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No |
-| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No |
-| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` |
-| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No |
+| Host | Remote recognised | CI detected | PR / MR numbers from history | Webhook auto-sync | Gate summary on the PR / MR | [Issue links](#issue-links) |
+|------|-------------------|-------------|------------------------------|-------------------|-----------------------------|-----------------------------|
+| GitHub | Yes | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) | Yes |
+| GitHub Enterprise | With a [host override](#self-managed-hosts) | GitHub Actions | Yes | `/api/webhooks/github` | Comment ([Action](CI.md#github-actions)) | Yes |
+| GitLab.com | Yes | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) | Yes |
+| Self-managed GitLab | Yes when a host label is `gitlab` (`gitlab.corp.com`), else with an override | GitLab CI | Yes | `/api/webhooks/gitlab` | Note ([template](CI.md#gitlab)) | Yes |
+| Azure DevOps (`dev.azure.com`, `ssh.dev.azure.com`, `*.visualstudio.com`) | Yes, all three URL forms as one repo | Azure Pipelines | Yes | No | No | No |
+| Bitbucket Cloud | Yes | Bitbucket Pipelines | Yes | No | No | No |
+| Bitbucket Data Center | With an override | Jenkins or another [listed CI](#ci-systems) | Yes | No | No | No |
+| Gitea / Forgejo | As a generic host | Any [listed CI](#ci-systems) | Yes | `/api/webhooks/gitea` | No | No |
+| Other git hosts (cgit, plain ssh) | As a generic host | Any [listed CI](#ci-systems) | Yes | No | No | No |
 
 Azure DevOps Server needs an override too. Bot accounts and noreply addresses
 from every host are recognised on every repository, since history can predate
 a move between hosts. Remote URLs shown in the dashboard and returned by the
 server have their credentials removed.
+
+## Issue links
+
+repowise can read which issues each commit closed from GitHub and GitLab, so
+a commit linked to a bug counts as a fix even when its message does not say
+so. This is the built-in `forge` issue source. It runs only once you set a
+read token:
+
+```bash
+export REPOWISE_PLUGIN_FORGE_TOKEN=$(gh auth token)
+repowise sources sync --source forge
+```
+
+After that, `repowise update` syncs it first. GitHub Enterprise and
+self-managed GitLab work once their host is mapped below. Azure Boards
+(`AB#12`) and Bitbucket issues are not read. Details, including which labels
+count as bugs, are in
+[the plugin reference](../reference/PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
 
 ## Self-managed hosts
 

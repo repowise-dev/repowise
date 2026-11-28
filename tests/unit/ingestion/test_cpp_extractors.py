@@ -230,3 +230,72 @@ void Consume(const std::vector<Widget>& xs);
         result = parser.parse_file(_file(), src)
         ref_names = {r.type_name for r in result.type_refs}
         assert "Widget" in ref_names
+
+
+class TestInPlaceOperatorsAndLocalClasses:
+    """Operators, destructors and a function's local classes defined in place are symbols."""
+
+    def test_in_class_operators_and_destructor_are_methods(self, parser: ASTParser) -> None:
+        src = b"""\
+struct S {
+  bool operator()(int x) const { return x > 0; }
+  S& operator=(const S& o) { return *this; }
+  S* operator->() { return this; }
+  ~S() {}
+  operator bool() const { return true; }
+  friend bool operator==(S a, S b) { return true; }
+};
+int operator*(S a, S b) { return 1; }
+"""
+        result = parser.parse_file(_file(), src)
+        by_id = {s.id: s for s in result.symbols}
+        for member, line in [
+            ("operator()", 2),
+            ("operator=", 3),
+            ("operator->", 4),
+            ("~S", 5),
+            ("operator bool", 6),
+            ("operator==", 7),
+        ]:
+            symbol = by_id[f"Foo.cpp::S::{member}"]
+            assert (symbol.kind, symbol.start_line, symbol.parent_name) == ("method", line, "S")
+        assert by_id["Foo.cpp::operator*"].kind == "function"
+
+    def test_a_local_class_is_named_under_its_function(self, parser: ASTParser) -> None:
+        src = b"""\
+struct bytes { int n; };
+struct Plan { void Compute(); };
+void Plan::Compute() {
+  struct bytes {
+    void Visit(int e) {}
+  };
+}
+"""
+        result = parser.parse_file(_file(), src)
+        by_id = {s.id: s for s in result.symbols}
+        assert by_id["Foo.cpp::bytes"].start_line == 1
+        assert by_id["Foo.cpp::Plan::Compute::bytes"].start_line == 4
+        visit = by_id["Foo.cpp::Plan::Compute::bytes::Visit"]
+        assert (visit.kind, visit.parent_name) == ("method", "Plan::Compute::bytes")
+
+    def test_a_class_nested_in_a_local_class_stays_under_the_function(
+        self, parser: ASTParser
+    ) -> None:
+        src = b"""\
+int ff() {
+  struct L {
+    struct In { void n() {} };
+  };
+  return 0;
+}
+"""
+        result = parser.parse_file(_file(), src)
+        assert {s.id: s.parent_name for s in result.symbols if s.name in ("In", "n")} == {
+            "Foo.cpp::ff::L::In": "ff::L",
+            "Foo.cpp::ff::L::In::n": "ff::L::In",
+        }
+
+    def test_a_function_local_prototype_stays_out(self, parser: ASTParser) -> None:
+        src = b"void f() {\n  void helper(int);\n  helper(1);\n}\n"
+        result = parser.parse_file(_file(), src)
+        assert [s.name for s in result.symbols] == ["f"]

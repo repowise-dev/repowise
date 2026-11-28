@@ -11,7 +11,7 @@ What the index gives downstream consumers:
   public/private header list, include dirs, link deps, and a flag for
   conditionally-compiled sources (CMake ``if(option)`` blocks).
 * ``file_to_targets`` — which targets own a given source/header file
-  (drives sibling fan-out in :func:`resolve_cpp_import`).
+  (drives the per-target include search in :func:`resolve_cpp_import`).
 * ``public_header_includes`` — every ``#include "x/y.h"`` shape supported
   by the workspace's public-header layout. Without this, ``leveldb``-shape
   repos (where every ``include/leveldb/*.h`` is the library's public API

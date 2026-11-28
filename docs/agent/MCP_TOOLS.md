@@ -4,7 +4,7 @@ repowise serves its codebase intelligence to AI coding assistants (Claude Code, 
 
 Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your LLM to draft a diff.
 
-18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible. That default is what Claude Code is listed; other clients, which load every schema up front, are listed the five core tools unless `mcp.tools` says otherwise ([Configuring the tool surface](#configuring-the-tool-surface)).
 
 This page says which tool to call and with what arguments. Response fields, the `_meta` envelope and truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
@@ -53,29 +53,59 @@ repowise mcp --transport sse --port 7338  # legacy SSE transport
 - **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
 - **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
 
-Set `mcp.tools` in `.repowise/config.yaml`, or pass `--tools` per launch (it overrides the config):
+That default is what Claude Code is listed: it loads a tool's schema only when the model asks for it, so a larger surface costs only the tool names each turn. Every other client (Codex, Cursor, VS Code and Copilot, OpenCode, Windsurf, Kiro, Hermes, and any client that announces a name repowise does not recognise) sends every listed schema with every request, so with nothing configured it is listed the `core` profile instead. The server reads the client's name from the MCP handshake.
+
+**The `core` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase` and `get_why`, plus `list_repos` in workspace mode: about 1,400 tokens of schema against about 3,300 for the standard set.
+
+**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean` (or `core`), `repowise init` skips the Claude Code tool-search recommendation.
+
+**The read tools** are `get_answer`, `get_context`, `get_symbol` and `search_codebase`: the core profile without `get_why`. They are the set always-load keeps loaded.
+
+**Always-load** (`mcp.always_load`, off by default) applies to Claude Code, which keeps every schema behind tool search, so the first repowise call usually follows a tool-search turn. `repowise config set mcp.always_load true` asks it to keep the four read tools loaded from the first turn, for about 2.5k more tokens a turn. Other tools stay deferred; clients that load every schema up front are unaffected. Restart the agent after the change.
+
+`repowise agents add` prints what each connected agent lists, and the always-load state for Claude Code. `repowise init --progress json` carries the same facts per agent in the summary's `mcp_tools` field, and the dashboard's Agents page shows them.
+
+| Value | Lists |
+|-------|-------|
+| unset | each client's default: `standard` on Claude Code, `core` elsewhere |
+| `core` | the core profile |
+| `lean` | the lean profile |
+| `standard` | the default set above, on every client |
+| `all` | every tool usable in this mode |
+| a profile, then `+name` / `-name` | that profile adjusted |
+| `+name` / `-name` alone | each client's default adjusted |
+| plain names | exactly those tools |
+
+One setting, `mcp.tools`, sets it for every client:
+
+```bash
+repowise config set mcp.tools standard            # Claude Code's set on every client
+repowise config set mcp.tools "core +get_health"  # core plus one specialist
+repowise config reset mcp.tools                   # back to each client's default
+repowise agents add --target cursor --tools core  # same setting, while wiring an agent
+```
 
 ```yaml
 mcp:
-  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
+  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust each client's default
+# tools: ["core", "+get_health"]                       # a profile, adjusted
 # tools: ["get_answer", "get_context"]                 # explicit allowlist
 # tools: all                                           # every tool usable in this mode
-# tools: lean                                          # the agent-lean profile
 ```
 
+`repowise mcp --tools` in one client's server entry pins that client alone and wins over the setting:
+
 ```bash
-repowise mcp --tools "+get_execution_flows"   # default set plus one
+repowise mcp --tools "+get_execution_flows"   # each client's default plus one
 repowise mcp --tools "get_answer,get_context"  # explicit allowlist
 repowise mcp --tools lean                      # agent-lean profile
 repowise mcp --all                             # every tool usable in this mode
 ```
 
-- `+` or `-` tokens adjust the default set; a list without prefixes is an allowlist.
 - Unknown names are ignored with a warning, as are workspace-only tools outside workspace mode (no workspace graph to read).
-- Clients see the surface resolved at server start; restart after changing it.
-- The dashboard Settings page toggles each tool per repo and writes the same block. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
-
-**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
+- The server resolves the surface when it starts; restart it, or the agent, after a change.
+- A tool left out only by a client's default still answers if the agent calls it; one the setting removes is not served at all. Each session's server instructions name only the tools its client is listed.
+- The dashboard's Agents settings for a repository pick a profile, toggle each tool with its schema cost, and write the same setting. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
 
 ---
 
@@ -83,19 +113,24 @@ repowise mcp --all                             # every tool usable in this mode
 
 Every tool returns JSON with a `_meta` envelope ([fields](../reference/MCP_RESPONSE_FIELDS.md#the-_meta-envelope)). Check:
 
-- `stale_warning`: run `repowise update` (or `repowise update --working-tree` when `working_tree_dirty` is set) before trusting file-level detail. Absent means current.
+- `stale_warning`: the commit the facts describe and what differs from it; read the files this response served from disk. Absent means current.
 - `complete`: content verified against the live file. Do not re-read it.
-- `state`: `degraded`, `partial` or `truncated`. A degraded empty result is a failed read, not an empty repository.
+- `degraded`: the parts of the server that failed for this call. A degraded empty result is a failed read, not an empty repository.
 - `get_answer`'s top-level `confidence` is its one trust signal.
-- Diagnostics such as `timing_ms` ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
+- Empty fields, `null` and a `false` status flag are not sent; absence means nothing to report.
+- Diagnostics (`timing_ms`, index commits and age, budget accounting) ride only on `get_overview`; `REPOWISE_MCP_DEBUG_META=1` restores them everywhere.
 
 ### Reversible truncation: `_meta.omitted`
 
-Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. Capped lists keep `*_total` counts. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
+Responses fit 24,000 characters (32,000 with a nonempty `include` for most tools). Cut content goes to the [omission store](DISTILL.md#the-omission-store); restore a ref from `_meta.omitted` with `repowise expand <ref>` or `get_symbol("repowise#<ref>")`. A list that was cut carries `<key>_total`, its size before the cut. [Details](../reference/MCP_RESPONSE_FIELDS.md#truncation-and-recovery).
 
 ### Unrecognised arguments: `ignored_arguments`
 
 A value outside a closed vocabulary (a misspelled `kind`, `include` key or `mode`) is dropped, never applied as a filter matching nothing, and named in `ignored_arguments` with the valid values. [Per-tool shapes](../reference/MCP_RESPONSE_FIELDS.md#ignored-arguments).
+
+### Parameters accepted but not advertised
+
+A parameter marked "Accepted, not advertised" below is left out of the schema `tools/list` sends, since hosts re-send that schema on every turn, and agents rarely pass it. The server still validates and applies it when a call passes it. The same holds for `include` values listed that way: the tool description leaves them out, and the server still serves them.
 
 ---
 
@@ -137,10 +172,12 @@ Answers a how, where or why question in one call: hybrid retrieval over the wiki
 |-----------|------|---------|---------|
 | `question` | string | required | The question, in plain language |
 | `scope` | string | none | Path prefix to restrict retrieval, e.g. `"src/auth/"` |
-| `include` | list[string] | none | `evidence` (full evidence, larger budget), `diagnostics` (adds `retrieval_quality`) |
+| `include` | list[string] | none | `evidence` (full evidence, larger budget; a keyless reply has one shape and ignores it, with `requires` naming `candidate_files`), `diagnostics` (adds `retrieval_quality`) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
+
+A why-question also reads the decisions in force that answer it (ranked as `get_why` ranks a question) and the ones over the top hits, so a recorded reason is cited whichever files retrieval surfaced. Background records reach the answer labelled as not binding. With `decisions.mode: off`, no decision is read.
 
 ```
 get_answer(question="How does the authentication flow work?")
@@ -155,14 +192,15 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
-| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
-| `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
-| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `decisions`, `skeleton`, `health`, `doc_drift`, `symbols`, `changes`, `suspects` (with `symptom`), `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)). Accepted, not advertised: `references+`, `skeleton+`, `metrics`, `community`, `facts`, `provenance` |
+| `compact` | bool | `true` | `false` adds the structure block, imports and docstrings. Accepted, not advertised |
+| `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words; sent alone, it adds `suspects` |
 | `repo` | string | default repo | `"all"` returns an error |
 
 Target kinds:
 
 - `path::Symbol`: a miss falls back to the file's card.
+- A directory: a module card from the indexed files under it, with or without a module page (none is `index_status: "directory_without_module_page"`, with up to 15 `docs.files`, and `docs.files_all` naming the opt-in when more exist). `include=["files"]` lists every file under it with `has_test` and the tests that cover each, for questions like "which files here have no test". Git history is stored per file, so `ownership` counts the files each person is primary owner of (`owners_by_files`), `last_change` gives the newest commit's date and file (and its author when a stored author matches), and `hotspot_files` counts hotspot files; no commit share, contributor count or bus factor is claimed.
 - `component:<name>`: declared context and rolled-up facts, from [`.repowise/components.yaml`](../reference/CONFIG.md#repowisecomponentsyaml) or derived.
 - `change:<id>` (`change:pr-123` or a commit sha): one [Change Record](../reference/CLI_REFERENCE.md#repowise-changes).
 - `package:<name>` (`package:requests`, `package:npm:lodash`): where a package is imported ([PACKAGE_USAGE.md](../reference/PACKAGE_USAGE.md)).
@@ -182,15 +220,15 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max) or `"repowise#<ref>"` |
+| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max), `"path/file.py:140"` (the innermost symbol holding line 140, else lines 130 to 150; a trailing `:column` is ignored) or `"repowise#<ref>"`. A bare file path returns the file's top-level symbol names (15 max) to pass back as `"path/file.py::<name>"` |
 | `id` | string | none | Alias for `symbol_id` |
-| `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged |
-| `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
+| `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged. Accepted, not advertised |
+| `context_lines` | int | `0` | Extra lines before and after, 0 to 50. Accepted, not advertised |
 | `depth` | int | `1` | 2 or 3 adds the bodies it calls, transitively |
 | `query` | string | none | Omission refs: keep lines matching this regex or substring. Read as `symbol_id` when none is given |
 | `repo` | string | default repo | `"all"` not supported |
 
-**Returns** `source` (about 600 lines max), bounds, `kind`, `truncated`, `candidates`, `callee_bodies`, `outlined` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
+**Returns** `source` (about 600 lines max), bounds, `kind`, `facts`, `tests`, `truncated`, `candidates`, `callee_bodies`; a class comes back `outlined`, as its member signatures ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)
@@ -201,25 +239,28 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ## `search_codebase`
 
-Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
+Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files (a query naming one directory leads with it), prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. A grep pattern is taken as written: `a|b|c` searches each alternative as its own query and serves its lines as one group, in query order; a regex (`enqueue\(`, `class \w+Analyzer\b`) serves the lines it matches. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | `""` | Identifier, path or natural language. Required unless `pattern` is given |
-| `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments` |
-| `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
+| `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
+| `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments`. Accepted, not advertised |
+| `limit` | int | `5` | Max results, up to 20; outside `symbol` mode, max distinct files. A larger value is cut to 20 and named in `ignored_arguments` |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
 | `kind` | string | none | `implementation`, `test`, `config` or `doc` |
 | `symbol_kind` | string | none | Symbol filter, e.g. `function`, `class`, `method` |
-| `page_type` | string | none | One page type, usually `file_page` or `module_page` |
-| `repo` | string | default repo | Or `"all"` for every repo |
+| `page_type` | string | none | One page type, usually `file_page` or `module_page`. Accepted, not advertised |
+| `repo` | string | default repo | In a workspace, `"all"` searches every repo; a single-repo server does not advertise it and serves it as the one repo |
 
-**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
+**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 
 ```
 search_codebase(query="GitIndexer index_repo")
 search_codebase(query="login", mode="symbol", symbol_kind="method")
+search_codebase(query="short_code|share_code|public_code")
 ```
+
+On an index with no embedder, the first natural-language search with rows says once, in `_meta.keyless_note`, that its rows are keyword matches; `_meta.semantic_search: false` stays on every reply.
 
 ---
 
@@ -231,7 +272,8 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 |-----------|------|---------|---------|
 | `targets` | list[string] | `changed_files` | File paths to assess |
 | `changed_files` | list[string] | none | Files in a change; switches on PR mode |
-| `include` | list[string] | none | `graph`, `churn`, `owners`, `tests`, `blast`, `scales`, `changes` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)) |
+| `include` | list[string] | none | `graph`, `owners`, `tests`, `blast` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#get_risk)). Accepted, not advertised: `churn`, `scales`, `changes` (the same block as `get_context` `changes`), `hotspots` (the repository's hotspots outside the targets) |
+| `since` | string | none | `YYYY-MM-DD`, or `<N>d` counted back from the indexed commit. `co_change_partners` then count the commits since that date (a walk of the checkout), and each card carries `co_change_window`. Without it, partners span the indexed history, weighted toward recent commits |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** per-file `hotspot_score`, `health_score`, `dependents_count`, `co_change_partners`, `primary_owner`, `security_signals`; in PR mode `directive` with `may_break`, `tests_to_run`, `tests_to_update`, `reach` ([fields](../reference/MCP_RESPONSE_FIELDS.md#pr-mode-directive)). Dependent counts are a floor; `reach` is an uncalibrated band, not a probability.
@@ -239,6 +281,7 @@ What history says about touching a file: hotspot, bug-fix record, owners, co-cha
 ```
 get_risk(targets=["src/auth/middleware.ts"])
 get_risk(changed_files=["src/api/routes.ts", "src/middleware/cors.ts"])
+get_risk(targets=["src/auth/middleware.ts"], since="90d")
 ```
 
 ---
@@ -254,8 +297,9 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 | `exclude_patterns` | list[string] | none | Gitignore-style paths to omit, plus a root `.riskignore` |
 | `include_paths` | list[string] or string | all | Gitignore-style paths to keep, as a list or comma-separated string |
 | `baseline` | int | `200` | Recent commits sampled for percentiles; `0` disables |
-| `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `evidence` (the record `repowise changes show` prints), `tests` |
+| `include` | list[string] | none | `findings`, `diagnostics`, `scales`, `tests`. Accepted, not advertised: `evidence` (the record `repowise changes show` prints) |
 | `finding_id` | string | none | Expand one `health_delta` finding |
+| `per_commit` | bool | `false` | With a range, one compact row per commit (up to 30) in place of the review |
 | `repo` | string | default repo | `"all"` not supported |
 
 `include_paths` and `exclude_patterns` scope the score, health delta and per-file blocks; `impacted_tests` still selects over the whole change, less repowise's own output.
@@ -266,6 +310,7 @@ Reviews a commit, a range, or uncommitted work by comparing the two revisions di
 get_change_risk()
 get_change_risk(revspec="main..HEAD", exclude_patterns=["tests/"])
 get_change_risk(revspec="main..HEAD", finding_id="chf_27a13be11e7ee33f")
+get_change_risk(revspec="main..HEAD", per_commit=True)
 ```
 
 ---
@@ -279,10 +324,12 @@ Why code is shaped as it is: decision records, falling back to git archaeology a
 | `query` | string | none | A question or a path. Omit for the decision health dashboard |
 | `targets` | list[string] | none | Paths to anchor a question to, or to ask about alone |
 | `id` | string | none | A decision id or `ev_...` evidence id from an earlier response |
-| `reference` | object | none | An evidence reference this tool emitted, unchanged |
+| `reference` | object | none | An evidence reference this tool emitted, unchanged. Accepted, not advertised |
 | `repo` | string | default repo | Or `"all"`, only with a `query` |
 
-Modes: a question searches decisions; a path (or `targets` alone) returns `decisions`, `candidates`, `history`, its origin story and `alignment`; `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots).
+Modes: a question searches decisions; a path (or `targets` alone) returns the rules in force (`decisions`), then at most two background records (`candidates`, labelled as not binding), and stops; `include=["history"]` adds the origin story, `alignment`, withdrawn records (`history`), git archaeology, rationale comments and episodes. A path that was renamed or split into a package is answered at its new location, with `moved_from` naming the old one. `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots). With `decisions.mode: off` every call returns `{"decisions": "off", "note": "Decisions are off for this repository."}` and reads nothing.
+
+A directory's origin story (`scope: "directory"`) is built from the files under it: how many have history, the first and last commit dates, and their stored key commits, each listed once. Git history is stored per file, so it carries no commit count or owner for the directory.
 
 **Returns** `decisions` (binding), `candidates` (hints, not rules), `history`, `answer_basis` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_why)).
 
@@ -319,7 +366,7 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | none (dashboard) | File paths or `module:<name>`; misses go to `unresolved` |
-| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance`, `defect`, `maintainability`, `advisory` |
+| `include` | list[string] | none | Blocks: `biomarkers`, `refactoring`, `trend`, `coverage`, `accuracy`, `signals`, `churn_complexity`, `untested_complexity`, `doc_drift`, `semantics`, `unverified`, `recipe`, `what_if` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#opt-in-blocks)). Dimensions: `performance` (also adds `performance_measured`, what stored profiles ranked), `defect`, `maintainability`, `advisory` |
 | `only` | list[string] | none | Keep these top-level keys; identity, totals and recovery always survive |
 | `limit` | int | `20` | Rows per ranked list, max 50; `0` for none |
 | `cursor` | int | `0` | Offset into a ranked list (or `fix_first` when named in `only`); `recovery` names the next call |
@@ -338,11 +385,11 @@ Code-health scores and findings from stored analysis, across defect risk, mainta
 | `performance_confidence` | string | none | `high`, `medium`, `low` |
 | `performance_actionability` | string | none | `plan_ready`, `advisory`, `investigate`, `expected` |
 | `performance_sort` | string | `rank` | `rank`, `leverage`, `observations` |
-| `scope` | string | `"all"` | `production` drops test files from every figure |
+| `scope` | string | `"all"` | `production` drops test, tooling, vendored and generated files from every figure |
 | `counts` | string | `"everything"` | `code_shape` drops the git-derived half of the score |
 | `repo` | string | default repo | `"all"` not supported |
 
-- Pass one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id`; two return `mode: "conflict"`.
+- Pass one of `fix_id`, `finding_id`, `plan_id`, `opportunity_id`; two return `mode: "conflict"`. A miss on an id minted for another selector (a `fix1_` id passed as `plan_id`) carries a `hint` naming the right one.
 - `fix_first` shows five items unless `limit` comes with `only=["fix_first"]`, which pages up to 25.
 - The response is bounded: pair `include` with `only` to keep one block, e.g. `get_health(include=["refactoring"], only=["refactoring_opportunities"])`.
 
@@ -356,6 +403,7 @@ get_health(fix_id="act_...")
 get_health(include=["refactoring"], only=["refactoring_plans"], limit=15, refactoring_scope="all")
 get_health(targets=["src/api/server.py"], include=["signals"])
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"], limit=10)
 get_health(include=["coverage"], only=["coverage"])
 ```
 
@@ -371,7 +419,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `min_confidence` | float or string | `0.4` | Floor; or `"high"` (0.7), `"medium"` (0.4), `"low"` (0.0) |
 | `tier` | string | all | `high` (0.7+), `medium` (0.4 to 0.7), `low` |
 | `safe_only` | bool | `false` | Deletion-ready only: drops runtime-load risk such as dynamic imports and framework-registered functions |
-| `limit` | int | `20` | Per tier, clamped to 25 |
+| `limit` | int | `10` | Per tier, clamped to 25 |
 | `directory` | string | none | Path-prefix filter |
 | `owner` | string | none | Primary-owner filter |
 | `group_by` | string | none | `directory` or `owner` rollup |
@@ -380,7 +428,7 @@ Unreachable files, unused exports, unused internals and zombie packages, tiered 
 | `no_unreachable` | bool | `false` | Skip unreachable-file findings |
 | `no_unused_exports` | bool | `false` | Skip unused-export findings |
 | `include_unverified` | bool | `false` | Also show provisional types and gated-language findings |
-| `finding_id` | string | none | Open one finding |
+| `finding_id` | string | none | Open one finding, whatever its triage status, with every field |
 | `repo` | string | default repo | Or `"all"` to aggregate across repos |
 
 **Returns** `tiers`, `summary`, and `by_directory` or `by_owner` with `group_by` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_dead_code)).
