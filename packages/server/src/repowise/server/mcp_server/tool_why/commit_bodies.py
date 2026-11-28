@@ -21,7 +21,7 @@ from typing import Any
 from repowise.core.changelist import changelist_number, without_changelist_number
 from repowise.core.changes.reconstruct import _is_trailer
 from repowise.core.git_sha import is_sha_prefix
-from repowise.core.ingestion.git_indexer._constants import _MAX_COMMIT_BODY_BYTES
+from repowise.core.ingestion.git_indexer._constants import body_was_cut
 from repowise.server.mcp_server._why_relevance import (
     question_terms,
     relevance,
@@ -218,7 +218,7 @@ def _stored_bodies(target_git: dict[str, Any]) -> dict[str, _Body]:
         for e in entries:
             # A body at the indexer's cap was cut; the clone has it whole.
             body = e.get("body") if isinstance(e, dict) else None
-            if body and e.get("sha") and len(body.encode()) < _MAX_COMMIT_BODY_BYTES - 4:
+            if body and e.get("sha") and not body_was_cut(body):
                 out.setdefault(
                     str(e["sha"])[:8].lower(),
                     (e["body"], e.get("pr_number"), e.get("changelist")),

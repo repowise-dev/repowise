@@ -14,6 +14,7 @@ from repowise.core.analysis.decisions.scope import (
     selected_scope_files,
 )
 from repowise.core.forges import CHANGE_BODY_MARKERS, Forge
+from repowise.core.ingestion.git_indexer._constants import whole_body
 
 from .commit_signals import count_decision_signals
 from .records import ExtractedDecision
@@ -51,7 +52,7 @@ def _scope_from_selection(
 def _signal_commit_info(commit: dict) -> dict | None:
     """The prompt-ready record of a commit with decision signals, else None."""
     msg = commit.get("message", "")
-    body = commit.get("body", "")
+    body = whole_body(commit.get("body", ""))
     # Scan subject and body: squash-merge repos carry the rationale in the body.
     signal_count = count_decision_signals(f"{msg}\n{body}".lower())
     if signal_count <= 0:
@@ -248,7 +249,7 @@ def pr_candidates(
             if not sha:
                 continue
             files_by_sha.setdefault(sha, []).append(fp)
-            body = (c.get("body") or "").strip()
+            body = whole_body(c.get("body") or "").strip()
             if sha in candidates or not body:
                 continue
             candidate = _pr_candidate(c, body)
