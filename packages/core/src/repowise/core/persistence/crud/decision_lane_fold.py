@@ -331,7 +331,8 @@ _OPPOSITES = (
 )
 
 
-def _quantities(words: frozenset[str]) -> frozenset[str]:
+def _quantities(words: list[str]) -> frozenset[str]:
+    """Number words and digits in *words*, read before ``_content`` drops a one-digit number."""
     return frozenset(w for w in words if w in _QUANTITIES or w.isdigit())
 
 
@@ -342,10 +343,11 @@ def _opposed(a: frozenset[str], b: frozenset[str]) -> bool:
 
 def same_decision_title(a: str, b: str) -> bool:
     """Whether titles *a* and *b*, mined from one commit, name the same choice."""
-    ca, cb = _content(_words(a)), _content(_words(b))
+    wa, wb = _words(a), _words(b)
+    ca, cb = _content(wa), _content(wb)
     if min(len(ca), len(cb)) < _MIN_CONTENT_WORDS:
         return False
-    if ca & _NEGATIONS != cb & _NEGATIONS or _quantities(ca) != _quantities(cb):
+    if ca & _NEGATIONS != cb & _NEGATIONS or _quantities(wa) != _quantities(wb):
         return False
     if _opposed(ca, cb):
         return False

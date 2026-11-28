@@ -158,6 +158,7 @@ DISTINCT_TITLES = [
     ("Retry failed uploads in the worker", "Never retry failed uploads in the worker"),
     ("Keep one worker pool for indexing", "Keep two worker pool for indexing"),
     ("Don't cache auth tokens in Redis", "Cache auth tokens in Redis"),
+    ("Set retry limit to 3 attempts", "Set retry limit to 5 attempts"),
     (
         "Enable authentication for internal health endpoints",
         "Disable authentication for internal health endpoints",
