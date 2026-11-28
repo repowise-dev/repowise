@@ -17,11 +17,11 @@ _MSBUILD_RE = re.compile(
     r"^(?P<file>[^\s(][^(]*?)\((?P<line>\d+),(?P<col>\d+)\):\s"
     r"(?P<sev>error|warning)\s(?P<code>[A-Za-z]+\d+):\s(?P<msg>.+?)\s*$"
 )
-# gcc / clang / javac / go: path:line[:col]: [severity:] message
-# shortcut: rejects Windows drive paths (C:\...), widen when a Windows toolchain needs it.
+# gcc / clang / javac / go: [C:]path:line[:col]: [severity:] message [-Wcode]
 _GNU_RE = re.compile(
-    r"^(?P<file>[^\s:]+):(?P<line>\d+)(?::(?P<col>\d+))?:\s"
-    r"(?:(?P<sev>fatal error|error|warning|note):\s)?(?P<msg>.+?)\s*$"
+    r"^(?P<file>(?:[A-Za-z]:)?[^\s:]+):(?P<line>\d+)(?::(?P<col>\d+))?:\s"
+    r"(?:(?P<sev>fatal error|error|warning|note):\s)?(?P<msg>.+?)"
+    r"(?:\s+\[(?P<code>[^\]\s]+)\])?\s*$"
 )
 
 _NOT_FOUND = ("command not found", "is not recognized")
@@ -76,22 +76,27 @@ def _lint_records(output: str) -> list[dict[str, Any]]:
     fmt = _detect_format(output, min_hits=1)
     if fmt is None:
         return []
-    # shortcut: concise/golangci severity is always "warning", upgrade when the parsers read real severities.
-    # shortcut: GNU fatal-error lines mixed into mypy-detected output are dropped, fold them in if seen.
     diags, _trailing = _PARSERS[fmt](output.splitlines())
-    out = []
-    for d in diags:
-        source = fmt
-        if fmt == "mypy":
-            # _MYPY_RE also matches gcc/clang/javac lines.
-            source = "mypy" if d.file.endswith((".py", ".pyi")) else "gnu"
-        code = None if d.rule == "(uncoded)" else d.rule
-        out.append(_record(d.file, d.line, d.col, d.severity, code, source, d.message))
-    return out
+    if fmt == "mypy" and not any(d.file.endswith((".py", ".pyi")) for d in diags):
+        # gcc/clang/javac lines also match _MYPY_RE; the GNU parser reads them whole
+        # (fatal errors, severity-less go lines, notes).
+        return []
+    # ruff/flake8/golangci print no severity, so their parsers report "warning".
+    return [
+        _record(
+            d.file,
+            d.line,
+            d.col,
+            d.severity,
+            None if d.rule == "(uncoded)" else d.rule,
+            fmt,
+            d.message,
+        )
+        for d in diags
+    ]
 
 
 def _fallback_records(output: str) -> list[dict[str, Any]]:
-    # shortcut: dotnet prints each error twice (build log + summary), dedupe if users complain.
     out: list[dict[str, Any]] = []
     for ln in output.splitlines():
         m = _MSBUILD_RE.match(ln)
@@ -107,7 +112,7 @@ def _fallback_records(output: str) -> list[dict[str, Any]]:
                     code,
                     source,
                     m.group("msg"),
-                )
+                ),
             )
             continue
         m = _GNU_RE.match(ln)
@@ -125,9 +130,13 @@ def _fallback_records(output: str) -> list[dict[str, Any]]:
                 int(m.group("line")),
                 int(col) if col else None,
                 "error" if sev == "fatal error" else sev,
-                None,
+                m.group("code"),
                 "gnu",
                 m.group("msg"),
-            )
+            ),
         )
-    return out
+    # dotnet prints every diagnostic twice: once in the build log, once in the summary.
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for rec in out:
+        unique.setdefault(tuple(rec.values()), rec)
+    return list(unique.values())

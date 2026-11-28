@@ -481,6 +481,28 @@ def test_parse_diagnostics_single_lines(output, record) -> None:
     assert (d["file"], d["line"], d["col"], d["severity"], d["code"], d["source"]) == record
 
 
+def test_parse_diagnostics_windows_drive_path() -> None:
+    [d] = parse_diagnostics("C:\\src\\main.c:3:5: error: bad\n", 1)["diagnostics"]
+    assert (d["file"], d["line"], d["col"]) == ("C:\\src\\main.c", 3, 5)
+
+
+def test_parse_diagnostics_gcc_fatal_error_not_lost_beside_errors() -> None:
+    out = (
+        "main.c:3:5: error: unknown type name 'foo'\n"
+        "main.c:1:10: fatal error: missing.h: No such file or directory\n"
+    )
+    result = parse_diagnostics(out, 1)
+    assert result["source"] == "gnu"
+    assert [d["severity"] for d in result["diagnostics"]] == ["error", "error"]
+    assert "missing.h" in result["diagnostics"][1]["message"]
+
+
+def test_parse_diagnostics_dotnet_summary_duplicates_collapse() -> None:
+    line = "Program.cs(10,5): error CS1002: ; expected [/src/app.csproj]\n"
+    out = line + "\nBuild FAILED.\n\n" + line + "    0 Warning(s)\n    1 Error(s)\n"
+    assert len(parse_diagnostics(out, 1)["diagnostics"]) == 1
+
+
 def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
     out = "./a.go:1:1: undefined: x\n./a.go:1:1: note: declared here\n"
     [d] = parse_diagnostics(out, 1)["diagnostics"]
