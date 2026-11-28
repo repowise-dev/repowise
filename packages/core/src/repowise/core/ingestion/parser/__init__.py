@@ -48,7 +48,7 @@ from ..extractors.imports.rust import (
 from ..extractors.imports.scala import _scala_imports
 from ..extractors.imports.ts_js import _cjs_imports, _is_dynamic_esm_import
 from ..extractors.visibility import ts_export_aliases
-from ..lang_helpers.preproc_twins import inactive_arm_twins, inside_spans
+from ..lang_helpers.preproc_twins import outside_dropped, without_inactive_arm_twins
 from ..language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
 from ..parser_helpers import _collect_error_nodes, _run_query
@@ -225,11 +225,9 @@ class ASTParser:
         query = _load_compiled_query(lang, grammar_tag)
         matches = _run_query(query, root) if query is not None else []
 
-        extracted = _extract_symbols(matches, config, file_info, src, original_source)
-        dropped = inactive_arm_twins(extracted, source) if lang == "cpp" else []
-        if dropped:
-            gone = {id(s) for s in dropped}
-            extracted = [s for s in extracted if id(s) not in gone]
+        extracted, dropped = without_inactive_arm_twins(
+            lang, _extract_symbols(matches, config, file_info, src, original_source), source
+        )
         symbols = _finalize_symbols(extracted, root, src, file_info)
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
@@ -248,9 +246,7 @@ class ASTParser:
         local_refs, registrars = (
             _python_module_facts(src, symbols) if lang == "python" else (frozenset(), frozenset())
         )
-        if dropped:
-            calls = [c for c in calls if not inside_spans(c.line, dropped)]
-            references = [r for r in references if not inside_spans(r.line, dropped)]
+        calls, references = outside_dropped(calls, dropped), outside_dropped(references, dropped)
         _warn_symbol_bloat(file_info, symbols)
 
         return ParsedFile(

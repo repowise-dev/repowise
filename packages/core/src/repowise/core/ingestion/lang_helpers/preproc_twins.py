@@ -26,7 +26,7 @@ from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 
-from ..models import Symbol
+from ..models import CallSite, Symbol
 from .preproc_arms import _ARM_SWITCH_RE, _DEAD_ARM_RE, _TOKEN_RE, _Arm, _Group, _GroupScan
 
 _CALLABLE_KINDS = frozenset({"function", "method"})
@@ -69,33 +69,40 @@ def inactive_arm_twins(symbols: Iterable[Symbol], source: bytes) -> list[Symbol]
     if not any(n > 1 for n in callables.values()):
         return []
     every = _groups(source)
-    groups = [g for g in every if len(g.arms) > 1]
-    if not groups or not symbols:
+    if not any(len(g.arms) > 1 for g in every):
         return []
     line_starts = [0] + [m.end() for m in re.finditer(rb"\n", source)]
     offsets = [line_starts[min(s.start_line, len(line_starts)) - 1] for s in symbols]
     dead_arms = [a for g in every for a in g.arms if _is_dead(a.head)]
     dropped: set[int] = set()
-    for group in groups:
-        by_id: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        for index, offset in enumerate(offsets):
-            if symbols[index].kind not in _CALLABLE_KINDS:
-                continue
-            arm = _arm_of(group, offset)
-            if arm is not None:
-                by_id[symbols[index].id].append((arm, index))
-        for found in by_id.values():
-            if len({arm for arm, _ in found}) < 2:
-                continue
-            live = [arm for arm, i in found if not _inside_any(offsets[i], dead_arms)]
-            keep = min(live or [arm for arm, _ in found])
-            dropped.update(index for arm, index in found if arm != keep)
+    for group in every:
+        if len(group.arms) > 1:
+            dropped |= _later_twins(group, symbols, offsets, dead_arms)
     spans = [(symbols[i].start_line, symbols[i].end_line) for i in dropped]
     return [
         s
         for i, s in enumerate(symbols)
         if i in dropped or any(lo < s.start_line and s.end_line < hi for lo, hi in spans)
     ]
+
+
+def _later_twins(
+    group: _Group, symbols: list[Symbol], offsets: list[int], dead_arms: list[_Arm]
+) -> set[int]:
+    """The positions of the callables of *group* whose twin sits in the arm that is kept."""
+    by_id: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for index, offset in enumerate(offsets):
+        arm = _arm_of(group, offset) if symbols[index].kind in _CALLABLE_KINDS else None
+        if arm is not None:
+            by_id[symbols[index].id].append((arm, index))
+    dropped: set[int] = set()
+    for found in by_id.values():
+        if len({arm for arm, _ in found}) < 2:
+            continue
+        live = [arm for arm, i in found if not _inside_any(offsets[i], dead_arms)]
+        keep = min(live or [arm for arm, _ in found])
+        dropped.update(index for arm, index in found if arm != keep)
+    return dropped
 
 
 def _is_dead(head: bytes) -> bool:
@@ -116,6 +123,19 @@ def _arm_of(group: _Group, offset: int) -> int | None:
     return index
 
 
-def inside_spans(line: int, dropped: Iterable[Symbol]) -> bool:
-    """Is *line* inside one of the *dropped* symbols?"""
-    return any(s.start_line <= line <= s.end_line for s in dropped)
+def without_inactive_arm_twins(
+    language: str, symbols: list[Symbol], source: bytes
+) -> tuple[list[Symbol], list[Symbol]]:
+    """``(kept, dropped)``: a C++ file's symbols split by :func:`inactive_arm_twins`."""
+    dropped = inactive_arm_twins(symbols, source) if language == "cpp" else []
+    if not dropped:
+        return symbols, []
+    gone = {id(s) for s in dropped}
+    return [s for s in symbols if id(s) not in gone], dropped
+
+
+def outside_dropped(sites: list[CallSite], dropped: list[Symbol]) -> list[CallSite]:
+    """*sites* without those inside a *dropped* symbol's lines."""
+    if not dropped:
+        return sites
+    return [c for c in sites if not any(s.start_line <= c.line <= s.end_line for s in dropped)]
