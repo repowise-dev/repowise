@@ -52,6 +52,7 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
                             spec.get("affected_files", ["src/app.py"])
                         ),
                         evidence_file=spec["id"],
+                        evidence_commits_json=json.dumps(spec.get("evidence_commits", [])),
                     )
                 )
             await session.commit()

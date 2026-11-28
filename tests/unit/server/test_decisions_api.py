@@ -412,3 +412,42 @@ async def test_list_and_detail_carry_how_often_agents_were_shown_it(
 
     detail = (await client.get(f"/api/repos/{repo['id']}/decisions/{shown_id}")).json()
     assert detail["delivered_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# linked_issues on the detail endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decision_detail_lists_linked_issues_only_when_stored(
+    client: AsyncClient, app
+) -> None:
+    from repowise.core.persistence.models import IssueLink
+
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+    sha = "ab" * 20
+    async with get_session(app.state.session_factory) as session:
+        rec = await crud.get_decision(session, decision_id)
+        rec.evidence_commits_json = f'["{sha[:10]}"]'
+    url = f"/api/repos/{repo['id']}/decisions/{decision_id}"
+
+    plain = (await client.get(url)).content
+    assert b"linked_issues" not in plain
+
+    async with get_session(app.state.session_factory) as session:
+        session.add(
+            IssueLink(
+                repository_id=repo["id"],
+                commit_sha=sha,
+                issue_key="ENG-9",
+                source="t",
+                issue_type="incident",
+                title="Outage",
+            )
+        )
+    body = (await client.get(url)).json()
+    assert body["linked_issues"] == [
+        {"key": "ENG-9", "type": "incident", "status": "", "title": "Outage", "url": ""}
+    ]

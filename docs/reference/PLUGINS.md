@@ -34,7 +34,7 @@ Every row is listed in the [extension points catalog](#extension-points-catalog)
 | Local embedding model | `embedder` | Embeds pages with a model that runs on your machines |
 | LDAP or Okta teams | `team-directory` | Reads team membership from your directory for declared ownership |
 | SSO for `repowise serve` | `authenticator` | Accepts your identity provider's tokens on the HTTP API |
-| Jira or Linear issues | `issue-source` | Links commits to your tracker's issues, so a commit tied to a Bug counts as a fix in prior defects, change risk and health |
+| Jira or Linear issues | `issue-source` | Links commits to your tracker's issues, so a commit tied to a Bug counts as a fix in prior defects, change risk and health, and decisions and changes show the issue |
 | Internal vulnerability feed | `advisory-source` | Reads advisories from your own feed for `repowise packages import` |
 | Compliance report section or format | `report-section`, `report-renderer` | Adds evidence your auditors ask for, or writes the report in their text format |
 | Internal API as an agent tool | `mcp-tool` | Gives agents a read-only tool that queries an internal service |
@@ -629,7 +629,7 @@ What it returns, one `IssueLink` per commit and issue:
 | `type` | `bug`, `incident`, `feature`, `task` or `other`. Map the tracker's own types onto these |
 | `sha` or `change` | The commit: one of the request's full shas, or a change number, which links every requested commit with that number |
 | `title` | Quoted next to the key in fix history, cut at 80 characters there |
-| `status`, `url` | Stored with the link |
+| `status`, `url` | Shown with the issue on decisions and changes |
 | `basis` | How the commit names the issue, such as `message names ENG-42` or `PR #12 closes #40` |
 
 `repowise plugins check` confirms a source has a `name` and a `fetch` method. When a sync runs, repowise also checks each link it returns. `tests/unit/issues/test_issue_sources.py` covers these rules:
@@ -652,6 +652,14 @@ What it returns, one `IssueLink` per commit and issue:
 commit is counted with its issue in the same update. When a sync adds or
 removes a bug link on a commit that is already indexed, the next update
 reads git history again once, so the counts match a fresh index.
+
+Stored links also show up where people read decisions and changes. A
+decision whose evidence commits link to an issue lists it in `get_why`,
+`repowise decision show` and the decision page, with key, type, status, title
+and url. A change card, `repowise changes show` and the change page print
+`ENG-42 (bug, Done): Checkout fails` in place of the bare key, and add issues
+linked to the change's own commits. Without stored links these outputs do not
+change.
 
 A host with no checkout can fetch links itself and store them with
 `repowise.core.persistence.crud.issue_links.store_issue_links`. Indexing and
