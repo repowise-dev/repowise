@@ -51,6 +51,7 @@ import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
+from .resolution_containment import Failure, resolve_contained
 from .symbol_identity import file_of_symbol
 from .ts_declarations import is_declaration_file
 
@@ -1067,19 +1068,35 @@ def resolve_type_refs(
     parsed_files: dict[str, ParsedFile],
     ctx: ResolverContext,
     graph: nx.DiGraph,
+    failures: list[Failure] | None = None,
 ) -> dict[str, int]:
     """Dispatch each parsed file to its language's type-ref strategy.
 
-    Returns a per-language emitted-edge count for logging.
+    Returns a per-language emitted-edge count for logging. A file whose
+    strategy raises is recorded in *failures* and skipped
+    (:mod:`.resolution_containment`).
     """
     counts: dict[str, int] = {}
+    failures = [] if failures is None else failures
     defined_names = _build_defined_name_index(graph)
     for parsed in parsed_files.values():
         lang = parsed.file_info.language
         strategy = _STRATEGIES.get(lang)
         if strategy is None:
             continue
-        emitted = strategy(parsed, ctx, graph, defined_names)
+        src = parsed.file_info.path
+        had = set(graph.successors(src)) if src in graph else set()
+        emitted = resolve_contained(
+            failures, "type_refs", src, strategy, parsed, ctx, graph, defined_names
+        )
+        if emitted is None:
+            # Strategies write as they go: drop the edges this file added. A
+            # name merged into an edge it already had stays, as a fact it did read.
+            if src in graph:
+                graph.remove_edges_from(
+                    [(src, d) for d in list(graph.successors(src)) if d not in had]
+                )
+            continue
         if lang in _OWN_TYPE_FIRST_LANGUAGES:
             _mark_own_name_edges(parsed, graph)
         if emitted:

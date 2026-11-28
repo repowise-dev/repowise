@@ -808,6 +808,10 @@ async def persist_incremental_index(
         failed_steps=failed_steps,
         timings=timings,
     )
+    from repowise.core.ingestion.resolution_containment import failure_summary
+
+    if note := failure_summary(getattr(graph_builder, "resolve_failures", [])):
+        ctx.degraded.append(note)
     await _write(ctx)
 
 

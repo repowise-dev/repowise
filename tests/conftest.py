@@ -236,6 +236,12 @@ def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pyte
     monkeypatch.setenv("REPOWISE_TOKENS_FILE", str(missing))
 
 
+@pytest.fixture(autouse=True)
+def _strict_graph_build(monkeypatch: pytest.MonkeyPatch):
+    """A resolver bug fails the test instead of being skipped per file."""
+    monkeypatch.setenv("REPOWISE_STRICT_GRAPH", "1")
+
+
 _REAL_HOME = Path.home()
 
 

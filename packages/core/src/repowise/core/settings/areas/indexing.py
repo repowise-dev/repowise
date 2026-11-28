@@ -227,6 +227,13 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
     ),
     _e(
+        "REPOWISE_STRICT_GRAPH",
+        "bool",
+        False,
+        "Re-raise a file's resolution error in graph build instead of skipping that file.",
+        internal=True,
+    ),
+    _e(
         "REPOWISE_KG_CURATION",
         "bool",
         True,
