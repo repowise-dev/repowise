@@ -80,6 +80,8 @@ DEFAULT_DISCOVERY_GLOBS: tuple[str, ...] = (
     # ``sf apex run test --code-coverage --output-dir``.
     ".sfdx/tools/testresults/apex/test-result-codecoverage.json",
     "**/test-result-codecoverage.json",
+    # DelphiCodeCoverage: ``-od <dir> -xml -xmllines``.
+    "**/CodeCoverage_Summary.xml",
 )
 
 # Directories we never descend into when expanding ``**`` patterns — heavy,

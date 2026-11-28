@@ -80,6 +80,8 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Delphi / FireMonkey / Lazarus forms: no symbols, read for the event handlers they bind.
+    "pascal_form",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
     # Salesforce Visualforce (.page/.component): markup that names its Apex controller.

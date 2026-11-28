@@ -431,10 +431,16 @@ Steps 1–5 give you the symbols, imports and calls your query captures. They do
   JUnit report. See
   [runtime-evidence-languages.md](runtime-evidence-languages.md).
 - **Class-level metrics, if the language does not nest method bodies in the
-  type.** Go's external receivers and Object Pascal's split
-  declaration/implementation sections both fail this, and both are deliberately
-  left unmapped rather than emitting a `ClassComplexity` with
-  `method_count == 0`.
+  type.** Go's external receivers fail this and are deliberately left
+  unmapped rather than emitting a `ClassComplexity` with `method_count == 0`.
+  C++ and Object Pascal pair out-of-line methods with their class by the
+  qualified name (`TFoo.Bar`, case-insensitively for Pascal); a Pascal forward
+  declaration (`TFoo = class;`) holds no members and a method whose class is in
+  another unit gets no class of its own.
+  Pascal names match in any case, a property is an alias for the field or
+  method its `read` / `write` clauses name (never state of its own), and a
+  constructor, destructor or `override` declared in the class is a contract
+  method that does not count as a responsibility.
 - **Dataflow, if the grammar does not label control-flow fields.** The CFG
   builder resolves bodies and branches through *field names* (`body`,
   `consequence`, `alternative`) and *node types* (`break_kinds`,
@@ -812,7 +818,7 @@ dependency surface their syntax supports.
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
 | Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references, `include` / `require` with an unparenthesized literal path |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
-| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points |
+| Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points. Form files (`.dfm` `.fmx` `.lfm`) link to the unit sharing their stem and bind the event handlers they name |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
 | Good | **GDScript** | `.gd` | `preload` / `load` / `extends "res://..."` from the nearest `project.godot` |
 | Good | **VB.NET** | `.vb` | `Imports` through the same MSBuild project index C# uses |
@@ -1166,11 +1172,13 @@ credential's own endpoint is not read.
   both, since props are set by the parent as markup attributes.
 - **Object Pascal type kinds collapse** to `kind="class"`, and its `extends`
   vs `implements` split is positional: the first parent in `class(...)` is the
-  base class, the rest are interfaces. Form files (`.dfm`, `.fmx`, `.lfm`) are
-  not read, so an event handler bound only in a form has no caller, and a
-  build that picks units outside the project files (a script passing `-U`)
-  is seen only as a same-named variant no project claims. tree-sitter-pascal
-  has no rule for non-ASCII identifiers.
+  base class, the rest are interfaces. A form file (`.dfm`, `.fmx`, `.lfm`) is
+  matched to the unit with the same stem in the same directory, and binds only
+  the handlers its own unit's form class declares: a form inheriting from a
+  form in another unit leaves the inherited handlers unbound, and a binary
+  form (`TPF0`) is skipped. A build that picks units outside the project files
+  (a script passing `-U`) is seen only as a same-named variant no project
+  claims. tree-sitter-pascal has no rule for non-ASCII identifiers.
 - **COBOL dynamic `CALL` targets stay silent**, and free-format source is read
   without column handling.
 - **Razor has no import edges**, because every directive is blanked by the

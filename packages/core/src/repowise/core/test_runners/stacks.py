@@ -1354,6 +1354,33 @@ def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     )
 
 
+_DELPHI_PROJECTS = (".dproj", ".dpr")
+
+
+def _delphi(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    """DelphiCodeCoverage reads a built test program, so the build is the project's own.
+
+    The test program is a ``.dpr`` whose path names tests; with none the stack
+    only says where the report is read from.
+    """
+    tests = [p for p in paths if p.endswith(".dpr") and "test" in p.lower() and p.count("/") <= 3]
+    how = ("DelphiCodeCoverage measures a built test program: link it with a detailed map file "
+           "(project option Linking > Map file: Detailed, or `dcc32 -GD`), then run "
+           "`CodeCoverage.exe -e <Tests.exe> -m <Tests.map> -sp <source dir> -u <unit names> "
+           "-od coverage -xml -xmllines`. `-xmllines` is what puts per-line hits in "
+           "`CodeCoverage_Summary.xml`; without it only per-file percentages are read.")
+    if len(tests) == 1:
+        return Stack(
+            "delphi", "DelphiCodeCoverage", None, "**/CodeCoverage_Summary.xml",
+            notes=(f"{how} The test project is `{tests[0]}`.",),
+        )
+    reason = ("Repowise found several test projects; point DelphiCodeCoverage at the one that runs your tests."
+              if tests else "Repowise found no test project (a `.dpr` named for its tests) to run DelphiCodeCoverage on.")
+    return Stack(
+        "delphi", "DelphiCodeCoverage", None, "**/CodeCoverage_Summary.xml", notes=(how, reason),
+    )
+
+
 _RUBY = re.compile(r"(?<![\w-])(?:rspec|rake\s+(?:test|spec)|rails\s+test)(?![\w:-])")
 
 
@@ -1457,7 +1484,7 @@ _LANGUAGE_STACKS = {
     "typescript": "node",
 }
 #: Most specific first; node last, as a root ``package.json`` is often tooling.
-_ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
+_ORDER = ("python", "go", "rust", "jvm", "dotnet", "delphi", "ruby", "php", "node")
 #: A builder returns None for a unit with nothing to test (a package with no test script).
 _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | None]] = {
     "python": _python,
@@ -1467,6 +1494,7 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | Non
         _maven(names, files) if "pom.xml" in names else _gradle(names, files)
     ),
     "dotnet": _dotnet,
+    "delphi": _delphi,
     "ruby": _ruby,
     "php": lambda names, paths, files: _php(files),
     "node": lambda names, paths, files: _node(names, files),
@@ -1589,6 +1617,20 @@ class _Units:
     workspaces: frozenset[str] = frozenset()
 
 
+def _grouped_roots(
+    paths: list[str],
+    groups: str | tuple[str, ...],
+    projects: str | tuple[str, ...],
+    repo_root: str | None,
+) -> set[str]:
+    """The kept directories holding a *groups* file (a solution), else the root
+    of a repository with *projects* files near the top."""
+    grouped = {_dir(p) for p in paths if p.endswith(groups) and _kept(p, repo_root)}
+    if grouped:
+        return grouped
+    return {""} if any(p.endswith(projects) and p.count("/") <= 2 for p in paths) else set()
+
+
 def _units(
     paths: list[str], units: BuildUnitIndex | None, repo_root: str | None = None
 ) -> _Units:
@@ -1606,10 +1648,12 @@ def _units(
     if any("/" not in p and _PIP_REQUIREMENTS.fullmatch(p) for p in paths):
         roots.setdefault("", set()).add("python")
         workspaces.discard("")
-    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p, repo_root)}
-    has_projects = any(p.endswith(".csproj") and p.count("/") <= 2 for p in paths)
-    for root in solutions or ({""} if has_projects else set()):
-        roots.setdefault(root, set()).add("dotnet")
+    for stack, groups, projects in (
+        ("dotnet", _SOLUTIONS, ".csproj"),
+        ("delphi", ".groupproj", _DELPHI_PROJECTS),
+    ):
+        for root in _grouped_roots(paths, groups, projects, repo_root):
+            roots.setdefault(root, set()).add(stack)
     return _Units(roots, frozenset(workspaces))
 
 

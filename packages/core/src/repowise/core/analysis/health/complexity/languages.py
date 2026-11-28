@@ -132,6 +132,15 @@ class LanguageNodeMap:
     binding_kinds: frozenset[str] = frozenset()
     identifier_kinds: frozenset[str] = frozenset()
     nested_type_kinds: frozenset[str] = frozenset()
+    # Identifiers differ only by case in the language (Pascal): a bare name
+    # matches a declared member whatever its spelling, and a parameter shadows
+    # a field in any spelling.
+    case_insensitive_names: bool = False
+    # Class-body declarations of a named alias for a field or method: a
+    # property whose ``getter`` / ``setter`` fields name its targets. A
+    # reference to the property is a reference to those targets, and the
+    # property is never state of its own.
+    property_kinds: frozenset[str] = frozenset()
     # Count only cohesion components that hold state (two or more fields), as
     # implicit-receiver languages always do. For an explicit-receiver language
     # whose methods routinely touch one field or none: Rust setters, getters
@@ -1515,16 +1524,19 @@ _PASCAL = LanguageNodeMap(
     # a node literally named ``expression_statement`` the way most grammars
     # this pass serves spell it.
     expr_stmt_kinds=frozenset({"statement"}),
-    # No class-level metrics: Pascal splits a class into an interface-only
-    # ``declClass`` (method SIGNATURES only, via ``declProc`` -- no bodies)
-    # and a fully separate implementation section where each qualified
-    # method (``TFoo.Bar``) is its own top-level ``defProc``. There is no
-    # single node that groups a type's method BODIES the way
-    # ``_collect_class_methods`` expects (``declClass``'s children are
-    # forward declarations only), so mapping ``class_kinds`` here would
-    # silently emit a ``ClassComplexity`` with ``method_count == 0`` for
-    # every class. Same posture as Go (external-receiver methods): left
-    # unmapped rather than emitting a misleading zero-method class.
+    # Pascal declares a class's members (``declField``, ``declProc`` without
+    # a body) in ``declClass`` and implements each method as a separate
+    # top-level ``defProc TFoo.Bar``; ``class_analysis`` pairs the two by
+    # the qualified name. Members are reached bare or through ``Self``.
+    # ``declProp`` is not a field: it only forwards to one.
+    class_kinds=frozenset({"declClass"}),
+    self_identifiers=frozenset({"Self", "self", "SELF"}),
+    member_access_kinds=frozenset({"exprDot"}),
+    field_decl_kinds=frozenset({"declField"}),
+    binding_kinds=frozenset({"declArg", "declVar"}),
+    identifier_kinds=frozenset({"identifier"}),
+    case_insensitive_names=True,
+    property_kinds=frozenset({"declProp"}),
     if_kinds=frozenset({"if", "ifElse"}),
     # ``block`` is the ``begin ... end`` container; ``statements`` is the
     # grammar's OTHER flat statement-list node, used for a ``try``'s guarded
@@ -1557,8 +1569,6 @@ _PASCAL = LanguageNodeMap(
     # assignment, so no statement is a local declaration.
     assignment_kinds=frozenset({"assignment"}),
     local_decl_kinds=frozenset(),
-    self_identifiers=frozenset({"Self"}),
-    member_access_kinds=frozenset({"exprDot"}),
     # ``Exit`` / ``Exit(X)``, ``Halt``, ``Abort``, ``Break`` and ``Continue``
     # are ordinary identifiers and calls, so they are named here: a span
     # holding one is never lifted out, whose helper would jump from itself.
