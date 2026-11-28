@@ -107,9 +107,9 @@ def _block_at(content: str, blocks: list[tuple[int, int]], pos: int) -> str | No
 
 
 def _compose_aspnet_path(prefix: str, action_path: str) -> str:
-    if action_path.startswith("~"):
-        # Absolute route override in ASP.NET Web API / MVC
-        return action_path.lstrip("~").lstrip("/")
+    if action_path.startswith(("/", "~")):
+        # A rooted template ("/x" or "~/x") replaces the controller prefix.
+        return "/" + action_path.lstrip("~/")
     if prefix and action_path:
         return prefix.rstrip("/") + "/" + action_path.lstrip("/")
     if prefix:
