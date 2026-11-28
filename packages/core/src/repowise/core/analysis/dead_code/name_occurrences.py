@@ -58,7 +58,7 @@ from ...ingestion.extractors.visibility import (
     _TS_EXPORT_LIST_SOURCE_RE,
 )
 from ...ingestion.languages.js_config_values import (
-    jest_root_dir,
+    jest_root_dirs,
     plugin_path_arguments,
     value_spans,
 )
@@ -677,14 +677,13 @@ def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, 
 
 
 def _expand_root_dir(blob: bytes, config: str, source: bytes | None = None) -> bytes:
-    """Replace ``<rootDir>/`` in *blob* using *source*'s literal ``rootDir`` when present."""
+    """Replace ``<rootDir>/`` in *blob* using *source*'s literal ``rootDir`` values when present."""
     if b"<rootDir>/" not in blob:
         return blob
-    root = jest_root_dir(blob if source is None else source, config)
-    if root is None:
+    roots = jest_root_dirs(blob if source is None else source, config)
+    if not roots:
         return blob
-    prefix = f"{root}/".encode() if root else b"./"
-    return blob.replace(b"<rootDir>/", prefix)
+    return b"\n".join(blob.replace(b"<rootDir>/", f"{r}/".encode() if r else b"./") for r in roots)
 
 
 def _targets_in(

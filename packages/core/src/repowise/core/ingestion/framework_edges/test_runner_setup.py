@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 from ...test_paths import is_test_path
 from ..languages.js_config_values import (
     TEST_SETUP_KEYS,
-    jest_root_dir,
+    jest_root_dirs,
     string_literals,
     value_spans,
 )
@@ -87,23 +87,24 @@ def _package_dir(config: str, path_set: set[str]) -> str:
 
 
 def resolve_setup_spec(
-    spec: str, config: str, ctx: ResolverContext, *, root_dir: str | None = None
+    spec: str, config: str, ctx: ResolverContext, *, root_dirs: tuple[str, ...] | None = None
 ) -> str | None:
     """The indexed file *spec*, written in *config*, names, or ``None``.
 
     A runner resolves a relative setup path against its root, which may be the
     config's directory or any directory above it (a config under
     ``test/vitest/`` with ``root`` set to the repository), so each is tried,
-    nearest first. ``<rootDir>/`` is the config's literal ``rootDir`` resolved
-    against the config's directory, or the package directory when absent.
+    nearest first. ``<rootDir>/`` tries any literal ``rootDir`` values in the
+    config resolved against the config's directory, then falls back to the
+    package directory.
     """
     from ..resolvers.typescript import resolve_ts_js_import
 
     if spec.startswith("<rootDir>/"):
-        if root_dir is None and config in ctx.source_map:
-            root_dir = jest_root_dir(ctx.source_map[config], config)
-        base = _package_dir(config, ctx.path_set) if root_dir is None else root_dir
-        bases = [base]
+        if root_dirs is None and config in ctx.source_map:
+            root_dirs = tuple(jest_root_dirs(ctx.source_map[config], config))
+        pkg_dir = _package_dir(config, ctx.path_set)
+        bases = list(dict.fromkeys([*(root_dirs or ()), pkg_dir]))
         spec = spec[len("<rootDir>/") :]
     else:
         bases = []
@@ -136,11 +137,11 @@ def _setups_by_scope(
         text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
         if not any(k in text for k in _SETUP_KEY_BYTES):
             continue
-        root_dir = jest_root_dir(text, path)
+        root_dirs = tuple(jest_root_dirs(text, path))
         targets = {
             t
             for s in setup_specs(text)
-            if (t := resolve_setup_spec(s, path, ctx, root_dir=root_dir))
+            if (t := resolve_setup_spec(s, path, ctx, root_dirs=root_dirs))
         }
         if targets:
             scope = "" if leaves_its_directory(text) else _package_dir(path, path_set)

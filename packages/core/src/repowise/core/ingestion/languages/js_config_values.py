@@ -166,16 +166,32 @@ def _string_end(text: bytes, start: int) -> int:
     return len(text)
 
 
-def jest_root_dir(text: bytes, config: str) -> str | None:
-    """The literal ``rootDir`` directory in *text*, resolved against *config*'s directory."""
+def jest_root_dirs(text: bytes, config: str) -> list[str]:
+    """Literal ``rootDir`` directories in *text*, resolved against *config*'s directory.
+
+    Only plain string-literal values are accepted; computed expressions such as
+    ``path.join(__dirname, 'packages', 'app')`` are ignored so their first argument
+    is never mistaken for the full root path.
+    """
     config_dir = posixpath.dirname(config)
+    roots: list[str] = []
     for span in value_spans(text, ("rootDir",)):
-        for literal in string_literals(span):
-            if not literal or literal.startswith("/") or "<rootDir>" in literal or "\n" in literal:
-                continue
-            joined = posixpath.normpath(posixpath.join(config_dir, literal))
-            if joined == ".":
-                return ""
-            if not joined.startswith(".."):
-                return joined
-    return None
+        val = span.strip()
+        if not (val[:1] in _QUOTES and _string_end(val, 0) == len(val) - 1):
+            continue
+        literals = string_literals(val)
+        if len(literals) != 1:
+            continue
+        literal = literals[0]
+        if not literal or literal.startswith("/") or "<rootDir>" in literal or "\n" in literal:
+            continue
+        joined = posixpath.normpath(posixpath.join(config_dir, literal))
+        if joined == ".":
+            resolved = ""
+        elif joined.startswith(".."):
+            continue
+        else:
+            resolved = joined
+        if resolved not in roots:
+            roots.append(resolved)
+    return roots
