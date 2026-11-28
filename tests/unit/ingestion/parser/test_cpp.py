@@ -770,19 +770,6 @@ class TestCppParser:
         module_paths = [i.module_path for i in result.imports]
         assert any("calculator.hpp" in p or "stdexcept" in p for p in module_paths)
 
-    def test_parses_angle_bracket_includes_without_brackets(self, parser: ASTParser) -> None:
-        # Angle-bracket project includes must arrive at the resolver without
-        # their wrappers so `#include <cfg.hpp>` can match a repo file
-        # (stdlib names still fall through to the system-include filter).
-        fi = _make_file_info("cpp_pkg/main.cpp", "cpp")
-        source = b'#include "calculator.hpp"\n#include <cfg.hpp>\n#include <vector>\nint main(void);\n'
-        result = parser.parse_file(fi, source)
-        module_paths = [i.module_path for i in result.imports]
-        assert "calculator.hpp" in module_paths
-        assert "cfg.hpp" in module_paths
-        assert "vector" in module_paths
-        assert not any(p.startswith("<") for p in module_paths)
-
     def test_finds_types_declared_through_export_macros(self, parser: ASTParser) -> None:
         fi = _make_file_info("cpp_pkg/options.hpp", "cpp")
         result = parser.parse_file(fi, CPP_EXPORT_MACRO_TYPES)

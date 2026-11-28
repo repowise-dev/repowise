@@ -99,8 +99,41 @@ def test_stem_fallback_requires_matching_file_name(tmp_path):
     for rel in paths:
         _write(tmp_path, rel, "")
     ctx = _make_ctx(tmp_path, paths)
-    for include in ("zlib.h", "sqlite3.h", "curl.h", "rw_mingw.hpp"):
+    for include in ("<zlib.h>", "<sqlite3.h>", "<curl.h>", "<rw_mingw.hpp>"):
         assert resolve_cpp_import(include, "src/main.cc", ctx) is None
+
+
+def test_stem_fallback_quoted_include_links_cross_directory(tmp_path):
+    # Quoted includes keep the permissive stem lookup: a header in another
+    # folder still links back (review of #6309 — real edges restored).
+    _write(tmp_path, "src/cfg.hpp", "")
+    _write(tmp_path, "src/main.cc", "")
+    paths = ["src/cfg.hpp", "src/main.cc", "engine/util.hpp", "src/deep.cpp"]
+    ctx = _make_ctx(tmp_path, paths)
+    assert resolve_cpp_import("cfg.hpp", "src/main.cc", ctx) == "src/cfg.hpp"
+    assert resolve_cpp_import("engine/util.hpp", "src/deep.cpp", ctx) == "engine/util.hpp"
+
+
+def test_angle_include_resolves_through_compile_commands_include_dir(tmp_path):
+    # #6309: `<cfg.hpp>` resolves through an include dir from
+    # compile_commands.json (step 5 of the review).
+    import json
+
+    inc_dir = tmp_path / "include"
+    inc_dir.mkdir()
+    (inc_dir / "cfg.hpp").write_text("")
+    (tmp_path / "src").mkdir()
+    compile_commands = [
+        {
+            "file": "src/main.cc",
+            "directory": str(tmp_path),
+            "arguments": ["g++", "-I", str(inc_dir), "-c", "src/main.cc"],
+        }
+    ]
+    (tmp_path / "compile_commands.json").write_text(json.dumps(compile_commands))
+    paths = ["include/cfg.hpp", "src/main.cc"]
+    ctx = _make_ctx(tmp_path, paths)
+    assert resolve_cpp_import("<cfg.hpp>", "src/main.cc", ctx) == "include/cfg.hpp"
 
 
 def test_resolve_all_fans_out_to_target_siblings(tmp_path):

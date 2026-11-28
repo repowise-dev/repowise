@@ -89,6 +89,7 @@ def _resolve_single(
     ctx: ResolverContext,
     *,
     system_form: bool,
+    angle: bool = False,
 ) -> str | None:
     """Resolve a single include path; returns the resolved repo file or None."""
     repo_root = ctx.repo_path.resolve() if ctx.repo_path else None
@@ -141,36 +142,33 @@ def _resolve_single(
     if candidate_rel in ctx.path_set:
         return candidate_rel
 
-    # 6. Stem fallback (5 was system-include filter above): last resort,
-    #    only a same-named file in the importer's own directory. A bare or
-    #    pathed include must not invent a deep link into an unrelated
-    #    directory: ``<zlib.h>`` never links to ``tools/zlib.py``, and a
-    #    header only included as a bare ``<rw_mingw.hpp>`` stays
-    #    unresolved so the unreachable-file ceiling still applies to it.
-    name = Path(module_path).name.lower()
-    candidates = ctx.stem_map.get(Path(module_path).stem.lower(), ())
-    return next(
-        (
-            c
-            for c in candidates
-            if Path(c).name.lower() == name
-            and posixpath.dirname(c) == importer_dir
-        ),
-        None,
-    )
+    # 6. Stem fallback (5 was system-include filter above). Angle-bracket
+    #    includes only link through an exact relative-path suffix match, so
+    #    a bare ``<zlib.h>`` never links to ``tools/zlib.py`` and a pathed
+    #    ``<engine/util.hpp>`` must end with that relative path. Quoted
+    #    includes keep the permissive stem lookup that lets a header in
+    #    another folder link back.
+    if angle:
+        if "/" not in module_path:
+            return None
+        candidates = ctx.stem_map.get(Path(module_path).stem.lower(), ())
+        return next((c for c in candidates if c.endswith("/" + module_path)), None)
+    return ctx.stem_lookup(Path(module_path).stem.lower())
 
 
 def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a C/C++ ``#include`` to a repo-relative file path."""
-    # The parser strips ``< >`` / ``" "`` wrappers before passing
-    # ``module_path``; we treat any path that lacks an absolute prefix as
-    # a quoted include and let the importer-relative join catch it. The
-    # stdlib filter is conservative — bare names like ``vector`` resolve
-    # to None which is what we want.
+    # ``module_path`` may arrive with its ``< >`` wrapper (the parser only
+    # strips quotes); we unwrap it here so the include style stays visible
+    # to the resolver. The stdlib filter is conservative — bare names like
+    # ``vector`` resolve to None which is what we want.
     # Heuristic: if the raw text never collides with a repo file in
     # ``ctx.path_set`` AND it matches a stdlib name, treat as system.
     system_form = False
+    angle = False
     if module_path:
+        angle = module_path.startswith("<")
+        module_path = module_path.strip("<>")
         from .cpp_workspace import is_stdlib_include
 
         # Only treat as system when the path looks unambiguous (bare
@@ -179,7 +177,7 @@ def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContex
         # repos don't ship ``./vector`` next to a C++ TU.
         if is_stdlib_include(module_path):
             system_form = True
-    return _resolve_single(module_path, importer_path, ctx, system_form=system_form)
+    return _resolve_single(module_path, importer_path, ctx, system_form=system_form, angle=angle)
 
 
 def resolve_cpp_import_all(

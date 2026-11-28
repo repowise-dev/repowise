@@ -719,18 +719,12 @@ class TestCppCompileCommandsResolution:
         assert b.graph().has_edge("src/main.cpp", "src/utils.hpp")
 
     def test_stem_fallback_when_no_compile_commands(self, tmp_path: Path) -> None:
-        """Without compile_commands.json, stem fallback resolves a same-named
-        header in the importer's own directory."""
+        """When compile_commands.json is absent, stem-matching still works for C++."""
         b = GraphBuilder(repo_path=tmp_path)
         b.add_file(_cpp("lib/crypto.hpp"))
-        b.add_file(_cpp("src/crypto.hpp"))
         b.add_file(_cpp("src/main.cpp", imports=[_cinclude("crypto.hpp")]))
         b.build()
-        # Same-directory same-named candidate resolves; a same-named header
-        # in an unrelated directory must stay unresolved (see review on the
-        # stem fallback restriction).
-        assert b.graph().has_edge("src/main.cpp", "src/crypto.hpp")
-        assert not b.graph().has_edge("src/main.cpp", "lib/crypto.hpp")
+        assert b.graph().has_edge("src/main.cpp", "lib/crypto.hpp")
 
     def test_no_compile_commands_no_crash(self, tmp_path: Path) -> None:
         """Missing compile_commands.json does not crash — falls through to stem matching."""

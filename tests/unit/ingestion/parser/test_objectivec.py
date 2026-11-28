@@ -155,12 +155,9 @@ class TestObjectiveCImports:
     def test_both_import_forms_and_include(self, parser: ASTParser) -> None:
         result = parser.parse_file(_objc("Widget.h"), HEADER)
         modules = {i.module_path for i in result.imports}
-        # Angle-bracket includes are unwrapped at extraction so they can
-        # resolve like quoted ones (system names hit the stdlib filter).
-        assert "Foundation/Foundation.h" in modules
+        assert "<Foundation/Foundation.h>" in modules
         assert "Helper.h" in modules
-        assert "stdio.h" in modules
-        assert not any(m.startswith("<") for m in modules)
+        assert "<stdio.h>" in modules
 
     def test_a_forward_declaration_is_never_an_import(self, parser: ASTParser) -> None:
         # `@class Sidecar;` names a class, not a file. It has no path to
