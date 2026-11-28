@@ -7,6 +7,9 @@ from pathlib import Path
 
 import networkx as nx
 
+from repowise.core.ingestion.extractors.bindings.go import (
+    build_go_directory_package_map,
+)
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import ASTParser
@@ -19,9 +22,6 @@ from repowise.core.ingestion.resolvers.go import (
 from repowise.core.ingestion.resolvers.go_workspace import (
     build_go_package_index,
     exported_go_files,
-)
-from repowise.core.ingestion.extractors.bindings.go import (
-    build_go_directory_package_map,
 )
 
 
