@@ -1265,11 +1265,7 @@ def place_clr_frames(
     top-level statements' ``Program``), the frame keeps its path and stays
     outside the checkout.
     """
-    by_type: dict[str, list[str]] = {}
-    for rel, symbols in symbols_by_file.items():
-        if rel.endswith(".cs") and path_origin(rel) not in ("vendored", "generated"):
-            for full in _clr_type_names(symbols):
-                by_type.setdefault(full, []).append(rel)
+    by_type = _clr_files_by_type(symbols_by_file)
     base = posixpath.normpath(root.replace("\\", "/")).rstrip("/")
     out: list[ProfileFrame] = []
     for frame in frames:
@@ -1277,21 +1273,35 @@ def place_clr_frames(
         if name is None or "/" in frame.path.replace("\\", "/"):
             out.append(frame)
             continue
-        files = by_type.get(name.type_name, [])
-        if len(files) > 1 and not name.member_known:
-            # No member to look for: any file of a partial type would be a guess.
-            files = []
-        elif len(files) > 1:
-            files = [
-                rel for rel in files
-                if any(s.kind in _CALLABLE_KINDS and s.name == name.wanted and _id_parent(s) == name.types[-1]
-                       for s in symbols_by_file[rel])
-            ]
-        if len(files) != 1:
-            out.append(frame)
-            continue
-        out.append(replace(frame, path=f"{base}/{files[0]}"))
+        file = _clr_type_file(name, by_type.get(name.type_name, []), symbols_by_file)
+        out.append(frame if file is None else replace(frame, path=f"{base}/{file}"))
     return tuple(out)
+
+
+def _clr_files_by_type(symbols_by_file: Mapping[str, Sequence[IndexedSymbol]]) -> dict[str, list[str]]:
+    """Each type's full name to the checkout ``.cs`` files that declare it."""
+    by_type: dict[str, list[str]] = {}
+    for rel, symbols in symbols_by_file.items():
+        if rel.endswith(".cs") and path_origin(rel) not in ("vendored", "generated"):
+            for full in _clr_type_names(symbols):
+                by_type.setdefault(full, []).append(rel)
+    return by_type
+
+
+def _clr_type_file(
+    name: ClrFrameName, files: list[str], symbols_by_file: Mapping[str, Sequence[IndexedSymbol]]
+) -> str | None:
+    """The one file of *files* the frame belongs on: a partial type's goes by its method."""
+    if len(files) > 1 and not name.member_known:
+        # No member to look for: any file of a partial type would be a guess.
+        return None
+    if len(files) > 1:
+        files = [
+            rel for rel in files
+            if any(s.kind in _CALLABLE_KINDS and s.name == name.wanted and _id_parent(s) == name.types[-1]
+                   for s in symbols_by_file[rel])
+        ]
+    return files[0] if len(files) == 1 else None
 
 
 def _clr_type_names(symbols: Sequence[IndexedSymbol]) -> list[str]:
