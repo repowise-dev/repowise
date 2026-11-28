@@ -48,6 +48,7 @@ from ..extractors.imports.rust import (
 from ..extractors.imports.scala import _scala_imports
 from ..extractors.imports.ts_js import _cjs_imports, _is_dynamic_esm_import
 from ..extractors.visibility import ts_export_aliases
+from ..lang_helpers.preproc_twins import outside_dropped, without_inactive_arm_twins
 from ..language_configs import LANGUAGE_CONFIGS, LanguageConfig
 from ..models import FileInfo, Import, ParsedFile, Symbol, compute_content_hash
 from ..parser_helpers import _collect_error_nodes, _run_query
@@ -224,9 +225,10 @@ class ASTParser:
         query = _load_compiled_query(lang, grammar_tag)
         matches = _run_query(query, root) if query is not None else []
 
-        symbols = _finalize_symbols(
-            _extract_symbols(matches, config, file_info, src, original_source), root, src, file_info
+        extracted, dropped = without_inactive_arm_twins(
+            lang, _extract_symbols(matches, config, file_info, src, original_source), source
         )
+        symbols = _finalize_symbols(extracted, root, src, file_info)
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
         imports.extend(_masked_imports(lang, original_source))
@@ -244,6 +246,7 @@ class ASTParser:
         local_refs, registrars = (
             _python_module_facts(src, symbols) if lang == "python" else (frozenset(), frozenset())
         )
+        calls, references = outside_dropped(calls, dropped), outside_dropped(references, dropped)
         _warn_symbol_bloat(file_info, symbols)
 
         return ParsedFile(

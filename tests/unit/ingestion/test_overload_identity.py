@@ -713,16 +713,42 @@ class TestCppOverloads:
         source = (
             "struct Buf {\n"
             "  template <typename I> char& at(I i) { return d[i]; }\n"
+            "  template <typename I> char& at(I i) { return e[i]; }\n"
             "  template <typename I> const char& at(I i) const { return d[i]; }\n"
             "  char* d;\n"
             "};\n"
         )
         ids = _ids(_parse("b.h", "cpp", source))
-        assert [i for i in ids if "::at" in i] == ["b.h::Buf::at#1", "b.h::Buf::at#1~2"]
+        assert [i for i in ids if "::at" in i] == [
+            "b.h::Buf::at#1",
+            "b.h::Buf::at#1~2",
+            "b.h::Buf::at#1@const",
+        ]
 
-    def test_non_template_build_variants_keep_one_id(self) -> None:
+    def test_a_template_const_twin_takes_const_over_an_ordinal(self) -> None:
+        """The out-of-line const definition matches its declaration's id, and its head stays."""
+        source = (
+            "template <class T> class V {\n public:\n  T& at(int i);\n  const T& at(int i) const;\n"
+            "  template <class U, EN(x)> T& w(U u) { return a(); }\n"
+            "  template <class U, EN(y)> T& w(U u) { return a(); }\n"
+            "  template <class U, EN(y)> const T& w(U u) const { return b(); }\n};\n"
+            "template <class T> T& V<T>::at(int i) { return a(); }\n"
+            "template <class T> const T& V<T>::at(int i) const { return b(); }\n"
+        )
+        ids = [i for i in _ids(_parse("v.h", "cpp", source)) if "::V::" in i]
+        assert ids == [
+            "v.h::V::at#1",
+            "v.h::V::at#1@const",
+            "v.h::V::w#1<U,EN(x)>",
+            "v.h::V::w#1<U,EN(y)>",
+            "v.h::V::w#1<U,EN(y)>@const",
+            "v.h::V::at#1",
+            "v.h::V::at#1@const",
+        ]
+
+    def test_non_template_build_variants_keep_the_first_arm_only(self) -> None:
         source = "#ifdef _WIN32\nint fd(int a) { return a; }\n#else\nint fd(int a) { return -a; }\n#endif\n"
-        assert _ids(_parse("v.h", "cpp", source)) == ["v.h::fd", "v.h::fd"]
+        assert [(s.id, s.start_line) for s in _parse("v.h", "cpp", source).symbols] == [("v.h::fd", 2)]
 
     @pytest.mark.parametrize(
         ("written", "head"),
@@ -764,6 +790,168 @@ class TestCppOverloads:
         assert {"v.cpp::V::operator-#0", "v.cpp::V::operator-#1"} <= ids
         assert {"v.cpp::Cmp::operator()#1", "v.cpp::Cmp::operator()#2"} <= ids
         assert "v.cpp::Cmp::operator==" in ids
+
+
+MESH_H = """struct Tile {};
+class Mesh {
+ public:
+  Tile* getTile(int i);
+  const Tile* getTile(int i) const;
+  Tile& at(int i);
+  const Tile& at(int i) const;
+  Tile& at(const char* key);
+  int count() const;
+  int tiles() const { return getTile(0) ? 1 : 0; }
+};
+"""
+
+MESH_CPP = """#include "mesh.h"
+Tile* Mesh::getTile(int i) { return grow(); }
+const Tile* Mesh::getTile(int i) const { return peek(); }
+Tile* grow() { return 0; }
+const Tile* peek() { return 0; }
+"""
+
+
+class TestCppConstTwins:
+    def test_only_the_const_twin_takes_a_suffix(self) -> None:
+        ids = _ids(_parse("mesh.h", "cpp", MESH_H))
+        assert ids[2:8] == [
+            "mesh.h::Mesh::getTile",
+            "mesh.h::Mesh::getTile#1@const",
+            "mesh.h::Mesh::at#1(int)",
+            "mesh.h::Mesh::at#1(int)@const",
+            "mesh.h::Mesh::at#1(char*)",
+            "mesh.h::Mesh::count",
+        ]
+        assert base_symbol_id("mesh.h::Mesh::getTile#1@const") == "mesh.h::Mesh::getTile"
+        assert untyped_symbol_id("mesh.h::Mesh::at#1(int)@const") == "mesh.h::Mesh::at#1"
+        assert id_segment_name("getTile#1@const") == "getTile"
+
+    def test_a_const_return_type_is_no_const_member(self) -> None:
+        source = "struct S {\n  const int* f(int a);\n  int* f(long a);\n};\n"
+        assert _ids(_parse("s.h", "cpp", source))[1:] == ["s.h::S::f#1(int)", "s.h::S::f#1(long)"]
+
+    def test_an_inserted_const_twin_renames_no_sibling(self) -> None:
+        before = MESH_H.replace("  const Tile* getTile(int i) const;\n", "")
+        assert set(_ids(_parse("mesh.h", "cpp", before))) < set(_ids(_parse("mesh.h", "cpp", MESH_H)))
+
+    def test_each_twin_keeps_its_node_its_calls_and_its_definition(self, tmp_path: Path) -> None:
+        (tmp_path / "mesh.h").write_text(MESH_H)
+        (tmp_path / "mesh.cpp").write_text(MESH_CPP)
+        graph = TestCppOverloads._build(tmp_path)
+        assert graph.nodes["mesh.h::Mesh::getTile"]["defined_by"] == "mesh.cpp::Mesh::getTile"
+        assert graph.nodes["mesh.h::Mesh::getTile#1@const"]["defined_by"] == (
+            "mesh.cpp::Mesh::getTile#1@const"
+        )
+        assert graph.has_edge("mesh.cpp::Mesh::getTile", "mesh.cpp::grow")
+        assert graph.has_edge("mesh.cpp::Mesh::getTile#1@const", "mesh.cpp::peek")
+
+    def test_a_call_binds_the_twin_its_object_constness_names(self, tmp_path: Path) -> None:
+        caller = (
+            '#include "mesh.h"\n'
+            "void draw(const Mesh& m) { m.getTile(1); }\n"
+            "void look(const Mesh* m) { m->getTile(1); }\n"
+            "void edit(Mesh& m) { m.getTile(2); }\n"
+            "void hold(Mesh* m) { const Mesh* other = m; m->getTile(3); }\n"
+        )
+        files = {"mesh.h": ("cpp", MESH_H), "mesh.cpp": ("cpp", MESH_CPP), "use.cpp": ("cpp", caller)}
+        edges = {edge for edge in _edges(tmp_path, files) if edge[1].startswith("mesh.cpp::Mesh")}
+        assert edges >= {
+            ("use.cpp::draw", "mesh.cpp::Mesh::getTile#1@const"),
+            ("use.cpp::look", "mesh.cpp::Mesh::getTile#1@const"),
+            ("use.cpp::edit", "mesh.cpp::Mesh::getTile"),
+            ("use.cpp::hold", "mesh.cpp::Mesh::getTile"),
+        }
+
+    def test_a_const_member_calls_the_const_twin_through_this(self, tmp_path: Path) -> None:
+        files = {"mesh.h": ("cpp", MESH_H), "mesh.cpp": ("cpp", MESH_CPP)}
+        edges = _edges(tmp_path, files)
+        assert ("mesh.h::Mesh::tiles", "mesh.cpp::Mesh::getTile#1@const") in edges
+        assert ("mesh.h::Mesh::tiles", "mesh.cpp::Mesh::getTile") not in edges
+
+    def test_only_a_declaration_before_the_call_decides_constness(self, tmp_path: Path) -> None:
+        caller = (
+            '#include "mesh.h"\n'
+            "void use(const Mesh& m, Mesh& t) { m.getTile(0); { Mesh& m = t; } }\n"
+            "void note(const Mesh& m) {\n  // Mesh& m;\n  m.getTile(0);\n}\n"
+        )
+        files = {"mesh.h": ("cpp", MESH_H), "mesh.cpp": ("cpp", MESH_CPP), "use.cpp": ("cpp", caller)}
+        edges = _edges(tmp_path, files)
+        assert ("use.cpp::use", "mesh.cpp::Mesh::getTile#1@const") in edges
+        assert ("use.cpp::note", "mesh.cpp::Mesh::getTile#1@const") in edges
+
+    def test_twins_through_an_alias_pair_by_constness(self, tmp_path: Path) -> None:
+        (tmp_path / "s.h").write_text(
+            "using Num = int;\nstruct S {\n  int get(Num n);\n  int get(Num n) const;\n};\n"
+        )
+        (tmp_path / "s.cpp").write_text(
+            '#include "s.h"\nint S::get(int n) { return 1; }\nint S::get(int n) const { return 2; }\n'
+        )
+        graph = TestCppOverloads._build(tmp_path)
+        assert graph.nodes["s.h::S::get"]["defined_by"] == "s.cpp::S::get"
+        assert graph.nodes["s.h::S::get#1@const"]["defined_by"] == "s.cpp::S::get#1@const"
+
+
+class TestCppPreprocessorArmTwins:
+    SOURCE = (
+        "struct Filter {\n"
+        "#ifdef VIRTUAL_FILTER\n"
+        "  virtual bool pass(int ref) const;\n"
+        "#else\n"
+        "  bool pass(int ref) const;\n"
+        "#endif\n"
+        "};\n"
+        "#ifdef VIRTUAL_FILTER\n"
+        "bool Filter::pass(int ref) const { return first(ref); }\n"
+        "#else\n"
+        "inline bool Filter::pass(int ref) const { return second(ref); }\n"
+        "#endif\n"
+        "#if 0\n"
+        "int hash(int a) { return dead(a); }\n"
+        "#elif defined(WIDE)\n"
+        "int hash(long a) { return wide(a); }\n"
+        "#else\n"
+        "int hash(int a) { return narrow(a); }\n"
+        "#endif\n"
+        "#ifdef WIN\n"
+        "void only_here() { first(1); }\n"
+        "#endif\n"
+        "int first(int a) { return a; }\n"
+        "int second(int a) { return a; }\n"
+    )
+
+    def test_the_first_live_arm_keeps_the_name(self) -> None:
+        symbols = _parse("f.h", "cpp", self.SOURCE).symbols
+        assert [(s.id, s.start_line) for s in symbols if s.name in ("pass", "hash", "only_here")] == [
+            ("f.h::Filter::pass", 3),
+            ("f.h::Filter::pass", 9),
+            ("f.h::hash", 16),
+            ("f.h::only_here", 21),
+        ]
+
+    def test_no_call_comes_from_a_dropped_arm(self) -> None:
+        calls = {(c.caller_symbol_id, c.target_name) for c in _parse("f.h", "cpp", self.SOURCE).calls}
+        assert {("f.h::Filter::pass", "first"), ("f.h::hash", "wide")} <= calls
+        assert not {name for _, name in calls} & {"second", "dead", "narrow"}
+
+    def test_an_arm_inside_a_dead_block_never_wins(self) -> None:
+        source = (
+            "#if 0 /* disabled */\nvoid f() { dead(); }\n#else\nvoid f() { live(); }\n#endif\n"
+            "#ifdef A\n#if 0\nvoid g() { dead(); }\n#endif\n#else\nvoid g() { live(); }\n#endif\n"
+        )
+        calls = {(c.caller_symbol_id, c.target_name) for c in _parse("d.h", "cpp", source).calls}
+        assert calls == {("d.h::f", "live"), ("d.h::g", "live")}
+
+    def test_a_declaration_in_the_live_arm_drops_a_later_definition(self) -> None:
+        source = "#ifdef EXTERN_F\nvoid f();\n#else\nvoid f() { later(); }\n#endif\nstruct Kept {};\n"
+        parsed = _parse("e.h", "cpp", source)
+        assert [(s.name, s.is_declaration) for s in parsed.symbols] == [("f", True), ("Kept", False)]
+        assert not parsed.calls
+
+    def test_a_type_on_a_dropped_twins_last_line_stays(self) -> None:
+        source = "#ifdef A\nvoid f() {}\n#else\nvoid f() {\n}  struct Fallback {};\n#endif\n"
+        assert [s.name for s in _parse("t.h", "cpp", source).symbols] == ["f", "Fallback"]
 
 
 class TestOtherLanguagesAreUntouched:
