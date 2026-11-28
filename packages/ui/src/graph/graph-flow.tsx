@@ -1026,6 +1026,41 @@ export function GraphFlow(props: GraphFlowProps) {
     [onNodeViewDocs, displayGraph, enterCommunity],
   );
 
+  // Unified grammar — SINGLE CLICK = select + inspect (never structural):
+  //   file/module → select (no expansion; drill-down moved to double-click)
+  //   hub         → select + focus + open the community panel (NO expand)
+  //   core        → no-op
+  // Clicking an already-selected node is a no-op (keeps it selected); the two
+  // pre-clicks Sigma fires before a double-click therefore can't churn the
+  // selection. Deselection happens via stage click or Esc.
+  const handleSigmaNodeClick = useCallback(
+    (nodeId: string, nodeType: string) => {
+      if (nodeType === "core") return;
+      if (selectedNodeId === nodeId) return;
+      if (nodeType === "hub" && displayGraph?.hasNode(nodeId)) {
+        const cid = displayGraph.getNodeAttribute(nodeId, "communityId");
+        // The "not grouped" disc is a list, not a community: it opens its panel
+        // without being selected, since selection dims everything it does not
+        // link to, which is everything.
+        if (cid === UNCLUSTERED_COMMUNITY_ID) {
+          setCommunityPanelId(cid);
+          return;
+        }
+        if (typeof cid === "number" && cid >= 0) {
+          setSelectedNodeId(nodeId);
+          sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
+          openCommunityPanel(cid);
+          return;
+        }
+      }
+      setSelectedNodeId(nodeId);
+      // The community panel describes a hub; selecting a file replaces it in
+      // the rail rather than outranking the inspector forever.
+      setCommunityPanelId(null);
+    },
+    [selectedNodeId, displayGraph, openCommunityPanel],
+  );
+
   const handleSigmaNodeContextMenu = useCallback(
     (event: MouseEvent, nodeId: string, nodeType: string) => {
       setCtxMenu({
@@ -1149,11 +1184,10 @@ export function GraphFlow(props: GraphFlowProps) {
     });
   }, []);
 
-  // Ghost-selection reset, initial-node focus, canvas click, and inspector
-  // actions. Invoked here — after the view-mode reset above — so these effects
-  // keep their original order.
+  // Ghost-selection reset, initial-node focus, and inspector actions.
+  // Invoked here — after the view-mode reset above — so these effects keep
+  // their original order.
   const {
-    handleSigmaNodeClick,
     handleInspectNavigate,
     handleInspectFindPath,
     inspectedFile,
@@ -1162,9 +1196,6 @@ export function GraphFlow(props: GraphFlowProps) {
     selectedNodeId,
     setSelectedNodeId,
     displayGraph,
-    openCommunityPanel,
-    setCommunityPanelId,
-    sigmaRef,
     initialSelectedNode,
     panToNode,
     setPathFrom,

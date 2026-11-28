@@ -7,8 +7,6 @@ import {
 } from "react";
 import type Graph from "graphology";
 import type { FileNodeData, ModuleNodeData } from "./elk-layout";
-import type { SigmaCanvasHandle } from "./sigma/sigma-canvas";
-import { UNCLUSTERED_COMMUNITY_ID } from "./sigma/constellation-adapter";
 import type { SigmaEdgeAttributes, SigmaNodeAttributes } from "./sigma/types";
 
 type SigmaGraph = Graph<SigmaNodeAttributes, SigmaEdgeAttributes>;
@@ -22,9 +20,6 @@ interface GraphSelectionOptions {
   selectedNodeId: string | null;
   setSelectedNodeId: Dispatch<SetStateAction<string | null>>;
   displayGraph: SigmaGraph | null;
-  openCommunityPanel: (cid: number) => void;
-  setCommunityPanelId: Dispatch<SetStateAction<number | null>>;
-  sigmaRef: { current: SigmaCanvasHandle | null };
   initialSelectedNode: string | null | undefined;
   panToNode: (nodeId: string) => void;
   setPathFrom: Dispatch<SetStateAction<string>>;
@@ -36,23 +31,20 @@ interface GraphSelectionOptions {
 }
 
 /**
- * Selection upkeep and the handlers that change it: drop a node the redraw
- * removed, apply the host's initial selection and frame it, canvas single-click,
- * and the inspector's navigate / find-path actions.
+ * Selection upkeep: drop a node the redraw removed, apply the host's initial
+ * selection and frame it, and the inspector's navigate / find-path actions.
  *
  * `selectedNodeId` itself stays in GraphFlow. The notify effect and the
  * drill-down handlers read it before `displayGraph` exists, and these effects
  * have to stay after the view-mode reset. Call this hook at that later site
- * so effect order does not change.
+ * so effect order does not change. The canvas click handler stays in
+ * GraphFlow; its branching is a separate job.
  */
 export function useGraphSelection(opts: GraphSelectionOptions) {
   const {
     selectedNodeId,
     setSelectedNodeId,
     displayGraph,
-    openCommunityPanel,
-    setCommunityPanelId,
-    sigmaRef,
     initialSelectedNode,
     panToNode,
     setPathFrom,
@@ -62,41 +54,6 @@ export function useGraphSelection(opts: GraphSelectionOptions) {
     effectiveNodeDataMap,
     effectiveModuleDataMap,
   } = opts;
-
-  // Unified grammar — SINGLE CLICK = select + inspect (never structural):
-  //   file/module → select (no expansion; drill-down moved to double-click)
-  //   hub         → select + focus + open the community panel (NO expand)
-  //   core        → no-op
-  // Clicking an already-selected node is a no-op (keeps it selected); the two
-  // pre-clicks Sigma fires before a double-click therefore can't churn the
-  // selection. Deselection happens via stage click or Esc.
-  const handleSigmaNodeClick = useCallback(
-    (nodeId: string, nodeType: string) => {
-      if (nodeType === "core") return;
-      if (selectedNodeId === nodeId) return;
-      if (nodeType === "hub" && displayGraph?.hasNode(nodeId)) {
-        const cid = displayGraph.getNodeAttribute(nodeId, "communityId");
-        // The "not grouped" disc is a list, not a community: it opens its panel
-        // without being selected, since selection dims everything it does not
-        // link to, which is everything.
-        if (cid === UNCLUSTERED_COMMUNITY_ID) {
-          setCommunityPanelId(cid);
-          return;
-        }
-        if (typeof cid === "number" && cid >= 0) {
-          setSelectedNodeId(nodeId);
-          sigmaRef.current?.focusNode(nodeId, HUB_FOCUS_RATIO);
-          openCommunityPanel(cid);
-          return;
-        }
-      }
-      setSelectedNodeId(nodeId);
-      // The community panel describes a hub; selecting a file replaces it in
-      // the rail rather than outranking the inspector forever.
-      setCommunityPanelId(null);
-    },
-    [selectedNodeId, displayGraph, openCommunityPanel],
-  );
 
   // A rebuild can drop the selected node (module expanded into files) — clear
   // the selection then, or the reducer dims the whole canvas around a ghost.
@@ -138,7 +95,6 @@ export function useGraphSelection(opts: GraphSelectionOptions) {
     : undefined;
 
   return {
-    handleSigmaNodeClick,
     handleInspectNavigate,
     handleInspectFindPath,
     inspectedFile,
