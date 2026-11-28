@@ -620,7 +620,6 @@ def _split_by_generic_arity(
     """*by_index* with each key two members share respelled with CLR arities.
 
     Only the members that collide change; a sibling that does not keeps its id.
-    Members the arities still join append their CLR traits.
     """
     seen = Counter(by_index.values())
     respelled = {
