@@ -417,6 +417,9 @@ class CallResolver(
         # {C++ type alias id: whether it names a repository class}, {file: ids in function bodies}.
         self._cpp_alias_classes: dict[str, bool] = {}
         self._cpp_function_local_ids: dict[str, frozenset[str]] = {}
+        # {C++ class or constructor scope: (constructor id, admitted count range) pairs}.
+        self._cpp_constructors: dict[str, tuple[tuple[str, tuple[int, int | None] | None], ...]] = {}
+        self._cpp_file_constructors: dict[str, dict[str, list[Symbol]]] = {}
         # {member function name: the C++ classes declaring one}, built on first use.
         self._cpp_member_owners: dict[str, frozenset[str]] | None = None
         self._mros: dict[str, tuple[str, ...] | None] = {}

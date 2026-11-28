@@ -88,7 +88,6 @@ class TestStdNameLeaks:
             "#pragma once\nstruct Slice {\n  Slice(const char* s, int n);\n  const char* d;\n};\n"
             "inline Slice::Slice(const char* s, int n) : d(s) {}\n"
         )
-        # Two arguments: a one-argument ``Slice(x)`` is a cast, which binds the class.
         (tmp_path / "src" / "use.cc").write_text(
             '#include "slice.h"\nint Free() { Slice s = Slice("x", 1); return 0; }\n'
         )

@@ -1,17 +1,14 @@
 """C++ calls written through a type name: ``T(x)``, ``T(a, b)``, ``Alias(x)``.
 
 C++ spells a construction and a conversion like a call, so a bare call can
-land on a class, one of its constructors or a type alias. Three rules settle it:
+land on a class, one of its constructors or a type alias. Two rules settle it:
 
-- ``T(x)`` with one argument is a function-style cast. It names the type, so it
-  binds the class, not a converting constructor (the class's own constructors
-  share its name and would otherwise compete with it, or leave the call
-  ambiguous between two one-argument overloads).
-- ``T()`` and ``T(a, b)`` construct through a constructor, so a candidate set
-  holding a class and only its own constructors is that constructor set, not
-  an ambiguity. A ``T(a, b)`` that still lands on a class declaring
-  constructors chose none of them, so it draws no edge; a class with no
-  constructor of its own keeps the edge.
+- ``T()``, ``T(x)`` and ``T(a, b)`` on a repository class call the one user
+  constructor whose parameters admit that argument count, chosen the way any
+  overload set is (an exact arity first, then defaults). A tie the overload
+  phases cannot break, or a class with no constructor that fits (none
+  declared, so only a compiler-made one runs), draws no edge: neither the
+  class node nor a constructor of another arity is what the call ran.
 - ``Alias(x)`` through a ``using``/``typedef`` of a non-class type
   (``using size_type = uint32_t``), of a library type (``std::pair<..>``) or of
   a class the repository does not declare is a conversion, never a call, so it
@@ -22,12 +19,15 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import replace
 from itertools import accumulate
 
 from .call_receiver_typing._shared import _FUNCTION_KINDS
 from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
+from .return_types import signature_parameter_range
 from .symbol_identity import id_segment_name, outer_scope
 from .type_names import bare_type_name, strip_type_arguments
 
@@ -41,6 +41,8 @@ _TYPEDEF_CLASS_BODY = re.compile(
 )
 _INLINE_CLASS = "{"
 _TYPE_QUALIFIERS = re.compile(r"\b(?:typename|const|volatile|struct|class|union)\b")
+# ``(constructor id, admitted argument count range)`` pairs, one class's or file's.
+_Members = tuple[tuple[str, tuple[int, int | None] | None], ...]
 # An alias of an alias is followed this many hops before it counts as unresolved.
 _ALIAS_HOPS = 4
 
@@ -51,36 +53,88 @@ class CppConstructionMixin:
     def _cpp_type_name_callee(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """*resolved* settled for a receiver-less C++ call that names a type."""
         callee = self._symbols_by_id.get(resolved.callee_id)
-        if callee is None or callee.language != "cpp" or call.receiver_name:
+        if callee is None or callee.language != "cpp" or call.receiver_name or call.receiver_call:
             return resolved
         if callee.kind == "type_alias":
             return resolved if self._cpp_alias_names_repo_class(callee) else None
-        if call.argument_count == 1 and self._is_cpp_constructor(callee):
-            class_id = self._cpp_constructed_class(callee)
-            if class_id is not None:
-                return replace(resolved, callee_id=class_id)
-        # ``T()`` stays: a defaulted default constructor is named by its class.
-        if (
-            callee.kind in _CONSTRUCTIBLE_KINDS
-            and (call.argument_count or 0) > 1
-            and self._cpp_declares_constructor(resolved.callee_id)
-        ):
-            return None
-        return resolved
+        if callee.kind not in _CONSTRUCTIBLE_KINDS and not self._is_cpp_constructor(callee):
+            return resolved
+        members = self._cpp_constructor_group(resolved, callee)
+        found = self._deciding_members(members, call.argument_count, call.argument_types)
+        return replace(resolved, callee_id=found[0]) if len(found) == 1 else None
 
-    def _cpp_declares_constructor(self, class_id: str) -> bool:
-        """Does the class *class_id* declare a constructor of its own?"""
-        return any(
-            self._is_cpp_constructor(symbol) and self._cpp_constructed_class(symbol) == class_id
-            for sym_id in self._global_symbols.get(self._symbols_by_id[class_id].name, ())
-            if (symbol := self._symbols_by_id.get(sym_id)) is not None
+    def _cpp_constructor_group(self, resolved: ResolvedCall, callee: Symbol) -> _Members:
+        """The constructors a call on class or constructor *callee* may mean, with admitted counts.
+
+        A class answers with the constructors its body declares. A constructor
+        answers with its class's, when that body declares this very constructor
+        (an out-of-line definition in a .cc keeps its header siblings), else
+        with the group its own file declares. Another file's same-named class
+        that does not declare it is no evidence.
+        """
+        if callee.kind in _CONSTRUCTIBLE_KINDS:
+            # A forward declaration stands for the class body that holds the constructors.
+            return self._cpp_class_constructors(
+                (self._redirect_to_definition(resolved) or resolved).callee_id
+            )
+        class_id = self._cpp_constructed_class(callee)
+        if class_id is not None:
+            members = self._cpp_class_constructors(class_id)
+            if any(
+                member == callee.id or self._decl_to_def.get(member) == callee.id
+                for member, _ in members
+            ):
+                return members
+        scope = outer_scope(callee.id)
+        path = self._symbol_paths_by_id.get(callee.id, "")
+        # Keyed apart from a class id the same scope may spell.
+        return self._cpp_constructors_where(
+            f"{path}|{scope}", path, callee.name, lambda s: outer_scope(s.id) == scope
         )
+
+    def _cpp_class_constructors(self, class_id: str) -> _Members:
+        """The constructors declared in the body of class *class_id*.
+
+        Read from the body's span: a nested class's id carries its outer class,
+        while its constructors' ids do not.
+        """
+        owner = self._symbols_by_id[class_id]
+        return self._cpp_constructors_where(
+            class_id,
+            self._symbol_paths_by_id.get(class_id, ""),
+            owner.name,
+            lambda s: owner.start_line <= s.start_line <= owner.end_line,
+        )
+
+    def _cpp_constructors_where(
+        self, key: str, path: str, name: str, in_group: Callable[[Symbol], bool]
+    ) -> _Members:
+        """The constructors of class *name* in *path* that *in_group* admits, cached under *key*.
+
+        A constructor of a class local to a function body is never a candidate.
+        """
+        members = self._cpp_constructors.get(key)
+        if members is None:
+            by_name = self._cpp_file_constructors.get(path)
+            if by_name is None:
+                by_name = self._cpp_file_constructors[path] = defaultdict(list)
+                for s in getattr(self._parsed_files.get(path), "symbols", ()):
+                    if self._is_cpp_constructor(s):
+                        by_name[s.name].append(s)
+            # An in-class declaration and its inline definition share one id; the
+            # declaration comes first and is the one that carries default arguments.
+            ranges: dict[str, tuple[int, int | None] | None] = {}
+            for s in by_name.get(name, ()):
+                if in_group(s) and not self._cpp_function_local(s.id):
+                    ranges.setdefault(s.id, signature_parameter_range(s.signature or "", "cpp"))
+            members = self._cpp_constructors[key] = tuple(ranges.items())
+        return members
 
     def _cpp_one_constructed_type(self, candidates: set[str], call: CallSite) -> str | None:
         """The one class *candidates* construct, when they are a class and its own constructors.
 
-        A one-argument call answers with the class, any other with the
-        constructor set, which overload narrowing then splits by arity.
+        The class stands for the set; ``_cpp_type_name_callee`` then picks the
+        constructor the call's arguments fit.
         """
         types = [c for c in candidates if self._symbols_by_id[c].kind in _CONSTRUCTIBLE_KINDS]
         if len(types) != 1 or self._symbols_by_id[types[0]].language != "cpp":
@@ -92,9 +146,7 @@ class CppConstructionMixin:
             for c in constructors
         ):
             return None
-        if call.argument_count == 1 or len(constructors) != 1:
-            return types[0]
-        return next(iter(constructors))
+        return types[0]
 
     def _cpp_function_local(self, sym_id: str) -> bool:
         """Is C++ *sym_id* declared inside a function body, where only that body names it?
