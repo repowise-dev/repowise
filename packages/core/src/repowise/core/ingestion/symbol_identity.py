@@ -15,6 +15,11 @@ gains a discriminator:
   A Kotlin extension's receiver leads its types, as it leads the JVM
   signature it compiles to: ``Byte.toHexString()`` is
   ``Util.kt::toHexString#0(Byte)``, beside ``toHexString#0(Int)``.
+  C++ template definitions those types still join (SFINAE overloads that
+  differ only in their constraints) append their template parameters,
+  compacted: ``write#2(OutputIt,T)<Char,T,FMT_ENABLE_IF(is_integral<T>)>``.
+  Ones equal even there take ``~<n>``, their place among the equal ones,
+  the first keeping none.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
   mean any variant.
@@ -45,7 +50,7 @@ from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
-_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?|[A-Za-z_]\w*\(.*\)")
+_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?|[A-Za-z_]\w*\(.*\)")
 _COUNT = re.compile(r"\d+")
 _GENERIC_ARITY = re.compile(r"`\d+$")
 
@@ -81,6 +86,16 @@ def symbol_id_arity(symbol_id: str) -> str | None:
     payload = symbol_id_discriminator(symbol_id)
     count = _COUNT.match(payload) if payload else None
     return count.group() if count else payload
+
+
+def overload_signature(symbol_id: str) -> str | None:
+    """The payload's count and parameter types alone: ``write#2(T)<T>`` -> ``2(T)``."""
+    payload = symbol_id_discriminator(symbol_id)
+    count = _COUNT.match(payload) if payload else None
+    if payload is None or count is None:
+        return payload
+    rest = payload[count.end() :]
+    return count.group() + (rest[: rest.find(")") + 1] if rest.startswith("(") else "")
 
 
 def untyped_symbol_id(symbol_id: str) -> str:
@@ -466,6 +481,8 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
         keyed = [(symbol, discriminator(symbol)) for symbol in members]
         if discriminator is _parameter_count:
             keyed = _split_same_counts(keyed)
+        if language == "cpp":
+            keyed = _split_template_overloads(keyed)
         if len({key for _, key in keyed if key is not None}) < 2:
             continue
         for symbol, key in keyed:
@@ -503,6 +520,92 @@ def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Sym
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
     return out
+
+
+# How a C++ template head is compacted for an id: comments, defaults (written
+# on a declaration, never repeated on its definition), ``typename`` and
+# ``class`` go, a qualified name keeps its last segment (``std::is_same<T,
+# U>::value`` -> ``is_same<T,U>``), and a pack reads as the array erased types
+# spell (``typename... Args`` -> ``Args[]``), so no separator survives.
+_HEAD_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_HEAD_KEYWORD = re.compile(r"\b(?:typename|class)\b")
+_HEAD_QUALIFIER = re.compile(r"\b\w+\s*::\s*|(?<=>)(?:\s*::\s*(?:template\s+)?\w+)+|::")
+_HEAD_PACK = re.compile(r"\.\.\.\s*(\w*)")
+_HEAD_SPACE = re.compile(r"\s*([^\w\s])\s*")
+
+
+def _is_operator(head: str, index: int) -> bool:
+    """Is ``head[index]`` part of ``>=``, ``==``, ``->`` and the like, neither a bracket nor a default?"""
+    char, before, after = head[index], head[index - 1 : index], head[index + 1 : index + 2]
+    if char not in "<>=":
+        return False
+    return "=" in (before, after) or (char == "=" and before in ("<", ">", "!")) or (
+        char == ">" and before == "-"
+    )
+
+
+def _without_defaults(head: str) -> str:
+    """``<typename T = int, int N = 0>`` -> ``<typename T , int N >``: each top-level ``= ...`` cut."""
+    out: list[str] = []
+    depth, skipping = 0, False
+    for index, char in enumerate(head):
+        if not _is_operator(head, index):
+            depth += (char in "<([{") - (char in ">)]}")
+            if depth == 1 and char in ",=":
+                skipping = char == "="
+            skipping = skipping and depth > 0
+        if not skipping:
+            out.append(char)
+    return "".join(out)
+
+
+def template_head(symbol: Symbol) -> str:
+    """``<typename T, FMT_ENABLE_IF(std::is_integral<T>::value)>`` -> ``<T,FMT_ENABLE_IF(is_integral<T>)>``."""
+    text = symbol.template_parameters
+    if not text:
+        return ""
+    text = _without_defaults(_HEAD_COMMENT.sub(" ", text))
+    text = _HEAD_QUALIFIER.sub("", _HEAD_KEYWORD.sub(" ", text))
+    text = re.sub(r"[./#]", "_", _HEAD_PACK.sub(r" \1[]", text))
+    return _HEAD_SPACE.sub(r"\1", " ".join(text.split()))
+
+
+def _split_template_overloads(
+    keyed: list[tuple[Symbol, str | None]],
+) -> list[tuple[Symbol, str | None]]:
+    """Tell apart the C++ template definitions that still share a key.
+
+    Where their template heads differ, every member of the key appends its
+    own head, so a declaration stays with the definition writing the same
+    head. Template definitions equal even there append ``~<n>``, their place
+    among the equal ones; the first keeps none.
+    """
+    by_key: dict[str, list[int]] = defaultdict(list)
+    for index, (_symbol, key) in enumerate(keyed):
+        if key is not None:
+            by_key[key].append(index)
+    out = list(keyed)
+    for key, indices in by_key.items():
+        for index, suffix in _template_suffixes([keyed[i][0] for i in indices]).items():
+            out[indices[index]] = (keyed[indices[index]][0], key + suffix)
+    return out
+
+
+def _template_suffixes(members: list[Symbol]) -> dict[int, str]:
+    """``{position: suffix}`` for the *members* of one key that need a head or ordinal."""
+    heads = [template_head(member) for member in members]
+    defined = [i for i, member in enumerate(members) if not member.is_declaration]
+    if len(defined) < 2:
+        return {}
+    split = len({heads[i] for i in defined}) > 1
+    seen: Counter[str] = Counter(heads[i] for i in defined if heads[i])
+    ordinals: dict[int, str] = {}
+    for i in reversed(defined):
+        if heads[i]:
+            ordinals[i] = f"~{seen[heads[i]]}" if seen[heads[i]] > 1 else ""
+            seen[heads[i]] -= 1
+    suffixes = {i: (heads[i] if split else "") + ordinals.get(i, "") for i in range(len(members))}
+    return {i: suffix for i, suffix in suffixes.items() if suffix}
 
 
 def _split_by_generic_arity(
@@ -638,6 +741,7 @@ __all__ = [
     "module_symbol_id",
     "outer_scope",
     "overload_sets",
+    "overload_signature",
     "pair_overloads",
     "parameter_type_arity",
     "split_python_property_mutators",
@@ -647,5 +751,6 @@ __all__ = [
     "symbol_id_discriminator",
     "symbols_by_id",
     "takes_shared_id",
+    "template_head",
     "untyped_symbol_id",
 ]
