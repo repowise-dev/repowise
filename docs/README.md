@@ -72,6 +72,7 @@ For a map of every layer and how they feed each other, read
 | [layers/SECURITY.md](layers/SECURITY.md) | The local scan: 25 pattern kinds plus a symbol-name scan, and secrets across history |
 | [start/CI.md](start/CI.md) | Gate pull requests with the GitHub Action or the GitLab template |
 | [start/GIT_HOSTS.md](start/GIT_HOSTS.md) | What works on each git host and CI, and how to name a self-managed host |
+| [start/PERFORCE.md](start/PERFORCE.md) | Index a Perforce depot through a git-p4 or p4-fusion mirror |
 
 ### Improve the codebase
 
