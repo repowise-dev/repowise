@@ -325,6 +325,31 @@ class TestPartialFragmentScope:
         graph = _build(tmp_path)
         assert _calls(graph, "Text.cs::Text::Use") == {}
 
+    def test_construction_past_a_static_import_method_reaches_the_type(
+        self, tmp_path: Path
+    ) -> None:
+        # ``using static`` brings a method Widget in; ``new Widget()`` still means the type.
+        (tmp_path / "Caller.cs").write_text(
+            "namespace App;\nusing static Tools.Helper;\nusing Lib;\ninternal class Caller\n{\n"
+            "    public void Use() { var w = new Widget(); }\n}\n"
+        )
+        (tmp_path / "Helper.cs").write_text(
+            "namespace Tools;\npublic static class Helper\n{\n"
+            "    public static void Widget() { }\n}\n"
+        )
+        (tmp_path / "Widget.cs").write_text("namespace Lib;\npublic class Widget { }\n")
+        graph = _build(tmp_path)
+        assert set(_calls(graph, "Caller.cs::Caller::Use")) == {"Widget.cs::Widget"}
+
+    def test_delegate_construction_keeps_its_edge(self, tmp_path: Path) -> None:
+        (tmp_path / "U.cs").write_text(
+            "namespace App;\npublic delegate void Handler(int a);\ninternal class U\n{\n"
+            "    void M(int a) { }\n"
+            "    public void Run() { var h = new Handler(M); }\n}\n"
+        )
+        graph = _build(tmp_path)
+        assert "U.cs::Handler" in _calls(graph, "U.cs::U::Run")
+
     def test_partial_method_call_reaches_a_fragment(self, tmp_path: Path) -> None:
         # A partial method is declared in one fragment and implemented in
         # another; a call from a third lands on one of the two, never elsewhere.

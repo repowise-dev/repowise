@@ -1239,7 +1239,8 @@ class CallResolver(
             return invoked
         hit = self._resolve_free_call(file_path, call, caller_id)
         if hit is not None and call.is_construction and not self._is_constructible(hit.callee_id):
-            return None  # ``new X(..)`` builds a type, never calls a method X
+            # ``new X(..)`` builds a type, never calls a method X: ask the type tier.
+            return self._resolve_csharp_constructed_type(file_path, call, caller_id)
         if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
             return self._cpp_free_rival(file_path, call, caller_id)
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
@@ -1749,7 +1750,8 @@ class CallResolver(
         the file. ``_file_methods`` carries the class. A member call on its bare
         fallback has an explicit receiver, so the caller's class is not it.
         An anonymous class or enum-constant body (``Gson::FILTER::Filter``)
-        sees its own members first, then those of the class around it.
+        sees its own members first, then those of the class around it. A
+        construction (``new X()``) looks for a type, so it passes over methods.
         """
         parsed = self._parsed_files.get(file_path)
         if parsed is None or parsed.file_info.language not in _IMPLICIT_RECEIVER_LANGUAGES:
@@ -1760,7 +1762,7 @@ class CallResolver(
         caller_class = _extract_class_from_symbol_id(caller_id)
         while caller_class:
             own = methods.get((caller_class, call.target_name))
-            if own is not None:
+            if own is not None and (not call.is_construction or self._is_constructible(own)):
                 return own
             caller_class = outer_scope(caller_class)
         return None
@@ -1920,8 +1922,6 @@ class CallResolver(
     ) -> tuple[bool, ResolvedCall | None]:
         """Tier 1, as ``(handled, edge)``: a handled None is a refusal."""
         own = self._enclosing_class_method(file_path, call, caller_id)
-        if call.is_construction and not self._is_constructible(own):
-            own = None
         # Own scope answers recursion, where the site proves it is recursion.
         own_refused = own == caller_id and not self._is_bare_recursion(file_path, call, caller_id)
         if self._is_anonymous_id(own):
@@ -1949,24 +1949,11 @@ class CallResolver(
         else:
             table = self._file_symbols
         callee_id = table.get(file_path, {}).get(call.target_name)
-        if call.is_construction and not self._is_constructible(callee_id):
-            # The flat index is last-wins: a same-named method may hide the type.
-            callee_id = self._file_type_constructor(file_path, call.target_name)
+        if call.is_construction:
+            callee_id = self._constructed_in_file(file_path, call.target_name, callee_id)
         if callee_id is None:
             return False, None
-        if (
-            own is not None
-            and own != callee_id
-            and (
-                _rivals_a_class_method(callee_id)
-                # C# writes ``new`` for every construction: a plain call never means a type.
-                or (
-                    language == "csharp"
-                    and not call.is_construction
-                    and self._is_constructible(callee_id)
-                )
-            )
-        ):
+        if own is not None and own != callee_id and self._flat_hit_is_stranger(call, callee_id):
             # Own class first: the flat hit is a stranger.
             if own_refused:
                 return True, None
@@ -2068,16 +2055,41 @@ class CallResolver(
         )
 
     def _is_constructible(self, sym_id: str | None) -> bool:
-        """Is *sym_id* a type or a constructor, what ``new X(..)`` reaches?"""
+        """Is *sym_id* a type, a C# delegate or a constructor, what ``new X(..)`` reaches?"""
         if sym_id is None:
             return False
-        if self._symbols_by_id[sym_id].kind in _TYPE_KINDS:
+        symbol = self._symbols_by_id[sym_id]
+        if symbol.kind in _TYPE_KINDS:
+            return True
+        # C# indexes only constructors and delegates as functions.
+        if symbol.language == "csharp" and symbol.kind == "function":
             return True
         parts = sym_id.split("::")
         return len(parts) >= 3 and id_segment_name(parts[-1]) == id_segment_name(parts[-2])
 
-    def _file_type_constructor(self, file_path: str, name: str) -> str | None:
-        """The type *name* this file declares, by its constructor when it has one."""
+    def _flat_hit_is_stranger(self, call: CallSite, callee_id: str) -> bool:
+        """Is the flat same-file hit no rival for the caller's own class member?
+
+        Another class's ordinary method (the flat index is last-wins), or, in
+        C#, which writes ``new`` for every construction, a type or constructor
+        reached by a plain call.
+        """
+        if _rivals_a_class_method(callee_id):
+            return True
+        return (
+            not call.is_construction
+            and self._symbols_by_id[callee_id].language == "csharp"
+            and self._is_constructible(callee_id)
+        )
+
+    def _constructed_in_file(self, file_path: str, name: str, hit: str | None) -> str | None:
+        """What ``new name(..)`` reaches in this file: *hit*, unless it is a method.
+
+        The flat index is last-wins, so a same-named method may hide the type:
+        then the type this file declares, by its constructor when it has one.
+        """
+        if self._is_constructible(hit):
+            return hit
         parsed = self._parsed_files.get(file_path)
         type_id = next(
             (
