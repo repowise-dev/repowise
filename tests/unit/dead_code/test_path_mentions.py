@@ -273,3 +273,9 @@ def test_plugin_call_text_inside_a_string_is_not_a_load(config):
     assert not _dropped("src/old.ts", {"next.config.ts": config})
     # A real call after the literal still loads its file.
     assert _dropped("src/old.ts", {"next.config.ts": config + 'somePlugin("./src/old.ts");\n'})
+
+
+def test_a_config_with_root_dir_loads_its_setup_file():
+    # Issue #6484: jest config setting rootDir: "src" with <rootDir>/setup.ts drops unreachable finding
+    config = 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };\n'
+    assert _dropped("src/setup.ts", {"jest.config.js": config})

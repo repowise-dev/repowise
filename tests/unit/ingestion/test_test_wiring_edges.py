@@ -103,6 +103,34 @@ def test_a_setup_path_resolves_against_the_config_or_any_directory_above() -> No
     assert resolve_setup_spec("@testing-library/jest-dom", "web/config/jest.config.js", ctx) is None
 
 
+def test_setup_spec_resolves_against_literal_root_dir() -> None:
+    # Issue #6484: a config with rootDir: "src" resolves <rootDir>/setup.ts to src/setup.ts
+    graph, parsed, ctx = _ctx(
+        {
+            "package.json": "{}",
+            "jest.config.js": 'module.exports = { rootDir: "src", setupFilesAfterEnv: ["<rootDir>/setup.ts"] };',
+            "src/setup.ts": "",
+            "src/add.test.ts": "",
+        }
+    )
+    assert resolve_setup_spec("<rootDir>/setup.ts", "jest.config.js", ctx) == "src/setup.ts"
+    added = _add_setup_edges(graph, parsed, ctx, ctx.path_set)
+    assert added == 1
+    assert graph.has_edge("src/add.test.ts", "src/setup.ts")
+
+    # Configs without rootDir still resolve <rootDir> against package directory
+    _, _, ctx_no_root = _ctx(
+        {
+            "web/package.json": "{}",
+            "web/config/jest.config.js": 'module.exports = { setupFilesAfterEnv: ["<rootDir>/jest.setup.js"] };',
+            "web/jest.setup.js": "",
+        }
+    )
+    assert resolve_setup_spec("<rootDir>/jest.setup.js", "web/config/jest.config.js", ctx_no_root) == (
+        "web/jest.setup.js"
+    )
+
+
 def test_tests_a_config_runs_get_an_edge_to_its_setup_files() -> None:
     graph, parsed, ctx = _ctx(
         {

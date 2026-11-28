@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
@@ -57,7 +57,11 @@ from ...ingestion.extractors.visibility import (
     _TS_EXPORT_DEFAULT_NAME_RE,
     _TS_EXPORT_LIST_SOURCE_RE,
 )
-from ...ingestion.languages.js_config_values import plugin_path_arguments, value_spans
+from ...ingestion.languages.js_config_values import (
+    plugin_path_arguments,
+    string_literals,
+    value_spans,
+)
 from ...ingestion.languages.registry import REGISTRY
 from ...ingestion.models import TS_JS_LANGUAGES
 from ...ingestion.source_mask import can_mask, mask_source
@@ -655,7 +659,22 @@ def _token_spellings(token: str) -> list[str]:
         start = slash + 1
 
 
-def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, list[str]]:
+def _package_dir(config: str, paths: Collection[str]) -> str:
+    """The nearest directory at or above *config* holding a ``package.json``; ``""`` for none."""
+    path_set = paths if isinstance(paths, (set, frozenset)) else set(paths)
+    d = config.rpartition("/")[0]
+    while d:
+        if f"{d}/package.json" in path_set:
+            return d
+        d = d.rpartition("/")[0]
+    return ""
+
+
+def _files_naming(
+    targets: set[str],
+    source_map: dict[str, bytes],
+    loads: _ConfigLoads | None = None,
+) -> dict[str, list[str]]:
     """For each of *targets* other files name by path, those files in path order."""
     wanted: dict[str, set[str]] = {}
     for target in targets:
@@ -665,12 +684,17 @@ def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, 
     # every path-shaped token in a repository names none of the candidates.
     tails = {key.rpartition("/")[2] for key in wanted}
 
+    if loads is None:
+        loads = _ConfigLoads(source_map)
+
     named_in: dict[str, list[str]] = {}
     # Tokens whose last segment is no target's: the same paths recur across a
     # repository, so each is ruled out once rather than once per file.
     unnamed: set[bytes] = set()
     for path, blob in sorted(source_map.items()):
         base = path.rpartition("/")[0]
+        if is_tool_config(path):
+            blob = blob + b"\n" + loads._load_values(path)
         for target in _targets_in(blob, wanted, tails, base, unnamed) - {path}:
             named_in.setdefault(target, []).append(path)
     return named_in
@@ -758,8 +782,8 @@ def clamp_path_mentions(
     if not source_map or not in_scope:
         return findings
 
-    named_in = _files_naming({f.file_path for f in in_scope}, source_map)
     loads = _ConfigLoads(source_map)
+    named_in = _files_naming({f.file_path for f in in_scope}, source_map, loads)
     run = {id(f) for f in in_scope if _loaded(f, named_in.get(f.file_path, ()), loads)}
     kept = [f for f in findings if id(f) not in run]
     for finding in kept:
@@ -807,7 +831,22 @@ class _ConfigLoads:
             # a bare word argument is a name, not a file, so it needs a "/".
             paths = [f'"{s}"'.encode() for s in plugin_path_arguments(text) if "/" in s]
             spans = value_spans(text, _TOOL_CONFIG_LOAD_KEYS)
-            self._values[config] = b"\n".join([*spans, *paths])
+            root_dirs = [
+                s for span in value_spans(text, ("rootDir",)) for s in string_literals(span)
+            ]
+            config_dir = config.rpartition("/")[0]
+            root_base = (
+                posixpath.normpath(posixpath.join(config_dir, root_dirs[0]))
+                if root_dirs
+                else _package_dir(config, self.source_map)
+            )
+            root_paths = [
+                f'"{posixpath.normpath(posixpath.join(root_base, s[len("<rootDir>/"):]))}"'.encode()
+                for span in spans
+                for s in string_literals(span)
+                if s.startswith("<rootDir>/")
+            ]
+            self._values[config] = b"\n".join([*spans, *paths, *root_paths])
         return self._values[config]
 
 

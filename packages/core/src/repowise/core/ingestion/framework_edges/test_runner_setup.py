@@ -81,6 +81,25 @@ def _package_dir(config: str, path_set: set[str]) -> str:
     return ""
 
 
+def _config_root_dir(config: str, ctx: ResolverContext) -> str | None:
+    text = (ctx.source_map or {}).get(config)
+    if text is None:
+        abs_path = None
+        if ctx.parsed_files and config in ctx.parsed_files:
+            abs_path = getattr(ctx.parsed_files[config].file_info, "abs_path", None)
+        elif ctx.repo_path:
+            abs_path = ctx.repo_path / config
+        if abs_path:
+            text = source_bytes(config, abs_path, ctx.source_map)
+    if not text:
+        return None
+    for span in value_spans(text, ("rootDir",)):
+        for lit in string_literals(span):
+            base = posixpath.dirname(config)
+            return posixpath.normpath(posixpath.join(base, lit)) if base else lit
+    return None
+
+
 def resolve_setup_spec(spec: str, config: str, ctx: ResolverContext) -> str | None:
     """The indexed file *spec*, written in *config*, names, or ``None``.
 
@@ -92,7 +111,8 @@ def resolve_setup_spec(spec: str, config: str, ctx: ResolverContext) -> str | No
     from ..resolvers.typescript import resolve_ts_js_import
 
     if spec.startswith("<rootDir>/"):
-        bases = [_package_dir(config, ctx.path_set)]
+        root_dir = _config_root_dir(config, ctx)
+        bases = [root_dir if root_dir is not None else _package_dir(config, ctx.path_set)]
         spec = spec[len("<rootDir>/") :]
     else:
         bases = []
