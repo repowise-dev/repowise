@@ -224,8 +224,10 @@ def _is_python_method_eval(masked_source: str, match: re.Match) -> bool:
     if qualifier and qualifier.rstrip(".") not in _PYTHON_EVAL_OWNERS:
         return True
     # ``Net().eval(``: the pattern's qualifier only spans names, so a call or
-    # subscript in front of the dot leaves it empty.
-    return not qualifier and masked_source[: match.start()].rstrip().endswith(".")
+    # subscript in front of the dot leaves it empty. An ellipsis (``...``) on
+    # the line before is a statement, not a method dot.
+    prefix = masked_source[: match.start()].rstrip()
+    return not qualifier and prefix.endswith(".") and not prefix.endswith("...")
 
 
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:

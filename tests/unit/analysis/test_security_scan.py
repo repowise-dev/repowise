@@ -173,6 +173,7 @@ class TestScanFile:
             ("x = (\nmodel = Net().to(device).eval()\n", []),
             ("x = (\nmodel . eval()\n", []),
             ("x = (\nobj.exec(payload)\n", ["exec_call"]),
+            ("x = (\n...\neval(payload)\n", ["eval_call"]),
         ],
     )
     def test_python_fallback_eval_is_the_builtin_only(
