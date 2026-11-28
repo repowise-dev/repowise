@@ -241,3 +241,84 @@ def test_shared_basis_note_is_said_once():
     )
     assert summary["call_resolution_note"] == note
     assert summary["call_resolution_basis"] == [{"language": "python"}, {"language": "typescript"}]
+
+
+@pytest.mark.asyncio
+async def test_list_rows_leave_detail_to_the_lookup_by_id(setup_mcp):
+    from repowise.core.analysis.dead_code.serving import DETAIL_FIELDS
+    from repowise.server.mcp_server import get_dead_code
+
+    listed = await get_dead_code()
+    rows = [f for t in listed["tiers"].values() for f in t["findings"]]
+    assert rows
+    for row in rows:
+        assert not set(DETAIL_FIELDS) & set(row), row
+        assert {"id", "kind", "file_path", "confidence", "lines", "safe_to_delete"} <= set(row)
+
+    export = next(r for r in rows if r["symbol_name"] == "deprecated_login")
+    found = await get_dead_code(finding_id=export["id"])
+    assert found["resolved"] is True
+    detail = found["finding"]
+    assert detail["status"] == "open"
+    assert detail["symbol_kind"] == "function"
+    assert detail["age_days"] == 120
+    assert detail["repository"]
+
+
+@pytest.mark.asyncio
+async def test_default_page_is_ten_per_tier(setup_mcp, session):
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import DeadCodeFinding, Repository
+    from repowise.server.mcp_server import get_dead_code
+    from tests.unit.server.mcp.conftest import _NOW
+
+    rid = (await session.execute(select(Repository.id))).scalars().first()
+    for n in range(12):
+        session.add(
+            DeadCodeFinding(
+                id=f"many{n}",
+                repository_id=rid,
+                kind="unused_export",
+                file_path="src/db/models.py",
+                symbol_name=f"Unused{n}",
+                symbol_kind="class",
+                confidence=0.5,
+                reason="Exported but no external callers found",
+                lines=5,
+                safe_to_delete=False,
+                status="open",
+                analyzed_at=_NOW,
+            )
+        )
+    await session.commit()
+
+    medium = (await get_dead_code())["tiers"]["medium"]
+    assert medium["count"] == 13
+    assert len(medium["findings"]) == 10
+    assert len((await get_dead_code(limit=20))["tiers"]["medium"]["findings"]) == 13
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["resolved", "false_positive", "acknowledged"])
+async def test_a_triaged_finding_still_resolves_by_id(setup_mcp, session, status):
+    from repowise.core.persistence.crud.analysis.dead_code import update_dead_code_status
+    from repowise.server.mcp_server import get_dead_code
+
+    listed = await get_dead_code()
+    row = next(
+        f for t in listed["tiers"].values() for f in t["findings"] if f["symbol_name"] == "OldModel"
+    )
+    await update_dead_code_status(session, "dc3", status, note="kept for the migration")
+    await session.commit()
+
+    assert "OldModel" not in {
+        f.get("symbol_name")
+        for t in (await get_dead_code())["tiers"].values()
+        for f in t["findings"]
+    }
+    for asked in (row["id"], "dc3"):
+        found = await get_dead_code(finding_id=asked)
+        assert found["resolved"] is True, asked
+        assert found["finding"]["status"] == status
+        assert found["finding"]["note"] == "kept for the migration"

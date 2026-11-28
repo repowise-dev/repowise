@@ -72,6 +72,7 @@ from .models import (
     PackageInfo,
     RepoStructure,
 )
+from .ts_declarations import DECLARATION_SUFFIXES
 
 # ---------------------------------------------------------------------------
 # Traversal statistics
@@ -374,12 +375,25 @@ _EMITTED_LANGUAGES: frozenset[str] = _SKIP_GENERATED_CHECK | {
 
 #: Filename endings a compiler emits in otherwise hand-written languages.
 _EMITTED_SUFFIXES: tuple[str, ...] = (
-    ".d.ts",
-    ".d.mts",
-    ".d.cts",
+    *DECLARATION_SUFFIXES,
     ".qmltypes",
     *_GENERATED_SUFFIXES,
 )
+
+
+def _cargo_is_published(manifest_path: Path) -> bool:
+    """Whether a Cargo.toml declares the crate published (not publish = false or [])."""
+    import tomllib
+
+    from repowise.core.analysis.published_packages import cargo_manifest_publishes
+
+    try:
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8", errors="ignore"))
+        if "package" not in data:
+            return True
+        return cargo_manifest_publishes(data)
+    except Exception:
+        return False
 
 
 class FileTraverser:
@@ -584,6 +598,9 @@ class FileTraverser:
                 entry_points.append(f.path)
                 if f.is_application_main:
                     application_mains.append(f.path)
+        launchers = self._android_launchers(files)
+        application_mains = list(set(application_mains) | launchers)
+        entry_points = list(set(entry_points) | launchers)
 
         # Display-only estimate (~40 bytes/line), so no file is opened to count.
         total_loc = sum(f.size_bytes // 40 for f in files)
@@ -602,6 +619,15 @@ class FileTraverser:
             entry_points=sorted(entry_points),
             application_mains=sorted(application_mains),
         )
+
+    def _android_launchers(self, files: list[FileInfo]) -> set[str]:
+        """Launcher activity sources: an Android app has no main function, its
+        manifest names the activity the launcher starts and the app begins there."""
+        if not any(f.language in ("java", "kotlin") for f in files):
+            return set()
+        from .framework_edges.android_manifest import launcher_application_mains
+
+        return launcher_application_mains(self.repo_root, [f.path for f in files if not f.is_test])
 
     # ------------------------------------------------------------------
     # Internal: walking
@@ -991,7 +1017,14 @@ class FileTraverser:
         cached = self._package_root_cache.get(rel_dir)
         if cached is None:
             base = self.repo_root / rel_dir
-            cached = any((base / name).is_file() for name in _MANIFEST_FILES)
+            # Manifests other than Cargo.toml always count as package roots.
+            # An unpublished Cargo.toml does not, but another manifest in the
+            # same directory still ships.
+            has_other = any(
+                (base / name).is_file() for name in _MANIFEST_FILES if name != "Cargo.toml"
+            )
+            has_cargo = (base / "Cargo.toml").is_file()
+            cached = has_other or (has_cargo and _cargo_is_published(base / "Cargo.toml"))
             self._package_root_cache[rel_dir] = cached
         return cached
 
@@ -1091,6 +1124,16 @@ class FileTraverser:
             )
             self._dir_skipped[key] = skipped
         return skipped
+
+    def kept_files(self, rel_dir: str, names: list[str]) -> list[str]:
+        """*names* in the POSIX *rel_dir*, less the untracked ones when it is a
+        gitignored directory :meth:`dir_chain_skipped` kept only for the files
+        git tracks in it. Ask after :meth:`dir_chain_skipped` decided *rel_dir*.
+        """
+        prefix = f"{rel_dir}/"
+        if not rel_dir or not self._in_ignored_tracked_dir(f"{prefix}_"):
+            return names
+        return [name for name in names if self._is_tracked(prefix + name)]
 
 
 # ---------------------------------------------------------------------------

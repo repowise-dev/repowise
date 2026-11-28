@@ -24,20 +24,22 @@ from ..cohesion import (
     UNIT_FANOUT_LANGUAGES,
     withdraw_declaration_hint,
 )
+from ..external_calls import ExternalCallSite
 from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
-from ..models import Import, ParsedFile, Symbol, combine_load_kinds
+from ..models import Import, ParsedFile, combine_load_kinds
 from ..resolvers import ResolverContext
 from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
+from ..resolvers.ruby_rails import get_or_build_rails_index
 from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import (
     MODULE_SYMBOL_NAME,
-    has_overload_identity,
     make_symbol_id,
     module_symbol_id,
+    takes_shared_id,
 )
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
@@ -51,35 +53,30 @@ from ._stem import build_stem_map
 
 log = structlog.get_logger(__name__)
 
-_CALLABLE_KINDS = frozenset({"function", "method"})
-
-
-def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
-    """Does the definition already holding *sym*'s id keep its node?
-
-    Where overloads get their own ids, two definitions still sharing one erase
-    to one signature: the first declared keeps the node, so its span does not
-    depend on how many follow it. A function sharing its id with a Kotlin
-    property takes the node: calls name it.
-    """
-    if existing is None or existing.get("is_declaration") is not False:
-        return False
-    if not has_overload_identity(sym.language):
-        return False
-    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
-
-
 def _merge_load_kind(data: dict[str, Any], imp: Import) -> None:
-    """Fold one more import into an edge's ``type_only`` / ``deferred`` marks,
-    by :func:`~repowise.core.ingestion.models.combine_load_kinds` (one
-    load-time import makes the edge a runtime one). ``deferred`` is stored
-    only when true."""
-    edge = (bool(data.get("type_only")), bool(data.get("deferred")))
-    data["type_only"], deferred = combine_load_kinds(edge, (imp.type_only, imp.deferred))
-    if deferred:
-        data["deferred"] = True
-    else:
-        data.pop("deferred", None)
+    """Fold one more import into an edge's ``type_only`` / ``deferred`` /
+    ``guarded`` marks, by :func:`~repowise.core.ingestion.models.combine_load_kinds`
+    (one unguarded load-time import makes the edge a runtime one). ``deferred``
+    and ``guarded`` are stored only when true.
+
+    ``module_form`` holds while every load-time import along the edge is one:
+    a runtime import replaces the lazy imports' mark, a lazy one leaves a
+    runtime edge's mark alone."""
+    edge = (bool(data.get("type_only")), bool(data.get("deferred")), bool(data.get("guarded")))
+    kind = (imp.type_only, imp.deferred, imp.guarded)
+    module_form = bool(data.get("module_form"))
+    if not any(kind):
+        module_form = imp.module_form and (module_form or any(edge))
+    elif any(edge):
+        module_form = module_form and imp.module_form
+    data["type_only"], *lazy = combine_load_kinds(edge, kind)
+    for key, value in zip(
+        ("deferred", "guarded", "module_form"), (*lazy, module_form), strict=True
+    ):
+        if value:
+            data[key] = True
+        else:
+            data.pop(key, None)
 
 
 class GraphBuilder(
@@ -129,6 +126,14 @@ class GraphBuilder(
         # resolver indexes, or read from the store for a rehydrated builder.
         # None until either happens.
         self.build_units: BuildUnitIndex | None = None
+        # {file: the package calls its call sites make}, for the files this
+        # process's last build() resolved calls for: every file on a full build,
+        # the patch scope on a scoped one (``external_call_scope``, None for
+        # full). None when no build ran here (a rehydrated builder), so a writer
+        # leaves the stored rows alone.
+        self.external_call_sites: dict[str, list[ExternalCallSite]] | None = None
+        self.external_call_scope: frozenset[str] | None = None
+        self.external_calls_complete = True
         # {(file, partial type's bare name): every file declaring a fragment
         # of that type}, filled by ``_resolve_dotnet_partials`` so the call
         # resolver can treat the fragments as the one class scope they are.
@@ -190,6 +195,8 @@ class GraphBuilder(
         self._symbol_pagerank_cache: dict[str, float] | None = None
         self._symbol_betweenness_cache: dict[str, float] | None = None
         self._execution_flow_cache: Any | None = None
+        # (key, parsed files, plans) of ``flow_pages.plans_for_index``.
+        self._flow_plan_cache: tuple[Any, ...] | None = None
         # Filtered-subgraph caches — rebuilt lazily; guarded by a lock because
         # the init pipeline computes metrics concurrently (asyncio.to_thread).
         import threading
@@ -202,6 +209,10 @@ class GraphBuilder(
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
+        # {path: imports a framework writes for the file with no statement}
+        # (Nuxt auto-imports), made each build and never stored on ParsedFile,
+        # so the parse cache and the resolution cache keep the file's own list.
+        self._implicit_imports: dict[str, list[Import]] = {}
         # {path: the targets each of its imports resolved to, in order}. A
         # patch compares these to decide which files an edit re-routes.
         self.import_resolutions: dict[str, list[tuple[str, ...]]] = {}
@@ -222,6 +233,8 @@ class GraphBuilder(
         # restricted_view holds lambdas, which don't pickle; they rebuild lazily.
         state["_cycle_subgraph_cache"] = None
         state["_centrality_subgraph_cache"] = None
+        # Its key holds object ids, meaningless in another process.
+        state["_flow_plan_cache"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
@@ -235,6 +248,7 @@ class GraphBuilder(
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
         self.__dict__.setdefault("_centrality_subgraph_cache", None)
         self.__dict__.setdefault("fresh_communities", False)
+        self.__dict__.setdefault("_implicit_imports", {})
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -253,6 +267,9 @@ class GraphBuilder(
         self._symbol_pagerank_cache = None
         self._symbol_betweenness_cache = None
         self._execution_flow_cache = None
+        # Set when a kernel fell back to an empty answer; see ``metric_memo``.
+        self._metric_failed = False
+        self._flow_plan_cache = None
         self._file_subgraph_cache = None
         self._symbol_subgraph_cache = None
         self._cycle_subgraph_cache = None
@@ -332,6 +349,16 @@ class GraphBuilder(
             source_map=self._source_map,
         )
 
+    def _collect_implicit_imports(self, ctx: ResolverContext) -> None:
+        """Set :attr:`_implicit_imports` for every file (Nuxt auto-imports)."""
+        from ..resolvers.nuxt import nuxt_auto_imports
+
+        try:
+            self._implicit_imports = nuxt_auto_imports(self._parsed_files, ctx)
+        except Exception as exc:  # a reader bug must not fail the index
+            log.warning("nuxt_auto_imports_failed", error=str(exc))
+            self._implicit_imports = {}
+
     def _collect_build_units(self, ctx: ResolverContext) -> None:
         """Set :attr:`build_units` from the indexes the warmups left on *ctx*."""
         from repowise.core.build_units.collect import collect_build_units
@@ -388,12 +415,7 @@ class GraphBuilder(
             # the one-line declaration overwrites a definition's span, kind and
             # ``is_declaration``, and every consumer that tells the two apart
             # then reads the header line as the whole symbol.
-            existing = self._graph.nodes.get(sym.id)
-            if sym.is_declaration:
-                if existing is not None and existing.get("is_declaration") is False:
-                    self._graph.add_edge(path, sym.id, edge_type="defines")
-                    continue
-            elif _first_definition_keeps_node(existing, sym):
+            if not takes_shared_id(self._graph.nodes.get(sym.id), sym):
                 self._graph.add_edge(path, sym.id, edge_type="defines")
                 continue
 
@@ -505,6 +527,8 @@ class GraphBuilder(
         never create them.
         """
         self._invalidate_metric_caches()
+        # Set again by the call pass; a build that stops before it writes none.
+        self.external_call_sites, self.external_call_scope = None, None
         self._qualify_python_symbols()
         # Apex and Pascal names are case-insensitive; every resolver keys on
         # the declared spelling.
@@ -546,6 +570,7 @@ class GraphBuilder(
 
         run_warmups(self._parsed_files, ctx, progress=progress)
         self._collect_build_units(ctx)
+        self._collect_implicit_imports(ctx)
 
         # Tests the import graph cannot see into, from the bytes already held,
         # so selection reads a stored fact and never re-reads test files.
@@ -594,6 +619,11 @@ class GraphBuilder(
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
             self.import_resolutions[path] = resolved
+            # Already resolved, and kept out of ``import_resolutions``, which
+            # lines up with ``parsed.imports`` one for one.
+            for imp in self._implicit_imports.get(path, ()):
+                file_imports.add(imp.resolved_file)
+                self._add_import_edge(path, imp.resolved_file, imp, _unit_fanout, _own_dir)
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             check_cancelled()
@@ -684,6 +714,7 @@ class GraphBuilder(
             scope=scope_set,
             registrations=run_global,
             cpp_index=self._shared_cpp_index(ctx),
+            rails_index=get_or_build_rails_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---
@@ -765,6 +796,10 @@ class GraphBuilder(
         }
         if imp.deferred:
             edge_attrs["deferred"] = True
+        if imp.guarded:
+            edge_attrs["guarded"] = True
+        if imp.module_form:
+            edge_attrs["module_form"] = True
         # ``external:`` targets are excluded before the
         # directory test, not after: an external node id has no
         # directory, and a single-segment one such as

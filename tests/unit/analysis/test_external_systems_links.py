@@ -61,7 +61,7 @@ def test_scoped_npm_subpath_falls_back_to_the_package() -> None:
 
 def test_rust_and_python_paths_fall_back_to_their_root() -> None:
     assert declaration_name_candidates("serde::de") == ("serde::de", "serde")
-    assert declaration_name_candidates("pkg.sub.mod") == ("pkg.sub.mod", "pkg")
+    assert declaration_name_candidates("pkg.sub.mod") == ("pkg.sub.mod", "pkg.sub", "pkg")
 
 
 def test_candidates_are_deduplicated() -> None:
@@ -100,8 +100,7 @@ def test_an_ecosystem_qualified_node_resolves_through_the_ambiguity() -> None:
 
 
 def test_an_ambiguous_candidate_refuses_rather_than_falling_through() -> None:
-    # The generic separators split at the *first* occurrence, so the only
-    # candidates for ``a/b/c`` are itself and ``a``. ``a`` is ambiguous, and
+    # ``a/z`` has candidates itself and ``a``. ``a`` is ambiguous, and
     # matching it returns the refusal instead of resolving the collision.
     declarations = [
         _Declaration("a", ecosystem="npm"),
@@ -424,4 +423,115 @@ def test_junit_platform_is_not_linked_to_junit4() -> None:
 
     assert _links(declarations, nodes) == [
         ("external:org.junit.Test", "maven", "junit:junit"),
+    ]
+
+
+# --- Go module paths ------------------------------------------------------
+
+
+def test_go_package_resolves_to_its_module_longest_prefix_first() -> None:
+    declarations = [
+        _Declaration("google.golang.org/protobuf", ecosystem="go", declared_in="go.mod"),
+        _Declaration("github.com/go-kratos/kratos/v2", ecosystem="go", declared_in="go.mod"),
+        _Declaration("github.com/go-kratos/kratos", ecosystem="go", declared_in="go.mod"),
+    ]
+    nodes = [
+        _Node("external:google.golang.org/protobuf/encoding/protojson"),
+        _Node("external:github.com/go-kratos/kratos/v2/transport/http"),
+        _Node("external:github.com/go-kratos/kratos/log"),
+    ]
+
+    assert _links(declarations, nodes) == [
+        (
+            "external:google.golang.org/protobuf/encoding/protojson",
+            "go",
+            "google.golang.org/protobuf",
+        ),
+        (
+            "external:github.com/go-kratos/kratos/v2/transport/http",
+            "go",
+            "github.com/go-kratos/kratos/v2",
+        ),
+        ("external:github.com/go-kratos/kratos/log", "go", "github.com/go-kratos/kratos"),
+    ]
+
+
+def test_a_go_major_version_path_never_links_to_the_module_without_it() -> None:
+    declarations = [_Declaration("github.com/go-redis/redis", ecosystem="go", declared_in="go.mod")]
+
+    assert _links(declarations, [_Node("external:github.com/go-redis/redis/v8/internal")]) == []
+    assert "github.com/go-redis/redis" not in declaration_name_candidates(
+        "github.com/go-redis/redis/v8"
+    )
+
+
+def test_a_v1_or_api_version_directory_is_an_ordinary_package() -> None:
+    declarations = [
+        _Declaration("k8s.io/api", ecosystem="go", declared_in="go.mod"),
+        _Declaration("google.golang.org/api", ecosystem="go", declared_in="go.mod"),
+    ]
+    nodes = [_Node("external:k8s.io/api/core/v1"), _Node("external:google.golang.org/api/drive/v3")]
+
+    assert _links(declarations, nodes) == [
+        ("external:k8s.io/api/core/v1", "go", "k8s.io/api"),
+        ("external:google.golang.org/api/drive/v3", "go", "google.golang.org/api"),
+    ]
+
+
+# --- PyPI import names ----------------------------------------------------
+
+
+def _pypi(name: str) -> _Declaration:
+    return _Declaration(name, ecosystem="pypi", declared_in="requirements.txt")
+
+
+def test_a_pypi_distribution_links_from_the_module_it_is_imported_under() -> None:
+    declarations = [
+        _pypi("Pillow"),
+        _pypi("djangorestframework"),
+        _pypi("Django"),
+        _pypi("protobuf"),
+    ]
+    nodes = [
+        _Node("external:PIL"),
+        _Node("external:rest_framework.serializers"),
+        _Node("external:django.db.models"),
+        _Node("external:google.protobuf.json_format"),
+    ]
+
+    assert _links(declarations, nodes) == [
+        ("external:PIL", "pypi", "Pillow"),
+        ("external:rest_framework.serializers", "pypi", "djangorestframework"),
+        ("external:django.db.models", "pypi", "Django"),
+        ("external:google.protobuf.json_format", "pypi", "protobuf"),
+    ]
+
+
+def test_a_hyphenated_distribution_links_from_its_underscored_module() -> None:
+    assert _links([_pypi("typing-extensions")], [_Node("external:typing_extensions")]) == [
+        ("external:typing_extensions", "pypi", "typing-extensions")
+    ]
+
+
+def test_import_names_are_offered_only_for_pypi_declarations() -> None:
+    assert _links([_Declaration("Pillow", ecosystem="npm")], [_Node("external:PIL")]) == []
+
+
+def test_a_declared_name_outranks_another_distributions_import_name() -> None:
+    # An npm ``yaml`` keeps its link beside a PyPI ``PyYAML``, in either order.
+    for declarations in (
+        [_pypi("PyYAML"), _Declaration("yaml", ecosystem="npm")],
+        [_Declaration("yaml", ecosystem="npm"), _pypi("PyYAML")],
+    ):
+        assert _links(declarations, [_Node("external:yaml")]) == [("external:yaml", "npm", "yaml")]
+    assert _links(
+        [_pypi("PyYAML"), _Declaration("yaml", ecosystem="npm")], [_Node("external:PyYAML")]
+    ) == [("external:PyYAML", "pypi", "PyYAML")]
+
+
+def test_a_scoped_npm_subpath_still_resolves_to_its_package() -> None:
+    declarations = [_Declaration("@scope/pkg")]
+
+    assert _links(declarations, [_Node("external:@scope/pkg/a/b")]) == [
+        ("external:@scope/pkg/a/b", "npm", "@scope/pkg")
     ]

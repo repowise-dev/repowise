@@ -41,10 +41,6 @@ def _unreachable(path: str) -> bool:
         # pnpm's install hook.
         ".pnpmfile.cjs",
         "tools/.pnpmfile.cjs",
-        # Next.js request proxy, the successor of ``middleware.ts``.
-        "proxy.ts",
-        "apps/web/proxy.ts",
-        "apps/web/src/proxy.js",
     ],
 )
 def test_js_tool_convention_files_are_never_flagged(path):
@@ -55,18 +51,22 @@ def test_js_tool_convention_files_are_never_flagged(path):
 @pytest.mark.parametrize(
     "path",
     [
-        # Astro pages and endpoints: routed by their path under src/pages, never imported.
+        # Framework convention files are anchored from the package.json that
+        # depends on the framework (framework_facts), not exempt by path: the
+        # same names in a repo without it can be dead.
+        "proxy.ts",
+        "apps/web/src/proxy.js",
+        "src/middleware.ts",
+        "app/dashboard/page.tsx",
+        "app/api/users/route.ts",
+        "src/routes/+page.svelte",
+        "pages/index.vue",
         "src/pages/index.astro",
-        "apps/web/src/pages/blog/[slug].astro",
-        "src/pages/robots.txt.ts",
-        "apps/site/src/pages/api/products/[id].json.ts",
-        "src/pages/rss.xml.js",
         "src/pages/feed.json.mjs",
     ],
 )
-def test_astro_routes_are_never_flagged(path):
-    assert never_flag_match(path)
-    assert not _unreachable(path)
+def test_framework_convention_files_are_not_exempt_by_path(path):
+    assert not never_flag_match(path)
 
 
 @pytest.mark.parametrize(
@@ -131,6 +131,34 @@ def test_origin_near_misses_stay_flaggable(path):
 @pytest.mark.parametrize(
     "path",
     [
+        # A migration runner loads its scripts from their directory.
+        "packages/database/migration/20240101_add_x/migration.ts",
+        "src/migration/1700000000000-Init.ts",
+        "db/migrate/20240101_add_users.rb",
+        "alembic/versions/abc_add.py",
+        # TypeScript declaration files, ESM and CommonJS flavours included.
+        "src/types.d.ts",
+        "src/types.d.mts",
+        "src/types.d.cts",
+        "packages/x/dist/index.d.ts",
+    ],
+)
+def test_migrations_and_declarations_are_never_flagged(path):
+    assert never_flag_path(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/migration/index.ts", "modules/migration/comment.go", "src/types.mts"],
+)
+def test_migration_and_declaration_near_misses_stay_flaggable(path):
+    assert not never_flag_path(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         # A build tool runs a build file by its name; nothing imports one.
         "ktor-server/ktor-server-core/build.gradle.kts",
         "gradle/plugins/ktorbuild.kmp.gradle.kts",
@@ -143,6 +171,7 @@ def test_origin_near_misses_stay_flaggable(path):
         "cmake/Toolchain.cmake",
         "Package@swift-6.0.swift",
         "Package@swift-5.10.swift",
+        "build/out.js",
     ],
 )
 def test_build_files_are_never_flagged(path):
@@ -154,6 +183,8 @@ def test_build_files_are_never_flagged(path):
     "path",
     [
         "src/build.rs",  # a ``mod build;`` module
+        "src/build/x.ts",
+        "packages/next/src/build/index.ts",
         "src/main/kotlin/io/ktor/Settings.kt",
         "lib/webpack.js",
         "PackageManager.swift",
@@ -242,3 +273,38 @@ def test_swiftpm_version_specific_manifests_not_reported_unreachable(tmp_path):
     assert "Package@swift-6.0.swift" not in unreachable
     assert "Package@swift-5.10.swift" not in unreachable
 
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The formatter and Credo read their config files by name.
+        ".formatter.exs",
+        "apps/web/.formatter.exs",
+        ".credo.exs",
+        "apps/web/.credo.exs",
+        # Mix evaluates config/*.exs at boot.
+        "config/config.exs",
+        "config/runtime.exs",
+        "apps/web/config/dev.exs",
+        # Data files under priv/ are loaded by Code.eval_file or File.read!.
+        "priv/data/langs.exs",
+        "apps/web/priv/data/langs.exs",
+    ],
+)
+def test_elixir_tool_loaded_files_are_never_flagged(path):
+    assert never_flag_match(path)
+    assert not _unreachable(path)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "lib/demo.ex",
+        "lib/demo/langs.ex",
+        "apps/web/lib/web.ex",
+        "lib/demo/script.exs",
+        "mix_tasks/formatter.exs",
+    ],
+)
+def test_elixir_near_misses_stay_flaggable(path):
+    assert not never_flag_match(path)

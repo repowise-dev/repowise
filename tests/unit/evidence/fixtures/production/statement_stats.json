@@ -1,0 +1,13 @@
+{
+  "format": "repowise-evidence-v1",
+  "kind": "statement_stats",
+  "tool": {"name": "pg_stat_statements"},
+  "window": {"start": "2026-10-01T00:00:00Z"},
+  "statements": [
+    {"statement_fp": "a0b1c2d3e4f50617", "query": "select * from search_repos($1, $2)", "calls": 50000, "total_ms": 31950000.5, "mean_ms": 639.0, "rows": 1000000},
+    {"statement_fp": "0000000000000077", "query": "REFRESH MATERIALIZED VIEW repo_stats", "calls": 30, "total_ms": 558000, "mean_ms": 18600, "rows": 0},
+    {"statement_fp": "3a7bd3e2360a3d29", "query": "update users set token = 'abc' where id = 42", "calls": 7, "total_ms": 3.5},
+    {"statement_fp": "SELECT 1", "calls": 1},
+    {"statement_fp": "deadbeefdeadbeef"}
+  ]
+}

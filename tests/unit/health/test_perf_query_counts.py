@@ -76,3 +76,39 @@ def test_growing_counts_confirm_first_and_a_ranked_function_alone_does_not() -> 
 
     assert exact.facets["confirmed"] == "query_count"
     assert "confirmed" not in ranked.facets
+
+
+def test_a_unit_test_run_marks_and_confirms_apart_and_a_leading_run_wins() -> None:
+    (tests,) = build_performance_opportunities(
+        [_finding("network")], in_tests={OWNER: "pytest"}, hot_in_tests=frozenset({OWNER})
+    )
+    assert (tests.facets["measured_in_tests"], tests.facets["confirmed"]) == (
+        "pytest",
+        "measured_in_tests",
+    )
+    assert "measured" not in tests.facets
+
+    (both,) = build_performance_opportunities(
+        [_finding("network")],
+        measured={OWNER: "api-load"},
+        hot=frozenset({OWNER}),
+        in_tests={OWNER: "pytest"},
+        hot_in_tests=frozenset({OWNER}),
+    )
+    assert (both.facets["measured"], both.facets["confirmed"]) == ("api-load", "measured")
+    assert "measured_in_tests" not in both.facets
+
+
+def test_a_cold_cause_a_leading_run_measured_is_confirmed_by_the_run() -> None:
+    # The run answers the guess that a cold role runs once; counts do not.
+    cold = _finding()
+    cold.details["execution_role"] = "cli"
+    grows = {SINK: QueryReading("grows", 101, 100)}
+    (measured,) = build_performance_opportunities(
+        [cold], queries=grows, measured={OWNER: "update"}, hot=frozenset({OWNER})
+    )
+    (counts,) = build_performance_opportunities([cold], queries=grows)
+
+    assert measured.facets["execution_role"] == "cli"
+    assert measured.facets["confirmed"] == "measured"
+    assert counts.facets["confirmed"] == "query_count"

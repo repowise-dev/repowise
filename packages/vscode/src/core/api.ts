@@ -44,6 +44,8 @@ export interface RepowiseApi {
    * touching its lockfile, instead of staying "connected" forever.
    */
   onConnectionFailure(listener: () => void): void;
+  /** Epoch ms of the last data request the extension made (0 before any). */
+  lastRequestAt(): number;
 }
 
 const DEFAULT_HEALTH_TIMEOUT_MS = 800;
@@ -62,8 +64,10 @@ function canonicalPath(p: string): string {
 export function createApi(log: Logger): RepowiseApi {
   let baseUrl: string | null = null;
   let connectionFailureListener: (() => void) | null = null;
+  let lastRequest = 0;
 
   const guardedFetch: typeof fetch = async (input, init) => {
+    lastRequest = Date.now();
     try {
       return await fetch(input, init);
     } catch (err) {
@@ -122,5 +126,6 @@ export function createApi(log: Logger): RepowiseApi {
     onConnectionFailure(listener: () => void): void {
       connectionFailureListener = listener;
     },
+    lastRequestAt: () => lastRequest,
   };
 }

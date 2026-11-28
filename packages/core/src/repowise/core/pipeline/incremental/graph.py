@@ -16,10 +16,18 @@ def build_filtered_changed_paths(file_diffs: list, exclude_patterns: list[str]) 
     paths = [fd.path for fd in file_diffs]
     if not exclude_patterns:
         return paths
+    excluded = _excluded_path_filter(exclude_patterns)
+    return [p for p in paths if not excluded(p)]
+
+
+def _excluded_path_filter(exclude_patterns: list[str]):
+    """A membership predicate for the walk's exclude patterns; never matches when empty."""
+    if not exclude_patterns:
+        return lambda _path: False
     import pathspec
 
     spec = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns)
-    return [p for p in paths if not spec.match_file(p)]
+    return lambda path: spec.match_file(path)
 
 
 def _record_structural_episodes(repo_path: Any, traverser: Any) -> None:
@@ -141,7 +149,7 @@ def _add_synthetic_edges(
     # init path reports, or an index degrades differently depending on how it
     # was built and nothing says which.
     try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+        from repowise.core.ingestion.tech_stack import detect_tech_stack
 
         with timed(timings, "rebuild.framework"):
             tech_items = detect_tech_stack(repo_path)
@@ -222,6 +230,12 @@ def _plan_graph_patch(
             None,
         )
     resolutions, record = load_cache(Path(repo_path) / ".repowise")
+    # Whether the walk indexes other files than the last build did, beyond
+    # the ones the diff added, deleted or renamed.
+    indexed = {pf.file_info.path for pf in parsed_files}
+    index_moved = presence_changed is None or bool(
+        (indexed ^ parse_cache.known_paths()) - presence_changed
+    )
     refusal, cleared = _checked_non_source(
         repo_path,
         graph_builder,
@@ -231,6 +245,7 @@ def _plan_graph_patch(
         presence_changed,
         current_inputs=current_inputs,
         record=record,
+        index_moved=index_moved,
     )
     if refusal is not None:
         return PatchPlan(False, reason=refusal), None
@@ -332,6 +347,7 @@ def _plan_non_source(
     *,
     current_inputs: dict[str, Any] | None,
     record: dict[str, Any] | None,
+    index_moved: bool = True,
 ) -> tuple[str | None, frozenset[str]]:
     """Check the update's config, data and unindexed files (:mod:`.config_inputs`)."""
     from .config_inputs import plan_non_source_changes
@@ -354,6 +370,7 @@ def _plan_non_source(
         config_reads=config_reads,
         current=current_inputs,
         record=record,
+        index_moved=index_moved,
     )
 
 
@@ -377,7 +394,9 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
         parsed_files, graph_builder._source_map, [p for p in paths if p not in c_paths], resolutions
     )
     if names is None or others is None:
-        return PatchPlan(False, reason="an edited file has no field record to compare")
+        return PatchPlan(
+            False, reason="an edited file's field record cannot be compared or scoped by name"
+        )
     if not names and not others:
         return patch_plan
     # A C/C++ file's fields and facts are read through source text only by
@@ -779,7 +798,11 @@ pass reads the sources.
     if not read_only and (patch_requested or cache_resolutions):
         from .config_inputs import record_inputs
 
-        current_inputs = record_inputs(Path(repo_path), walked)
+        current_inputs = record_inputs(
+            Path(repo_path),
+            walked,
+            prune_nested_git=not (include_submodules or include_nested_repos),
+        )
 
     # Structural episodes, minus the formatter check: this path is the hot one
     # (every update, plus the config-triggered re-score), so it derives only
@@ -1016,10 +1039,14 @@ async def _load_update_seed(
     enabled: bool,
     timings: PhaseTimings | None,
     log: LogFn,
-) -> tuple[Any | None, Any | None]:
-    """Load and invalidate the optional seed before any update write that uses it."""
+) -> tuple[Any | None, Any | None, bool]:
+    """Load and invalidate the optional seed before any update write that uses it.
+
+    The last value says whether the loaded snapshot was set aside for the save
+    to put back (:func:`~.graph_seed.invalidate_seed_edge_cache`).
+    """
     if not enabled:
-        return None, None
+        return None, None, False
     from .graph_seed import (
         invalidate_seed_edge_cache,
         load_seed_edges,
@@ -1031,8 +1058,10 @@ async def _load_update_seed(
         previous_seed_edges = seed_edges or await load_seed_edges_for_reconciliation(repo_path)
     if seed_edges is None:
         log("[yellow]Full graph rebuild: no valid persisted edge snapshot[/yellow]")
-    invalidate_seed_edge_cache(repo_path)
-    return seed_edges, previous_seed_edges
+    # A valid snapshot is set aside, not deleted: if the graph comes out equal
+    # to it, the save puts it back instead of writing it again.
+    kept = invalidate_seed_edge_cache(repo_path, keep=seed_edges is not None)
+    return seed_edges, previous_seed_edges, kept
 
 
 async def _prime_graph_metrics(
@@ -1044,6 +1073,36 @@ async def _prime_graph_metrics(
             await graph_builder.compute_metrics_parallel()
     except Exception as exc:
         log(f"[yellow]Metric pre-computation skipped: {exc}[/yellow]")
+
+
+def _replay_graph_metrics(
+    repo_path: Any, graph_builder: Any, timings: PhaseTimings | None, log: LogFn
+) -> bool:
+    """Prime the metrics from the snapshot's memo when the graph came out the same.
+
+    Every metric is a function of the graph, so an unchanged graph replays the
+    values the last run computed and stored, and the node rows need no write
+    (``graph_metrics_reused``). A full re-score always computes afresh, and
+    any error here only costs the shortcut.
+    """
+    from .graph_seed import confirm_kept_snapshot
+
+    graph_builder.graph_metrics_reused = False
+    try:
+        with timed(timings, "rebuild.snapshot_match"):
+            memo = confirm_kept_snapshot(repo_path, graph_builder)
+        if memo is None or graph_builder.fresh_communities:
+            return False
+        restore = getattr(graph_builder, "restore_metric_memo", None)
+        if restore is None or not restore(memo):
+            return False
+    except Exception as exc:
+        graph_builder.kept_snapshot_match = False
+        log(f"[yellow]Graph metrics recomputed: the snapshot check failed: {exc}[/yellow]")
+        return False
+    graph_builder.graph_metrics_reused = True
+    log("Graph unchanged: reusing the last run's graph metrics")
+    return True
 
 
 async def rebuild_graph_and_git(
@@ -1103,9 +1162,15 @@ async def rebuild_graph_and_git(
     if timings is not None:
         timings.start("rebuild")
 
-    seed_edges, previous_seed_edges = await _load_update_seed(
+    seed_edges, previous_seed_edges, seed_kept = await _load_update_seed(
         repo_path, enabled=patch_graph, timings=timings, log=log
     )
+
+    # Excluded paths are dropped before the patch gate (#5944): an
+    # add/delete/rename of a path the walk never indexes would otherwise
+    # read as "an unindexed file was added or removed" and force a full
+    # graph rebuild on almost every commit.
+    _excluded = _excluded_path_filter(exclude_patterns)
 
     # Full re-ingest for graph (needed for cascade analysis)
     parsed_files, source_map, graph_builder, repo_structure, file_count = build_repo_graph(
@@ -1123,7 +1188,7 @@ async def rebuild_graph_and_git(
             path
             for fd in file_diffs
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
+            if path and not _excluded(path)
         },
         # Only a plain in-place edit proves the file existed before and after.
         presence_changed={
@@ -1132,9 +1197,10 @@ async def rebuild_graph_and_git(
             if getattr(fd, "status", None) != "modified"
             or getattr(fd, "old_path", None) not in (None, getattr(fd, "path", None))
             for path in (getattr(fd, "path", None), getattr(fd, "old_path", None))
-            if path
+            if path and not _excluded(path)
         },
     )
+    graph_builder.seed_snapshot_kept = seed_kept
     if previous_seed_edges is not None:
         graph_builder.previous_seed_edges = previous_seed_edges
         if not getattr(getattr(graph_builder, "patch_plan", None), "eligible", False):
@@ -1166,13 +1232,21 @@ async def rebuild_graph_and_git(
     # avoids rewriting unchanged rows, but the metric values must still be fresh.
     # A full re-score detects communities afresh rather than reusing a drifted partition.
     graph_builder.fresh_communities = fresh_communities
-    await _prime_graph_metrics(graph_builder, timings, log)
+    reused = _replay_graph_metrics(repo_path, graph_builder, timings, log)
+    if not reused:
+        await _prime_graph_metrics(graph_builder, timings, log)
+    # Nothing after this point changes the graph, so the metrics describe the
+    # graph the snapshot will hold (init primes them before its co-change
+    # edges go in, and so never stores a memo).
+    graph_builder.metrics_on_final_graph = True
 
     graph_builder.incremental_graph_decision = _graph_update_decision(
         enabled=patch_graph,
         seed_edges=seed_edges,
         patch_plan=getattr(graph_builder, "patch_plan", None),
     )
+    if reused:
+        graph_builder.incremental_graph_decision["metrics"] = "reused"
 
     if timings is not None:
         timings.stop("rebuild")

@@ -110,7 +110,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -250,7 +253,13 @@
     "docstring": null,
     "parse_errors": [],
     "content_hash": "f1fc1488093ce806dd8e8b6a04c8e92b26d64020a26f9f7ce12b82364b20287d",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Minitest::Test",
+        "line": 3,
+        "origin": "extends"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
     "references": [],
@@ -987,7 +996,33 @@
     "docstring": "Control-flow fixture for the Ruby complexity walker.",
     "parse_errors": [],
     "content_hash": "2a38411f2e58f62b77150e98ac997dfd214c2389e0541f2b0ec714b8b0a432af",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Integer",
+        "line": 64,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 73,
+        "origin": "constant"
+      },
+      {
+        "type_name": "ArgumentError",
+        "line": 74,
+        "origin": "constant"
+      },
+      {
+        "type_name": "TypeError",
+        "line": 76,
+        "origin": "constant"
+      },
+      {
+        "type_name": "StandardError",
+        "line": 85,
+        "origin": "constant"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
     "references": [],
@@ -1312,7 +1347,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [
@@ -1830,7 +1868,73 @@
     "docstring": "Perf-dialect fixture: block-iteration loops, the sink lexicon, string\nconcat (+= flagged, << not), regex/resource construction, lock scopes.",
     "parse_errors": [],
     "content_hash": "44d4e6640bcfe0a0a50f76947c4eed318d8712f3a5f247d21efc890af234d0f7",
-    "type_refs": [],
+    "type_refs": [
+      {
+        "type_name": "Net::HTTP",
+        "line": 8,
+        "origin": "constant"
+      },
+      {
+        "type_name": "URI",
+        "line": 8,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 13,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Dir",
+        "line": 18,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 18,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 19,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Order",
+        "line": 26,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 32,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 35,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Regexp",
+        "line": 58,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Regexp",
+        "line": 60,
+        "origin": "constant"
+      },
+      {
+        "type_name": "Faraday",
+        "line": 67,
+        "origin": "constant"
+      },
+      {
+        "type_name": "File",
+        "line": 81,
+        "origin": "constant"
+      }
+    ],
     "local_refs": [],
     "registrars": [],
     "references": [],

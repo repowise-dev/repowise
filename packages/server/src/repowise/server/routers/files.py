@@ -25,6 +25,7 @@ from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.analysis.patch_coverage import file_on_disk_freshness
 from repowise.core.attribution import attribution_enabled
+from repowise.core.exclusion import build_exclude_spec
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
@@ -362,6 +363,9 @@ async def file_detail(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # Edges with an end in a file the repo rules exclude are left out of the
+    # degree and the neighbour lists alike, before the per-direction cap.
+    exclude_spec = build_exclude_spec(repo.local_path)
     node = await crud.get_graph_node(session, repo_id, file_path)
     git_meta = await crud.get_git_metadata(session, repo_id, file_path)
     metrics = await crud.get_health_metrics(session, repo_id, file_paths=[file_path])
@@ -373,7 +377,11 @@ async def file_detail(
     # "Dependents (N)" above the dependents list.
     degrees = (
         await crud.get_node_degree_counts(
-            session, repo_id, file_path, edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+            session,
+            repo_id,
+            file_path,
+            edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+            exclude_spec=exclude_spec,
         )
         if node is not None
         else None
@@ -501,6 +509,7 @@ async def file_detail(
             direction="both",
             edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
             limit=40,
+            exclude_spec=exclude_spec,
         )
         neighbor_ids = {
             e.source_node_id if e.source_node_id != file_path else e.target_node_id for e in edges

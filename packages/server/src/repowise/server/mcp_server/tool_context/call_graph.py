@@ -373,7 +373,9 @@ async def _place_rows(
 
 async def _interface_rows(run: _CallGraphRun) -> list[dict[str, Any]]:
     """Caller rows reaching this symbol through a base method it implements."""
-    pairs = await interface_call_edges(run.session, run.repository.id, [run.node.node_id])
+    pairs = await interface_call_edges(
+        run.session, run.repository.id, [run.node.node_id], run.exclude_spec
+    )
     if not pairs:
         return []
     nodes = await get_graph_nodes_by_ids(
@@ -442,6 +444,7 @@ async def _serve_call_rows(run: _CallGraphRun, direction: str, rows: list[dict[s
             run.node,
             [r["symbol_id"] for r in visible],
             known_nodes=run.node_map,
+            exclude_spec=run.exclude_spec,
         )
         hop = filter_dicts_by_key(hop, "file", run.exclude_spec)
         if hop:
@@ -536,7 +539,9 @@ async def _resolve_file_level_callers(
     way is marked ``via: "interface"``.
     """
     importer_files = await _file_importers(session, repo_id, node)
-    calls_by_file, interface_by_file = await _file_inbound_calls(session, repo_id, node)
+    calls_by_file, interface_by_file = await _file_inbound_calls(
+        session, repo_id, node, exclude_spec
+    )
 
     entries: list[dict[str, Any]] = []
     for f in sorted(importer_files | set(calls_by_file) | set(interface_by_file)):
@@ -612,7 +617,7 @@ async def _file_importers(session: AsyncSession, repo_id: str, node: GraphNode) 
 
 
 async def _file_inbound_calls(
-    session: AsyncSession, repo_id: str, node: GraphNode
+    session: AsyncSession, repo_id: str, node: GraphNode, exclude_spec: Any = None
 ) -> tuple[dict[str, int], dict[str, int]]:
     """Cross-file calls per calling file: direct, and through a base method implemented here."""
     target_file = node.file_path or node.node_id
@@ -646,7 +651,7 @@ async def _file_inbound_calls(
             continue
         calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
     interface_by_file: dict[str, int] = {}
-    for edge, _base in await interface_call_edges(session, repo_id, sym_ids):
+    for edge, _base in await interface_call_edges(session, repo_id, sym_ids, exclude_spec):
         src_file = file_of_symbol(edge.source_node_id)
         if keep_projected_edge(src_file, target_file, "calls", edge.confidence):
             interface_by_file[src_file] = interface_by_file.get(src_file, 0) + 1

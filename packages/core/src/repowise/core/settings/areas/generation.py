@@ -189,7 +189,7 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         None,
         "Which embedding service powers semantic search: openai, gemini, ollama, "
-        "openrouter, edenai, a plugin's, or mock for none.",
+        "fastembed (the local-embed extra), openrouter, edenai, a plugin's, or mock for none.",
         default_note="Unset: the first embedder whose API key is present, then the "
         "embedder in ~/.repowise/config.yaml, then mock.",
         env=Env("REPOWISE_EMBEDDER", wins=True),

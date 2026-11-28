@@ -1412,7 +1412,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [],
@@ -1484,7 +1487,25 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": [],
+    "references": [
+      {
+        "target_name": "axios",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/typescript/perf_io_in_loop.ts::axiosInLoop",
+        "line": 15,
+        "argument_count": null,
+        "receiver_call": null,
+        "start_byte": 388,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
     "schema_refs": [],
     "grammar_missing": false
   },

@@ -423,6 +423,24 @@ class TestRouterDslContracts:
         )
         assert _providers(tmp_path)["http::GET::/deep"].meta["framework"] == "express"
 
+    def test_express_setting_reads_are_not_routes(self) -> None:
+        from repowise.core.workspace.extractors.base import ScanContext
+        from repowise.core.workspace.extractors.http.express import ExpressDialect
+
+        src = (
+            "const app = express();\n"
+            "var fn = app.get('etag fn');\n"
+            "if (app.get('env') === 'production') {}\n"
+            "if (app.get('trust proxy fn')(addr)) {}\n"
+            "app.get('/users/:id', show);\n"
+            "router.get('*', fallback);\n"
+        )
+        contracts = ExpressDialect().extract(ScanContext("r", "lib/app.js", ".js", src))
+        assert [c.contract_id for c in contracts] == [
+            "http::GET::/users/{param}",
+            "http::GET::/{param}",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Fixtures built from real parser output, never hand-written ids

@@ -59,8 +59,3 @@ export {
 } from "./savings-checks";
 export { CHECK_PROMPTS, switchProfilePrompt } from "./check-prompts";
 export { RepowiseUsage, USAGE_DAY_LIMIT, type RepowiseUsageProps } from "./repowise-usage";
-export {
-  SavingsResetNotice,
-  ACCOUNTING_METHOD_VERSION,
-  type SavingsResetNoticeProps,
-} from "./savings-methodology";

@@ -279,7 +279,7 @@ def test_keyless_weak_reply_serves_the_ranked_list_and_one_guidance_line():
         "answer", "confidence", "degraded", "best_guesses",
         "candidate_files", "code_rationale", "_meta",
     }
-    assert "src/pkg/f0.py first" in out["answer"] and "search_codebase" in out["answer"]
+    assert "Verify by reading src/pkg/f0.py" in out["answer"] and "search_codebase" in out["answer"]
     assert "hint" not in out["_meta"]
     # Ranking and the files served are untouched.
     assert out["best_guesses"] == before["best_guesses"]

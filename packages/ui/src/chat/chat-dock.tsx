@@ -196,6 +196,10 @@ export interface ChatDockProps {
   owlLightSrc?: string;
   /** Clears host page controls anchored near the viewport bottom. */
   collisionInset?: string;
+  /** Render no minimized pill, for a page whose own controls own the
+   *  bottom-right corner. The dock still opens from commands (shortcut,
+   *  handoffs) and minimizing closes it; the status stays announced. */
+  hidePill?: boolean;
   onArtifactPin?: (artifact: ChatArtifact, pinned: boolean) => void | Promise<void>;
   onOpenArtifactSource?: (artifact: ChatArtifact) => void;
   artifactOverrides?: Readonly<Record<string, ChatArtifact>>;
@@ -235,6 +239,7 @@ export function ChatDock({
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
   collisionInset = DEFAULT_COLLISION_INSET,
+  hidePill = false,
   onArtifactPin,
   onOpenArtifactSource,
   artifactOverrides,
@@ -392,6 +397,14 @@ export function ChatDock({
         ? "Chat needs attention"
         : "Answer ready"
       : null;
+
+  if (mode === "minimized" && hidePill) {
+    return (
+      <span className="sr-only" role="status" aria-live="polite">
+        {statusText ?? ""}
+      </span>
+    );
+  }
 
   if (mode === "minimized") {
     return (

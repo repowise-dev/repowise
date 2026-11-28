@@ -213,3 +213,40 @@ class PackageUsageResponse(BaseModel):
     components: list[PackageUsageComponent]
     method: dict[str, str]
     note: str | None = None
+
+
+class PackageAdvisorySite(BaseModel):
+    path: str
+    line: int | None = None
+    symbol: str | None = None
+
+
+class PackageAdvisoryRow(BaseModel):
+    """One stored advisory on the package and the closest production code comes to it."""
+
+    package: str
+    ecosystem: str | None = None
+    id: str
+    #: package_called | imported | unknown (ranked with imported, never below it)
+    tier: str
+    basis: str
+    aliases: list[str] = []
+    severity: str | None = None
+    score: float | None = None
+    version: str | None = None
+    fix: str | None = None
+    #: None when no exact version decided the advisory's range.
+    affected: bool | None = None
+    summary: str | None = None
+    sites: list[PackageAdvisorySite] = []
+
+
+class PackageAdvisoriesResponse(BaseModel):
+    """The package's stored advisories, strongest tier first.
+
+    *imported* is False when no advisory document was ever imported, so an
+    empty list then means "not checked", not "no advisories".
+    """
+
+    imported: bool
+    advisories: list[PackageAdvisoryRow]

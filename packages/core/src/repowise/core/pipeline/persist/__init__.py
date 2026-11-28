@@ -67,6 +67,7 @@ from .health import (
 )
 from .ingestion import (
     persist_build_units,
+    persist_external_call_sites,
     persist_ingestion,
 )
 from .prune import (
@@ -84,6 +85,7 @@ from .security import (
     _replace_security_findings,
     persist_incremental_security_findings,
     persist_security_findings,
+    rescan_repo_security,
 )
 from .sweeps import (
     _SWEPT_GENERATED_PAGE_TYPES,
@@ -93,6 +95,7 @@ from .sweeps import (
     sweep_absent_cycle_pages,
     sweep_absent_symbol_spotlights,
     sweep_deselected_file_keyed_pages,
+    sweep_deselected_flow_pages,
     sweep_deselected_pages,
     sweep_retired_pages,
     sweep_store_hygiene,
@@ -132,6 +135,43 @@ async def _refresh_commit_health(result: Any, session: Any, repo_id: str) -> Non
         repo_path,
         recent_shas(getattr(summary, "commit_rows", None)),
     )
+
+
+async def persist_routes(result: Any, session: Any, repo_id: str) -> None:
+    """Store the repo's HTTP routes (``http_routes``) from its working tree.
+
+    After symbols and analysis: handlers bind to the stored symbols, and the
+    ``code_origin`` rule reads the stored origins. A result with no
+    ``repo_path`` has no tree to read and keeps the stored rows. Best-effort:
+    the write is a savepoint, so a failure leaves the rest of the index whole.
+    """
+    repo_path = getattr(result, "repo_path", "")
+    if not repo_path:
+        return
+    from repowise.core.workspace.repo_routes import refresh_route_table
+
+    try:
+        await refresh_route_table(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("route_table_not_written", error=repr(exc))
+
+
+async def persist_statement_sites(result: Any, session: Any, repo_id: str) -> None:
+    """Store the repo's statement sites (``statement_sites``) from its working tree.
+
+    After symbols and analysis, like :func:`persist_routes`: each site binds
+    to the stored function holding it, and the ``code_origin`` rule reads the
+    stored origins. Best-effort: the write is a savepoint.
+    """
+    repo_path = getattr(result, "repo_path", "")
+    if not repo_path:
+        return
+    from repowise.core.workspace.statement_sites import refresh_statement_sites
+
+    try:
+        await refresh_statement_sites(session, repo_id, repo_path)
+    except Exception as exc:  # a derived table never fails an index
+        logger.warning("statement_sites_not_written", error=repr(exc))
 
 
 async def persist_pipeline_result(
@@ -213,6 +253,8 @@ async def persist_pipeline_result(
     else:
         await persist_git(result, session, repo_id)
     await persist_analysis(result, session, repo_id)
+    await persist_routes(result, session, repo_id)
+    await persist_statement_sites(result, session, repo_id)
     await persist_generation(result, session, repo_id)
 
     # What each recent commit did to health. Needs the working tree, so it

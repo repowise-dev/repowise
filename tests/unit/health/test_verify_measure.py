@@ -142,3 +142,39 @@ async def test_hydration_with_a_checkout_times_the_units_benchmark(tmp_path: Pat
     assert "measure" not in other.validation.detail_dict()
     # Without a checkout there is nothing to read the unit from.
     assert "measure" not in live.validation.detail_dict()
+
+
+async def test_one_session_detects_the_checkouts_stacks_once(tmp_path: Path, monkeypatch) -> None:
+    """The two plan finalizers of an update share one session and one tree."""
+    from repowise.core.evidence import setup
+    from repowise.core.test_runners import stacks
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\n')
+    calls: list[str] = []
+    detect = stacks.detect_repo_stacks
+
+    def counted(root, units=None):
+        calls.append(str(root))
+        return detect(root, units)
+
+    monkeypatch.setattr(stacks, "detect_repo_stacks", counted)
+    monkeypatch.setattr(setup, "detect_repo_stacks", counted)
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    await init_db(engine)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    rows = [_plan("performance_fix")]
+    async with factory() as session:
+        repo = await insert_repo(session)
+        await session.commit()
+        first = await hydrate_recommendations(session, repo.id, rows, checkout=str(tmp_path))
+        second = await hydrate_recommendations(session, repo.id, rows, checkout=str(tmp_path))
+    assert calls == [str(tmp_path)]
+    assert first[0].validation.detail_dict() == second[0].validation.detail_dict()
+    async with factory() as session:
+        await hydrate_recommendations(session, repo.id, rows, checkout=str(tmp_path))
+    await engine.dispose()
+    assert len(calls) == 2  # a new session reads the tree again

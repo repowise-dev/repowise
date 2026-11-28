@@ -24,10 +24,11 @@ FINISH_SETUP_OFFER = "finish_setup"
 STATE_FILE = Path(".repowise") / "setup.json"
 
 #: The MCP instruction line while the pass is offered; dropped once it is not.
+#: Addressed to the agent: an agent told to "offer" at the end of a one-shot
+#: answer pastes the offer into the answer, so it waits for a live session.
 MCP_SETUP_LINE = (
-    "Repowise setup is not finished. Offer once at a natural pause: run "
-    "`repowise next --prompt setup` and follow it. If declined, run "
-    "`repowise next --dismiss setup`."
+    "Agent note, not for answers: setup unfinished. If the user is still chatting, offer "
+    "`repowise next --prompt setup` once; declined: `repowise next --dismiss setup`."
 )
 
 

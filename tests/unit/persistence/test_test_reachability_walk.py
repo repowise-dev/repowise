@@ -959,7 +959,7 @@ async def test_a_node_listed_twice_across_batches_reads_its_edges_once(async_ses
         _IN_BATCH,
         _edges_from,
         _edges_into,
-        _imported_names,
+        imported_names,
     )
 
     repo = await insert_repo(async_session)
@@ -978,7 +978,7 @@ async def test_a_node_listed_twice_across_batches_reads_its_edges_once(async_ses
         async_session, repo.id, ["tests/test_a.py", *padding, "tests/test_a.py"], ["imports"]
     )
     assert out == [("tests/test_a.py", "src/a.py")]
-    names = await _imported_names(async_session, repo.id, ["src/a.py", *padding, "src/a.py"])
+    names = await imported_names(async_session, repo.id, ["src/a.py", *padding, "src/a.py"])
     assert names == [("tests/test_a.py", "src/a.py", frozenset())]
 
 

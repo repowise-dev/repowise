@@ -35,6 +35,7 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from ..ids import SYMBOL_SEP
 from .decorator_names import property_mutator_role
@@ -354,6 +355,51 @@ def symbol_discriminator(symbol: Symbol) -> str | None:
     return None if discriminator is None else discriminator(symbol)
 
 
+_CALLABLE_KINDS = frozenset({"function", "method"})
+
+
+def _first_definition_keeps_node(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does the definition already holding *sym*'s id keep its node?
+
+    Where overloads get their own ids, two definitions still sharing one erase
+    to one signature: the first declared keeps the node, so its span does not
+    depend on how many follow it. A function sharing its id with a Kotlin
+    property takes the node: calls name it.
+    """
+    if existing is None or existing.get("is_declaration") is not False:
+        return False
+    if not has_overload_identity(sym.language):
+        return False
+    return not (sym.kind in _CALLABLE_KINDS and existing.get("kind") not in _CALLABLE_KINDS)
+
+
+def takes_shared_id(existing: dict[str, Any] | None, sym: Symbol) -> bool:
+    """Does *sym* take its id from *existing*, the attributes of the symbol that holds it?
+
+    A declaration never displaces a definition. A definition displaces a
+    declaration, and another definition as :func:`_first_definition_keeps_node`
+    says. The graph's node and the stored symbol row of an id both follow this.
+    """
+    if sym.is_declaration:
+        return existing is None or existing.get("is_declaration") is not False
+    return not _first_definition_keeps_node(existing, sym)
+
+
+def id_holders(symbols: Iterable[Symbol]) -> list[Symbol]:
+    """One symbol for each id among *symbols*, in source order: the one that holds it.
+
+    The others keep no row and no node of their own: a field or property beside
+    a function of its name, a definition beside another of the same erasure, a
+    declaration beside its definition.
+    """
+    holders: dict[str, Symbol] = {}
+    for sym in symbols:
+        held = holders.get(sym.id)
+        if held is None or takes_shared_id(vars(held), sym):
+            holders[sym.id] = sym
+    return list(holders.values())
+
+
 def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
     """Give each member of a colliding id its own id, in place.
 
@@ -539,6 +585,7 @@ __all__ = [
     "disambiguate_colliding_ids",
     "file_of_symbol",
     "has_overload_identity",
+    "id_holders",
     "id_segment_name",
     "kotlin_erased_type",
     "local_symbol_id",
@@ -553,5 +600,6 @@ __all__ = [
     "symbol_discriminator",
     "symbol_id_arity",
     "symbol_id_discriminator",
+    "takes_shared_id",
     "untyped_symbol_id",
 ]

@@ -81,7 +81,8 @@ class MatchState:
         """Link *consumer* to nothing: its route is served by two or more repos and
         neither its host nor its base says which one it calls. Later passes skip
         it, and diagnostics count it as an ambiguous provider, also when its own
-        service declares the route too."""
+        service declares the route too (a relative ``fetch`` it serves is not
+        refused: :attr:`..TypeMatcher.own_service_first`)."""
         consumer.meta[AMBIGUOUS_PROVIDER] = True
         self.matched.add(id(consumer))
 

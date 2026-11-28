@@ -31,6 +31,7 @@ from .fix_first import (
     stored_item_counts,
     unjudged,
 )
+from .performance import agent_hidden
 from .shown import gated_counts, ungated
 
 Unit = Literal["findings", "causes", "plans", "items"]
@@ -77,6 +78,7 @@ async def unit_counts(
     shown: int = 0,
     file_paths: Sequence[str] | None = None,
     include_unverified: bool = False,
+    include_measured_hotspots: bool = True,
 ) -> QueueCounts:
     """``unit``'s counts over its open inventory, in ``file_paths`` when named.
 
@@ -99,6 +101,9 @@ async def unit_counts(
         return (await load_fix_first(session, repo_id, limit=None)).counts(shown)
     model, population = _population(unit, repo_id)
     scoped = model.file_path.in_(list(file_paths)) if file_paths is not None else true()
+    if unit == "causes" and not include_measured_hotspots:
+        # The agent surface counts no measured hotspot it leaves out.
+        scoped = scoped & ~agent_hidden(model)
     layer, kind = _GATE_LAYERS[unit]
     kind_col = getattr(model, kind)
     served = ungated(layer, model.file_path, kind_col, include_unverified=include_unverified)

@@ -307,6 +307,57 @@ class TestFindWorkspaceRoot:
         deep.mkdir(parents=True)
         assert find_workspace_root(deep) == ws.resolve()
 
+    def test_nested_git_repo_wins_unless_it_is_a_member(self, tmp_path: Path) -> None:
+        """The nearest git root decides: a member resolves to the workspace,
+        a repo cloned under the workspace but not listed in it does not."""
+        ws = tmp_path.resolve()
+        (ws / ".git").mkdir()
+        members = [RepoEntry(path=".", alias="outer"), RepoEntry(path="member", alias="member")]
+        WorkspaceConfig(repos=members).save(ws)
+        (ws / "member" / ".git").mkdir(parents=True)
+        (ws / "member" / "src").mkdir()
+        (ws / "clones" / "other" / ".git").mkdir(parents=True)
+        (ws / "clones" / "other" / "src").mkdir()
+        # A worktree or submodule keeps ``.git`` as a file.
+        (ws / "clones" / "linked").mkdir()
+        (ws / "clones" / "linked" / ".git").write_text("gitdir: elsewhere", encoding="utf-8")
+
+        assert find_workspace_root(ws) == ws
+        assert find_workspace_root(ws / "member" / "src") == ws
+        assert find_workspace_root(ws / "clones") == ws  # inside the outer repo
+        assert find_workspace_root(ws / "clones" / "other") is None
+        assert find_workspace_root(ws / "clones" / "other" / "src") is None
+        assert find_workspace_root(ws / "clones" / "linked") is None
+        # Commands that manage the workspace still find it from a non-member.
+        assert find_workspace_root(ws / "clones" / "other", any_repo=True) == ws
+
+    def test_a_monorepo_whose_folders_are_members_stays_in_the_workspace(
+        self, tmp_path: Path
+    ) -> None:
+        ws = tmp_path.resolve()
+        members = [RepoEntry(path="mono/pkg-a", alias="a"), RepoEntry(path="mono/pkg-b", alias="b")]
+        WorkspaceConfig(repos=members).save(ws)
+        (ws / "mono" / ".git").mkdir(parents=True)
+        (ws / "mono" / "pkg-a" / "src").mkdir(parents=True)
+        assert find_workspace_root(ws / "mono" / "pkg-a" / "src") == ws
+
+    def test_a_config_that_fails_to_load_still_found_from_a_nested_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text("version: 1", encoding="utf-8")
+        (tmp_path / "repo" / ".git").mkdir(parents=True)
+
+        def _broken(_root: Path) -> WorkspaceConfig:
+            raise KeyError("missing field")
+
+        monkeypatch.setattr(WorkspaceConfig, "load", staticmethod(_broken))
+        assert find_workspace_root(tmp_path / "repo") == tmp_path.resolve()
+
+    def test_unreadable_config_still_found_from_a_nested_repo(self, tmp_path: Path) -> None:
+        (tmp_path / WORKSPACE_CONFIG_FILENAME).write_text("repos: [", encoding="utf-8")
+        (tmp_path / "repo" / ".git").mkdir(parents=True)
+        assert find_workspace_root(tmp_path / "repo") == tmp_path.resolve()
+
 
 # ---------------------------------------------------------------------------
 # Losing a repo must leave a trace

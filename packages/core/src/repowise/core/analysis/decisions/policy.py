@@ -367,6 +367,7 @@ MODE_DEFAULTS: dict[str, dict[str, bool]] = {
         "sync": False,
         "session_start": False,
         "upkeep_prompt": False,
+        "stop_prompt": False,
     },
     "read_only": {
         "agent_acceptance": False,
@@ -375,6 +376,7 @@ MODE_DEFAULTS: dict[str, dict[str, bool]] = {
         "sync": False,
         "session_start": False,
         "upkeep_prompt": False,
+        "stop_prompt": False,
     },
 }
 MODE_DEFAULTS["off"] = MODE_DEFAULTS["read_only"]
@@ -438,6 +440,11 @@ class DecisionPolicy:
     #: it asks something of the agent, and stays off until its firings show
     #: agents act on it.
     upkeep_prompt: bool = False
+    #: Whether the Stop hook asks the agent, once a session, to record a
+    #: decision it reasoned out. Off by default: it reaches the sessions that
+    #: never commit, where most choices are made, but it asks something of the
+    #: agent on every session that did real work, useful or not.
+    stop_prompt: bool = False
     #: The layer's one switch; see :data:`_MODE_DEFAULTS`.
     mode: Mode = "full"
 
@@ -525,6 +532,11 @@ class DecisionPolicy:
     def commit_upkeep(self) -> bool:
         """Whether the commit hook names the decisions a commit's files are under."""
         return self.delivers and self.upkeep_prompt
+
+    @property
+    def stop_capture(self) -> bool:
+        """Whether the Stop hook asks the agent to record what it decided."""
+        return self.delivers and self.enabled and self.stop_prompt
 
     @property
     def session_start_on(self) -> bool:
@@ -660,6 +672,7 @@ class DecisionPolicy:
             "update_mining": self.update_mining,
             "session_start": self.session_start,
             "upkeep_prompt": self.upkeep_prompt,
+            "stop_prompt": self.stop_prompt,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -885,6 +898,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "update_mining",
         "session_start",
         "upkeep_prompt",
+        "stop_prompt",
         "mode",
     }
 )

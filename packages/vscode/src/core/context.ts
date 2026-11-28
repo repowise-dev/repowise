@@ -24,6 +24,8 @@ export interface RepowiseConfig {
   /** Explicit server port override, or null to discover from the lockfile. */
   serverPort(): number | null;
   autoStart(): "ask" | "always" | "never";
+  /** Minutes without extension requests before a server it started stops; 0 = never. */
+  idleStopMinutes(): number;
   /** Configured CLI path, or "" to fall back to `repowise` on PATH. */
   cliPath(): string;
 }
@@ -33,6 +35,7 @@ function createConfig(): RepowiseConfig {
   return {
     serverPort: () => read().get<number | null>("server.port", null),
     autoStart: () => read().get<"ask" | "always" | "never">("server.autoStart", "ask"),
+    idleStopMinutes: () => read().get<number>("server.idleStopMinutes", 0),
     cliPath: () => read().get<string>("cliPath", ""),
   };
 }

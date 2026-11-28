@@ -545,6 +545,33 @@ def test_a_name_declared_twice_in_one_file_keeps_its_best_occurrence():
     assert _first_per_target(ranked) == [(3.0, ("a.py", "new")), (2.0, ("a.py", "run"))]
 
 
+def test_a_spotlight_records_which_same_named_symbol_won():
+    """Issue #6025: a method declared before a same-named function hid it.
+
+    The page is keyed by ``(file_path, name)`` alone, so selection has to say
+    which symbol was ranked. Here the module-level function is the used one.
+    """
+    method = FakeSymbol(
+        name="get_current_user",
+        kind="method",
+        parent_name="Deps",
+        signature="(self, token)",
+        id="pkg/a.py::Deps::get_current_user",
+    )
+    function = FakeSymbol(
+        name="get_current_user", signature="(token)", id="pkg/a.py::get_current_user"
+    )
+    inputs = _inputs(_one_file(method, function), {"pkg/a.py": 1.0}, {}, {}, GenerationConfig())
+    inputs.symbol_uses = {"pkg/a.py::get_current_user": SymbolUse(17, 17)}
+
+    sel = select_pages(inputs)
+
+    assert sel.symbol_spotlights == [("pkg/a.py", "get_current_user")]
+    assert sel.spotlight_symbol_ids == {
+        ("pkg/a.py", "get_current_user"): "pkg/a.py::get_current_user"
+    }
+
+
 def test_a_symbol_with_no_recorded_span_is_trivial():
     """No line range reads as a zero-line body, so it needs heavy use."""
     from repowise.core.generation.selection.scoring import spotlight_eligible

@@ -24,6 +24,8 @@ from .prior_defects import PriorDefects, compute_prior_defects
 from .records import _CommitRec, _should_skip_index
 
 if TYPE_CHECKING:
+    from repowise.core.author_identity import IdentityResolver
+
     from .indexer import GitIndexer
 
 # Logged under the indexer module's name.
@@ -55,6 +57,7 @@ class IdleRefresh:
     provenance_classifier: Any
     prior_defects: PriorDefects
     history_files: set[str]
+    people: IdentityResolver | None = None
 
 
 def apply_co_change(rows: list[dict], walk: CoChangeWalk) -> None:
@@ -211,5 +214,6 @@ async def _idle_decay_stage(
                 walk,
                 idle.prior_defects,
                 idle.history_files,
+                idle.people,
             )
         )

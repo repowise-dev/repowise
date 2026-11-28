@@ -27,6 +27,7 @@ from ...ingestion.package_roots import package_roots_above
 from ...ingestion.parse_cache import ParseCache
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
+from .. import MAX_CHANGE_ANALYSIS_FILE_BYTES as MAX_FILE_BYTES
 from ..health import (
     HealthAnalyzer,
     HealthFileMetricData,
@@ -38,9 +39,6 @@ from ..health.walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
     from .index_inputs import IndexInputs
-
-#: Files above this size are skipped rather than parsed on both sides.
-MAX_FILE_BYTES = 1_500_000
 
 
 def language_of(path: str) -> str | None:

@@ -240,6 +240,40 @@ describe("SavingsPageBody, partial states", () => {
   });
 });
 
+describe("RepowiseUsage, host body", () => {
+  it("shows the host's own spend in place of the token figures and grouping", () => {
+    renderBody({
+      savings: undefined,
+      usage: {
+        summary: spend,
+        rows: undefined,
+        grouping: "operation",
+        onGroupingChange: () => {},
+        children: <p>Ledger: 12 credits</p>,
+      },
+    });
+    expect(screen.getByText(copy.usageTitle)).toBeTruthy();
+    expect(screen.getByText("Ledger: 12 credits")).toBeTruthy();
+    expect(screen.queryByText(copy.inputTokens)).toBeNull();
+    expect(screen.queryByRole("radiogroup", { name: copy.usageGroupLabel })).toBeNull();
+  });
+
+  it("keeps the token figures when a conditional body renders false", () => {
+    const hasLedger = false;
+    renderBody({
+      usage: {
+        summary: spend,
+        rows,
+        grouping: "operation",
+        onGroupingChange: () => {},
+        children: hasLedger && <p>Ledger</p>,
+      },
+    });
+    expect(screen.getAllByText(copy.inputTokens).length).toBeGreaterThan(0);
+    expect(screen.getByRole("radiogroup", { name: copy.usageGroupLabel })).toBeTruthy();
+  });
+});
+
 describe("SavingsPageBody, empty states", () => {
   it("fresh: nothing recorded and no spend", () => {
     renderBody({

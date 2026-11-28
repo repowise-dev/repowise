@@ -37,8 +37,16 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, W
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
+from repowise.server.mcp_server._c_masks import c_family_masks
+from repowise.server.mcp_server._edit_sites_go import go_judge, go_target
+from repowise.server.mcp_server._edit_sites_twins import Twin, Twins, sibling_twins
 from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
-from repowise.server.mcp_server._helpers import read_repo_file_text
+from repowise.server.mcp_server._helpers import (
+    filter_edge_rows,
+    filter_path_list,
+    is_excluded,
+    read_repo_file_text,
+)
 from repowise.server.mcp_server._meta import (
     _changed_files_between,
     _working_tree_dirty_paths,
@@ -424,6 +432,10 @@ async def import_sites(
     return await asyncio.to_thread(_import_sites, Path(repo_root).resolve(), files, module_path)
 
 
+# C and C++ are masked here: the workspace extractors' masker covers neither.
+_C_FAMILY_EXTENSIONS = REGISTRY.extensions_for(("c", "cpp"))
+
+
 class _ProseLines:
     """Which hit lines of one file name the symbol only in prose.
 
@@ -507,6 +519,8 @@ class _ProseLines:
 
         full = _comment_mask(self._suffix, text, strings=True)
         comments = _comment_mask(self._suffix, text, strings=False)
+        if full is None and self._suffix in _C_FAMILY_EXTENSIONS:
+            full, comments = c_family_masks(text)
         if full is None or comments is None:
             return ("mask", None)
         return ("mask", (full.split("\n"), comments.split("\n")))
@@ -737,11 +751,96 @@ class _OwnMember:
         return n in self._own or bool(_SELF_BEFORE.search(text, 0, m.start()))
 
 
+def _header(lines: list[str], start: int) -> str:
+    """A class's header from its first line: through ``{`` or a closing ``:``."""
+    out = []
+    for t in lines[start - 1 : start + 5]:
+        out.append(t)
+        if "{" in t or t.rstrip().endswith(":"):
+            break
+    return " ".join(out)
+
+
+def _headers_relate(lines: list[str], twin: Twin) -> bool:
+    """Whether either class's header names the other's: related, so kept."""
+    (its_head, own_head), (its_class, own_class) = twin.heads, twin.names
+    if its_head and _word(own_class).search(_header(lines, its_head)):
+        return True
+    return bool(own_head and _word(its_class).search(_header(lines, own_head)))
+
+
+# A Python class header with a positional base (``class A(B):``); ``object`` and
+# keyword arguments alone (``metaclass=M``) declare none.
+_PY_BASE = re.compile(
+    r"\bclass\s+\w+\s*(?:\[[^\]]*\])?\s*\(\s*(?!object\s*\))(?![A-Za-z_]\w*\s*=(?!=))[A-Za-z_]"
+)
+# Elsewhere ``extends``/``implements``, or a ``:`` (Kotlin, C#, Swift, C++).
+_OTHER_BASE = re.compile(r"\b(?:extends|implements)\b|:")
+
+
+def _base_unresolved(lines: list[str], twin: Twin, python: bool) -> bool:
+    """Whether either class's header declares a base the index holds no edge
+    for: its inheritance is unknown, so the twin is kept."""
+    declares = (_PY_BASE if python else _OTHER_BASE).search
+    for head, resolved in zip(twin.heads, twin.resolved, strict=True):
+        if head and not resolved and declares(_header(lines, head)):
+            return True
+    return False
+
+
+def _kept(lines: list[str], twin: Twin, python: bool) -> bool:
+    """Whether *twin* may be related to the symbol, so none of its uses are judged."""
+    return _headers_relate(lines, twin) or _base_unresolved(lines, twin, python)
+
+
+def _def_line(lines: list[str], word: re.Pattern[str], span: tuple[int, int]) -> int:
+    """The first line of *span* naming *word*, decorators left out; 0 for none."""
+    first, last = span
+    for n in range(first, min(last, len(lines)) + 1):
+        if not lines[n - 1].lstrip().startswith("@") and word.search(lines[n - 1]):
+            return n
+    return 0
+
+
+class _SiblingMember:
+    """Uses in the definition file of a member that are another, unrelated
+    class's member of the same name: its definition line, and calls on
+    ``self``/``this`` inside that class but outside the symbol's own. A
+    class whose header names the other's, or declares a base the index does
+    not hold, counts as related and is kept. A twin whose class holds a nested
+    class has no body here: that class's ``self`` may be the symbol's."""
+
+    def __init__(self, lines: list[str], name: str, twins: Twins, python: bool):
+        word = _word(name)
+        self._own = twins.own_body
+        # Only a twin inside a class body is judged: there its calls are told
+        # apart too (``self`` in its class). A Go receiver's or a twin whose
+        # class holds another keeps its definition, so a rename stays whole.
+        unrelated = [
+            t for t in twins.members if t.body and t.body != self._own and not _kept(lines, t, python)
+        ]
+        self._defs = {n for t in unrelated if (n := _def_line(lines, word, t.span))}
+        self._bodies = [t.body for t in unrelated]
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        if n in self._defs:
+            return True
+        if not _SELF_BEFORE.search(text, 0, m.start()):
+            return False
+        if self._own and self._own[0] <= n <= self._own[1]:
+            return False
+        return any(s <= n <= e for s, e in self._bodies)
+
+
 class _Judge(NamedTuple):
     """Which judge, if any, reads one file's uses."""
 
     member: bool
     own: set[int]
+    # A Go target's package (:class:`GoTarget`): import-qualified uses are judged.
+    go: Any = None
+    # The definition file's unrelated same-named members, for a member.
+    twins: Twins | None = None
 
     def for_file(
         self,
@@ -755,6 +854,10 @@ class _Judge(NamedTuple):
     ) -> Any:
         if self.own:
             return _OwnMember(self.own)
+        # Set only when the definition file has no edits.
+        if self.twins and rel == def_path:
+            python = PurePosixPath(rel).suffix in _PYTHON_EXTENSIONS
+            return _SiblingMember(lines, name, self.twins, python)
         suffix = PurePosixPath(rel).suffix
         # An edit in progress may use the name before importing it: not judged.
         if self.member or live or rel == def_path or suffix not in _IMPORT_BOUND_EXTENSIONS:
@@ -768,6 +871,8 @@ class _Scope(NamedTuple):
     member: bool
     # Files holding a base method the symbol answers for, or an override of it.
     kin: frozenset[str]
+    go: Any = None
+    twins: Twins | None = None
 
 
 def _scan(
@@ -836,7 +941,7 @@ def _scan(
             own.append(rel)
         found, missed, through_object = _file_sites(
             rel, lines, imports, name, local, definition, graph_calls, live,
-            _Judge(scope.member, own_lines),
+            _Judge(scope.member, own_lines, scope.go, scope.twins),
         )
         sites += found
         stale += missed
@@ -883,6 +988,9 @@ def _file_sites(
     def_seen = rel != def_path
     prose = _ProseLines(rel, lines, name)
     foreign = judge.for_file(rel, lines, imports, name, prose, live, def_path)
+    # Read on the graph's call lines too: a call the graph bound by name alone
+    # (``mg.Deps(...)`` for ``UI.Deps``) is still another package's.
+    go_foreign = go_judge(rel, lines, imports, judge.go, member=judge.member)
     sites: list[dict[str, Any]] = []
     stale = 0
     for n, text in enumerate(lines, 1):
@@ -892,8 +1000,11 @@ def _file_sites(
             continue
         if n in imports:
             hits = _outside_module(text, hits)
-        elif foreign is not None and n not in graph_calls:
-            hits = [h for h in hits if not foreign(n, text, h)]
+        else:
+            if go_foreign is not None:
+                hits = [h for h in hits if not (prose.is_code(n, h) and go_foreign(text, h))]
+            if foreign is not None and n not in graph_calls:
+                hits = [h for h in hits if not foreign(n, text, h)]
         if not hits:
             continue
         is_def = not def_seen and def_start <= n <= def_end
@@ -1244,12 +1355,18 @@ async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> l
 
 
 async def _importer_files(
-    session: AsyncSession, repo_id: str, def_file: str, name: str, edges: list[Any]
+    session: AsyncSession,
+    repo_id: str,
+    def_file: str,
+    name: str,
+    edges: list[Any],
+    exclude_spec: Any = None,
 ) -> tuple[set[str], set[str], bool]:
     """``(files, holders, cut)``: the definition file, its importers, and files
     re-exporting the name onward; *holders* the files the walk followed (the
     definition and each file that may bind the name); *cut* when the walk
-    stopped at its ceiling."""
+    stopped at its ceiling. An importer *exclude_spec* matches is neither a
+    candidate nor a hop onward."""
     # A package barrel's own importers are scanned too.
     files: set[str] = {def_file}
     files.update(row[0] for row in edges if row[2] == "imports")
@@ -1267,7 +1384,7 @@ async def _importer_files(
                 )
             ).all()
         frontier = []
-        for src, names_json in rows:
+        for src, names_json in filter_edge_rows(rows, exclude_spec, lambda r: (r[0],)):
             files.add(src)
             names = _edge_names(names_json)
             # Unknown names may carry this one onward, so they are followed too.
@@ -1498,6 +1615,7 @@ async def _module_object_reasons(
     root: Path,
     on_object: list[str],
     holders: set[str],
+    exclude_spec: Any = None,
 ) -> list[str]:
     """Why uses on an object no import binds may be the symbol's.
 
@@ -1518,6 +1636,7 @@ async def _module_object_reasons(
             )
         )
     ).all()
+    rows = filter_edge_rows(rows, exclude_spec, lambda r: (r[0], r[1]))
     imported: dict[str, set[str]] = {}
     for src, tgt in rows:
         imported.setdefault(src, set()).add(tgt)
@@ -1532,21 +1651,28 @@ async def _module_object_reasons(
 
 
 async def _python_alias_exports(
-    session: AsyncSession, repo_id: str, python_aliases: dict[str, set[str]], renamed_in: set[str]
+    session: AsyncSession,
+    repo_id: str,
+    python_aliases: dict[str, set[str]],
+    renamed_in: set[str],
+    exclude_spec: Any = None,
 ) -> None:
-    """Add to *renamed_in* each file whose Python alias another file imports."""
+    """Add to *renamed_in* each file whose Python alias another file, not one
+    *exclude_spec* matches, imports."""
     if not python_aliases:
         return
     # Any module-level Python name is importable, so an alias another file
     # imports (or may, by unknown names or ``*``) leaves its file.
     rows = await session.execute(
-        select(GraphEdge.target_node_id, GraphEdge.imported_names_json).where(
+        select(
+            GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.imported_names_json
+        ).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.edge_type == "imports",
             GraphEdge.target_node_id.in_(list(python_aliases)),
         )
     )
-    for tgt, names_json in rows.all():
+    for _src, tgt, names_json in filter_edge_rows(rows.all(), exclude_spec, lambda r: (r[0],)):
         names = _edge_names(names_json)
         if not names or "*" in names or python_aliases[tgt] & set(names):
             renamed_in.add(tgt)
@@ -1649,9 +1775,10 @@ def _member_reasons(
 
 
 async def _dispatch_kin(
-    session: AsyncSession, repo_id: str, node: GraphNode
+    session: AsyncSession, repo_id: str, node: GraphNode, exclude_spec: Any = None
 ) -> tuple[list[str], list[str]]:
-    """``(base methods, overriding methods)`` *node* is joined to by ``dispatches_to``."""
+    """``(base methods, overriding methods)`` *node* is joined to by ``dispatches_to``,
+    leaving out those in files *exclude_spec* matches."""
     rows = (
         await session.execute(
             select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
@@ -1665,6 +1792,7 @@ async def _dispatch_kin(
             )
         )
     ).all()
+    rows = filter_edge_rows(rows, exclude_spec, lambda r: (r[0], r[1]))
     bases = sorted({src for src, tgt in rows if tgt == node.node_id and src != node.node_id})
     overrides = sorted({tgt for src, tgt in rows if src == node.node_id and tgt != node.node_id})
     return bases, overrides
@@ -1728,15 +1856,22 @@ async def _edit_set(
     node: GraphNode,
     *,
     wider: bool,
+    exclude_spec: Any = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """``(sites, reasons)``: every live site naming *node*, uncapped, and why
-    the list may not be all of them."""
+    the list may not be all of them.
+
+    A file *exclude_spec* matches is never read, listed or named in a reason,
+    and its graph rows decide nothing: the index can keep rows for a file
+    excluded after it was built.
+    """
     root = Path(repo_root).resolve()
     name = _bare_name(node)
     reasons: list[str] = []
+    spec = exclude_spec
 
-    edges = await _edges_into(session, repo_id, node)
-    files, holders, cut = await _importer_files(session, repo_id, node.file_path, name, edges)
+    edges = filter_edge_rows(await _edges_into(session, repo_id, node), spec)
+    files, holders, cut = await _importer_files(session, repo_id, node.file_path, name, edges, spec)
     if cut:
         reasons.append(f"over {MAX_IMPORTERS} importing files")
     facts = _edge_facts(edges, node, name, files)
@@ -1745,6 +1880,7 @@ async def _edit_set(
     if unseen is None:
         reasons.append("working tree status unknown")
         unseen = []
+    unseen = filter_path_list(unseen, spec)
     row_commit = await session.scalar(
         select(Repository.head_commit).where(Repository.id == repo_id)
     )
@@ -1754,23 +1890,30 @@ async def _edit_set(
     reasons += why
     # Committed since the index or edited since: either way the graph's lines
     # predate the file, so it is read like an uncommitted edit.
-    unseen = sorted(set(unseen) | set(committed))
+    unseen = sorted(set(unseen) | set(filter_path_list(committed, spec)))
     dirty = frozenset(unseen)
 
     language = await _node_language(session, repo_id, node)
     package_files, package, why = await asyncio.to_thread(_package_scope, root, node, language)
+    package_files = filter_path_list(package_files, spec)
     files.update(package_files)
     reasons += why
 
     held = await asyncio.to_thread(_holding, root, name)
+    if held is not None and spec:
+        held = set(filter_path_list(sorted(held), spec))
     ordered, unindexed = await asyncio.to_thread(
         _capped_candidates, root, name, files, unseen, held, node.file_path, reasons
     )
     definition = await _definition_span(root, node, name, language, dirty)
-    bases, overrides = await _dispatch_kin(session, repo_id, node)
+    bases, overrides = await _dispatch_kin(session, repo_id, node, spec)
     scope = _Scope(
         node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
         frozenset(file_of_symbol(i) for i in bases + overrides),
+        await asyncio.to_thread(_go_scope, root, node, language),
+        await sibling_twins(
+            session, repo_id, node, name, {*bases, *overrides}, dirty, exclude_spec=spec
+        ),
     )
     scan = _ScanResult(
         *await asyncio.to_thread(
@@ -1782,8 +1925,8 @@ async def _edit_set(
         scan = scan._replace(
             stale=scan.stale + _unread_call_lines(facts.call_lines, ordered, dirty)
         )
-    await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
-    reasons += await _module_object_reasons(session, repo_id, root, scan.on_object, holders)
+    await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in, spec)
+    reasons += await _module_object_reasons(session, repo_id, root, scan.on_object, holders, spec)
 
     reasons += _evidence_reasons(scan, facts)
     scanned = set(ordered) - set(scan.unreadable)
@@ -1795,9 +1938,16 @@ async def _edit_set(
     reasons += _dispatch_reasons(bases, overrides)
     if wider:
         reasons += await _widen(
-            session, repo_id, root, node, name, ordered + unindexed, scan.sites
+            session, repo_id, root, node, name, ordered + unindexed, scan.sites, spec
         )
     return scan.sites, reasons
+
+
+def _go_scope(root: Path, node: GraphNode, language: str) -> Any:
+    """A Go symbol's package, which judges the qualified uses in each file."""
+    if language != "go":
+        return None
+    return go_target(root, node.file_path, _read_lines(root, node.file_path) or [])
 
 
 async def reference_edit_set(
@@ -1807,6 +1957,7 @@ async def reference_edit_set(
     node: GraphNode,
     *,
     wider: bool = False,
+    exclude_spec: Any = None,
 ) -> dict[str, Any]:
     """Every live site naming *node*, classified, with a completeness verdict.
 
@@ -1817,7 +1968,9 @@ async def reference_edit_set(
     same_name | doc (see :mod:`._edit_sites_wider`). search_codebase serves
     these rows; get_context serves :func:`edit_set_block`.
     """
-    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=wider)
+    sites, reasons = await _edit_set(
+        session, repo_id, repo_root, node, wider=wider, exclude_spec=exclude_spec
+    )
     return _served_sites(sites, reasons)
 
 
@@ -1856,6 +2009,7 @@ async def edit_set_block(
     collector: OmissionCollector | None = None,
     *,
     prose: bool = False,
+    exclude_spec: Any = None,
 ) -> dict[str, Any]:
     """get_context's ``references`` block: the edit set, one entry per file.
 
@@ -1869,7 +2023,14 @@ async def edit_set_block(
     served and the rest go to *collector*, with ``files_total`` and
     ``complete: false``: nothing is left out without its count.
     """
-    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
+    from repowise.server.mcp_server._line_hits import line_read_memo
+
+    # The candidate files and the document rows grep the same name: one git
+    # grep serves both, as search_codebase's edit sets already share theirs.
+    with line_read_memo():
+        sites, reasons = await _edit_set(
+            session, repo_id, repo_root, node, wider=True, exclude_spec=exclude_spec
+        )
     by_file, left_out = _file_lines(sites, prose)
     budget = int(effective_char_budget() * _BLOCK_SHARE)
     # ``in`` only adds bytes, so the files that fit with it are a prefix of
@@ -1965,8 +2126,10 @@ async def _widen(
     name: str,
     files: list[str],
     sites: list[dict[str, Any]],
+    exclude_spec: Any = None,
 ) -> list[str]:
-    """Add re-export, same-name and doc sites to *sites*; why the docs may be short."""
+    """Add re-export, same-name and doc sites to *sites*, none in a file
+    *exclude_spec* matches; why the docs may be short."""
     from repowise.server.mcp_server import _edit_sites_wider as wide
 
     seen = {(s["path"], s["line"]) for s in sites}
@@ -1974,6 +2137,8 @@ async def _widen(
     found += await wide.same_name_sites(session, repo_id, root, node, name)
     docs, reasons = await asyncio.to_thread(wide.doc_sites, root, name)
     for site in found + docs:
+        if is_excluded(site["path"], exclude_spec):
+            continue
         if (site["path"], site["line"]) not in seen:
             seen.add((site["path"], site["line"]))
             sites.append(site)

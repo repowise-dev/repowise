@@ -68,6 +68,7 @@ from repowise.server.mcp_server.tool_overview.workspace import (
     _build_workspace_footer,
     _workspace_overview,
 )
+from repowise.server.services.hotspots import count_hotspots
 
 #: The ``include`` values get_overview serves; anything else is named, not applied.
 _INCLUDE_BLOCKS = frozenset(
@@ -217,6 +218,7 @@ async def _repo_overview(
         module_rows = await _load_module_pages(session, repository, collector, package_roots)
         entry_point_ids = await _resolve_entry_point_ids(session, repository, exclude_spec)
         all_git = await _load_git_rows(session, repository, exclude_spec)
+        hotspot_count = await count_hotspots(session, repository.id)
         architecture = await _build_architecture(session, repository, package_roots)
         dependencies = await _build_package_dependencies(session, repository, exclude_spec)
         if dependencies:
@@ -243,7 +245,7 @@ async def _repo_overview(
         "entry_points": _capped_entry_points(
             _grouped_by_package(entry_point_ids, package_roots), collector
         ),
-        "git_health": _build_git_health(all_git, repo_root),
+        "git_health": _build_git_health(all_git, repo_root, hotspot_count),
         "more": (
             'get_overview(include=[...]) also serves: "outline" (the wiki '
             'page tree), "tour" (guided_tour + reading_order), "decisions", '

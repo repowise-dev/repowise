@@ -20,6 +20,7 @@ from .decay import (
 )
 from .detector import PARSERS, detect_format, is_test_file, parse
 from .discovery import (
+    EMPTY_COVERAGE_REPORT_NOTE,
     CoverageConfig,
     CoverageProvenance,
     CoverageScope,
@@ -60,6 +61,7 @@ from .repowise_json import parse_repowise_json
 __all__ = [
     "DRIFT_MIN_MEASURED",
     "DRIFT_PCT",
+    "EMPTY_COVERAGE_REPORT_NOTE",
     "PARSERS",
     "ContextCoverageReport",
     "CoverageConfig",

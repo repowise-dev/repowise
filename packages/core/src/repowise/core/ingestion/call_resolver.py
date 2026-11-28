@@ -41,6 +41,7 @@ from .call_barrel_forwarding import (  # noqa: F401
 )
 from .call_cobol import CobolCallsMixin
 from .call_cpp_class_scope import CppClassScopeMixin
+from .call_external import ExternalCallsMixin
 from .call_inheritance import (  # noqa: F401
     _EXTERNAL_PREFIX,
     _MAX_ANCESTOR_EXPAND_DEPTH,
@@ -88,6 +89,7 @@ from .call_receiver_typing import (
 )
 from .call_rust_paths import RustPathCallsMixin
 from .decorator_names import is_property_accessor, property_mutator_role
+from .external_calls import ExternalCallSite
 from .lang_helpers.anonymous_classes import is_anonymous_member
 from .language_data import (
     get_builtin_methods,
@@ -113,6 +115,7 @@ from .return_types import (
     declared_return_type,
     normalize_return_type,
     signature_parameter_count,
+    signature_parameters,
 )
 from .symbol_identity import id_segment_name, module_symbol_id, outer_scope, same_parameters
 from .type_names import (
@@ -215,6 +218,13 @@ def _imports_a_library(imp: Import) -> bool:
     if classify_jvm_import(imp.module_path, kotlin=True) is None:
         return False
     return not imp.resolved_file or imp.resolved_file.startswith(_EXTERNAL_PREFIX)
+
+
+def _guessed(hit: ResolvedCall | None) -> ResolvedCall | None:
+    """*hit* read through an import another function makes: a guess, not a binding."""
+    if hit is None:
+        return None
+    return ResolvedCall(hit.caller_id, hit.callee_id, 0.50, hit.line, "import_elsewhere")
 
 
 def _is_kotlin_alias(sym: Symbol | None) -> bool:
@@ -331,6 +341,7 @@ class CallResolver(
     InheritanceMixin,
     CppClassScopeMixin,
     RustPathCallsMixin,
+    ExternalCallsMixin,
 ):
     """Resolve raw CallSites to symbol-level edges.
 
@@ -356,11 +367,14 @@ class CallResolver(
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
         cpp_index: Any | None = None,
+        rails_index: Any | None = None,
         source_map: dict[str, bytes] | None = None,
     ) -> None:
         # {repo path: bytes} of the revision under analysis, when it is not the
         # working tree; a file it lacks is read from disk.
         self._source_map = source_map
+        # Calls whose package-call check raised (see ``resolve_file``).
+        self.external_call_failures = 0
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
@@ -499,6 +513,8 @@ class CallResolver(
         self._import_bindings: dict[str, dict[str, NamedBinding]] = import_maps.import_bindings
         # Module alias mapping: {file_path: {alias: source_file}}
         self._module_aliases: dict[str, dict[str, str]] = import_maps.module_aliases
+        # Scope-aware reads of a name only function-body imports bind.
+        self._import_maps = import_maps
 
         # Lazy per-file merged views of every imported file's symbol and
         # method tables, merged in sorted import order with first-wins so
@@ -530,6 +546,9 @@ class CallResolver(
             # The C/C++ workspace index the build's warmup already made over
             # these files; without it one is built here on first use.
             self._cpp_index, self._cpp_index_built = cpp_index, True
+        if rails_index is not None:
+            # The Zeitwerk index the type-reference pass already built.
+            self._rails_index, self._rails_index_built = rails_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
@@ -1030,8 +1049,18 @@ class CallResolver(
             cache[file_path] = merged
         return merged
 
-    def resolve_file(self, file_path: str, calls: list[CallSite]) -> list[ResolvedCall]:
-        """Resolve all calls in a single file to symbol-level edges."""
+    def resolve_file(
+        self,
+        file_path: str,
+        calls: list[CallSite],
+        external: list[ExternalCallSite] | None = None,
+    ) -> list[ResolvedCall]:
+        """Resolve all calls in a single file to symbol-level edges.
+
+        With *external*, a call bound to no repo symbol whose callee an import
+        provably binds to a package is appended there instead
+        (:meth:`_external_call_site`); it never becomes an edge.
+        """
         results: list[ResolvedCall] = []
         self._chain_inner_resolved.clear()
 
@@ -1044,6 +1073,16 @@ class CallResolver(
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)
             if resolved:
                 resolved = self._settle_callee(resolved, call)
+            if resolved is None and external is not None:
+                try:
+                    site = self._external_call_site(file_path, call)
+                except Exception as exc:  # a derived record never fails the graph
+                    # Counted, so the build's package calls are stored as incomplete.
+                    self.external_call_failures += 1
+                    log.debug("external_call_site_failed", path=file_path, error=repr(exc))
+                    site = None
+                if site is not None:
+                    external.append(site)
             if resolved:
                 # The edge type is a property of the call syntax, not of the
                 # tier that answered, so it is stamped once here.
@@ -1124,15 +1163,45 @@ class CallResolver(
             return self._with_props(hit, call)
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
 
-    def _chain_from_repo_function(self, file_path: str, call: CallSite, caller_id: str) -> bool:
-        """Whether the inner call of chained *call* resolves to a repo function or method."""
+    def _chain_from_repo_function(
+        self, file_path: str, call: CallSite, caller_id: str, *, value_of: str | None = None
+    ) -> bool:
+        """Whether the inner call of chained *call* resolves to a repo function or method.
+
+        With *value_of*, a repo variable counts too when its declaration line
+        writes a function literal returning that type: Go calls a function
+        value the repo declares (``var engine = sync.OnceValue(func() *gin.Engine
+        {...})``; ``engine()``). One holding a library function does not.
+        """
         assert call.receiver_call is not None
         language = self._language_of(file_path) or ""
         # Not gated on the return-type chain lane: whether the inner call is a
         # repo function needs no return type, so every language gets the carve-out.
         inner = self._chain_inner_link(file_path, call, call.receiver_call, caller_id, language)
         symbol = self._symbols_by_id.get(inner.callee_id) if inner is not None else None
-        return symbol is not None and symbol.kind in ("function", "method")
+        if symbol is None:
+            return False
+        if symbol.kind in ("function", "method"):
+            return True
+        return symbol.kind == "variable" and value_of is not None and self._returns_from_literal(
+            symbol, value_of
+        )
+
+    def _returns_from_literal(self, variable: Symbol, type_name: str) -> bool:
+        """Whether *variable*'s declaration line writes ``func(...) [*][pkg.]T``
+        with ``T`` *type_name* or a repo type embedding it (Go's ancestors)."""
+        path = self._symbol_paths_by_id.get(variable.id)
+        lines = self._text_of(path).splitlines() if path else []
+        if not 0 < variable.start_line <= len(lines):
+            return False
+        literal = re.search(
+            r"\bfunc\s*\([^)]*\)\s*\*?(?:\w+\.)?(?P<type>[A-Za-z_]\w*)\b",
+            lines[variable.start_line - 1],
+        )
+        if literal is None:
+            return False
+        returned = literal.group("type")
+        return returned == type_name or type_name in self._ancestor_names(returned, "go")
 
     def _through_kotlin_alias(
         self, alias: Symbol, call: CallSite, caller_id: str
@@ -1179,9 +1248,19 @@ class CallResolver(
             # value, and a value's method is never a module-level function of
             # that name. Only a repo function or method may hand back a module
             # (``_lazy_mod().helper()``, ``self._backend().helper()``), so only
-            # its result keeps the name.
-            function = alias is not None and alias.kind == "function"
-            return None if function and not self._chain_from_repo_function(file_path, call, caller_id) else hit
+            # its result keeps the name. A Go chain is always a method on that
+            # value, so a method hit needs the result of a repo function (or
+            # of a function value the repo declares returning the method's
+            # type) too: ``http.FileServer(fs).ServeHTTP(w, r)`` is the
+            # library handler's.
+            go = self._language_of(file_path) == "go"
+            narrowed = alias is not None and (alias.kind == "function" or go)
+            owner = bare_type_name(alias.parent_name or "") if go and alias is not None else ""
+            if narrowed and not self._chain_from_repo_function(
+                file_path, call, caller_id, value_of=owner or None
+            ):
+                return None
+            return hit
         if hit is None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
@@ -1575,12 +1654,16 @@ class CallResolver(
         if language == "java" and self._returns_java_self_type(callee_id):
             # A self-bounded ``B`` is the type of whatever the call was made on.
             # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
-            nested = self._nested_receiver_call(file_path, call, inner, language)
+            # The next hop is read from *inner*'s own site, so each step looks
+            # strictly left of the last: ``x.name(a).name(b)`` walks down
+            # instead of finding the outer ``name`` again forever.
+            site = self._nested_receiver_site(file_path, call, inner, language)
+            nested = site.receiver_call if site is not None else None
             if nested is None:
                 return None
-            nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
+            nested_callee = self._chain_inner_callee(file_path, site, nested, caller_id, language)
             return self._callee_chain_return_type(
-                file_path, call, nested, nested_callee, caller_id, language
+                file_path, site, nested, nested_callee, caller_id, language
             )
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
@@ -1600,7 +1683,12 @@ class CallResolver(
     def _nested_receiver_site(
         self, file_path: str, call: CallSite, inner: CallReceiver, language: str
     ) -> CallSite | None:
-        """The CallSite in the same chain that corresponds to `inner`."""
+        """The CallSite in the same chain that corresponds to `inner`.
+
+        A receiver records one hop, but the parser keeps every link of a chain
+        as its own site on the chain's first line, so the hop below `inner` is
+        that site's receiver. The nearest such site left of `call` is taken.
+        """
         if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
             return None
         matches = self._chained_sites_for(file_path).get(
@@ -1613,20 +1701,6 @@ class CallResolver(
             if inner.argument_count is None or c.argument_count == inner.argument_count:
                 return c
         return None
-
-    def _nested_receiver_call(
-        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
-    ) -> CallReceiver | None:
-        """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
-
-        A receiver records one hop, but the parser keeps every link of a chain
-        as its own site on the chain's first line, so the hop below is read
-        off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
-        builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it.
-        """
-        matched = self._nested_receiver_site(file_path, call, inner, language)
-        return matched.receiver_call if matched is not None else None
 
     def _callee_return_type(
         self, callee_id: str, argument_count: int | None, language: str
@@ -1772,8 +1846,17 @@ class CallResolver(
             if hit is not None:
                 return hit
 
-        # Tier 2: import-scoped
-        binding = self._import_bindings.get(file_path, {}).get(target_name)
+        # Tier 2: import-scoped. A name only other functions import is unbound
+        # here: a module-level star import brings it, else that import's
+        # binding is read as a guess.
+        local = self._import_maps.local_binding(file_path, target_name, call.line)
+        if local is not None and local[1]:
+            return self._module_star_import_call(file_path, call, caller_id) or _guessed(
+                self._bound_import_call(call, caller_id, local[0])
+            )
+        binding = (
+            local[0] if local is not None else self._import_bindings.get(file_path, {}).get(target_name)
+        )
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
@@ -1845,6 +1928,14 @@ class CallResolver(
         # a fallback for names no top-level symbol claims (class-scoped
         # bindings live there alone).
         language = self._language_of(file_path)
+        if language == "rust":
+            item = self._rust_block_call(file_path, call, caller_id)
+            if item is not None:
+                return True, (
+                    None
+                    if item == caller_id and not self._is_bare_recursion(file_path, call, caller_id)
+                    else ResolvedCall(caller_id, item, 0.95, call.line, "same_file")
+                )
         if language in _BARE_CALL_SKIPS_MEMBERS_LANGUAGES or (
             language in _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES
             and call.target_name in self._file_top_level.get(file_path, {})
@@ -1864,6 +1955,19 @@ class CallResolver(
             return True, ResolvedCall(caller_id, callee_id, 0.95, call.line, "same_file")
         # A method no bare name reaches here (Python, Go, Rust) is not this call's target.
         return False, None
+
+    def _rust_block_call(self, file_path: str, call: CallSite, caller_id: str) -> str | None:
+        """The inline block item a Rust call written bare names, else None.
+
+        Written bare on its line: a chained ``a().f()`` reaches here without
+        its receiver.
+        """
+        if call.receiver_name or call.scope_name:
+            return None
+        item = self._rust_block_item(file_path, call.line, call.target_name)
+        if item is None or not _called_bare_on_line(self._lines_of(file_path), call):
+            return None
+        return item
 
     def _bare_name_reaches_caller(self, file_path: str, call: CallSite, own: str | None) -> bool:
         """Is a bare call the flat index answers with its own caller recursion?
@@ -2034,6 +2138,21 @@ class CallResolver(
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
+
+    def _module_star_import_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """The symbol a module-level ``from m import *`` of *file_path* publishes."""
+        parsed = self._parsed_files.get(file_path)
+        for imp in parsed.imports if parsed else ():
+            if imp.scopes is None and "*" in imp.imported_names and imp.resolved_file:
+                published = self._published(imp.resolved_file, call.target_name)
+                if published is not None:
+                    return ResolvedCall(caller_id, published, 0.85, call.line, "import_merged")
+        return None
 
     def _merged_import_call(
         self,
@@ -2310,19 +2429,47 @@ class CallResolver(
             hit = self._module_alias_call(file_path, held, call, caller_id)
             if hit is not None:
                 return self._body_typed_call(caller_id, hit.callee_id, "import", call.line)
+        local = self._import_maps.local_binding(file_path, receiver_name, call.line)
+        if local is not None:
+            binding, guessed = local
+            # A parameter holds what its caller passes, never the module.
+            if binding is None or (
+                guessed and self._python_parameter_at(file_path, call.line, receiver_name)
+            ):
+                return None
+            module_file = binding.source_file if binding.is_module_alias else None
+            name_file = binding.source_file
+        else:
+            guessed = False
+            module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
+            name_file = self._import_names.get(file_path, {}).get(receiver_name)
         # Strategy 1: receiver is a module alias (e.g. "import models" → "models.User()")
-        module_file = self._module_aliases.get(file_path, {}).get(receiver_name)
         if module_file:
-            return self._module_alias_call(file_path, module_file, call, caller_id)
+            hit = self._module_alias_call(file_path, module_file, call, caller_id)
+            return _guessed(hit) if guessed else hit
 
         # Strategy 1b: receiver in import names (non-alias fallback for backward compat)
-        name_to_file = self._import_names.get(file_path, {})
-        if receiver_name not in name_to_file:
+        if name_file is None:
             return None
-        published = self._published_by(name_to_file[receiver_name], receiver_name, call.target_name)
+        published = self._published_by(name_file, receiver_name, call.target_name)
         if published is None:
             return None
-        return ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        hit = ResolvedCall(caller_id, published, 0.88, call.line, "module_alias")
+        return _guessed(hit) if guessed else hit
+
+    def _python_parameter_at(self, file_path: str, line: int, name: str | None) -> bool:
+        """Is *name* a parameter of a Python function whose span holds *line*?
+
+        Ceiling: a nested ``def`` or a lambda is no symbol, so its parameters
+        are not seen here.
+        """
+        parsed = self._parsed_files.get(file_path)
+        for symbol in parsed.symbols if parsed else ():
+            if symbol.kind in ("function", "method") and symbol.start_line <= line <= symbol.end_line:
+                for piece in signature_parameters(symbol.signature or "") or ():
+                    if re.split(r"[:=]", piece, maxsplit=1)[0].strip().lstrip("*") == name:
+                        return True
+        return False
 
     def _module_held_by_local(
         self, file_path: str, caller_id: str, receiver_name: str | None
@@ -2705,6 +2852,29 @@ def _declaration_pattern(name: str) -> re.Pattern[str]:
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,
 # typically into ``::dup``.
 _MACRO_OPENING = re.compile(r"\b[A-Z][A-Z0-9_]+\s*\([^()]*$")
+
+
+def _called_bare_on_line(lines: list[str], call: CallSite) -> bool:
+    """Does *call*'s line call its name with no receiver or path before it?
+
+    Char literals, strings and a trailing ``//`` comment are blanked first; a turbofish
+    (``bar::<Vec<u8>>()``) still reads as a call.
+    """
+    if not 0 < call.line <= len(lines):
+        return False
+    text = lines[call.line - 1]
+    for pattern, blank in ((_CHAR_LITERAL, "' '"), (_STRING_LITERAL, '""'), (_RUST_LINE_COMMENT, "")):
+        text = pattern.sub(blank, text)
+    called = re.compile(rf"\b{re.escape(call.target_name)}\b\s*(?:::\s*<|\()")
+    return any(
+        not text[: m.start()].rstrip().endswith((".", "::", "->")) for m in called.finditer(text)
+    )
+
+
+_STRING_LITERAL = re.compile(r'"(?:\\.|[^"\\])*"')
+_RUST_LINE_COMMENT = re.compile(r"//.*$")
+# A char literal, blanked first: ``'"'`` would otherwise open a string.
+_CHAR_LITERAL = re.compile(r"'(?:\\.|[^'\\])'")
 
 
 def _unqualified(before: str) -> bool:

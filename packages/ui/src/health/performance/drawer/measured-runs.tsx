@@ -7,6 +7,7 @@ import type { MeasuredFunction } from "@repowise-dev/types/runtime-evidence";
 import { formatNumber, formatRelativeTimeOrNull } from "../../../lib/format";
 import type { PerformanceViewAdapter } from "../adapter";
 import { useMeasuredOverview } from "../runtime";
+import { isMeasuredHotspot } from "../presentation";
 import { EvidenceWordTag } from "../tags";
 import { intervalText, plural, shareText, workloadClassLabel } from "../measured-format";
 import { Section } from "./layout";
@@ -15,7 +16,8 @@ import { Section } from "./layout";
  * What stored profile runs measured on the function this cause edits, from
  * its basis run. Named "runs" because the drawer's evidence section is the
  * static observations. Renders nothing when no run measured the function:
- * no row means unknown, never cheap.
+ * no row means unknown, never cheap. A measured hotspot, which has no static
+ * observation, falls back to the measurement its detail carried.
  */
 
 const FRESHNESS: Record<NonNullable<MeasuredFunction["freshness"]>, string> = {
@@ -85,15 +87,28 @@ export function MeasuredRunsSection({
   const symbolId = current.intervention_symbol;
   // The tab's own overview read, shared by key: a repository with no stored
   // runs never asks about one function.
-  const { data: overview } = useMeasuredOverview(adapter);
+  const { data: overview, isLoading: overviewLoading } = useMeasuredOverview(adapter);
   const stored = overview != null && overview.status !== "no_runtime_data";
-  const { data } = useSWR(
+  const { data, isLoading } = useSWR(
     load && symbolId && stored ? `evidence-function:${adapter.cacheKey}:${symbolId}` : null,
     () => load!({ symbolId: symbolId! }),
     { revalidateOnFocus: false, shouldRetryOnError: false },
   );
   const fn = data?.functions[0];
-  if (!fn) return null;
+  if (!fn) {
+    // A measured hotspot's evidence is its run, so a host that cannot read the
+    // function still shows the measurement its detail carried. Only once the
+    // reads settled without a row: while one is in flight the live row may
+    // still come, and the carried line would flash before it.
+    const settled = !overviewLoading && !isLoading;
+    const carried =
+      settled && isMeasuredHotspot(current) ? current.evidence[0]?.reason : null;
+    return carried ? (
+      <Section title="Runs that measured it">
+        <p className="text-xs text-[var(--color-text-secondary)]">{carried}</p>
+      </Section>
+    ) : null;
+  }
   const others = (fn.run_count ?? 1) - 1;
   const ranked = fn.rank != null && !fn.ordering_only;
   const notes = [

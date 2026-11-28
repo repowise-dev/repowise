@@ -94,9 +94,10 @@ class GlobalMcpTarget:
             if not e.moves:
                 continue
             if not e.present:
+                # A plan, printed before the write: the outcome is reported after it.
                 lines.append(
-                    f"{e.client} repowise MCP entry added, "
-                    f"will serve {_serves(e.planned_target)}"
+                    f"{e.client} repowise MCP entry will be added, "
+                    f"serving {_serves(e.planned_target)}"
                 )
                 continue
             now = _serves(e.target)

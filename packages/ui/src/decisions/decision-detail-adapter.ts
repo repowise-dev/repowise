@@ -58,6 +58,11 @@ export interface DecisionDetailAdapter {
   commitsHref(opts?: { commit?: string; sort?: string }): string;
   /** href to the hotspots/churn view for the affected areas. */
   hotspotsHref(): string;
+  /**
+   * href for a file reference (an evidence row's file and line). Optional: a
+   * host without a file view leaves the location as text.
+   */
+  fileHref?(path: string, line?: number | null): string;
 
   /** Link element for internal navigation. Defaults to `<a>`. */
   LinkComponent?: DecisionLinkComponent;

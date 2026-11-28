@@ -83,13 +83,32 @@ def parse_json_object(content: str) -> dict[str, Any]:
 _STOP_SEGMENTS = {"src", "lib", "app", "packages", "core", "internal", "pkg", "source"}
 
 
+# Fixed tool directory names that read as camelCase but are one name. Gradle's
+# ``buildSrc`` is the one a module tree shows; add a name here only when a tool
+# fixes its spelling.
+_WHOLE_WORDS = frozenset({"buildSrc"})
+
+# A brand spelled with a short lowercase lead: the ``iOS`` / ``macOS`` /
+# ``watchOS`` family, and one lowercase letter before a capital (``iPhone``,
+# ``eBay``). Two-letter leads are left to split: they are ``myApp`` and
+# ``toJson`` far more often than a brand, and a caps tail other than OS is
+# ``userID`` far more often than ``macOS``.
+_BRAND_SHAPE = re.compile(r"[a-z]{1,5}OS|[a-z][A-Z][a-z][A-Za-z\d]*")
+
+
 def _humanise(segment: str) -> str:
     words = re.split(r"[-_.\s]+", segment)
     out: list[str] = []
     for word in words:
         if not word:
             continue
-        # Split camelCase so ``pageGenerator`` reads as two words.
+        # A word that starts with a capital (``AnkiDroid``, ``GitHub``) or has
+        # a brand shape is a name spelled the way its project spells it, and
+        # splitting it reads as not knowing the project. Only lowerCamelCase
+        # splits, so ``pageGenerator`` reads as two words.
+        if word in _WHOLE_WORDS or word[0].isupper() or _BRAND_SHAPE.fullmatch(word):
+            out.append(word)
+            continue
         parts = re.findall(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", word) or [word]
         cased = [p.capitalize() if p.islower() else p for p in parts]
         # A trailing number belongs to the word it was written against: the

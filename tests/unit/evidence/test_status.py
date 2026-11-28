@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from repowise.cli.commands.evidence_cmd import _status_line
-from repowise.core.evidence.status import evidence_status, run_share, run_status, split_words
+from repowise.core.evidence.status import (
+    evidence_status,
+    low_signal,
+    run_share,
+    run_status,
+    split_words,
+)
 
 
 def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleNamespace:
@@ -20,6 +26,7 @@ def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleName
         "units_truncated": None, "skipped_json": None, "total_value": None,
         "explained_value": None, "repo_self_value": None, "wait_value": None,
         "library_value": None, "mapping_partial": False, "tests_failed": None,
+        "total_samples": None,
     }
     return SimpleNamespace(**{**base, **fields})
 
@@ -109,3 +116,72 @@ def test_a_partial_run_is_newest_only_without_a_complete_one() -> None:
     assert [w["run_id"] for w in status["workloads"]] == ["r1", "p1"]
     assert status["workloads"][1]["mapping_partial"] is True
     assert status["runs_stored"] == {"profile": 3}
+
+
+def test_a_profile_without_sample_counts_is_flagged_with_its_cause() -> None:
+    counted = _run("r1", "build", None, total_samples=4200, tool_name="pyinstrument")
+    pruned = _run("r2", "build", None, tool_name="pyinstrument")
+    uncounted = _run("r3", "build", None, tool_name="perf")
+    timing = _run("r4", "pytest", None, kind="test_timing")
+
+    assert [low_signal(r) for r in (counted, pruned, uncounted, timing)] == [
+        None,
+        "pruned_1pct",
+        "no_samples",
+        None,
+    ]
+    assert run_status(counted, None)["total_samples"] == 4200
+    assert run_status(pruned, None)["low_signal"] == "pruned_1pct"
+    assert "Low signal" in _status_line(run_status(pruned, None))
+    assert "Low signal" not in _status_line(run_status(counted, None))
+
+
+def _production(commit: str | None, **fields) -> SimpleNamespace:
+    window = {
+        "window_start": datetime(2026, 10, 30, 8, 0),  # SQLite hands it back without a zone
+        "window_end": datetime(2026, 11, 26, 13, 29, tzinfo=UTC),
+        "base_commit_sha": None,
+    }
+    return _run(
+        "p1", "api", commit, kind="statement_stats", workload_class="production",
+        environment="production", **{**window, **fields},
+    )
+
+
+def test_a_production_run_names_its_window_and_deploy() -> None:
+    unknown = run_status(_production(None), None)
+    assert unknown["window"] == {
+        "start": "2026-10-30T08:00:00+00:00",
+        "end": "2026-11-26T13:29:00+00:00",
+        "base_commit": None,
+        "claim": "in production over 2026-10-30 to 2026-11-26, deployed commit unknown",
+    }
+    assert unknown["window"]["claim"] in _status_line(unknown)
+
+    span = run_status(
+        _production(
+            "b" * 40,
+            window_start=datetime(2026, 11, 26, 13, 24, 55, tzinfo=UTC),
+            base_commit_sha="a" * 40,
+        ),
+        None,
+    )["window"]
+    assert span["base_commit"] == "a" * 40
+    assert span["claim"] == (
+        f"in production over 2026-11-26 13:24 to 13:29 UTC, deployed {'a' * 12} to {'b' * 12}"
+    )
+    same = run_status(_production("b" * 40, base_commit_sha="b" * 40), None)["window"]
+    assert same["claim"].endswith(f"deployed {'b' * 12}")
+    oldest_only = run_status(_production(None, base_commit_sha="a" * 40), None)["window"]
+    assert oldest_only["claim"].endswith(f"deployed from {'a' * 12}, newest commit unknown")
+    unbounded = _production(None, window_start=None)
+    assert run_status(unbounded, None)["window"]["claim"] == (
+        "in production, window unknown, deployed commit unknown"
+    )
+
+
+def test_only_a_production_run_carries_a_window() -> None:
+    for workload_class in ("entry_point", "load_test", "unit_test", "benchmark"):
+        run = run_status(_run("r1", "w", "a" * 40, workload_class=workload_class), None)
+        assert "window" not in run
+        assert "in production" not in _status_line(run)

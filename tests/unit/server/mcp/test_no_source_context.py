@@ -30,6 +30,7 @@ _CALLS: list[tuple[str, dict[str, Any], bool]] = [
     ("get_symbol", {"symbol_id": "src/auth/service.py:20"}, True),
     ("get_symbol", {"symbol_id": "src/auth/service.py:1-5"}, True),
     ("get_symbol", {"symbol_id": "src/auth/service.py::nothing_here"}, False),
+    ("get_symbol", {"symbol_id": "src/auth/service.py"}, False),
     ("search_codebase", {"query": "AuthService", "mode": "symbol"}, True),
     ("search_codebase", {"query": "how does AuthService handle authentication"}, False),
     ("search_codebase", {"query": "src/auth/service.py", "mode": "path"}, False),
@@ -270,3 +271,22 @@ def test_capability_gaps_name_real_arguments_and_include_values(tmp_path) -> Non
         params = inspect.signature(getattr(mcp_mod, tool)).parameters
         assert set(row["arguments"]) <= set(params), tool
         assert set(row["includes"]) <= set(includes.get(tool, ())), tool
+
+
+@pytest.mark.asyncio
+async def test_location_ids_resolve_from_stored_spans_with_no_source(checkout) -> None:
+    """A line, a range or a bare path names what the index holds there."""
+    from repowise.server.mcp_server import _state, get_symbol
+
+    with _state.serving(_context()):
+        line = await get_symbol("src/auth/service.py:22")
+        ranged = await get_symbol("src/auth/service.py:1-30")
+        bare = await get_symbol("src/auth/service.py")
+        outside = await get_symbol("src/auth/service.py:90")
+
+    assert line["symbol_id"] == "src/auth/service.py::login"
+    assert (line["start_line"], line["end_line"]) == (20, 40)
+    assert ranged["symbols"] == ["src/auth/service.py::AuthService", "src/auth/service.py::login"]
+    assert ranged["complete"] is False
+    assert bare["kind"] == "file" and bare["symbols"] == ["AuthService"]
+    assert "symbols" not in outside and outside["complete"] is False

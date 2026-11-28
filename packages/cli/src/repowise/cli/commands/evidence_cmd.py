@@ -41,18 +41,20 @@ from repowise.core.evidence.add import (
     detect_environment,
     evidence_caps,
     evidence_paths,
+    evidence_report_dir,
     prepare_evidence_files,
 )
 from repowise.core.evidence.ci_snippet import CI_KINDS
 from repowise.core.evidence.format_v1 import VALUE_KINDS
-from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
+from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES, run_class
 from repowise.core.evidence.profile_formats import profile_formats
 
 
-def _resolve_repo(path: str | None, notices: Any) -> Path:
+def _resolve_repo(path: str | None, notices: Any, command: str = "evidence") -> Path:
     """The repository to ingest into (workspace-aware, like ``coverage``)."""
     target = resolve_command_target(path=path)
-    return target.narrow(notices, command="evidence", repo_option=False)
+    return target.narrow(notices, command=command, repo_option=False)
+
 
 
 @click.group("evidence")
@@ -66,14 +68,14 @@ def evidence_group() -> None:
 @click.option(
     "--class",
     "workload_class",
-    required=True,
-    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ".",
+    default=None,
+    help="Workload class: " + ", ".join(FLAG_WORKLOAD_CLASSES) + ". Required, except for "
+    "a route_latency or statement_stats file, which is production by its kind.",
 )
 @click.option(
     "--commit",
     default=None,
-    help="The full SHA measured. Defaults to the file's commit_sha; required for a "
-    "converted file.",
+    help="The full SHA measured. Defaults to the file's commit_sha; required for a converted file.",
 )
 @click.option(
     "--checkout-root",
@@ -91,7 +93,7 @@ def evidence_group() -> None:
     "--environment",
     default=None,
     help="Where it ran, one word. Defaults to the OS and whether this is a CI job, "
-    "e.g. linux-ci or macos-local.",
+    "e.g. linux-ci or macos-local; production for a production file.",
 )
 @click.option(
     "--input-format",
@@ -113,13 +115,15 @@ def evidence_group() -> None:
     default=False,
     help="Store the run even when more than half its entries did not map (flagged partial).",
 )
-@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary)."
+)
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show debug logs.")
 @format_option()
 def evidence_add(
     files: tuple[Path, ...],
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     commit: str | None,
     checkout_root: Path | None,
     dirty: bool | None,
@@ -135,20 +139,26 @@ def evidence_add(
 
     FILE is a repowise-evidence-v1 document, or a profile, benchmark
     results or a test report as the tool wrote them (Speedscope JSON, Go pprof,
-    V8 .cpuprofile, collapsed stacks, pytest-benchmark or hyperfine JSON,
-    go test -bench output, JUnit XML), detected from its content. Several
+    V8 .cpuprofile, collapsed stacks, Python cProfile/pstats, pytest-benchmark,
+    hyperfine or Vitest
+    benchmark JSON, Criterion estimates,
+    go test -bench or go test -json output, JUnit XML, a pg_stat_statements CSV from
+    psql --csv), detected from its content. Several
     profiles (a parent process and its workers, or a directory holding one file
     per process) merge into one run; they must share a format, unit, tool and
     clock.
     A single profile that spent time starting or waiting on other processes
     gets a warning that their work is not in it. JUnit XML reports (a Maven or
-    Gradle report directory) read as one run; other files beside them are left out.
+    Gradle report directory, or a quoted glob such as '**/target/surefire-reports/*.xml'
+    for one directory per module) read as one run; other files beside them are left out.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
     exactly. Evidence from another commit than HEAD keeps its commit and
     reads as stale; it is never re-mapped. The production class is set only
-    by a verified source, never by this flag.
+    by a verified source or a production kind (route_latency, statement_stats:
+    leave --class out, and --commit is optional since a window spans
+    deploys), never by this flag.
 
     Examples:
 
@@ -160,12 +170,14 @@ def evidence_add(
         repowise evidence add parent.json worker-1.json worker-2.json --workload "build" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add .repowise/node-app --workload "node app" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add target/surefire-reports --workload "maven tests" --class unit_test --commit $(git rev-parse HEAD)
+        repowise evidence add statements.csv --workload "prod db"
 
     Exits 1 when nothing was stored, 2 on a usage error.
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
     commit = commit.lower() if commit is not None else None
+    named_environment = environment
     environment = environment or detect_environment()
     try:
         check_options(workload, workload_class, environment, commit)
@@ -198,7 +210,8 @@ def evidence_add(
         for path, size in zip(paths, sizes, strict=True):
             check_file_size(size, max_file_mb, str(path))
         prepared = prepare_evidence_files(
-            [(str(path), path.read_bytes()) for path in paths],
+            [(path, path.read_bytes()) for path in paths],
+            report_dir=evidence_report_dir(paths, root),
             checkout_root=root,
             commit=commit,
             dirty=dirty,
@@ -207,6 +220,14 @@ def evidence_add(
         )
     except EvidenceRefusedError as exc:
         _refuse(exc, fmt)
+    # The class the file's kind takes, refused before the index is opened (a
+    # converted profile is a profile).
+    stored_class, why = run_class(prepared.doc.kind if prepared.doc else "profile", workload_class)
+    if why is not None:
+        raise click.BadParameter(why, param_hint="--class")
+    if stored_class == "production" and named_environment is None:
+        # Production ran where users are, not on the machine adding the file.
+        environment = "production"
     try:
         payload = run_async(
             _ingest(
@@ -256,7 +277,7 @@ async def _store(
     repo_path: Path,
     prepared: PreparedEvidence,
     workload: str,
-    workload_class: str,
+    workload_class: str | None,
     environment: str,
     allow_partial: bool,
     caps: Any,
@@ -300,6 +321,10 @@ async def _store(
             payload["truncated"],
             payload["index_commit"],
         )
+        compared = await _compare_stored(session, target.repo.id, repo_path, payload)
+        if compared is not None:
+            payload["compare"] = compared
+            notices.print(_comparison_markup(compared))
     elif payload["reason"] == "mostly_unmapped":
         refuse_partial(
             "evidence file",
@@ -312,10 +337,64 @@ async def _store(
     return payload
 
 
+async def _compare_stored(
+    session: Any, repo_id: str, repo_path: Path, payload: dict[str, Any]
+) -> dict[str, Any] | None:
+    """The stored run's workload against its band of earlier runs, when it has one.
+
+    Never fails the add: the run is stored whatever the comparison meets (a
+    reading the store or git could not finish is logged and left out).
+    """
+    import logging
+
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
+
+    try:
+        # A savepoint, so a failed read cannot abort the transaction holding the run.
+        async with session.begin_nested():
+            comparisons = await load_comparisons(session, repo_id, repo_path)
+    except Exception:  # a comparison must never undo the stored run
+        logging.getLogger(__name__).warning(
+            "Could not compare the run with earlier runs.", exc_info=True
+        )
+        return None
+    # Only a comparison about the run just stored: a partially mapped run has none.
+    for found in comparisons:
+        if found.head_run_id == payload.get("run_id"):
+            return comparison_payload(found)
+    return None
+
+
+def _comparison_markup(compared: dict[str, Any]) -> str:
+    """A comparison's line (``comparison_payload``), yellow when it is slower."""
+    line = escape(compared["line"])
+    return line if compared["verdict"] == "within_noise" else f"[yellow]{line}[/yellow]"
+
+
+def _ordering_skipped_summary(summary: dict[str, Any]) -> str:
+    """Format skipped repo frames summary for an ordering-only conversion."""
+    skipped_counts = {
+        r: c for r, c in summary.get("skipped", {}).items() if r != "outside_repo"
+    }
+    if not skipped_counts:
+        return "all repo frames resolved" if summary.get("symbols") else "no repo frames"
+    reasons = ", ".join(
+        f"{r} ({c})" if c > 1 else r for r, c in sorted(skipped_counts.items())
+    )
+    total_skipped = sum(skipped_counts.values())
+    suffix = "s" if total_skipped != 1 else ""
+    return f"{total_skipped} repo frame{suffix} skipped ({reasons})"
+
+
 def _report_conversion(notices: Any, name: str, summary: dict[str, Any], profiles: int) -> None:
     """Where the profile's time went and how its frames joined, never silent."""
     from repowise.core.evidence.status import split_words
 
+    if summary.get("total") is None:
+        skipped = _ordering_skipped_summary(summary)
+        notices.print(f"Converted {escape(name)}: ordering of functions only; {skipped}.")
+        return
     rate = summary["skip_rate"]
     split = split_words(summary) or "repo code itself unknown"
     skipped = "no repo frames" if rate is None else f"{rate:.0%} of repo frame time skipped"
@@ -337,7 +416,7 @@ _SHORT_RUN_S = 3.0
 
 
 def _warn_short_run(
-    notices: Any, workload_class: str, value_kind: str | None, summary: dict[str, Any]
+    notices: Any, workload_class: str | None, value_kind: str | None, summary: dict[str, Any]
 ) -> None:
     """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
 
@@ -347,8 +426,8 @@ def _warn_short_run(
     per = _SECONDS.get(summary["unit"])
     if workload_class != "entry_point" or value_kind != "wall" or per is None:
         return
-    seconds = summary["total"] * per
-    if seconds >= _SHORT_RUN_S:
+    seconds = summary["total"] * per if summary.get("total") is not None else None
+    if seconds is None or seconds >= _SHORT_RUN_S:
         return
     notices.print(
         f"[yellow]This entry point's profile covers {seconds:.1f} s: a run "
@@ -367,9 +446,12 @@ def _report_stored(
 ) -> None:
     """Print what was stored, what was left out and whether it reads as current."""
     verb = "Restamped" if restamped else "Stored"
+    commit = summary["commit_sha"]
+    at = commit[:12] if commit else "an unknown deployed commit"
     notices.print(
-        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]: "
-        f"{stored} of {summary['entries']} entries stored at {summary['commit_sha'][:12]}."
+        f"[green]{verb} {summary['kind']} evidence for {escape(summary['workload'])}[/green]"
+        f"{escape(_production_window(summary))}: {stored} of {summary['entries']} entries "
+        f"stored at {at}."
     )
     labels = (("Skipped", summary["skipped"]), ("Kept without a function", summary["unlinked"]))
     for label, counts in labels:
@@ -385,7 +467,19 @@ def _report_stored(
         )
     if summary["mapping_partial"]:
         report_stored_partial("evidence", out=notices)
+    if summary.get("low_signal"):
+        notices.print(_low_signal_note(summary["low_signal"]).strip())
     _report_staleness(notices, summary, index_commit)
+
+
+def _production_window(summary: dict[str, Any]) -> str:
+    """`` in production over <start> to <end>`` for a production run; ``""`` otherwise."""
+    window = summary.get("window")
+    if not window:
+        return ""
+    if not (window["start"] or window["end"]):
+        return " in production"
+    return f" in production over {window['start'] or '?'} to {window['end'] or '?'}"
 
 
 def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str | None) -> None:
@@ -394,7 +488,7 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
             "[yellow]Measured at another commit than HEAD: it is kept with its own "
             "commit and reads as stale.[/yellow]"
         )
-    elif index_commit and index_commit != summary["commit_sha"]:
+    elif index_commit and summary["commit_sha"] and index_commit != summary["commit_sha"]:
         notices.print(
             "[yellow]The index is at another commit than the one measured; run "
             "[cyan]repowise update[/cyan] and add the file again to join it to the "
@@ -428,7 +522,8 @@ def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: s
     suite, each with a profiler command that needs no privileges and the exact
     ``evidence add`` line. ``next_call`` lists the steps to run next, each
     with its directory: a coverage report on disk first, then the best
-    profile, then the tests with coverage. ``stack: unknown`` when repowise is
+    profile, then the tests with coverage, which also write and ingest the
+    test timings. ``stack: unknown`` when repowise is
     not sure how a unit runs. Works before the repository is indexed.
 
     --write adds one CI file (``.github/workflows/repowise-evidence.yml`` or
@@ -445,7 +540,7 @@ def evidence_setup_command(repo: str | None, write: bool, ci: str | None, fmt: s
     """
     if ci is not None and not write:
         raise click.UsageError("--ci names the file --write writes; add --write.")
-    _print_setup(repo, fmt, write=write, ci=ci)
+    _print_setup(repo, fmt, write=write, ci=ci, command="evidence")
 
 
 def _print_setup(
@@ -455,6 +550,7 @@ def _print_setup(
     coverage_only: bool = False,
     write: bool = False,
     ci: str | None = None,
+    command: str
 ) -> None:
     """Shared by ``evidence setup`` and ``coverage setup`` (*coverage_only*)."""
     from repowise.core.evidence.ci_snippet import detect_ci
@@ -463,7 +559,7 @@ def _print_setup(
     from repowise.core.workspace.update.state import get_head_commit
 
     notices = notice_console(fmt)
-    repo_path = _resolve_repo(repo, notices)
+    repo_path = _resolve_repo(repo, notices, command)
     if write:
         ci = ci or detect_ci(repo_path)
     indexed, units, coverage_commit, runtime, index_error, index_fix = run_async(
@@ -502,7 +598,8 @@ def _print_next(plan: dict[str, Any], notices: Any) -> None:
         return
     notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
     for step in call["steps"]:
-        notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+        env = f" with {_env_words(step['env'])} in its environment" if step.get("env") else ""
+        notices.print(f"  [dim]in {escape(step['cwd'])}{escape(env)}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
     if call.get("optional"):
         optional = call["optional"]
         notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
@@ -559,6 +656,11 @@ def _print_written(snippet: dict[str, Any], notices: Any) -> None:
         )
 
 
+def _env_words(env: dict[str, str]) -> str:
+    """An environment mapping as ``NAME=value`` words."""
+    return " ".join(f"{name}={value}" for name, value in env.items())
+
+
 def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
     """How a unit's tests write JUnit XML, and the line that ingests it."""
     if not timings:
@@ -569,7 +671,7 @@ def _timings_lines(timings: dict[str, Any] | None) -> list[str]:
         else "written by default"
     )
     if timings.get("env"):
-        how += f" with [cyan]{escape(timings['env'])}[/cyan] in its environment"
+        how += f" with [cyan]{escape(_env_words(timings['env']))}[/cyan] in its environment"
     lines = [f"  test timings: {how}, report {escape(timings['report'])}"]
     if timings["ingest"]:
         lines.append(f"    then: [cyan]{escape(timings['ingest'])}[/cyan]")
@@ -585,8 +687,12 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
     if cov["command"]:
         lines += [f"  needs: [cyan]{escape(p)}[/cyan]" for p in cov["prerequisites"]]
         lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
+        if cov.get("env"):
+            lines.append(f"    with [cyan]{escape(_env_words(cov['env']))}[/cyan] in its environment")
     elif cov["reason"]:
         lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    # The reason is the last note when there is no command; the rest say what the command installs or skips.
+    lines += [f"  [dim]note: {escape(n)}[/dim]" for n in cov["notes"] if n != cov["reason"]]
     if cov["found"]:
         lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
     if cov["ingest"]:
@@ -600,6 +706,8 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
         lines.append(f"{head}: [cyan]{escape(target['command'])}[/cyan]")
         if target["reason"]:
             lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
+        if target.get("note"):
+            lines.append(f"    [dim]note: {escape(target['note'])}[/dim]")
         if target["ingest"]:
             lines.append(f"    then: [cyan]{escape(target['ingest'])}[/cyan]")
     return lines
@@ -664,17 +772,35 @@ async def _index_read_error(repo_path: Path) -> str | None:
 
 @evidence_group.command("status")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@click.option(
+    "--compare",
+    "compare",
+    is_flag=True,
+    default=False,
+    help="Also compare each workload's newest run with its earlier runs: what got slower, "
+    "and the commits in between that changed what it ran.",
+)
 @format_option()
-def evidence_status_command(repo: str | None, fmt: str) -> None:
+def evidence_status_command(repo: str | None, compare: bool, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
 
     Each run says how fresh it is against the indexed commit (current, stale
     or unknown), where its time went (production repo code itself, waits,
     libraries), and what was skipped.
+
+    With --compare, each workload with an earlier run at another commit is
+    compared with a band of up to 5 of them. Against 3 or more earlier runs, a
+    benchmark is slower when its median is past the band's own spread and at
+    least 25% worse (10% when two or more runs of the new commit pool their
+    samples), with no sample overlapping; against fewer it only looks slower,
+    to confirm with perf measure. Allocations per op and query counts are exact:
+    any growth is slower. Profiles compare CPU self seconds and suites their
+    seconds, against 3 or more runs. A slower workload names the commits in
+    between that changed a function it ran.
     """
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
-    payload = run_async(_status(repo_path))
+    payload = run_async(_status(repo_path, compare=compare))
     if fmt == "json":
         emit_json(payload)
         return
@@ -689,6 +815,12 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
         return
     for run in payload["workloads"]:
         notices.print(_status_line(run))
+    if compare:
+        compared = payload["compare"]
+        if not compared:
+            notices.print("No workload has an earlier run at another commit to compare with.")
+        for found in compared:
+            notices.print(_comparison_markup(found))
 
 
 def _status_line(run: dict[str, Any]) -> str:
@@ -711,15 +843,30 @@ def _status_line(run: dict[str, Any]) -> str:
     return (
         f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
         f"{escape(run['environment'])}): {run['freshness']} at "
-        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}{explained}"
+        f"{run['commit_sha'][:12] if run['commit_sha'] else 'an unknown commit'}; "
+        f"{stored}{explained}"
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
+        # A production run: over which window and which deploy.
+        + (f"; {run['window']['claim']}" if run.get("window") else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
+        + _low_signal_note(run.get("low_signal"))
     )
 
 
-def _total(value: float) -> str:
+def _low_signal_note(token: str | None) -> str:
+    """The cause and fix of a profile run with no sample counts; empty otherwise."""
+    from repowise.core.evidence.status import LOW_SIGNAL_FIX
+
+    if token is None:
+        return ""
+    return f"\n  [yellow]Low signal: {escape(LOW_SIGNAL_FIX[token])}.[/yellow]"
+
+
+def _total(value: float | None) -> str:
     """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    if value is None:
+        return "unknown"
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
@@ -743,15 +890,24 @@ async def _read_store(repo_path: Path, read: Any, empty: dict[str, Any]) -> dict
         await engine.dispose()
 
 
-async def _status(repo_path: Path) -> dict[str, Any]:
+async def _status(repo_path: Path, *, compare: bool = False) -> dict[str, Any]:
+    from repowise.core.evidence.compare import comparison_payload
+    from repowise.core.evidence.compare_history import load_comparisons
     from repowise.core.evidence.status import evidence_status
     from repowise.core.persistence.crud import list_evidence_runs
 
     async def read(session: Any, repo_row: Any) -> dict[str, Any]:
         runs = await list_evidence_runs(session, repo_row.id)
-        return evidence_status(runs, repo_row.head_commit)
+        out = evidence_status(runs, repo_row.head_commit)
+        if compare:
+            found = await load_comparisons(session, repo_row.id, repo_path)
+            out["compare"] = [comparison_payload(c) for c in found]
+        return out
 
-    return await _read_store(repo_path, read, evidence_status([], None))
+    empty = evidence_status([], None)
+    if compare:
+        empty["compare"] = []
+    return await _read_store(repo_path, read, empty)
 
 
 @evidence_group.command("tests")
@@ -765,13 +921,15 @@ async def _status(repo_path: Path) -> dict[str, Any]:
 )
 @format_option()
 def evidence_tests_command(repo: str | None, limit: int, fmt: str) -> None:
-    """Show the slowest tests and the test time spent on each production file.
+    """Show which groups of tests make the suite slow, and the slowest tests.
 
     Reads the JUnit XML timings ``evidence add`` stored (the newest run of each
-    test workload). Test time per file sums the timed tests that run it:
-    ``measured`` from the per-test coverage map when one is stored
-    (``repowise coverage add`` with per-test contexts), else ``inferred`` from
-    each function's nearest tests on the call graph. Timing orders, never gates.
+    test workload). With a per-test coverage map (``repowise coverage add`` with
+    per-test contexts), up to 3 groups of tests that run the same production
+    code and take longer than the rest, each with the time it adds and the
+    fixture its tests share; without one, how concentrated the time is. A suite
+    under a minute, or with no group 5 s over the rest, gets one line. Timing
+    orders, never gates.
 
     Examples:
 
@@ -807,27 +965,140 @@ async def _tests(repo_path: Path, limit: int) -> dict[str, Any]:
 
 
 def _tests_lines(payload: dict[str, Any]) -> list[str]:
-    """The slow-test list and the file costs, in words."""
+    """Where the suite's time goes, in words: one line when nothing is worth a list."""
+    cost = payload["cost"]
+    total = f"{cost['seconds']:,.1f} s"
+    if cost["verdict"] == "small_suite":
+        return [
+            f"Tests take {total} in all ({cost['timed']:,} timed): under a minute, nothing to speed up."
+        ]
+    if cost["verdict"] == "small_excess":
+        return [
+            f"Tests take {total} ({cost['timed']:,} timed), spread evenly: no group of tests "
+            "runs 5 s over the rest."
+        ]
+    lines = _cost_lead(cost, payload.get("suite"))
+    for i, cluster in enumerate(cost["clusters"], 1):
+        lines.extend(_cluster_lines(i, cluster))
     runs = ", ".join(
         f"{escape(r['workload'])} ({r['freshness']} at {(r['commit_sha'] or 'unknown')[:12]})"
         for r in payload["runs"]
     )
-    lines = [f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:"]
+    lines.append(f"[bold]Slowest tests[/bold] of {payload['tests_total']:,} timed, from {runs}:")
     for test in payload["slow_tests"]:
-        shared = " [dim](may include its class's shared fixtures)[/dim]" if test["first_in_class"] else ""
+        shared = (
+            " [dim](may include its class's shared fixtures)[/dim]"
+            if test["first_in_class"]
+            else ""
+        )
         failed = f" [red]{test['outcome']}[/red]" if test["outcome"] in ("failed", "error") else ""
         lines.append(f"  {test['duration_s']:8.2f}s  {escape(test['test_id'])}{failed}{shared}")
-    costs = payload["file_costs"]
-    if not costs["files"]:
-        lines.append(f"No production file is tied to a timed test ({costs['basis']}).")
-        return lines
-    lines.append(
-        f"[bold]Test time per production file[/bold] ({costs['basis']}), "
-        f"{len(costs['files'])} of {costs['files_total']:,}:"
-    )
-    for row in costs["files"]:
+    suite = payload.get("suite")
+    cut = sum(r["units"]["truncated"] or 0 for r in payload["runs"])
+    if cut:
+        whole = ""
+        if suite is not None:
+            whole = f"; with them the {suite['timed']:,} timed tests take {suite['seconds']:,.1f}s"
+            # Folds add up per workload: a test two workloads run counts in each.
+            n = len(payload["runs"])
+            whole += f", summed over {n} workloads" if n > 1 else " in all"
         lines.append(
-            f"  {row['test_seconds']:8.2f}s  {escape(row['file_path'])} "
-            f"[dim]({row['timed_tests']} of {row['tests']} tests timed)[/dim]"
+            f"[dim]{cut:,} faster or untimed tests were left out at the per-run cap{whole}.[/dim]"
         )
     return lines
+
+
+def _cost_lead(cost: dict[str, Any], suite: dict[str, Any] | None) -> list[str]:
+    """What to look at first and what it saves, then how the time is spread."""
+    total = f"{cost['seconds']:,.1f} s"
+    top = cost["concentration"]
+    spread = f"; the slowest {top['tests']:,} take {top['share']:.0%} of it" if top else ""
+    shape = f"Tests take {total} ({cost['timed']:,} timed){spread}."
+    if suite is not None:
+        shape += f" [dim]{_histogram_text(suite['histogram'])}[/dim]"
+    if cost["verdict"] == "no_test_map":
+        return [
+            shape,
+            "To see which code makes them slow, record a per-test coverage map: "
+            f"[cyan]{escape(cost['command'])}[/cyan], then [cyan]repowise coverage add .coverage[/cyan].",
+        ]
+    first = cost["clusters"][0]
+    via = ""
+    if first["fixture"]:
+        fx = first["fixture"]
+        via = f", {fx['tests']} of them through fixture [cyan]{escape(fx['name'])}[/cyan] ({_where(fx)})"
+    return [
+        f"[bold]Start with the {first['tests']:,} tests that run {_files(first)}[/bold]: they take "
+        f"{first['excess_s']:,.1f} s more than the rest's pace ({_share(first)} of the suite){via}.",
+        shape,
+        "[bold]Groups of tests slower than the rest[/bold] (time over the others' mean):",
+    ]
+
+
+def _histogram_text(histogram: list[dict[str, Any]]) -> str:
+    """``By duration: 300 at 10-100 ms, 12 at 0.1-1 s, 2 over 100 s.``, empty buckets left out."""
+
+    def bound(le: float) -> str:
+        return f"{le * 1000:g}" if le < 1 else f"{le:g}"
+
+    parts, below = [], None
+    for bucket in histogram:
+        n, le = bucket["tests"], bucket["le"]
+        if n and below is None:
+            parts.append(f"{n:,} under {bound(le)} {'ms' if le < 1 else 's'}")
+        elif n and le is None:
+            parts.append(f"{n:,} over {bound(below)} s")
+        elif n:
+            unit = "ms" if le < 1 else "s"
+            low = bound(below) if (below < 1) == (le < 1) else f"{below:g}"
+            parts.append(f"{n:,} at {low}-{bound(le)} {unit}")
+        below = le
+    return f"By duration: {', '.join(parts)}." if parts else ""
+
+
+def _cluster_lines(i: int, cluster: dict[str, Any]) -> list[str]:
+    lines = [
+        f"  {i}. {cluster['tests']:,} tests at {cluster['mean_s']:.2f} s each vs "
+        f"{cluster['others_mean_s']:.2f} s: +{cluster['excess_s']:,.1f} s ({_share(cluster)})",
+        f"     run: {_files(cluster, cap=None)}",
+    ]
+    if cluster.get("within"):
+        outer = cluster["within"]
+        lines.append(
+            f"     [dim]inside the {outer['tests']:,} tests that run {_files(outer)}[/dim]"
+        )
+    if cluster["fixture"]:
+        fx = cluster["fixture"]
+        others = f"{fx['others']:,} other timed tests" if fx["others"] else "no other timed test"
+        lines.append(
+            f"     fixture: [cyan]{escape(fx['name'])}[/cyan] ({_where(fx)}), asked for by "
+            f"{fx['tests']:,} of them and {others}"
+        )
+    slowest = ", ".join(
+        f"{escape(_short_test(t['test_id']))} {t['duration_s']:.2f} s" for t in cluster["slowest"]
+    )
+    lines.append(f"     slowest: {slowest}")
+    return lines
+
+
+def _short_test(test_id: str) -> str:
+    """``tests/unit/test_add.py::test_a[x/y]`` as ``test_add.py::test_a[x/y]``."""
+    path, sep, name = test_id.partition("::")
+    return f"{path.rsplit('/', 1)[-1]}{sep}{name}"
+
+
+def _files(group: dict[str, Any], cap: int | None = 1) -> str:
+    """A group's files, the first *cap* of them named (all listed ones for ``None``)."""
+    shown = group["files"] if cap is None else group["files"][:cap]
+    more = group["files_total"] - len(shown)
+    named = ", ".join(escape(f) for f in shown)
+    return f"{named} and {more} more file{'s' if more != 1 else ''}" if more else named
+
+
+def _share(group: dict[str, Any]) -> str:
+    return f"{group['share']:.0%}" if group["share"] is not None else "unknown share"
+
+
+def _where(fixture: dict[str, Any]) -> str:
+    line = f":{fixture['line']}" if fixture["line"] else ""
+    return f"{escape(fixture['file_path'])}{line}"

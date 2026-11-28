@@ -55,7 +55,12 @@ FixStrategy = Literal[
     "shrink_lock_scope",
     "push_reduction_into_query",
     "eager_load_relationship",
+    "reduce_measured_self_time",
 ]
+
+#: The marker of a cause no static finding names: a function a leading
+#: workload measured above the lead bar (``perf.opportunities.measured_hotspots``).
+MEASURED_HOTSPOT = "measured_hotspot"
 
 BATCHABLE_MARKERS = frozenset({"io_in_loop", "nested_loop_with_io"})
 BATCHABLE_BOUNDARIES = frozenset({"db", "network"})

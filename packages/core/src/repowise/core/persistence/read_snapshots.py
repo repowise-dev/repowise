@@ -80,6 +80,7 @@ UNRELATED_TABLES = frozenset(
         "pipeline_jobs",
         "read_snapshots",
         "refactoring_summaries",
+        "reports",
         "repositories",
         "snapshot_runs",
         "symbol_lineage_events",

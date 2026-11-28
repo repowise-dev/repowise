@@ -68,7 +68,8 @@ for the workspace. `--no-workspace` hides the note.
 To skip the screen, `--repos api,web` indexes only those repos (by alias,
 directory name, or relative path). In a new workspace the first one listed is
 primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
-stdin take every repo and print which ones. Picking fewer repos on a re-run
+stdin take every repo and print which ones; a new workspace's primary is then
+the repo you ran from, or else the one with the most tracked files. Picking fewer repos on a re-run
 keeps the others in `.repowise-workspace.yaml`: an interactive run asks before
 dropping them, and `--yes` never drops them.
 

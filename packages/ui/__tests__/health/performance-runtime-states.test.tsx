@@ -1,10 +1,10 @@
-import { configure, fireEvent, render, screen, within } from "@testing-library/react";
+import { configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MeasuredFunction, MeasuredResponse } from "@repowise-dev/types/runtime-evidence";
 
 import { PerformanceView } from "../../src/health/performance-view";
-import { adapter } from "./fixtures/performance";
-import { evidenceAdapter, measured, RUNS, runSummary } from "./fixtures/runtime-evidence";
+import { adapter, opportunity, page } from "./fixtures/performance";
+import { evidenceAdapter, measured, RUNS, runSummary, statementsOnly } from "./fixtures/runtime-evidence";
 
 configure({ asyncUtilTimeout: 5000 });
 beforeAll(async () => {
@@ -57,6 +57,75 @@ const openFirstCause = async () => {
 };
 
 describe("Drawer: runs that measured it", () => {
+  const carried = "Measured: rank 1 of repo code in entry_point \"cli build\" (3% self, 2-3%), 2d old";
+  const hotspotPage = () =>
+    page({
+      items: [
+        opportunity({
+          opportunity_id: "perf2_hotspot",
+          biomarker_type: "measured_hotspot",
+          boundary_kind: null,
+          intervention_symbol: "src/a.py::build",
+          observations_total: 0,
+          evidence: [
+            {
+              finding_id: "",
+              file_path: "src/a.py",
+              biomarker_type: "measured_hotspot",
+              function_name: "build",
+              line_start: null,
+              line_end: null,
+              reason: carried,
+              path: [],
+              provenance: "measured",
+            },
+          ],
+        }),
+      ],
+      total: 1,
+      next_offset: null,
+    });
+
+  it("never flashes a hotspot's carried line while the live row loads", async () => {
+    let resolve!: (value: { functions: MeasuredFunction[] }) => void;
+    const getMeasuredFunctions = vi.fn(
+      () => new Promise<{ functions: MeasuredFunction[] }>((r) => (resolve = r)),
+    );
+    render(
+      <PerformanceView
+        adapter={adapter({
+          ...evidenceAdapter(),
+          getPerformanceOpportunities: async () => hotspotPage(),
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions,
+        })}
+      />,
+    );
+    const panel = await openFirstCause();
+    await vi.waitFor(() => expect(getMeasuredFunctions).toHaveBeenCalled());
+    expect(within(panel).queryByText(carried)).toBeNull();
+    resolve({ functions: [measuredFunction()] });
+    expect(await within(panel).findByText("cli build · entry point")).toBeTruthy();
+    expect(within(panel).queryByText(carried)).toBeNull();
+  });
+
+  it("shows a hotspot's carried line once the reads settle without a row", async () => {
+    const getMeasuredFunctions = vi.fn(async () => ({ functions: [] }));
+    render(
+      <PerformanceView
+        adapter={adapter({
+          ...evidenceAdapter(),
+          getPerformanceOpportunities: async () => hotspotPage(),
+          getPerformanceOpportunity: undefined,
+          getMeasuredFunctions,
+        })}
+      />,
+    );
+    const panel = await openFirstCause();
+    expect(await within(panel).findByText(carried)).toBeTruthy();
+    expect(getMeasuredFunctions).toHaveBeenCalled();
+  });
+
   it("shows the basis run's share, interval and basis for the cause's function", async () => {
     const getMeasuredFunctions = vi.fn(async () => ({ functions: [measuredFunction()] }));
     render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasuredFunctions })} />);
@@ -150,6 +219,25 @@ describe("Runtime evidence notices", () => {
   it("says when stored runs rank no production function", async () => {
     render(<PerformanceView adapter={adapter({ getMeasured: async () => unranked("not_ranked", null) })} />);
     expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    // Without the runs, where the newest run sits is unknown: no sample-count claim alone.
+    expect(screen.getByText(/They may be measured at a commit other than the indexed one/)).toBeTruthy();
+  });
+
+  it("never places a benchmark profile, which ranks nothing, as the run short of samples", async () => {
+    const runs = {
+      ...RUNS,
+      runs: [runSummary({ run_id: "run-bench", workload: "go bench", class: "benchmark" })],
+    };
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked", null),
+          listEvidenceRuns: async () => runs,
+        })}
+      />,
+    );
+    expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    expect(screen.queryByText(/Profile a workload that runs more repo code/)).toBeNull();
   });
 
   it("keeps the code-shape order when only a unit-test run is measured", async () => {
@@ -161,6 +249,41 @@ describe("Runtime evidence notices", () => {
     expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Measured cost in/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
+  });
+
+  it("says profiled in tests only, keeping the prompt, when production statement windows are stored", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await measured(opts);
+      const statements = await statementsOnly(opts);
+      const ours = !opts.runId || opts.runId === "run-pg";
+      return { ...view, measured: null, statements: ours ? (statements.statements ?? null) : null };
+    });
+    render(<PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />);
+    await screen.findByRole("list", { name: "Statements in postgres:hosted" });
+    expect(screen.queryByText("Measured in tests only.")).toBeNull();
+    expect(screen.getByText("Profiled in tests only.")).toBeTruthy();
+    expect(screen.getByText(/production statement windows do not rank functions/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
+  });
+
+  it("copies the host's connect prompt from the tests-only notice", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await measured(opts);
+      return { ...view, measured: null };
+    });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <PerformanceView
+        adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })}
+        connectEvidencePrompt={() => "Add the evidence upload workflow."}
+      />,
+    );
+    expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText.mock.calls[0]![0]).toBe("Add the evidence upload workflow.");
   });
 
   it("counts what a partly mapped run skipped, by reason", async () => {

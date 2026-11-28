@@ -63,10 +63,9 @@ own parser, so lowering the count is the most direct memory lever.
 **Indexing one directory of a large repository.** When the path you index is a
 subdirectory of a larger git repository, git rows (per-file history, per-commit
 file detail) are recorded for that directory only, so the database stays
-proportional to the directory rather than to the whole repository. Co-change
-partners outside the directory are not recorded. Set `REPOWISE_GIT_SCOPE=repo`
-to record the whole repository instead. An index created before this change
-keeps its old rows until `repowise init --force` rebuilds it.
+proportional to the directory. Co-change partners outside the directory are not
+recorded. Set `REPOWISE_GIT_SCOPE=repo` to record the whole repository, then
+rebuild with `repowise init --force`.
 
 **An update spends minutes after the files are already indexed.** After an
 update commits, repowise scans recent commits for what each did to code health.
@@ -75,35 +74,27 @@ stall it; change the limit with `REPOWISE_COMMIT_HEALTH_MAX_FILES` (`0` removes
 it), or turn the scan off with `REPOWISE_COMMIT_HEALTH_COMMITS=0`. An update on
 a `--mode fast` index does not run the scan.
 
+**Is the index finished when `repowise init` returns?** Yes. When init scans
+commit health (each repo of a workspace init, or a single-repo init whose index
+checkpoint failed), it spends at most 10 s per repo inline and starts no
+background process, so nothing writes `.repowise/wiki.db` after init exits and
+it is safe to archive or cache at once. The commits that budget leaves are
+scanned by the next `repowise update`.
+
 **An update of a very large repository takes as long as the first index.**
 Every update walks and reads the repository and runs global analysis. The
-graph itself is patched for body-only edits in Java, Python, JavaScript,
+graph is patched in place for body-only edits in Java, Python, JavaScript,
 TypeScript, Go, C#, Kotlin, Rust, Ruby, PHP, Scala and Swift when the parsed
-dependency surface is unchanged. Changed imports/exports/signatures,
-added/removed/renamed files and unsupported languages fall back to the full
-rebuild. The patch re-resolves the changed files' imports, calls and heritage;
-global type-use, framework and dynamic-hint passes and centrality/community
-metrics still run repo-wide. Metrics therefore remain fresh, but these global
-passes still cost time on a large repository.
-A sealed `.repowise/graph_seed_edges.pkl` snapshot avoids re-reading seed edges
-from the database when it matches the repository ID, edge count and parser
-fingerprint. A missing or stale snapshot falls back safely, so the first update
-of an index built before the snapshot existed runs a full rebuild to create it.
-Set `REPOWISE_INCREMENTAL_GRAPH=0` to always rebuild the graph in full; then
-Repowise does not read, write, or invalidate the incremental graph seed or
-resolved-import caches. `state.json` records `graph_update` with the selected
-`patch`/`full` path, whether the feature was enabled, the fallback reason, and
-the patched file list.
-When phase timings are enabled, `rebuild.graph` is the overall graph stage;
-`rebuild.graph.patch` and `rebuild.graph.full` identify which graph-build path
-actually ran. The log states the fallback reason when an attempted patch is
-unsafe or its seed/resolution cache is unavailable.
+dependency surface is unchanged. Changed imports, exports or signatures,
+added, removed or renamed files, and other languages take the full rebuild.
+Global passes (type use, framework and dynamic hints, centrality and
+communities) run repo-wide either way, so metrics stay fresh and still cost
+time on a large repository.
 
-To compare both update paths end-to-end on a synthetic large repository, run
-`python scripts/benchmark_incremental_graph_update.py` from a Repowise checkout.
-It defaults to 5,000 files, makes isolated full/patch copies, checks persisted
-graph convergence, and writes phase timings to `bench/results/`. It uses no
-model provider or LLM and isolates temporary editor/MCP configuration.
+`state.json` records `graph_update`: whether the patch or the full path ran,
+and the fallback reason. With phase timings on, `rebuild.graph.patch` and
+`rebuild.graph.full` show which path ran. Set `REPOWISE_INCREMENTAL_GRAPH=0`
+to always rebuild the graph in full.
 
 **Indexing cost more than expected.** `repowise init --dry-run` shows the
 estimate without writing a wiki, `--test-run` generates for the top 10 files

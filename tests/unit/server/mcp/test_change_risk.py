@@ -337,9 +337,9 @@ async def test_impacted_tests_line_precise_hit_and_miss(engine, tmp_path, monkey
     assert it["map_present"] is True
     # app.py line 3 is covered -> its test leads; other/new are not covering.
     assert it["tests_to_run"][0] == "tests/test_app.py::test_app"
-    # No test is known for the new file, so the subset cannot be vouched for.
-    assert it["run_all"] is True
-    assert any(r.startswith("src/new.py:") for r in it["reasons"])
+    # The new file runs the tests reaching the code beside it, so the subset stands.
+    assert it["run_all"] is False
+    assert any(r.startswith("src/new.py changed: it is new in this change") for r in it["reasons"])
 
     mt = it["line_coverage"]
     # other.py is in the map but its changed lines (1,2,3) are uncovered.

@@ -39,6 +39,7 @@ from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     resolve_explicit_provider_or_prompt,
@@ -70,6 +71,8 @@ from repowise.cli.ui import (
 )
 from repowise.cli.ui.glyphs import glyph
 from repowise.cli.ui.mode_names import pages
+from repowise.core.analysis.decisions import mining_state
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
@@ -83,7 +86,7 @@ from ._interactive import (
     offer_hook_install,
     warn_unresolved_hooks,
 )
-from ._workspace_config import WorkspacePick, build_workspace_config
+from ._workspace_config import WorkspacePick, build_workspace_config, kept_primary
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
 from .generation import (
@@ -382,6 +385,8 @@ def _ingest_and_generate_repo(repo: Any, idx: int, total: int, ctx: _WorkspaceCt
         f"  [{BRAND}][{idx}/{total}][/] Indexing [bold]{repo.alias}[/bold] ({repo.path.name}){glyph('ellipsis')}"
     )
     ensure_repowise_dir(repo.path)
+    if not ctx.dry_run:
+        sweep_orphan_temps(get_repowise_dir(repo.path))
 
     # The index phase mines decisions with a model too, so it needs the provider,
     # bound to this repo: a provider that shells out runs in the repo's directory.
@@ -643,6 +648,10 @@ def _repo_state(
     if repo_phase_timings:
         state["phase_timings"] = repo_phase_timings
     apply_git_history_coverage_state(state, result)
+    # Same ledger write the single-repo paths make (#6031).
+    mining_state.record_extraction_report(
+        state, getattr(result, "decision_report", None), head
+    )
     _stamp_repo_scope(state, repo_path, ctx, index, docs)
     keep_prior_documentation(state, load_state(repo_path), ctx.run_mode)
     kg = getattr(result, "knowledge_graph_result", None)
@@ -667,7 +676,11 @@ def _stamp_repo_scope(
     configured_cap = resolve_max_file_pages(config=scope_config)
     scope_embedder = _scope_embedder(ctx, docs)
     semantic = (
-        semantic_search_status(scope_embedder, getattr(result, "embed_failed_pages", 0))
+        semantic_search_status(
+            scope_embedder,
+            getattr(result, "embed_failed_pages", 0),
+            getattr(result, "vector_store", None),
+        )
         if result.generated_pages
         else "unavailable"
     )
@@ -882,7 +895,10 @@ def _workspace_init(
     )
     if picked is None:
         return
-    pick, plan = picked
+    named_pick, plan = picked
+    # The primary the config will end up with, so provider, embedder and editor
+    # setup read the same repo the workspace names.
+    pick = kept_primary(named_pick, ask=sys.stdin.isatty() and not yes)
     selected, primary_alias = pick.selected, pick.primary_alias
     if plan is not None:
         answers = plan.answers
@@ -906,7 +922,7 @@ def _workspace_init(
     first_index = not (root / WORKSPACE_CONFIG_FILENAME).exists()
     ws_config = _workspace_config(pick, ask=sys.stdin.isatty() and not yes, dry_run=dry_run)
     if repo_names:
-        console.print(repos_primary_line(ws_config.default_repo, pick))
+        console.print(repos_primary_line(ws_config.default_repo, named_pick))
 
     from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
@@ -1099,9 +1115,9 @@ def _settle_repos(
         )
         if plan is not None:
             primary_repo = next(r for r in plan.selected if r.alias == plan.primary_alias)
-            # The screen defaults to the first repo; only a changed primary replaces
-            # the one an existing workspace config names.
-            primary_picked = plan.primary_alias != plan.selected[0].alias
+            # Only a primary changed from the screen's default replaces the one an
+            # existing workspace config names.
+            primary_picked = plan.primary_alias != plan.primary_default
             pick = WorkspacePick(
                 plan.selected, scan.root, plan.primary_alias, primary_repo, primary_picked
             )
@@ -1192,7 +1208,9 @@ def _resolve_workspace_provider(
             # Re-resolve: interactive provider selection may just have set the
             # provider's API key in os.environ.
             answers.embedder_name_resolved = resolve_embedder(
-                answers.embedder_name, repo_path=primary_repo.path
+                answers.embedder_name,
+                repo_path=primary_repo.path,
+                provider=provider.provider_name,
             )
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "

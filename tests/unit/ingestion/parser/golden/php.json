@@ -110,7 +110,10 @@
         "is_reexport": false,
         "is_module_declaration": false,
         "type_only": false,
-        "deferred": false
+        "deferred": false,
+        "guarded": false,
+        "module_form": false,
+        "scopes": null
       }
     ],
     "exports": [

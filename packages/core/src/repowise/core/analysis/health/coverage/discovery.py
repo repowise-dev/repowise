@@ -41,6 +41,7 @@ from repowise.core.test_paths import dotted_module_paths, nodeid_test_file
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
+from .detector import detect_format
 from .detector import parse as parse_coverage
 from .model import (
     ContextCoverageReport,
@@ -513,13 +514,22 @@ class ResolvedCoverage:
     def scope(self) -> CoverageScope:
         return CoverageScope(
             report_formats=tuple(sorted(self.report_formats)),
-            ignore=tuple(sorted(self.ignore)),
+            ignore=_in_order(self.ignore),
             mapping_partial=self.mapping_partial,
         )
 
 
 #: Unmatched report paths kept for the diagnostic; the counts stay exact.
 UNMATCHED_SAMPLE_CAP = 10
+
+
+def _in_order(patterns: Iterable[str]) -> tuple[str, ...]:
+    """*patterns* in order with repeats dropped, each kept at its last place.
+
+    The last pattern that matches a path decides it, so an earlier copy of a
+    pattern never decides anything and the result matches the same paths.
+    """
+    return tuple(reversed(dict.fromkeys(reversed(list(patterns)))))
 
 
 @dataclass(frozen=True)
@@ -551,8 +561,9 @@ class CoverageScope:
     """What makes two coverage measurements comparable.
 
     *report_formats* has one entry per report read (``("lcov", "lcov")`` for
-    two lcov reports), sorted; *ignore* is the ``coverage.ignore`` applied,
-    sorted. A base and head that differ in either measured different things,
+    two lcov reports), sorted; *ignore* is the ``coverage.ignore`` applied, in
+    the order written, since a ``!`` exception only re-includes what a pattern
+    above it left out. A base and head that differ in either measured different things,
     and a partial mapping measured a fragment, so neither delta means anything
     (``patch_coverage.delta.incomparable_reasons``).
     """
@@ -578,7 +589,7 @@ class CoverageScope:
             return None
         return cls(
             report_formats=tuple(sorted(str(f) for f in formats)),
-            ignore=tuple(sorted(str(g) for g in ignore)),
+            ignore=_in_order(str(g) for g in ignore),
             mapping_partial=bool(data.get("mapping_partial", False)),
         )
 
@@ -1319,6 +1330,10 @@ def resolve_test_reports(
     return out
 
 
+#: Sentinel error note for a recognized coverage report that measured zero files.
+EMPTY_COVERAGE_REPORT_NOTE = "measured no files, skipped"
+
+
 def build_coverage_map(
     repo_root: Path,
     report_paths: list[Path],
@@ -1369,7 +1384,12 @@ def build_coverage_map(
             continue
         report = parse_coverage(text, format=coverage_format)
         if not report.files:
-            errors.append((path, f"no coverage entries (detected={report.source_format})"))
+            msg = (
+                EMPTY_COVERAGE_REPORT_NOTE
+                if report.source_format != "unknown" and detect_format(text) == report.source_format
+                else f"no coverage entries (detected={report.source_format})"
+            )
+            errors.append((path, msg))
             continue
         report.origin_dir = report_origin_dir(path, repo_root)
         report.path_prefix = prefixes.get(path)

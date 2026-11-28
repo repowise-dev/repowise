@@ -23,7 +23,8 @@ def _require_workspace(start: Path | None = None) -> tuple[Path, WorkspaceConfig
     """
     from repowise.core.workspace.config import WorkspaceConfig
 
-    ws_root = find_workspace_root(start)
+    # Managing the workspace from inside a repo it does not list yet still finds it.
+    ws_root = find_workspace_root(start, any_repo=True)
     if ws_root is None:
         raise click.ClickException(
             "No .repowise-workspace.yaml found. "

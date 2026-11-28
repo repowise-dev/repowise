@@ -2,12 +2,42 @@
 
 from __future__ import annotations
 
+import errno
 import os
-import tempfile
+import secrets
 import time
 from collections.abc import Iterable
 from pathlib import Path, PurePath
 from typing import Any
+
+
+def make_temp_file(
+    directory: Path | str, *, prefix: str = "", suffix: str = ".tmp"
+) -> tuple[int, str]:
+    """``tempfile.mkstemp`` in *directory*, raising at once when it refuses new files.
+
+    On Windows ``mkstemp`` reads a ``PermissionError`` as a name taken by a
+    directory and tries the next name for as long as ``os.access`` calls the
+    directory writable. ``os.access`` reads only the read-only bit, never the
+    ACL, so in a directory that denies creating files (a Codex sandbox lets the
+    agent write ``~/.claude.json`` but not new files beside it) it tries about
+    2**31 names and the command hangs. Random names make a real clash rare, so
+    a refusal here is a refusal.
+    """
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_NOINHERIT", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
+    for _attempt in range(100):
+        path = os.path.join(directory, f"{prefix}{secrets.token_hex(8)}{suffix}")
+        try:
+            return os.open(path, flags, 0o600), path
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "No usable temporary file name found", str(directory))
 
 
 def atomic_write_text(
@@ -29,7 +59,7 @@ def atomic_write_text(
     something they can regenerate.
     """
     parent = path.parent
-    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    fd, tmp = make_temp_file(parent)
     try:
         with open(fd, "w", encoding="utf-8", newline=newline) as f:
             f.write(content)

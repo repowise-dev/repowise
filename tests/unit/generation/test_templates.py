@@ -485,7 +485,7 @@ def scc_page_ctx() -> SccPageContext:
     return SccPageContext(
         scc_id="scc-0",
         files=["pkg/a.py", "pkg/b.py"],
-        cycle_description="Circular dependency cycle: pkg/a.py → pkg/b.py",
+        cycle_description="Static import cycle: pkg/a.py → pkg/b.py",
         total_symbols=10,
     )
 

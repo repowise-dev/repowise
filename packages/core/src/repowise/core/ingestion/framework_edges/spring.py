@@ -422,11 +422,7 @@ def _add_spring_edges(
 
 class _SpringHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        spring_in_stack = any(
-            token in dctx.stack_lower
-            for token in ("spring", "springboot", "spring-boot", "spring boot")
-        )
-        return spring_in_stack or _has_spring_imports(dctx.parsed_files)
+        return _has_spring_imports(dctx.parsed_files)
 
     def add_edges(
         self,

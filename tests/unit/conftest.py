@@ -34,7 +34,7 @@ def _isolated_home(tmp_path_factory, monkeypatch):
 
     ``XDG_CONFIG_HOME`` is cleared because it is an *absolute* path that wins
     over ``~`` outright (the OpenCode target reads it on every platform).
-    ``HERMES_HOME``, ``COPILOT_HOME``, ``KIRO_HOME`` and ``LOCALAPPDATA`` are the
+    ``HERMES_HOME``, ``COPILOT_HOME``, ``KIRO_HOME``, ``CODEX_HOME`` and ``LOCALAPPDATA`` are the
     same hole: the Hermes target reads ``HERMES_HOME`` first and then, on Windows
     only, ``%LOCALAPPDATA%\\hermes``. ``LOCALAPPDATA`` is *redirected* rather than
     cleared, because Windows always sets it and other code legitimately reads it.
@@ -56,6 +56,7 @@ def _isolated_home(tmp_path_factory, monkeypatch):
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.delenv("COPILOT_HOME", raising=False)
     monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(fake_home / "AppData" / "Local"))
     return fake_home
 

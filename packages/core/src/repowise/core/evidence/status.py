@@ -29,6 +29,57 @@ def time_split(run: Any) -> dict[str, float | None]:
     }
 
 
+def unattributed_share(run: Any) -> float | None:
+    """The share of a stored profile run's time in none of :func:`time_split`'s
+    buckets: test or tooling code, module bodies, unresolved frames, and
+    stacks that run only the runtime (``evidence.profile_convert``). ``None``
+    when the run did not record the split."""
+    parts = (run.repo_self_value, run.wait_value, run.library_value)
+    if run.total_value is None or any(v is None for v in parts):
+        return None
+    return run_share(run.total_value, max(run.total_value - sum(parts), 0.0))
+
+
+#: Exporters whose speedscope file holds no samples because it was pruned:
+#: pyinstrument's ``-r speedscope`` renderer drops frames under 1% of the run
+#: and leaves their time on the caller. The sampled profile the ``evidence
+#: setup`` recipe writes from pyinstrument counts its samples, so it is never
+#: read as pruned.
+_PRUNING_EXPORTERS = frozenset({"pyinstrument"})
+
+
+def low_signal(run: Any) -> str | None:
+    """Why a profile run (stored, or an ingested document) cannot rank with
+    confidence, as one token; ``None`` for a run that counted its samples and
+    for every other kind.
+
+    ``pruned_1pct``: no sample counts, from an exporter that prunes small
+    frames, so self times are inflated and small functions are missing.
+    ``no_samples``: no sample counts otherwise, so no share has an interval.
+    A deterministic tracer counts calls, not samples, and also reads
+    ``no_samples``; its measured rows say ``ordering_only``.
+    """
+    if run.kind != "profile" or run.total_samples is not None:
+        return None
+    if (run.tool_name or "").lower() in _PRUNING_EXPORTERS:
+        return "pruned_1pct"
+    return "no_samples"
+
+
+#: What fixes each :func:`low_signal` token, as ``evidence status`` and ``add`` print it.
+LOW_SIGNAL_FIX = {
+    "pruned_1pct": (
+        "no sample counts, and frames under 1% of the run were pruned by the "
+        "speedscope export; profile with the recipe `repowise evidence setup` prints "
+        "(or py-spy) for counted samples"
+    ),
+    "no_samples": (
+        "no sample counts, so no share has an interval; a sampling profiler "
+        "(the recipe `repowise evidence setup` prints) records them"
+    ),
+}
+
+
 def split_words(shares: Mapping[str, float | None]) -> str | None:
     """The split in words, repo code first: ``repo code itself 47%, waits 30%,
     libraries 12%``. ``None`` when the run did not record it."""
@@ -42,13 +93,57 @@ def split_words(shares: Mapping[str, float | None]) -> str | None:
     return ", ".join(parts)
 
 
+def window_claim(
+    start: datetime | None, end: datetime | None, commit: str | None, base_commit: str | None
+) -> str:
+    """What a production run's rows claim, in words: ``in production over
+    2026-10-30 to 2026-11-26, deployed 1a2b3c4d5e6f``. A window inside one
+    day names its hours (UTC); a commit the source did not name is
+    ``deployed commit unknown``, and a window that spans deploys names the
+    oldest commit it covered and the newest."""
+    if start is not None and end is not None:
+        if start.date() == end.date():
+            span = f"{start:%Y-%m-%d %H:%M} to {end:%H:%M} UTC"
+        else:
+            span = f"{start:%Y-%m-%d} to {end:%Y-%m-%d}"
+        words = f"in production over {span}"
+    else:
+        words = "in production, window unknown"
+    if commit is None:
+        if base_commit:
+            return f"{words}, deployed from {base_commit[:12]}, newest commit unknown"
+        return f"{words}, deployed commit unknown"
+    if base_commit and base_commit != commit:
+        return f"{words}, deployed {base_commit[:12]} to {commit[:12]}"
+    return f"{words}, deployed {commit[:12]}"
+
+
+def production_window(run: Any) -> dict[str, Any] | None:
+    """The window a stored production run covers, the oldest commit it
+    covered (``base_commit``, when the source knows) and :func:`window_claim`.
+    ``None`` for every other class: their payloads carry no ``window`` key,
+    so they do not grow."""
+    if run.workload_class != "production":
+        return None
+    start, end = _utc(run.window_start), _utc(run.window_end)
+    start = start.astimezone(UTC) if start else None
+    end = end.astimezone(UTC) if end else None
+    return {
+        "start": start.isoformat() if start else None,
+        "end": end.isoformat() if end else None,
+        "base_commit": run.base_commit_sha,
+        "claim": window_claim(start, end, run.commit_sha, run.base_commit_sha),
+    }
+
+
 def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
     """One stored run as the status view shows it.
 
     *reference_commit* is the indexed commit: a run measured there is
     ``current``, at any other commit ``stale``, and ``unknown`` without one.
+    A production run also names its ``window`` (:func:`production_window`).
     """
-    return {
+    out = {
         "run_id": run.id,
         "kind": run.kind,
         "workload": run.workload_name,
@@ -77,9 +172,16 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "skipped": json.loads(run.skipped_json) if run.skipped_json else None,
         "total_value": run.total_value,
         **time_split(run),
+        "unattributed_share": unattributed_share(run),
+        "total_samples": run.total_samples,
+        "low_signal": low_signal(run),
         "mapping_partial": bool(run.mapping_partial),
         "tests_failed": run.tests_failed,
     }
+    window = production_window(run)
+    if window is not None:
+        out["window"] = window
+    return out
 
 
 def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[str, Any]:
@@ -177,11 +279,14 @@ async def load_evidence_freshness(
 
 __all__ = [
     "ABSENT",
+    "LOW_SIGNAL_FIX",
     "evidence_status",
     "freshness_entry",
     "load_evidence_freshness",
+    "low_signal",
     "run_share",
     "run_status",
     "split_words",
     "time_split",
+    "unattributed_share",
 ]

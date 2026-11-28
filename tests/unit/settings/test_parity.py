@@ -605,6 +605,7 @@ def test_refactoring_and_assertion_defaults_match():
     assert real.refactoring_min_confidence == get("refactoring.min_confidence").default
     assert real.assert_extra_names == get("assertions.extra_names").default
     assert llm_enrichment_enabled({}) == get("refactoring.llm.enabled").default
+    assert real.duplication_enabled == get("health.duplication.enabled").default
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, "maybe"])
