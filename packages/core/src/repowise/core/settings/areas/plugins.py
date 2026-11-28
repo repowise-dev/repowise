@@ -32,7 +32,8 @@ FORGE_API_URL = plugin_setting(
     "",
     "API endpoint of a self-managed host: GitHub's GraphQL URL "
     "(https://ghe.example.com/api/graphql) or GitLab's API root "
-    "(https://git.example.com/api/v4). Empty reads it from the remote.",
+    "(https://git.example.com/api/v4), https on the remote's host. Empty reads it "
+    "from the remote.",
 )
 FORGE_BUG_LABELS = plugin_setting(
     "forge",

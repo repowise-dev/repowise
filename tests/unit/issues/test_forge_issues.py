@@ -16,7 +16,13 @@ import httpx
 import pytest
 
 from repowise.core.forges.remote import parse_remote
-from repowise.core.issues import IssueCommit, IssueRequest, issue_sources, run_issue_fetch
+from repowise.core.issues import (
+    IssueCommit,
+    IssueRequest,
+    SourceRefused,
+    issue_sources,
+    run_issue_fetch,
+)
 from repowise.core.issues.forge import ForgeIssues, closing_mentions, github, gitlab, link_type
 from repowise.core.issues.forge.http import retry_point
 from repowise.core.settings.areas.plugins import FORGE_API_URL, FORGE_BUG_LABELS, FORGE_TOKEN
@@ -134,6 +140,9 @@ def test_an_issue_keeps_its_first_fix_and_a_rollup_closes_nothing() -> None:
         [("PR #9", link("c", "#7")), ("PR #4", link("b", "#7")), ("PR #4", link("a", "#7"))]
     )
     assert [(k.sha, k.key) for k in kept] == [("b", "#7"), ("a", "#7")]
+    # A mention on one of the PR's commits is that PR's change, not a newer one.
+    kept = first_closers([("PR #4", link("b", "#7")), ("PR #4", link("a", "#7"))])
+    assert len(kept) == 2
 
     many = [{"iid": n, "issue_type": "issue", "labels": ["bug"]} for n in range(ROLLUP)]
 
@@ -168,22 +177,31 @@ def test_api_urls_follow_the_remote_and_self_managed_hosts() -> None:
     assert gitlab.api_url(lab) == "https://git.corp.com/api/v4"
 
 
-def test_the_api_url_setting_wins() -> None:
+def test_the_api_url_setting_wins_on_the_remote_host_only() -> None:
     hosts: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
         hosts.append(request.url.host)
         return httpx.Response(200, json={"id": 1} if request.url.path.endswith("cli") else [])
 
-    request = IssueRequest(
-        "r",
-        commits=[IssueCommit("b" * 40, "docs: x")],
-        remote=GITLAB,
-        settings={FORGE_API_URL.key: "https://proxy.example.com/api/v4"},
-        credentials={FORGE_TOKEN.key: TOKEN},
-    )
-    assert list(ForgeIssues(transport=httpx.MockTransport(handle)).fetch(request)) == []
-    assert set(hosts) == {"proxy.example.com"}
+    def request(url: str) -> IssueRequest:
+        return IssueRequest(
+            "r",
+            commits=[IssueCommit("b" * 40, "docs: x")],
+            remote=GITLAB,
+            settings={FORGE_API_URL.key: url},
+            credentials={FORGE_TOKEN.key: TOKEN},
+        )
+
+    source = ForgeIssues(transport=httpx.MockTransport(handle))
+    assert list(source.fetch(request("https://gitlab.com/api/v4/"))) == []
+    assert set(hosts) == {"gitlab.com"}
+    # The key can come from a repository's own config, so the token never
+    # goes to another host or over plain http.
+    for url in ("https://collector.example.com/api/v4", "http://gitlab.com/api/v4"):
+        with pytest.raises(SourceRefused, match=r"must be an https URL on gitlab.com"):
+            list(source.fetch(request(url)))
+    assert set(hosts) == {"gitlab.com"}
 
 
 def _outcome(handler, remote=GITHUB):
@@ -251,6 +269,21 @@ def test_an_unreachable_host_is_unavailable() -> None:
         "unavailable",
         "GitHub did not answer (ConnectError); sync again later.",
     )
+
+
+def test_an_unexplained_graphql_error_is_unavailable_and_stores_nothing() -> None:
+    def handle(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "data": {"repository": {"c0": None}},
+                "errors": [{"message": "Something went wrong", "path": ["repository", "c0"]}],
+            },
+        )
+
+    outcome = _outcome(handle)
+    assert (outcome.status, outcome.stored) == ("unavailable", [])
+    assert outcome.error == "GitHub answered with an error (untyped); sync again later."
 
 
 def test_a_repository_github_cannot_see_is_refused() -> None:
@@ -346,3 +379,15 @@ def test_the_request_carries_the_checkout_remote(tmp_path: Path) -> None:
         ("group", "sub"),
         "app",
     )
+
+
+def test_sources_sync_lists_the_forge_source_until_a_token_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.commands.sources_cmd import _planned
+
+    monkeypatch.delenv(FORGE_TOKEN.key, raising=False)
+    forge = [p for p in _planned(tmp_path, "forge", "json")]
+    assert [(p.seam.name, p.name, p.configured) for p in forge] == [
+        ("issue-source", "forge", False)
+    ]

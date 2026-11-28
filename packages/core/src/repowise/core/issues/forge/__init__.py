@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Iterator
 from importlib import import_module
 from typing import Any
+from urllib.parse import urlsplit
 
 from repowise.core.settings.areas.plugins import FORGE_API_URL, FORGE_BUG_LABELS, FORGE_TOKEN
 
@@ -92,6 +93,22 @@ def first_closers(candidates: Iterable[tuple[str, IssueLink]]) -> list[IssueLink
     return out
 
 
+def _checked(api_url: str, remote: Any) -> str:
+    """*api_url* when it is https on the remote's host (or its ``api.`` host).
+
+    The token goes wherever this points, and the key can sit in a repository's
+    own config, so any other host is refused.
+    """
+    parts = urlsplit(api_url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or host not in (remote.host, f"api.{remote.host}"):
+        raise SourceRefused(
+            f"{FORGE_API_URL.key} must be an https URL on {remote.host}, the remote's host, "
+            f"since the token is sent there; it names {parts.scheme}://{host}."
+        )
+    return api_url
+
+
 class ForgeIssues:
     """Issue links read from the repository's own GitHub or GitLab.
 
@@ -130,7 +147,7 @@ class ForgeIssues:
             request.commits,
             remote,
             token=token,
-            api_url=api_url or forge_api.api_url(remote),
+            api_url=_checked(api_url, remote) if api_url else forge_api.api_url(remote),
             bug_labels=labels,
             transport=self._transport,
         )

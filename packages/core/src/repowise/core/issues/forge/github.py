@@ -85,11 +85,14 @@ def _links(
     candidates = []
     for commit in commits:
         number = pull_of.get(commit.sha)
-        found = [(f"PR #{number}", issue) for issue in closing.get(number, ())]
-        found += [(commit.sha, mentioned[n]) for n in mentions[commit.sha] if n in mentioned]
-        for via, issue in found:
+        found = [(f"PR #{number}", issue, f"PR #{number}") for issue in closing.get(number, ())]
+        # A message on a PR's commit belongs to that PR's change.
+        change = f"PR #{number}" if number is not None else commit.sha
+        found += [
+            (change, mentioned[n], "commit message") for n in mentions[commit.sha] if n in mentioned
+        ]
+        for via, issue, how in found:
             key = _key(issue, own)
-            how = "commit message" if via == commit.sha else via
             candidates.append((via, _link(commit.sha, key, issue, f"{how} closes {key}", labels)))
     yield from first_closers(candidates)
 
@@ -192,21 +195,30 @@ class _Api:
 def _raise_for(
     errors: list[dict[str, Any]], owner: str, name: str, headers: Mapping[str, str]
 ) -> None:
-    """Raise for a query-wide error. A NOT_FOUND on one alias only means no such object."""
+    """Raise unless every error only says one object is missing or hidden.
+
+    A NOT_FOUND or FORBIDDEN below ``repository`` (a pull request number that
+    is an issue, a closing issue in a private repository) leaves that object
+    null and the rest stands. Any other error means the answer may be partial,
+    and a fetch that completes on a partial answer would drop stored links.
+    """
     for error in errors:
         kind = error.get("type")
+        path = error.get("path") or []
+        if kind in ("NOT_FOUND", "FORBIDDEN") and len(path) > 1:
+            continue
         if kind == "RATE_LIMITED":
             at = retry_point(headers)
             when = f"after {at:%Y-%m-%d %H:%M} UTC" if at else "within the hour"
             raise SourceUnavailable(f"GitHub's rate limit is used up; sync again {when}.")
-        path = error.get("path") or []
-        if kind == "NOT_FOUND" and len(path) > 1:
-            continue
         if kind in ("FORBIDDEN", "UNAUTHORIZED", "NOT_FOUND"):
             raise SourceRefused(
                 f"GitHub refused to read {owner}/{name} ({kind}): the token needs read access "
                 "to its pull requests and issues."
             )
+        raise SourceUnavailable(
+            f"GitHub answered with an error ({kind or 'untyped'}); sync again later."
+        )
 
 
 def _pull_of(sha: str, commit: dict[str, Any] | None) -> int | None:

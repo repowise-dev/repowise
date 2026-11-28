@@ -95,7 +95,7 @@ remote's host is still unknown, the CI running the job decides: a GitLab runner
 | GitHub Actions | `GITHUB_ACTIONS` | `GITHUB_BASE_REF` | `GITHUB_REF` (`refs/pull/N/merge`) |
 | GitLab CI | `GITLAB_CI` | `CI_MERGE_REQUEST_TARGET_BRANCH_NAME` | `CI_MERGE_REQUEST_IID` |
 | Azure Pipelines | `TF_BUILD` or `SYSTEM_TEAMFOUNDATIONCOLLECTIONURI` | `SYSTEM_PULLREQUEST_TARGETBRANCHNAME`, else `SYSTEM_PULLREQUEST_TARGETBRANCH` | `SYSTEM_PULLREQUEST_PULLREQUESTNUMBER`, else `SYSTEM_PULLREQUEST_PULLREQUESTID` |
-| Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | `BITBUCKET_PR_DESTINATION_BRANCH` | `BITBUCKET_PR_ID` | No |
+| Bitbucket Pipelines | `BITBUCKET_BUILD_NUMBER` | `BITBUCKET_PR_DESTINATION_BRANCH` | `BITBUCKET_PR_ID` |
 | Jenkins | `JENKINS_URL` | `CHANGE_TARGET` (multibranch) | `CHANGE_ID` |
 | Buildkite, TeamCity, any CI setting `CI` | `BUILDKITE`, `TEAMCITY_VERSION`, `CI` (known as CI only) | none: pass a range | none |
 
@@ -114,7 +114,7 @@ it is that change:
 | GitHub and generic hosts | Subject `Merge pull request #12 ...`; a subject ending `(#12)` or `(gh-12)` |
 | GitLab | Body trailer `See merge request group/proj!12` (or its URL form); on GitLab repos, a subject ending `(!12)` |
 | Azure DevOps | Subject `Merged PR 12: ...` or `Merge pull request 12 from ...` |
-| Bitbucket | A subject ending `(pull request #12)`; subject `Merge pull request #12 in PROJ/repo ...` | No |
+| Bitbucket | A subject ending `(pull request #12)`; subject `Merge pull request #12 in PROJ/repo ...` |
 
 Every host's forms are read on every repository, the repository's own host
 first. A bare `#12` never sets a number: it names an issue as often as a pull

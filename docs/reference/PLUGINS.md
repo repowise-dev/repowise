@@ -570,7 +570,8 @@ The project comes from the `origin` remote. For GitHub Enterprise or a
 self-managed GitLab on a neutral host name, map the host in
 [`forges.hosts`](../start/GIT_HOSTS.md#self-managed-hosts); repowise then
 calls `https://<host>/api/graphql` or `https://<host>/api/v4`. Set
-`plugins.forge.api_url` when the API lives somewhere else. Other hosts
+`plugins.forge.api_url` when the API has another path. It must be https on
+the remote's host (or its `api.` host), since the token is sent there. Other hosts
 (Azure DevOps, Bitbucket) are refused with a message that names the host.
 
 A rate limit stops the sync with the time to try again, and the next

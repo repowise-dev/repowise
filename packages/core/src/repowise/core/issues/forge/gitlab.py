@@ -11,8 +11,9 @@ batched form of the first two, so they run a few at a time.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -74,11 +75,14 @@ def _links(
     candidates = []
     for commit in commits:
         iid = merge_of.get(commit.sha)
-        found = [(f"MR !{iid}", issue) for issue in closing.get(iid, ())]
-        found += [(commit.sha, mentioned[n]) for n in mentions[commit.sha] if n in mentioned]
-        for via, issue in found:
+        found = [(f"MR !{iid}", issue, f"MR !{iid}") for issue in closing.get(iid, ())]
+        # A message on an MR's commit belongs to that MR's change.
+        change = f"MR !{iid}" if iid is not None else commit.sha
+        found += [
+            (change, mentioned[n], "commit message") for n in mentions[commit.sha] if n in mentioned
+        ]
+        for via, issue, how in found:
             key = _key(issue, project_id)
-            how = "commit message" if via == commit.sha else via
             link = IssueLink(
                 key=key,
                 type=link_type(issue.get("issue_type"), issue.get("labels") or (), labels),
@@ -158,17 +162,33 @@ class _Api:
 
 
 def _each(fn: Callable[[Any], Any], items: list[Any]) -> list[Any]:
-    """``fn`` over *items* on a few threads, in order; the first failure stops the rest."""
+    """``fn`` over *items* on a few threads, in order; the first failure stops the rest.
+
+    Tasks check a shared flag before sending, so a rate limit or a refused
+    token stops the queue at once instead of after every earlier task.
+    """
     if not items:
         return []
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        futures = [pool.submit(fn, item) for item in items]
+    stop = threading.Event()
+
+    def task(item: Any) -> Any:
+        if stop.is_set():
+            return None
         try:
-            return [f.result() for f in futures]
+            return fn(item)
         except BaseException:
-            for f in futures:
-                f.cancel()
+            stop.set()
             raise
+
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = [pool.submit(task, item) for item in items]
+        for done in as_completed(futures):
+            exc = done.exception()
+            if exc is not None:
+                for f in futures:
+                    f.cancel()
+                raise exc
+        return [f.result() for f in futures]
 
 
 def _merge_of(sha: str, found: list[Any]) -> dict[str, Any] | None:
