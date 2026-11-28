@@ -53,6 +53,21 @@ class CppConstructionMixin:
             return resolved
         if callee.kind == "type_alias":
             return resolved if self._cpp_alias_names_repo_class(callee) else None
+        if callee.kind not in _CONSTRUCTIBLE_KINDS and not self._is_cpp_constructor(callee):
+            return resolved
+        members = self._cpp_constructor_group(resolved, callee)
+        found = self._deciding_members(members, call.argument_count, call.argument_types)
+        return replace(resolved, callee_id=found[0]) if len(found) == 1 else None
+
+    def _cpp_constructor_group(
+        self, resolved: ResolvedCall, callee: Symbol
+    ) -> tuple[tuple[str, tuple[int, int | None] | None], ...]:
+        """The constructors a call on class or constructor *callee* may mean, with admitted counts.
+
+        A class answers with the constructors declared in its body, a
+        constructor with its own group: the class body, or the file that defines
+        it out of line. Another file's same-named class is no evidence.
+        """
         if callee.kind in _CONSTRUCTIBLE_KINDS:
             # A forward declaration stands for the class body that holds the constructors.
             key = (self._redirect_to_definition(resolved) or resolved).callee_id
@@ -64,17 +79,13 @@ class CppConstructionMixin:
             def in_group(s: Symbol) -> bool:
                 return s.name == owner.name and owner.start_line <= s.start_line <= owner.end_line
 
-        elif self._is_cpp_constructor(callee):
-            # The constructor's own group: the class body, or the file that defines it
-            # out of line. Another file's same-named class is no evidence.
+        else:
             key = outer_scope(callee.id)
             path = self._symbol_paths_by_id.get(callee.id, "")
 
             def in_group(s: Symbol) -> bool:
                 return outer_scope(s.id) == key
 
-        else:
-            return resolved
         members = self._cpp_constructors.get(key)
         if members is None:
             # An in-class declaration and its inline definition share one id; the
@@ -84,8 +95,7 @@ class CppConstructionMixin:
                 if self._is_cpp_constructor(s) and in_group(s):
                     ranges.setdefault(s.id, signature_parameter_range(s.signature or "", "cpp"))
             members = self._cpp_constructors[key] = tuple(ranges.items())
-        found = self._deciding_members(members, call.argument_count, call.argument_types)
-        return replace(resolved, callee_id=found[0]) if len(found) == 1 else None
+        return members
 
     def _cpp_one_constructed_type(self, candidates: set[str], call: CallSite) -> str | None:
         """The one class *candidates* construct, when they are a class and its own constructors.
