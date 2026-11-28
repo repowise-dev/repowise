@@ -91,3 +91,24 @@ def test_a_csharp_receiver_named_me_is_not_a_self_call(tmp_path: Path) -> None:
     )
 
     assert "Form.cs::Form::Wire" not in _calls(_build(tmp_path), "Form.cs::Form::Load")
+
+
+def test_a_construction_does_not_bind_to_a_same_named_method(tmp_path: Path) -> None:
+    """A ``New FG()`` is a construction of the type FG, not a call to a
+    method that happens to share the name in a sibling partial fragment
+    (#6616; the C# side got its flag in #2879)."""
+
+    (tmp_path / "W.vb").write_text(
+        "Partial Public Class W\n"
+        "    Public Sub M()\n"
+        "        Return New FG()\n"
+        "    End Sub\n"
+        "End Class\n"
+    )
+    (tmp_path / "W.Designer.vb").write_text(
+        "Partial Public Class W\n    Public Sub FG()\n    End Sub\nEnd Class\n"
+    )
+
+    assert "W.Designer.vb::W::FG" not in _calls(
+        _build(tmp_path), "W.vb::W::M"
+    )
