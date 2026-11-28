@@ -204,6 +204,7 @@ def test_coverage_add_stamps_live_head_not_stored_column(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     async def _no_reconcile(_url):
         return None
@@ -305,6 +306,7 @@ def test_coverage_add_stamps_a_leftover_report_at_the_commit_it_measured(
 
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _fake_repo_file_keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     async def _no_reconcile(_url):
         return None
@@ -357,6 +359,7 @@ def _fake_ingest(monkeypatch: pytest.MonkeyPatch, tmp_path, keys: set[str]) -> l
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
     monkeypatch.setattr(coverage_cmd, "_repo_file_keys", _keys)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: "sqlite:///:memory:")
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
     monkeypatch.setattr(coverage_cmd, "reconcile_schema_best_effort", _noop)
     monkeypatch.setattr("repowise.core.persistence.crud.get_repository_by_path", _repo)
     monkeypatch.setattr("repowise.core.persistence.crud.save_coverage_files", _save)
@@ -827,6 +830,7 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
     url = _status_index(tmp_path)
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
     monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
 
     text = CliRunner().invoke(cli, ["coverage", "status"])
     assert text.exit_code == 0, text.output
@@ -850,3 +854,138 @@ def test_coverage_status_names_indexed_production_files_the_report_leaves_out(
         "src/calc/gen/keep.py",
     ]
     assert coverage["file_count"] == 3
+
+
+def test_coverage_unindexed_repo_reports_no_index_and_creates_no_store(tmp_path) -> None:
+    cov_file = tmp_path / "coverage.lcov"
+    cov_file.write_text("TN:\nSF:src/a.py\nDA:1,1\nend_of_record\n")
+
+    # 1. coverage add returns exit code 1 and prints warning
+    add_result = CliRunner().invoke(cli, ["coverage", "add", str(cov_file), "--path", str(tmp_path)])
+    assert add_result.exit_code == 1, add_result.output
+    assert "No index yet. Run `repowise init`" in add_result.output
+
+    # 2. coverage status returns exit code 0 and prints notice
+    status_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path)])
+    assert status_result.exit_code == 0, status_result.output
+    assert "No index yet. Run `repowise init`." in status_result.output
+
+    # 3. coverage status --format json returns exit code 0 with indexed: False
+    json_result = CliRunner().invoke(cli, ["coverage", "status", "--path", str(tmp_path), "--format", "json"])
+    assert json_result.exit_code == 0, json_result.output
+    data = json.loads(json_result.output[json_result.output.index("{") :])
+    assert data["indexed"] is False
+
+    # 4. No .repowise/wiki.db file is created
+    assert not (tmp_path / ".repowise" / "wiki.db").exists()
+
+
+def test_a_dot_coverage_beside_its_report_is_named_for_the_map_it_built(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
+    (tmp_path / "coverage.xml").write_text(
+        '<coverage><packages><package><classes><class filename="src/a.py"><lines>'
+        '<line number="1" hits="1"/><line number="2" hits="0"/></lines></class></classes>'
+        "</package></packages></coverage>"
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "coverage.xml", ".coverage"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    # What setup's ingest line passes: the file did its job, nothing reads as a mistake.
+    assert ".coverage: used for the test-to-code map; per-file coverage comes from coverage.xml." in output
+    assert "gives no per-file coverage" not in output
+
+
+def test_the_per_test_map_hint_names_pytest_only_where_pytest_runs(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    url = _status_index(tmp_path)
+    monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda repo, fmt="table": tmp_path)
+    monkeypatch.setattr(coverage_cmd, "get_db_url_for_repo", lambda path: url)
+    monkeypatch.setattr("repowise.core.persistence.database.has_db_store", lambda _p=None: True)
+    (tmp_path / "package.json").write_text('{"name": "w", "scripts": {"test": "mocha"}}')
+
+    node = CliRunner().invoke(cli, ["coverage", "status"])
+    assert node.exit_code == 0, node.output
+    assert "pytest" not in node.output
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "calc"\n')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+    python = CliRunner().invoke(cli, ["coverage", "status"])
+    assert "No test-to-code map yet - record one with pytest --cov" in " ".join(python.output.split())
+
+
+def test_coverage_add_notes_empty_jacoco_report_by_relative_path_and_ingests_rest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"core/src/main/java/com/acme/App.java"})
+    empty_xml = tmp_path / "empty" / "target" / "site" / "jacoco" / "jacoco.xml"
+    empty_xml.parent.mkdir(parents=True)
+    empty_xml.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+
+    real_xml = tmp_path / "core" / "target" / "site" / "jacoco" / "jacoco.xml"
+    real_xml.parent.mkdir(parents=True)
+    real_xml.write_text(
+        '<?xml version="1.0"?><report name="core">'
+        '<package name="com/acme"><sourcefile name="App.java">'
+        '<line nr="1" mi="0" ci="1"/>'
+        "</sourcefile></package></report>",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(cli, ["coverage", "add", "**/target/site/jacoco/jacoco.xml"])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "empty/target/site/jacoco/jacoco.xml: measured no files, skipped" in output
+    assert "no coverage entries" not in output
+    assert [f.file_path for f in stored] == ["core/src/main/java/com/acme/App.java"]
+
+
+def test_coverage_add_when_only_empty_or_unrecognized_reports_stores_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"core/src/main/java/com/acme/App.java"})
+    empty_xml = tmp_path / "empty" / "target" / "site" / "jacoco" / "jacoco.xml"
+    empty_xml.parent.mkdir(parents=True)
+    empty_xml.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+    bad_report = tmp_path / "bad.xml"
+    bad_report.write_text("not a report", encoding="utf-8")
+
+    result = CliRunner().invoke(cli, ["coverage", "add", str(empty_xml), str(bad_report)])
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "empty/target/site/jacoco/jacoco.xml: measured no files, skipped" in output
+    assert "bad.xml: no coverage entries (detected=unknown)" in output
+    assert "Nothing was stored." in output
+
+
+def test_coverage_add_forced_format_on_mismatched_content_keeps_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    stored = _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+    bad_report = tmp_path / "mismatched.xml"
+    bad_report.write_text('<?xml version="1.0"?><report name="empty"/>', encoding="utf-8")
+
+    result = CliRunner().invoke(
+        cli, ["coverage", "add", "--format", "lcov", str(bad_report)]
+    )
+
+    output = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert stored == []
+    assert "mismatched.xml: no coverage entries (detected=lcov)" in output
+    assert "measured no files, skipped" not in output
+    assert "Nothing was stored." in output

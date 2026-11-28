@@ -2,7 +2,7 @@
 
 Two readers ask the same question of the same checkout: the formatter-drift
 episode in ``precedent/structural.py`` and the ``Format:`` line in generated
-agent files (``generation/editor_files/tech_stack.py``). The rules live here
+agent files (``ingestion/tech_stack.py``). The rules live here
 so the two cannot drift apart.
 """
 

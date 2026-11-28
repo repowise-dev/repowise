@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.generation.nav_titles import apply_outline_labels
@@ -38,6 +38,12 @@ router = APIRouter(
     tags=["pages"],
     dependencies=[Depends(verify_api_key)],
 )
+
+# The listing encodes its rows with the models' own serializer: the generic
+# encoder walks every field of every row in Python, which was ~40% of a
+# 2,000-row summary request.
+_SUMMARY_LIST = TypeAdapter(list[PageSummaryResponse])
+_FULL_LIST = TypeAdapter(list[PageResponse])
 
 # Names the id the reader actually asked for when they were moved. Without it a
 # redirect is indistinguishable from having requested the successor directly,
@@ -153,7 +159,7 @@ async def list_pages(
         "pages — and adds 'content_chars' in their place.",
     ),
     session: AsyncSession = Depends(get_db_session),
-) -> list[PageResponse] | list[PageSummaryResponse]:
+) -> Response:
     """List wiki pages for a repository."""
     if fields not in ("full", "summary"):
         raise HTTPException(
@@ -173,11 +179,13 @@ async def list_pages(
     if fields == "summary":
         rows = await crud.list_page_summaries(session, repo_id, listing)
         out: list = [PageSummaryResponse.from_row(r) for r in rows]
+        adapter: TypeAdapter = _SUMMARY_LIST
     else:
         pages = await crud.list_pages(session, repo_id, **vars(listing))
         out = [PageResponse.from_orm(p) for p in pages]
+        adapter = _FULL_LIST
     await _label_in_place(session, repo_id, out)
-    return out
+    return Response(content=adapter.dump_json(out), media_type="application/json")
 
 
 async def _label_in_place(session: AsyncSession, repo_id: str, rows: list) -> None:

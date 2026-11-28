@@ -95,7 +95,7 @@ PERF_SHAPE: dict[str, tuple[str, str, str]] = {
         "rows the database could have reduced, read on every call",
     ),
     "measured_hotspot": (
-        "Cut the measured cost of {name}",
+        "Speed up {name}",
         "a measured run spends a large share of its own time in {name}",
         "self time a measured run spent here",
     ),

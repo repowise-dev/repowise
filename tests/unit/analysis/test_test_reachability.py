@@ -243,6 +243,20 @@ def test_a_test_without_a_sibling_source_still_matches_across_directories() -> N
     assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
 
+def test_a_test_elsewhere_goes_to_the_same_named_file_whose_directories_it_mirrors() -> None:
+    sources = ["core/dynamic_hints/registry.py", "core/providers/registry.py"]
+    tests = {"tests/providers/test_registry.py", "tests/unit/settings/test_registry.py"}
+    files = {*sources, "cli/settings/registry.py", *tests}
+
+    found = name_match(sources, tests, files)
+
+    assert "core/dynamic_hints/registry.py" not in found
+    assert found["core/providers/registry.py"].tests == ["tests/providers/test_registry.py"]
+    # Sharing no directory with any of them, a test stays every one's fallback.
+    flat = name_match(sources, {"tests/test_registry.py"}, {*sources, "tests/test_registry.py"})
+    assert set(flat) == set(sources)
+
+
 @pytest.mark.parametrize("size", [16, 32, 64])
 @pytest.mark.parametrize("layout", ["flat", "separate"])
 def test_name_matching_generates_convention_names_linearly(monkeypatch, size, layout) -> None:

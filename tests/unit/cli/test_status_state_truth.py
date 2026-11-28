@@ -303,3 +303,23 @@ class TestRescorePending:
         (tmp_path / "j").mkdir()
         data = json.loads(_status(tmp_path / "j", monkeypatch, state, fmt="json"))
         assert data["rescore_pending"] == ["health", "security"]
+
+
+def test_stale_pages_on_a_code_wiki_with_a_provider_name_the_model_run(
+    tmp_path, monkeypatch
+) -> None:
+    from repowise.cli.commands import _page_freshness
+    from repowise.core.providers.llm import resolve
+
+    async def _three(_path):
+        return 3
+
+    monkeypatch.setattr(_page_freshness, "stale_page_count", _three)
+    named = SimpleNamespace(provider="mock")
+    monkeypatch.setattr(resolve, "resolve_llm", lambda *args, **kwargs: named)
+    state = {"last_sync_commit": "abc", "docs_mode": "deterministic"}
+    out = _status(tmp_path, monkeypatch, state, files=40)
+    assert (
+        "3 stale page(s): repowise update --full writes the whole wiki with a model, "
+        "and prices it first." in out
+    )

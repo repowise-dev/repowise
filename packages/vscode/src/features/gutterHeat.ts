@@ -4,21 +4,25 @@ import type { RepowiseContext } from "../core/context";
 import { getFileFindings, repoRelativePath } from "../core/fileSignals";
 import type { HealthFinding, HealthSeverity } from "@repowise-dev/types/health";
 
-/** Gutter/overview-ruler color per severity tier. */
-const TIER_COLOR: Record<HealthSeverity, string> = {
-  critical: "#f14c4c",
-  high: "#ff8800",
-  medium: "#ffcc00",
-  low: "#75beff",
+/**
+ * Gutter strip (a hex, since it is drawn as an SVG) and overview-ruler theme
+ * color per severity tier. Red and amber carry risk, as in the web UI; no
+ * custom orange. Low findings stay neutral.
+ */
+const TIER_COLOR: Record<HealthSeverity, { strip: string; opacity: number; ruler: string }> = {
+  critical: { strip: "#f14c4c", opacity: 0.85, ruler: "editorOverviewRuler.errorForeground" },
+  high: { strip: "#f14c4c", opacity: 0.5, ruler: "editorOverviewRuler.errorForeground" },
+  medium: { strip: "#cca700", opacity: 0.7, ruler: "editorOverviewRuler.warningForeground" },
+  low: { strip: "#8b8b8b", opacity: 0.5, ruler: "editorLineNumber.foreground" },
 };
 
 const TIERS: HealthSeverity[] = ["critical", "high", "medium", "low"];
 
 /** A 2px gutter strip in the tier color, as a data-URI SVG for gutterIconPath. */
-function stripIcon(color: string): vscode.Uri {
+function stripIcon(color: string, opacity: number): vscode.Uri {
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" width="6" height="18">` +
-    `<rect x="0" y="0" width="2" height="18" fill="${color}" fill-opacity="0.85"/>` +
+    `<rect x="0" y="0" width="2" height="18" fill="${color}" fill-opacity="${opacity}"/>` +
     `</svg>`;
   return vscode.Uri.parse(
     `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
@@ -61,9 +65,9 @@ export function registerGutterHeat(ctx: RepowiseContext): vscode.Disposable {
     const build = (severity: HealthSeverity): vscode.TextEditorDecorationType => {
       const color = TIER_COLOR[severity];
       const type = vscode.window.createTextEditorDecorationType({
-        gutterIconPath: stripIcon(color),
+        gutterIconPath: stripIcon(color.strip, color.opacity),
         gutterIconSize: "contain",
-        overviewRulerColor: color,
+        overviewRulerColor: new vscode.ThemeColor(color.ruler),
         overviewRulerLane: vscode.OverviewRulerLane.Left,
       });
       disposables.push(type);

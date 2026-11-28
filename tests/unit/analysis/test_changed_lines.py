@@ -311,6 +311,7 @@ def test_change_set_keeps_what_changed_lines_drops(git_repo) -> None:
     assert "mod.py" not in changed_lines(str(git_repo), "HEAD~1..HEAD")[0]
     assert set(change.files) == {"mod.py", "new_name.py", "logo.png"}
     assert change.deleted == {"gone.py", "old_name.py"}
+    assert change.added == {"new_name.py", "logo.png"}  # a rename adds its new path
     assert change.files["mod.py"].new_lines == set()
     assert change.files["mod.py"].old_ranges == [(2, 2)]
     assert change.label == "HEAD~1..HEAD"
@@ -331,6 +332,7 @@ def test_change_set_drops_excluded_paths_in_every_listing(git_repo) -> None:
 
     change = change_set(str(git_repo), working_tree=True, exclude_patterns=("/gen.md", "out/"))
     assert set(change.files) == {"mod.py", "new.py"}
+    assert change.added == {"new.py"}  # untracked
     assert change.deleted == set()
 
 

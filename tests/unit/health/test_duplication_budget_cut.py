@@ -135,3 +135,52 @@ def test_splice_scope_refuses_a_changed_stop_file():
 def test_splice_scope_refuses_an_unchanged_file_that_moved_across_the_cut():
     assert _scope(set(), {"b.py", "d.py"}) is None  # was unread, now before the stop
     assert _scope(set(), set()) is None  # was read, now after the stop
+
+
+# Production code is collected before tests, so the cut lands on a test file.
+# Path order would read test_a.py and x.py and stop at y.py; production-first
+# reads x.py and y.py, stops at z.py and leaves test_a.py unread.
+_MIXED = {"test_a.py": _BODY, "x.py": _BODY, "y.py": _BODY, "z.py": _BODY}
+
+
+def _seed_mixed(tmp_path: Path) -> Path:
+    cache_dir = _seed(tmp_path, _MIXED, limits=CUT)
+    idx = load_pair_index(cache_dir, WINDOW, CUT)
+    assert idx.budget_stop == "z.py" and idx.unread == {"test_a.py"}
+    return cache_dir
+
+
+def _file_pairs(report) -> set[tuple[str, str]]:
+    return {(p.file_a, p.file_b) for p in report.pairs}
+
+
+def test_the_budget_cuts_tests_before_production(tmp_path: Path):
+    _seed_mixed(tmp_path)
+    report = _full(_parsed(tmp_path), limits=CUT)
+    assert report.diagnostics["window_budget_hit"] is True
+    assert _file_pairs(report) == {("x.py", "y.py")}
+
+
+def test_production_first_cut_splices_like_the_full_run(tmp_path: Path):
+    cache_dir = _seed_mixed(tmp_path)
+    (tmp_path / "x.py").write_text(_BODY.replace("doit", "edited"))
+    assert _splice(tmp_path, cache_dir, {"x.py"}).get("incremental") is True
+    (tmp_path / "test_a.py").write_text(_BODY.replace("doit", "edited"))
+    assert _splice(tmp_path, cache_dir, {"test_a.py"}).get("incremental") is True
+
+
+def test_a_cut_persisted_in_path_order_is_recomputed(tmp_path: Path, monkeypatch):
+    # A state an older version wrote, collecting in path order.
+    from repowise.core.analysis.health.duplication import budget_cut, detector
+
+    with monkeypatch.context() as m:
+        m.setattr(detector, "collection_order", list)
+        m.setattr(budget_cut, "collection_order", list)
+        cache_dir = _seed(tmp_path, _MIXED, limits=CUT)
+    assert load_pair_index(cache_dir, WINDOW, CUT).budget_stop == "y.py"
+
+    parsed = _parsed(tmp_path)
+    report = _incremental(parsed, cache_dir, set(), limits=CUT)
+    assert "incremental" not in report.diagnostics
+    assert _key(report) == _key(_full(parsed, limits=CUT))
+    assert load_pair_index(cache_dir, WINDOW, CUT).budget_stop == "z.py"

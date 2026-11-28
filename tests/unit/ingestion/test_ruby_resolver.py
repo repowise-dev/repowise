@@ -219,3 +219,68 @@ class TestSpecMirrorEdges:
             builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
         graph = builder.build()
         assert not graph.has_edge("spec/integration_spec.rb", "lib/other.rb")
+
+
+class TestRailsAutoloadRoots:
+    def test_roots_are_derived_from_the_tree(self, tmp_path: Path) -> None:
+        _make_rails_repo(tmp_path)
+        (tmp_path / "config" / "application.rb").write_text(
+            "module App\n  class Application < Rails::Application\n"
+            "    config.eager_load_paths << Rails.root.join('enterprise/listeners')\n"
+            "  end\nend\n"
+        )
+        for rel in (
+            "app/builders/campaign_builder.rb",
+            "app/models/concerns/taggable.rb",
+            "app/views/layouts/mailer.rb",
+            "enterprise/app/models/enterprise/account.rb",
+            "enterprise/listeners/billing_listener.rb",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("# x\n")
+        index = build_rails_index(tmp_path)
+        assert index is not None
+        assert index.resolve("CampaignBuilder") == "app/builders/campaign_builder.rb"
+        # A concern is top level; ``Concerns::Taggable`` also meets it (overlay convention).
+        assert index.resolve("Taggable") == "app/models/concerns/taggable.rb"
+        assert index.resolve("Concerns::Taggable") == "app/models/concerns/taggable.rb"
+        assert index.resolve("Enterprise::Account") == "enterprise/app/models/enterprise/account.rb"
+        assert index.resolve("BillingListener") == "enterprise/listeners/billing_listener.rb"
+        # app/views holds templates, not constants.
+        assert index.resolve("Layouts::Mailer") is None
+
+
+class TestRailsResolve:
+    def test_relative_constant_is_looked_up_in_the_enclosing_namespaces(
+        self, tmp_path: Path
+    ) -> None:
+        _make_rails_repo(tmp_path)
+        for rel in (
+            "app/services/whatsapp/send_service.rb",
+            "app/services/whatsapp/client.rb",
+            "app/services/client.rb",
+        ):
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text("# x\n")
+        index = build_rails_index(tmp_path)
+        assert index is not None
+        sender = "app/services/whatsapp/send_service.rb"
+        assert index.resolve("Client", sender) == "app/services/whatsapp/client.rb"
+        assert index.resolve("::Client", sender) == "app/services/client.rb"
+        assert index.resolve("Client", "app/models/user.rb") == "app/services/client.rb"
+
+    def test_acronyms_meet_their_file(self, tmp_path: Path) -> None:
+        _make_rails_repo(tmp_path)
+        (tmp_path / "app" / "services").mkdir(parents=True)
+        (tmp_path / "app" / "services" / "openai_client.rb").write_text("# x\n")
+        index = build_rails_index(tmp_path)
+        assert index is not None
+        assert index.resolve("OpenAIClient") == "app/services/openai_client.rb"
+
+    def test_unknown_constant_has_no_stem_fallback(self, tmp_path: Path) -> None:
+        _make_rails_repo(tmp_path)
+        (tmp_path / "app" / "models" / "admin").mkdir(parents=True)
+        (tmp_path / "app" / "models" / "admin" / "base.rb").write_text("# x\n")
+        index = build_rails_index(tmp_path)
+        assert index is not None
+        assert index.resolve("Base") is None

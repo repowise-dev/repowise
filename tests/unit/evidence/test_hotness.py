@@ -201,6 +201,22 @@ def test_ranked_in_two_runs_makes_a_lead_candidate() -> None:
     assert one["tier"] == "ranked"
 
 
+def test_a_benchmark_profile_never_ranks_leads_or_counts_toward_a_lead() -> None:
+    # A gin-shaped run: one micro-benchmark's target holds a quarter of the time.
+    bench = _run("r1", cls="benchmark", total=4000)
+    costs = {"r1": [_cost("getMapFromFormData", 1000), _cost("serve", 200)]}
+    hotness = derive_hotness(
+        [bench], costs, _current("src/m.py::getMapFromFormData", "src/m.py::serve"),
+        _origins("src/m.py"), head_commit=HEAD, rules=RULES,
+    )
+    assert (hotness.symbols, hotness.workloads) == ([], [])
+    # Ranked once by an entry point and once by a benchmark: one leading run, no lead.
+    runs = [_run("r1", total=10000), _run("r2", cls="benchmark", day=2, total=10000)]
+    costs = {"r1": [_cost("f", 100)], "r2": [_cost("f", 100)]}
+    row = _derive(runs, costs)["src/m.py::f"]
+    assert (row["tier"], row["run_id"], row["run_count"]) == ("ranked", "r1", 1)
+
+
 def test_a_tracer_run_orders_only() -> None:
     costs = [_cost("f", 900, calls=3), _cost("g", 100, calls=1000)]
     rows = _derive([_run(unit="s", total=1.0)], {"r1": costs})
@@ -364,3 +380,22 @@ def test_commit_position_reads_ingest_order_within_the_runs_history() -> None:
     assert commit_position(late, [anchor, junit, late], HEAD) == "ahead"
     # No indexed commit.
     assert commit_position(late, [anchor, late], None) == "other"
+
+
+def test_inside_comes_from_the_basis_run_and_a_caller_gone_from_the_index_keeps_its_file() -> None:
+    import json
+    from dataclasses import replace
+
+    inside = '[{"kind": "own", "name": "(own code)", "share": 1.0}]'
+    drivers = json.dumps([
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "share": 0.4, "symbol": "src/gone.py::old"},
+    ])
+    cost = replace(_cost("f", 100), inside_json=inside, drivers_json=drivers)
+    rows = _derive([_run()], {"r1": [cost]}, current=_current("src/m.py::f", "src/app.py::main"))
+    row = rows["src/m.py::f"]
+    assert row["inside_json"] == inside
+    assert json.loads(row["drivers_json"]) == [
+        {"name": "main", "share": 0.6, "symbol": "src/app.py::main"},
+        {"name": "old", "path": "src/gone.py", "share": 0.4},
+    ]

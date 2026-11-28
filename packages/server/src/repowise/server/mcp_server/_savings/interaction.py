@@ -169,7 +169,9 @@ STAGES = frozenset(
         "impacted_tests",
         "patch_coverage",
         "prior_fixes",
+        "measured",
         "cross_repo",
+        "in_repo_contracts",
         "branch_overlap",
     }
 )

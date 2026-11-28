@@ -25,7 +25,7 @@ from repowise.core.support_paths import DOC_DIR_TOKENS, EXAMPLE_DIR_TOKENS
 
 from .facts import ObservationFacts, detail_map, is_performance, observation_facts
 
-PERFORMANCE_MODEL_VERSION = 4
+PERFORMANCE_MODEL_VERSION = 5
 """Version of the identity, grouping, actionability, and ranking semantics.
 
 From version 2 the version is the id prefix rather than a hash input, so a
@@ -46,6 +46,12 @@ becomes a ``measured_hotspot`` cause (#6097). The kernel's fields are
 unchanged, so most ids move only their prefix. A file whose origin is ``data``
 now reads as ``unknown`` in :func:`execution_context`, not ``production``, so
 its causes get new ids (#6009).
+
+Version 5 stops benchmark runs from confirming, admitting or ordering causes
+and from minting a ``measured_hotspot``: a benchmark measures the function it
+drives, not where the product spends its time (#6317). A measured hotspot
+carries its function's measured row (#6390). The kernel's fields are
+unchanged, so ids move only their prefix.
 """
 
 ExecutionContext = Literal["production", "tooling", "test", "unknown"]

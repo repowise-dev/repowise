@@ -153,7 +153,7 @@ def _extension_key(manifest: ComposerManifest | None) -> str | None:
 
 class _Typo3Handler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return "typo3" in dctx.stack_lower or bool(_find_typo3_extensions(dctx.ctx, dctx.path_set))
+        return dctx.uses("TYPO3") or bool(_find_typo3_extensions(dctx.ctx, dctx.path_set))
 
     def add_edges(
         self,

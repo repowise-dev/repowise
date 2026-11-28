@@ -149,7 +149,7 @@ def _add_synthetic_edges(
     # init path reports, or an index degrades differently depending on how it
     # was built and nothing says which.
     try:
-        from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+        from repowise.core.ingestion.tech_stack import detect_tech_stack
 
         with timed(timings, "rebuild.framework"):
             tech_items = detect_tech_stack(repo_path)
@@ -394,7 +394,9 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
         parsed_files, graph_builder._source_map, [p for p in paths if p not in c_paths], resolutions
     )
     if names is None or others is None:
-        return PatchPlan(False, reason="an edited file has no field record to compare")
+        return PatchPlan(
+            False, reason="an edited file's field record cannot be compared or scoped by name"
+        )
     if not names and not others:
         return patch_plan
     # A C/C++ file's fields and facts are read through source text only by

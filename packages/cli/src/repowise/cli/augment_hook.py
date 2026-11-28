@@ -49,6 +49,12 @@ def main() -> None:
                 from repowise.cli.health_gate_hook import run
 
                 run(sys.stdin, response_stream)
+            elif "--decision-stop" in sys.argv[1:]:
+                # The opt-in Stop prompt: its own module for the same reason. A
+                # repository without the switch pays one config read per stop.
+                from repowise.cli.decision_stop_hook import run as run_stop
+
+                run_stop(sys.stdin, response_stream)
             else:
                 from repowise.cli.commands.augment_cmd import _run_augment, command
 

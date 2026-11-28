@@ -737,11 +737,16 @@ async def _load_cascade_overflow_split(
     try:
         from sqlalchemy import select as sa_select
 
+        from repowise.core.persistence.crud import get_repository_by_path
         from repowise.core.persistence.models import Page
 
         async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
+                    Page.repository_id == repo.id,
                     Page.page_type.in_(
                         [
                             "file_page",

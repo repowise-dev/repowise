@@ -1,8 +1,9 @@
 """Runtime targets for ``evidence setup``: what to profile in each unit, and how.
 
 A target is a real entry point, a benchmark or the unit-test suite, in that
-order: a claim may not exceed its workload class, and only the first two may
-lead. Entry points come from their owners: console scripts from the unit's
+order: a claim may not exceed its workload class, and only an entry point may
+lead (a benchmark speaks through its own results, ``evidence.benchmarks``).
+Entry points come from their owners: console scripts from the unit's
 ``pyproject.toml`` (:func:`~repowise.core.generation.flow_entries.console_scripts`),
 the stored entry-point flag ranked by
 :func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
@@ -14,9 +15,12 @@ Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchma
 accepts.
 
 Every recipe needs no elevated privileges: pyinstrument in process for
-Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript.
-Profiles land in ``.repowise/``. TypeScript is refused: its positions are in
-the compiled JavaScript.
+Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript
+(a ``bin`` file, or the test runner's own script for the suite). Profiles
+land in ``.repowise/``. TypeScript is refused: its positions are in the
+compiled JavaScript. A Maven or Gradle unit gets one JVM target the agent
+finishes (:func:`_jvm_target`): JDK Flight Recorder through
+``JAVA_TOOL_OPTIONS`` on the run it chooses, then ``jfr print``.
 """
 
 from __future__ import annotations
@@ -686,8 +690,47 @@ def _go_targets(
 # ---------------------------------------------------------------------------
 
 
+#: Why a TypeScript program or suite gets no profile.
+_TS_REASON = ("A TypeScript profile's positions are in the compiled JavaScript; "
+              "repowise does not map them back yet.")
+#: Each JavaScript test runner's own script, which ``node`` runs with the profiler flags.
+_RUNNER_SCRIPTS = {
+    "mocha": "node_modules/mocha/bin/mocha.js",
+    "jest": "node_modules/jest/bin/jest.js",
+    "vitest": "node_modules/vitest/vitest.mjs",
+}
+
+
+def _node_suite(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> dict[str, Any] | None:
+    """The unit's test suite under ``node --cpu-prof``, from the runner's own command line
+    (:attr:`~repowise.core.test_runners.stacks.Stack.suite`); None without one.
+
+    ``node`` runs the runner's script from the unit's ``node_modules``, so the
+    profile holds the tests, not the package manager. Worker processes the
+    runner forks inherit the flags and write their own profiles into the
+    directory, which ``evidence add`` merges. Refused when most of the unit's
+    test files are TypeScript. Ceiling: a workspace that hoists the runner to
+    the root's ``node_modules`` has no script at the unit's path.
+    """
+    head, *args = stack.suite.split() or [""]
+    script = _RUNNER_SCRIPTS.get(head)
+    if script is None:
+        return None
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "node tests", "")
+    tests = [p for p in inputs.test_files if _owned(root, roots, p) is not None and p.endswith((*_TS, *_JS))]
+    if sum(p.endswith(_TS) for p in tests) * 2 > len(tests):
+        return _target("unit_test", name, cwd=cwd, command=None, profile=None, commit=commit, reason=_TS_REASON)
+    command = " ".join(["node --cpu-prof", f"--cpu-prof-dir={_from(root, profile)}", script, *args])
+    return _target("unit_test", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                   input_format="cpuprofile", prerequisites=[*stack.requires, _fresh(_from(root, profile))])
+
+
 def _node_targets(
-    stack: Stack, repo_root: Path, commit: str | None, roots: Collection[str]
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
 ) -> list[dict[str, Any]]:
     from ..ingestion.always_run import own_code
 
@@ -713,15 +756,58 @@ def _node_targets(
         name, profile = _named(root, f"node {rel}", "")
         if path.endswith(_TS):
             out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
-                               reason="A TypeScript profile's positions are in the compiled JavaScript; "
-                                      "repowise does not map them back yet."))
+                               reason=_TS_REASON))
             continue
         if not path.endswith(_JS):
             continue
         command = f"node --cpu-prof --cpu-prof-dir={_from(root, profile)} {rel}"
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
                            input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
-    return out
+    suite = _node_suite(stack, repo_root, inputs, commit, roots)
+    return [*out, suite] if suite else out
+
+
+# ---------------------------------------------------------------------------
+# JVM (Maven, Gradle)
+# ---------------------------------------------------------------------------
+
+
+def _jvm_target(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:
+    """A JVM run under JDK Flight Recorder, for the agent to start: never a step.
+
+    Which JVM to measure is the agent's call: a unit-test run mostly samples
+    JUnit and reflection, so a benchmark or the service under load is asked
+    for. The recorder goes in through ``JAVA_TOOL_OPTIONS``, which every JVM
+    the build starts reads, since a pom's surefire ``argLine`` is often
+    pinned. The command prints the recording's CPU samples as text
+    ``evidence add`` reads (``jfr``); the ingest line is in the reason, so
+    the target is shown but not offered (no ``ingest``) until the run exists.
+    Ceiling: a checkout path with a space splits ``JAVA_TOOL_OPTIONS``.
+    """
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    name, profile = _named(root, "jvm run", ".jfr.txt")
+    recording = profile.removesuffix(".txt")
+    command = (
+        "jfr print --events jdk.ExecutionSample --stack-depth 64 "
+        f"{_from(root, recording)} > {_from(root, profile)}"
+    )
+    options = (
+        "-XX:StartFlightRecording=filename="
+        f"{(repo_root / recording).as_posix()},settings=profile"
+    )
+    ingest = evidence_ingest_line(profile, name, "load_test", commit) if commit else None
+    reason = (
+        f"Start the JVM to measure (a benchmark, or the service under load: unit tests mostly "
+        f"measure JUnit) with JAVA_TOOL_OPTIONS={options} in its environment: every JVM reads "
+        "it, where a pom's surefire argLine is often pinned. Set it for that JVM alone, since a "
+        "build tool's own JVM would write the same file when it exits. When the run ends, run this command"
+        + (f", then: {ingest}" if ingest else "; evidence needs a git checkout for the commit.")
+    )
+    target = _target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                     input_format="jfr", reason=reason)
+    # Takes no arguments: the run it converts is the one the agent started.
+    return {**target, "serves": True}
 
 
 def runtime_targets(
@@ -742,7 +828,7 @@ def runtime_targets(
 
 
 #: Target keys for the callers in this package, never printed. ``serves``: a
-#: server, run with no arguments and driven by requests instead.
+#: server driven by requests, or a JVM run the agent starts: no arguments either way.
 _INTERNAL = frozenset({"timed", "format", "serves"})
 
 
@@ -790,7 +876,9 @@ def _unit_targets(
     elif stack.language == "go":
         found = _go_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
     elif stack.language == "node":
-        found = _node_targets(stack, repo_root, commit, unit_roots)
+        found = _node_targets(stack, repo_root, inputs, commit, unit_roots)
+    elif stack.language == "java":
+        found = [_jvm_target(stack, repo_root, commit)]
     else:
         found = []
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))

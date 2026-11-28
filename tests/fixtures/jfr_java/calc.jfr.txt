@@ -1,0 +1,6092 @@
+jdk.ExecutionSample {
+  startTime = 12:10:57.092 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.Properties.enumerateStringProperties(Map) line: 1290
+    java.util.Properties.stringPropertyNames() line: 1211
+    jdk.jfr.internal.instrument.JDKEvents.emitInitialSecurityProperties() line: 313
+    jdk.jfr.internal.periodic.JDKEventTask.execute(long, PeriodicType) line: 52
+    jdk.jfr.internal.periodic.PeriodicTask.run(long, PeriodicType) line: 128
+    jdk.jfr.internal.periodic.PeriodicEvents.doChunkBegin(boolean) line: 83
+    jdk.jfr.internal.PlatformRecorder.start(PlatformRecording) line: 286
+    jdk.jfr.internal.PlatformRecording.start() line: 123
+    jdk.jfr.Recording.start() line: 177
+    jdk.jfr.internal.dcmd.DCmdStart.execute(ArgumentParser) line: 211
+    jdk.jfr.internal.dcmd.AbstractDCmd.execute(String, String, char) line: 87
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.103 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(long) line: 45
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.104 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.114 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.lambda$mapAll$0(int) line: 63
+    calc.Calc.mapAll(int) line: 70
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.123 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc$1.compare(String, String) line: 86
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.125 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc$1.compare(String, String) line: 86
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeHi(int, int, int, int) line: 841
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.131 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.141 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.148 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.149 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.151 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(long) line: 45
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.164 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.167 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.175 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeHi(int, int, int, int) line: 841
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.180 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.182 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.185 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.mergeHi(int, int, int, int) line: 821
+    java.util.ComparableTimSort.mergeAt(int) line: 487
+    java.util.ComparableTimSort.mergeCollapse() line: 413
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 213
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.187 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.189 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.191 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.194 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.196 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.199 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.200 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.202 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.204 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.206 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.208 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeHi(int, int, int, int) line: 841
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.210 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.212 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.214 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.217 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeHi(int, int, int, int) line: 841
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.218 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.220 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.222 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.223 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.224 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.boxes(int) line: 112
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.226 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.228 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.230 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.231 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.234 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.236 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.237 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.239 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.241 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.243 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.244 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.245 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.247 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.248 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.249 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.mergeLo(int, int, int, int) line: 721
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.251 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.253 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.254 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.256 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.258 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.260 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.261 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.263 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.267 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.269 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.271 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.273 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.275 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.276 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.278 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.280 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.284 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.286 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.289 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.290 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.292 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.294 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.296 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.298 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.300 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.302 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.304 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.306 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.boxes(int) line: 112
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.308 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.310 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.312 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.314 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.mergeHi(int, int, int, int) line: 821
+    java.util.ComparableTimSort.mergeAt(int) line: 487
+    java.util.ComparableTimSort.mergeCollapse() line: 413
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 213
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.315 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.317 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.319 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.321 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.322 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.323 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.324 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.326 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.328 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.330 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.332 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.334 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.337 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.339 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.341 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.342 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.344 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.346 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.348 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.350 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.354 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.356 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.358 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.360 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.362 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.364 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.367 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(long) line: 45
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.369 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.371 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.372 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.374 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.boxes(int) line: 112
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.375 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.377 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.379 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.380 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.382 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.384 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.385 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.387 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.389 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.391 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.393 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.395 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.396 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.397 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.399 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.400 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.403 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.404 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.405 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.407 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.409 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.411 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.414 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.415 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.417 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.419 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.420 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.422 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.424 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.425 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.427 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.428 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.430 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.432 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.434 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.435 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.436 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.438 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.439 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.441 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.443 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.445 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.447 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.449 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.451 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.453 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.455 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.457 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.459 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.461 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.463 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.465 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.467 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.469 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.471 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.473 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.475 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.477 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.479 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.481 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.483 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.485 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.487 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.489 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.491 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.493 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.495 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.497 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.499 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.501 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.502 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.countRunAndMakeAscending(Object[], int, int, Comparator) line: 355
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 234
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.504 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.506 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.509 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.510 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.511 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.513 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.514 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.517 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.519 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.520 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.522 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.524 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.525 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.527 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.529 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.531 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.533 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.535 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.537 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.539 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.541 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.543 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.545 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.547 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.550 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.552 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.554 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.556 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.558 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.560 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.562 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.564 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.566 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.568 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.570 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.572 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.574 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.576 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.578 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.mergeLo(int, int, int, int) line: 662
+    java.util.ComparableTimSort.mergeAt(int) line: 485
+    java.util.ComparableTimSort.mergeCollapse() line: 413
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 213
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.580 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.582 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.583 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.585 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.587 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.589 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.591 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.595 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.597 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.600 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.601 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.603 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.605 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.606 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.609 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int) line: 37
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.610 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.612 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.615 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.618 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.620 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.621 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.623 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.625 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.627 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.629 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.631 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.632 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.634 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.636 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.638 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.640 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.642 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.643 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.644 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.mergeLo(int, int, int, int) line: 662
+    java.util.ComparableTimSort.mergeAt(int) line: 485
+    java.util.ComparableTimSort.mergeCollapse() line: 413
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 213
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.647 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.649 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.652 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.653 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.655 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.656 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.658 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.660 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.662 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.663 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.665 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.667 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.668 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.670 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.672 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 300
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.674 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.676 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.678 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.680 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.682 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.684 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.686 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.688 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.689 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.691 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.693 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.695 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.697 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.699 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.700 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.702 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.704 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.706 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.708 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.710 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.Arrays.sort(Object[], int, int) line: 1104
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.712 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.714 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.716 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.718 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.720 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.722 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.724 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.726 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.728 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.730 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.732 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.734 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.736 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.738 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.740 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.742 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.744 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.746 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.750 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.752 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.753 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.756 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.757 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.760 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.762 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.764 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.765 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.767 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.769 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.771 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.773 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.775 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.777 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.779 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.781 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.783 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.785 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.787 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.789 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.791 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.793 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.795 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.797 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.799 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.801 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.803 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int) line: 37
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.805 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.807 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.809 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.811 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.813 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.815 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.817 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.818 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.820 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.822 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.824 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.826 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.828 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.830 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.832 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.834 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.835 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.837 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.841 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.843 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.847 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.849 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.850 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.853 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.855 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.856 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.859 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.861 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.863 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.864 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.867 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.868 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.870 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.872 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.874 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.876 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.878 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.880 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.882 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.884 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.886 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.888 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.890 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.892 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.894 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.896 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.898 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.900 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.902 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.903 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.905 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.gallopLeft(Object, Object[], int, int, int, Comparator) line: 567
+    java.util.TimSort.mergeAt(int) line: 511
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.907 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.909 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.911 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.913 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.915 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.917 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.919 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.921 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.923 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.925 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.927 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.929 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.931 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.933 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.935 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.937 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.938 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.940 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.944 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.946 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.948 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.950 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.952 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.954 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.956 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.958 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.960 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.961 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.962 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.964 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.965 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.966 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.968 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.970 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.972 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.974 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.976 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.978 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(long) line: 45
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.980 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.983 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.984 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.986 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.binarySort(Object[], int, int, int) line: 266
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 207
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.987 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.988 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.990 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.992 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.gallopLeft(Object, Object[], int, int, int, Comparator) line: 567
+    java.util.TimSort.mergeLo(int, int, int, int) line: 756
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.994 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.996 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:57.998 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.000 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.002 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.004 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.005 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.007 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.009 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.mergeLo(int, int, int, int) line: 662
+    java.util.ComparableTimSort.mergeAt(int) line: 485
+    java.util.ComparableTimSort.mergeCollapse() line: 413
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 213
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.010 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.012 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.014 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.017 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.018 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.034 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.050 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.065 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.083 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.115 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.131 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.146 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.162 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.178 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.209 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.225 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.240 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.256 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.272 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.288 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.304 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.320 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.336 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.352 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.368 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.gallopRight(Object, Object[], int, int, int, Comparator) line: 664
+    java.util.TimSort.mergeAt(int) line: 500
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.384 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.400 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.415 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.431 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.447 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.463 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.479 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.495 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.511 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.527 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.542 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.558 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.574 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.590 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.606 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.621 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(long) line: 45
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.637 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.654 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.669 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.685 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.700 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.ComparableTimSort.binarySort(Object[], int, int, int) line: 262
+    java.util.ComparableTimSort.sort(Object[], int, int, Object[], int, int) line: 207
+    java.util.Arrays.sort(Object[], int, int) line: 1108
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1302
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.boxes(int) line: 114
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.716 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.731 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.734 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.765 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.781 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.797 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.813 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.829 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.fill(int) line: 29
+    calc.Calc.<init>(int) line: 11
+    calc.Calc.main(String[]) line: 122
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.844 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.860 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.892 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.908 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.924 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.gallopLeft(Object, Object[], int, int, int, Comparator) line: 567
+    java.util.TimSort.mergeAt(int) line: 511
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.940 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.955 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:58.987 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.002 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.018 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.033 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeLo(int, int, int, int) line: 694
+    java.util.TimSort.mergeAt(int) line: 518
+    java.util.TimSort.mergeCollapse() line: 448
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 245
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.049 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.065 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.081 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.097 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.112 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.128 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.144 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.Arrays.copyOf(Object[], int) line: 3482
+    java.util.ArrayList.grow(int) line: 237
+    java.util.ArrayList.grow() line: 244
+    java.util.ArrayList.add(Object, Object[], int) line: 483
+    java.util.ArrayList.add(Object) line: 496
+    calc.Calc.boxes(int) line: 112
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.160 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.175 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.191 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.207 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.223 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.239 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.254 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.270 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.286 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.301 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.317 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.333 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 54
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.349 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.365 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.380 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.396 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.412 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.lang.String.charAt(int) line: 1546
+    calc.Calc$1.compare(String, String) line: 87
+    calc.Calc$1.compare(Object, Object) line: 81
+    java.util.TimSort.binarySort(Object[], int, int, int, Comparator) line: 296
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 239
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.428 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.444 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.459 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.475 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.491 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.507 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.523 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.538 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.554 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    java.util.TimSort.mergeHi(int, int, int, int) line: 808
+    java.util.TimSort.mergeAt(int) line: 520
+    java.util.TimSort.mergeForceCollapse() line: 461
+    java.util.TimSort.sort(Object[], int, int, Comparator, Object[], int, int) line: 254
+    java.util.Arrays.sort(Object[], int, int, Comparator) line: 1308
+    java.util.ArrayList.sort(Comparator) line: 1804
+    calc.Calc.sorted(int) line: 80
+    calc.Calc.main(String[]) line: 124
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.570 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.sum(int, int) line: 53
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.587 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+
+jdk.ExecutionSample {
+  startTime = 12:10:59.603 (2026-11-26)
+  sampledThread = "main" (javaThreadId = 1)
+  state = "STATE_RUNNABLE"
+  stackTrace = [
+    calc.Calc.mapAll(int) line: 69
+    calc.Calc.main(String[]) line: 123
+  ]
+}
+

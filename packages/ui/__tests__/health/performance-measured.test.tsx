@@ -10,6 +10,12 @@ import {
   measuredRow,
   measuredRun,
   NOTHING_MEASURED,
+  PROD_CLAIM,
+  RUNS,
+  runSummary,
+  routesOnly,
+  statementsOnly,
+  withBenchmarks,
 } from "./fixtures/runtime-evidence";
 
 configure({ asyncUtilTimeout: 5000 });
@@ -40,7 +46,7 @@ describe("PerformanceView runtime evidence", () => {
     expect(within(strip).getByText("at 4f9c2a1, the indexed commit")).toBeTruthy();
     expect(within(strip).getByText("3 runs")).toBeTruthy();
     // The lede names how much of the run repo code can move.
-    expect(screen.getByText(/so a fix in repo code moves at most that share/)).toBeTruthy();
+    expect(screen.getByText(/a fix in repo code moves that share and the library calls/)).toBeTruthy();
     expect(screen.getByRole("list", { name: "Where the cli build run spent its time" })).toBeTruthy();
     expect(
       screen.getByText(/41 functions measured in test and tooling code are counted, not listed/),
@@ -62,10 +68,146 @@ describe("PerformanceView runtime evidence", () => {
   it("switches the workload from the lens", async () => {
     render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
     await table();
-    fireEvent.click(screen.getByRole("radio", { name: /bench parse/ }));
-    const rows = within(await screen.findByRole("list", { name: "Measured in bench parse" })).getAllByRole("listitem");
+    fireEvent.click(screen.getByRole("radio", { name: /cli serve/ }));
+    const rows = within(await screen.findByRole("list", { name: "Measured in cli serve" })).getAllByRole("listitem");
     expect(within(rows[0]!).getByText("tokenize")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Measured cost in bench parse" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Measured cost in cli serve" })).toBeTruthy();
+  });
+
+  it("lists each benchmark with the function it measures and its figures per operation", async () => {
+    const getMeasured = vi.fn(withBenchmarks(measured));
+    render(<PerformanceView adapter={adapter({ ...evidenceAdapter(), getMeasured })} />);
+    await table();
+    const list = await screen.findByRole("list", { name: "Benchmarks in go test -bench" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("BenchmarkParse")).toBeTruthy();
+    expect(within(rows[0]!).getByRole("link", { name: "Parse" })).toBeTruthy();
+    expect(within(rows[0]!).getByText("1,234.5 ns/op · 12 allocs/op · 2,048 B/op")).toBeTruthy();
+    // No function named: the benchmark and its numbers only, no claim.
+    expect(within(rows[1]!).getByText("BenchmarkMisc/small")).toBeTruthy();
+    expect(within(rows[1]!).queryByText(/measures/)).toBeNull();
+    expect(within(rows[1]!).getByText("88 ns/op · 0 allocs/op")).toBeTruthy();
+    expect(screen.getByText(/go test -bench · at 4f9c2a1/)).toBeTruthy();
+    expect(getMeasured).toHaveBeenCalledWith({ runId: "run-gobench", limit: 5 });
+    // A benchmark never leads: the lens offers only the ranked workloads.
+    expect(screen.queryByRole("radio", { name: /go test -bench/ })).toBeNull();
+  });
+
+  it("shows the benchmarks when they are the only runtime evidence", async () => {
+    const getMeasured = vi.fn(withBenchmarks(null));
+    render(
+      <PerformanceView
+        adapter={adapter({ getMeasured, listEvidenceRuns: async () => ({ ...RUNS, runs: [] }) })}
+      />,
+    );
+    const list = await screen.findByRole("list", { name: "Benchmarks in go test -bench" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "Benchmarks" })).toBeTruthy();
+    expect(screen.queryByText("Repo code explains")).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
+  });
+
+  it("lists production statement rows when they are the only runtime evidence", async () => {
+    const getMeasured = vi.fn(statementsOnly);
+    const statementRun = runSummary({
+      run_id: "run-pg",
+      kind: "statement_stats",
+      workload: "postgres:hosted",
+      class: "production",
+      environment: "production",
+      tool: null,
+      window: { start: null, end: null, base_commit: null, claim: PROD_CLAIM },
+    });
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured,
+          listEvidenceRuns: async () => ({ ...RUNS, runs: [statementRun] }),
+        })}
+      />,
+    );
+    const list = await screen.findByRole("list", { name: "Statements in postgres:hosted" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0]!).getByText("explore_repos")).toBeTruthy();
+    expect(within(rows[0]!).getByText("33.0%")).toBeTruthy();
+    expect(within(rows[0]!).getByText("6 calls · mean 102 ms")).toBeTruthy();
+    expect(
+      within(rows[0]!).getByText("Check a fix: compare this row in the next postgres:hosted window"),
+    ).toBeTruthy();
+    expect(within(rows[1]!).getByText("346 calls · mean 0.9 ms")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Production statements" })).toBeTruthy();
+    expect(screen.getByText("postgres:hosted · 42 statements · 1,854 ms stored")).toBeTruthy();
+    // The window claim on the run line; the unattributed shares as one quiet line, on no row.
+    expect(screen.getAllByText(PROD_CLAIM).length).toBeGreaterThan(0);
+    expect(screen.getByText("On no single function: 23.0% ambiguous · 6.0% unjoined.")).toBeTruthy();
+    expect(within(list).queryByText(/ambiguous/)).toBeNull();
+    expect(getMeasured).toHaveBeenCalledWith({ runId: "run-pg", limit: 5 });
+    // Statements never lead: no profile strip, no workload lens, no ranked table.
+    expect(screen.queryByText("Repo code explains")).toBeNull();
+    expect(screen.queryByRole("radio", { name: /postgres:hosted/ })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
+  });
+
+  it("lists production route rows by handler when they are the only runtime evidence", async () => {
+    const getMeasured = vi.fn(routesOnly);
+    render(<PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => ({ ...RUNS, runs: [] }) })} />);
+    const list = await screen.findByRole("list", { name: "Routes in api" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]!).getByText("get_repo")).toBeTruthy();
+    expect(within(rows[0]!).getByText("GET /repos/{repo_id}")).toBeTruthy();
+    expect(within(rows[0]!).getByText("41.0%")).toBeTruthy();
+    expect(within(rows[0]!).getByText("320 requests · mean 12.5 ms · p95 80 ms · 2 errors")).toBeTruthy();
+    expect(within(rows[1]!).getByText("175 requests · mean 12.5 ms · p95 80 ms")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Production routes" })).toBeTruthy();
+    expect(screen.getByText("api · 1,200 requests · 12 routes · 9,876 ms stored")).toBeTruthy();
+    expect(screen.getByText("On no single function: 5.0% unjoined.")).toBeTruthy();
+    expect(getMeasured).toHaveBeenCalledWith({ runId: "run-api", limit: 5 });
+    // Routes never lead, and the statements group stays away.
+    expect(screen.queryByRole("heading", { name: "Production statements" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Measured in/ })).toBeNull();
+  });
+
+  it("names a production run's window on its run line and in the runs list", async () => {
+    const window = { start: null, end: null, base_commit: null, claim: PROD_CLAIM };
+    const evidence = evidenceAdapter();
+    evidence.getMeasured.mockImplementation(async (opts = {}) => {
+      const view = await measured(opts);
+      return {
+        ...view,
+        measured: view.measured && {
+          ...view.measured,
+          runs: view.measured.runs.map((r) =>
+            r.run_id === "run-cli" ? { ...r, workload_class: "production", window } : r,
+          ),
+        },
+      };
+    });
+    evidence.listEvidenceRuns.mockImplementation(async () => ({
+      ...RUNS,
+      runs: RUNS.runs.map((r) => (r.run_id === "run-cli" ? { ...r, class: "production", window } : r)),
+    }));
+    render(<PerformanceView adapter={adapter(evidence)} />);
+    await table();
+    expect(screen.getByText(PROD_CLAIM)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
+    const runs = await screen.findByRole("table");
+    expect(within(runs).getByText(PROD_CLAIM)).toBeTruthy();
+    // Only the production run carries a claim.
+    expect(within(runs).getAllByText(/in production over/)).toHaveLength(1);
+  });
+
+  it("adds nothing for runs that are not production and no statements", async () => {
+    render(<PerformanceView adapter={adapter(evidenceAdapter())} />);
+    await table();
+    fireEvent.click(screen.getByRole("button", { name: /Runs/ }));
+    await screen.findByRole("table");
+    expect(screen.queryByText(/in production/)).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Production statements" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Statements in/ })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Production routes" })).toBeNull();
   });
 
   it("opens the static cause a measured function carries", async () => {
@@ -249,7 +391,7 @@ describe("Runtime evidence marks", () => {
         },
       ],
       tests_total: 1240,
-      file_costs: null,
+      cost: null,
     }));
     const { unmount } = render(
       <PerformanceView adapter={adapter({ ...evidenceAdapter(), getEvidenceTests })} />,
@@ -282,7 +424,70 @@ describe("buildMeasuredFunctionsPrompt", () => {
     );
     expect(prompt).toContain("Symbol id: `src/render/markdown.py::render_block`");
     expect(prompt).toContain("Static performance causes on it: `perf3_render`");
+    expect(prompt).toContain("Nearest tests by call graph: `tests/test_markdown.py::test_render`");
+    expect(prompt).not.toContain("Benchmark to run");
     expect(prompt).not.toMatch(/—/);
+  });
+
+  it("names the tests that ran a function and the benchmark that verifies a fix", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          tests_basis: "per_test_map",
+          verify: "pytest benchmarks/bench_render.py::test_render --benchmark-only",
+        }),
+      ],
+    });
+    expect(prompt).toContain("Tests that ran it: `tests/test_markdown.py::test_render`");
+    expect(prompt).toContain(
+      "Benchmark to run before and after: `pytest benchmarks/bench_render.py::test_render --benchmark-only`",
+    );
+  });
+
+  it("leads a row with its next step and names a workload rerun as the verify", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          next_step: {
+            rule: "filesystem",
+            why: "90% of it is stat calls",
+            next: "walk with os.scandir",
+            callee: "is_file",
+            share: 0.9,
+          },
+          verify: "repowise perf measure --save before -- cli build before the change",
+          verify_basis: "workload",
+        }),
+      ],
+    });
+    expect(prompt).toContain("Next step: walk with os.scandir");
+    expect(prompt).toContain("Why: 90% of it is stat calls");
+    expect(prompt).toContain(
+      "How to check a fix: repowise perf measure --save before -- cli build before the change",
+    );
+    expect(prompt).not.toContain("Benchmark to run");
+    const production = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [measuredRow({ verify: "compare this row in the next prod window", verify_basis: "workload" })],
+    });
+    expect(production).toContain("How to check a fix: compare this row in the next prod window");
+  });
+
+  it("names production callers, with the share each measured caller drove", () => {
+    const prompt = buildMeasuredFunctionsPrompt({
+      run: measuredRun(),
+      rows: [
+        measuredRow({
+          callers: ["src/cli.py::build", "src/render/page.py::render_page"],
+          caller_shares: { "src/cli.py::build": 0.82 },
+        }),
+      ],
+    });
+    expect(prompt).toContain(
+      "Production callers: `src/cli.py::build` (drove 82.0% of its time), `src/render/page.py::render_page`",
+    );
   });
 
   it("gives a rank and no share for an ordering-only run", () => {

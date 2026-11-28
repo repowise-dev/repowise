@@ -2,6 +2,9 @@
   "name": "@org/app",
   "private": true,
   "main": "./src/main.ts",
+  "dependencies": {
+    "next": "14"
+  },
   "scripts": {
     "start": "tsx src/main.ts"
   }

@@ -31,6 +31,7 @@ from repowise.core.workspace.contracts import (
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
+from repowise.core.workspace.matching import MATCHERS
 from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER, shared_idl
 from repowise.core.workspace.network_probe import (
     UNRECOGNISED_CALL_FILES_STAT,
@@ -590,11 +591,16 @@ def _classify_unmatched(
     if not candidates:
         return UnmatchedReason.NO_PROVIDER
     # A matching provider exists. If every one shares this consumer's repo AND
-    # service boundary, the call is intra-service and was filtered on purpose.
-    all_internal = all(
+    # service boundary, the call is intra-service and was filtered on purpose;
+    # so is one its own service serves first (`TypeMatcher.own_service_first`).
+    internal = [
         same_service(p.repo, p.service, consumer.repo, consumer.service) for p in candidates
-    )
-    return UnmatchedReason.INTERNAL_ONLY if all_internal else UnmatchedReason.UNLINKED
+    ]
+    rules = MATCHERS.get(consumer.contract_type)
+    own_first = rules.own_service_first if rules is not None else None
+    if all(internal) or (own_first is not None and any(internal) and own_first(consumer)):
+        return UnmatchedReason.INTERNAL_ONLY
+    return UnmatchedReason.UNLINKED
 
 
 def build_diagnostics(

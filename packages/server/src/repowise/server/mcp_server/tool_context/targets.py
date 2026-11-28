@@ -495,7 +495,11 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
     # Opt in: get_symbol carries them by default; the card stays its default size.
     sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
     if card.wants("facts") and sym_node_id:
-        docs.update(await symbol_card_facts(card.session, card.repo_id, sym_node_id))
+        docs.update(
+            await symbol_card_facts(
+                card.session, card.repo_id, sym_node_id, card.query.exclude_spec
+            )
+        )
     # Candidates
     if len(sym_matches) > 1:
         docs["candidates"] = filter_dicts_by_key(

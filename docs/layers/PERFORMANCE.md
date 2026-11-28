@@ -174,16 +174,58 @@ Everything else is counted by reason, not hidden:
 | `cold_role` | Only startup, a CLI command, tooling, tests or client UI code run the loop, so no server pays it per request |
 | `background_unproven` | A scheduled job runs the loop and nothing shows it grows with the data; listed under `proof=background_unproven` |
 
-Runtime evidence overrides `cold_path` and `cold_role`. When the newest run of a
-benchmark, entry point, load test or production workload ranks a cause's loop owner
-among its costliest functions, the cause stays in the queue and its `measured` facet
-names that workload. A unit-test run never does this. Such a cause is still never
-the one Fix first, Do next or the queue's lead name.
+To see them, widen the filter (below). Each performance finding also stores the
+reason its cause is in or out of the queue. Code in a package path that only looks
+like an example tree (`com/example/...`) is judged as production when the index
+read it as production.
 
-Query counts are exact, so they can confirm or contradict a database cause. The
-`queries` facet reads the newest complete `query_count` run of each workload at the
-cause's loop owner and along its call path. Sizes are compared only within one run
-and one scope kind (tests or requests):
+Performance work also appears in [Fix first](CODE_HEALTH.md#fix-first), where it
+competes with other kinds of work. Of the static causes, Fix first, Do next and the
+queue's lead name only a `plan_ready` default-queue cause whose growth a loop outside a
+registry and a cold path shows (facet `growth_source = loop`) and, when no role is known,
+that an entry point reaches. Every other cause stays in the Performance view and is
+counted in Fix first as `unconfirmed_cost`. A measured hotspot (below) can lead as well.
+
+### How measured evidence creates and orders work
+
+The findings above come from structure. Stored
+[runtime evidence](RUNTIME_EVIDENCE.md) adds what a real run measured, and it
+changes the work in five ways. Only a *leading* run counts: the newest run of an
+entry point, load test or production workload. A unit-test run says what the
+tests cost, not the product, and a benchmark profile gives each benchmark about
+the same time, so a function's share of it tracks how many benchmarks target it,
+not what it costs; neither creates, keeps, confirms or orders work, and nor does
+a tracer's run (cProfile gives an order, no share) or a stale one. Benchmark
+results still show under `benchmarks`, each with the function it measures.
+
+**1. A measured function becomes work.** A function a leading run measured
+above the lead bar, with no static cause inside it, becomes a measured hotspot:
+a work item that carries the function's
+[measured row](RUNTIME_EVIDENCE.md#what-you-learn). Its title is "Speed up
+`<function>`", its first step is the row's next step, its why is what the run
+measured inside the function, its gain is its self share of the run (`up to 13%
+of the "repowise status" run`), its facts name the callers that drove the time,
+and its verify block holds the row's tests and its one verify command. The lead
+bar is a share of the run that clears the `evidence.lead_min_share` and
+`evidence.lead_min_lower_bound` settings, or a rank in `evidence.lead_min_runs`
+runs. A module body's import-time row never becomes an item.
+
+**2. A measured hotspot with a next step leads Fix first.** Of several, the one
+with the largest self share leads; every other item keeps its place. Without a
+next step (no rule names what the time is) the item keeps the generic "find the
+repeated work" step, is listed, and never leads. The agent surfaces
+(`get_health`'s Fix first, performance list and counts, and `get_overview`'s Do
+next) carry only the measured hotspots that have a next step; the generated
+CLAUDE.md and AGENTS.md list none.
+
+**3. Evidence confirms a static cause.** A cause carries `confirmed` when
+runtime evidence backs it: `query_count` when its query counts grow with the
+items, or `measured` when a leading run measured its loop owner above the lead
+bar. A function that is only ranked confirms nothing. Query counts are exact,
+so they can confirm or contradict a database cause. The `queries` facet reads
+the newest complete `query_count` run of each workload at the cause's loop
+owner and along its call path. Sizes are compared only within one run and one
+scope kind (tests or requests):
 
 | `queries` | Meaning |
 |---|---|
@@ -194,37 +236,30 @@ and one scope kind (tests or requests):
 Telling `grows` from `flat` needs the scope's `items` in the evidence document
 ([Runtime Evidence](RUNTIME_EVIDENCE.md)). The cause stays listed in every case.
 
-A cause carries `confirmed` when runtime evidence backs it. The value is
-`query_count` when its query counts grow with the items, or `measured` when a
-benchmark, entry point, load test or production workload measured its loop owner
-above the lead bar. That bar is a share of the run that clears the
-`evidence.lead_min_share` and `evidence.lead_min_lower_bound` settings, or a rank in
-`evidence.lead_min_runs` runs. A function that is only ranked confirms nothing.
+**4. Evidence keeps a measured cause in the queue.** It overrides `cold_path`
+and `cold_role`: when a leading run ranks a cause's loop owner among its
+costliest functions, the cause stays in the queue and its `measured` facet
+names that workload. Such a cause is still never the one Fix first, Do next or
+the queue's lead name.
 
-With runtime evidence, the queue orders causes in three tiers: confirmed first,
-then causes a leading workload measured (the `measured` facet), then the rest in
-their static order. Nothing is hidden: a cause with flat query counts, and a
-cause measured against its cold name, stay among the rest in their static order.
-Each row of the Performance tab carries `runtime_evidence`, what the evidence
-says about it: `confirmed`, `measured` (with the workload), `counter_evidence`
-(flat query counts), `ran` (query counts that settle nothing), or
-`not_exercised`, with the leading workloads that ran and never reached it ("not
-exercised in `<workload>`"). A unit-test run is never one of those workloads. A
+**5. Evidence orders the queue.** With runtime evidence, the queue orders
+causes in three tiers: confirmed first, then causes a leading workload measured
+(the `measured` facet), then the rest in their static order. Nothing is hidden:
+a cause with flat query counts, and a cause measured against its cold name,
+stay among the rest in their static order. Each row of the Performance tab
+carries `runtime_evidence`, what the evidence says about it: `confirmed`,
+`measured` (with the workload), `counter_evidence` (flat query counts), `ran`
+(query counts that settle nothing), or `not_exercised`, with the leading
+workloads that ran and never reached it ("not exercised in `<workload>`"). A
 function a run sampled too rarely to rank reads as not exercised. The marks
-reflect the evidence of the last index or update. With no runtime evidence the
+reflect the evidence of the last index or update; with no runtime evidence the
 order is the static one and rows carry no mark.
 
-To see them, widen the filter (below). Each performance finding also stores the
-reason its cause is in or out of the queue. Code in a package path that only looks
-like an example tree (`com/example/...`) is judged as production when the index
-read it as production.
-
-Performance work also appears in [Fix first](CODE_HEALTH.md#fix-first), where it
-competes with other kinds of work. Fix first, Do next and the queue's lead name only
-a `plan_ready` default-queue cause whose growth a loop outside a registry and a cold path shows
-(facet `growth_source = loop`) and, when no role is known, that an entry point reaches.
-Every other cause stays in the Performance view and is counted in Fix first as
-`unconfirmed_cost`.
+Outside the queue, evidence names work in two more places: `repowise risk` and
+`get_change_risk` list the measured functions a change edits, each with the
+command to run before and after it, and `repowise evidence status --compare`
+says what got slower since earlier runs and the commits that changed what it
+ran ([Runtime Evidence](RUNTIME_EVIDENCE.md#what-you-learn)).
 
 Every headline counts causes the same way, in the three scopes of the Performance
 tab: `now` (the default queue, worth fixing now), `production` (every open
@@ -272,11 +307,14 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_health).
 
 `performance_measured` lists, for each workload's newest run, the functions
-ranked by self time (waits excluded), each with its workload class, age, sample
-size, interval and where the run's time went (repo code itself, waits,
-libraries)
-([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
-stored it says `no_runtime_data` and names `repowise evidence setup`.
+ranked by self time (waits excluded), each with the next step its profile names
+(and its own verify command when a benchmark measures it), beside its run's
+workload class, age, sample size, the workload rerun that verifies a fix, and
+where the run's time went (repo code itself, waits, libraries)
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). Benchmarks are listed
+apart under `benchmarks`: each result with the production function it measures
+and its time and allocations per operation. A benchmark profile ranks nothing.
+With no profile stored it says `no_runtime_data` and names `repowise evidence setup`.
 
 ## See also
 

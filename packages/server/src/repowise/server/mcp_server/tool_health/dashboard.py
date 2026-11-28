@@ -126,6 +126,10 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
     }
 
 
+#: Why the items read out of ``gain`` order: the queue's sort key (``queue/order.py``).
+FIX_FIRST_ORDER = "value band (size, reach) > tier > worth x confidence / effort; not gain"
+
+
 def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict[str, Any]:
     """Core's queue in the compact projection, its counts, and the call for one full item.
 
@@ -156,6 +160,8 @@ def _fix_first_block(data: HealthData, req: HealthRequest, pager: Pager) -> dict
     block["cursor"] = req.fix_first_cursor
     if full.lead is not None:
         block["detail_call"] = f"get_health(fix_id={full.lead.id!r})"
+    # Items whose ``gain`` does not follow their order read as misranked.
+    block["order"] = FIX_FIRST_ORDER
     if req.pages_fix_first:
         pager.note_page(
             "fix_first",

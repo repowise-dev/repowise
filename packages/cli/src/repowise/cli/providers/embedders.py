@@ -36,6 +36,7 @@ def resolve_embedder(
     embedder_flag: str | None,
     env: Mapping[str, str] | None = None,
     repo_path: Any = None,
+    provider: str | None = None,
 ) -> str:
     """Auto-detect the embedder backend, or use the flag value.
 
@@ -45,15 +46,23 @@ def resolve_embedder(
     this is the choice ``init`` makes afresh. Order: flag > ``REPOWISE_EMBEDDER``
     > detection from keys > ``~/.repowise/config.yaml``'s ``embedder`` > mock.
     """
-    return resolve_embedder_choice(embedder_flag, env, repo_path=repo_path)[0]
+    return resolve_embedder_choice(embedder_flag, env, repo_path=repo_path, provider=provider)[0]
 
 
 def resolve_embedder_choice(
     embedder_flag: str | None,
     env: Mapping[str, str] | None = None,
     repo_path: Any = None,
+    provider: str | None = None,
 ) -> tuple[str, str]:
-    """:func:`resolve_embedder` plus why it was picked, for the run to state."""
+    """:func:`resolve_embedder` plus why it was picked, for the run to state.
+
+    *provider* is the LLM provider writing the pages. When its spec names a
+    ``local_embedder`` (ollama), an embedder only inferred from a key that
+    happens to be exported gives way to it, so a local run stays local.
+    Anything the user named (flag, ``REPOWISE_EMBEDDER``, the global config)
+    still wins.
+    """
     from repowise.core.providers.embedding.resolve import embedder_reason, resolve_embedder_name
     from repowise.core.providers.llm.resolve import repo_getenv
 
@@ -66,10 +75,32 @@ def resolve_embedder_choice(
     name, source = resolve_embedder_name(
         embedder_flag, repo_path=repo_path, getenv=getenv, use_pin=False
     )
+    local = _local_embedder(provider)
+    if local and source == "autodetect" and name != local:
+        return local, f"follows the {provider} provider"
     return name, embedder_reason(name, source, repo_path=repo_path, getenv=getenv)
 
 
-def model_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str | None, str, bool]:
+def _local_embedder(provider: str | None) -> str:
+    """The embedder *provider*'s spec keeps a run on, or ``""``."""
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    spec = PROVIDER_SPECS.get(provider or "")
+    return spec.local_embedder if spec is not None else ""
+
+
+def embedder_label(name: str, repo_path: Any = None) -> str:
+    """*name* for a run header; ollama adds its model, which has to be pulled."""
+    if name != "ollama":
+        return name
+    from repowise.core.providers.embedding.ollama import _DEFAULT_MODEL
+
+    return f"ollama/{resolve_embedding_model(name, repo_path=repo_path) or _DEFAULT_MODEL}"
+
+
+def model_run_embedder(
+    pinned: str | None, repo_path: Any = None, provider: str | None = None
+) -> tuple[str | None, str, bool]:
     """``(name, stated, replaced_mock)`` for a run that pays a model.
 
     A keyless run pins ``mock`` because it promised no spend. A run already
@@ -78,7 +109,7 @@ def model_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str |
     """
     name, reason, upgraded = pinned, "pinned in .repowise/config.yaml", False
     if not pinned or pinned == "mock":
-        resolved, reason = resolve_embedder_choice(None, repo_path=repo_path)
+        resolved, reason = resolve_embedder_choice(None, repo_path=repo_path, provider=provider)
         if resolved != (pinned or "mock"):
             if pinned == "mock":
                 reason += ", replacing the keyless mock"
@@ -86,7 +117,7 @@ def model_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str |
     stated = name or "mock"
     if stated == "mock":
         reason += ", semantic search off"
-    return name, f"{stated} ({reason})", upgraded
+    return name, f"{embedder_label(stated, repo_path)} ({reason})", upgraded
 
 
 def keyless_run_embedder(pinned: str | None, repo_path: Any = None) -> tuple[str, str]:

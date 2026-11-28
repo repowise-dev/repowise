@@ -61,7 +61,7 @@ Repowise handles this with multiple layers of filtering, including **dynamic imp
 | Test files | Tests import production code, not the other way around |
 | `__init__.py` | Package initializers, loaded by Python automatically |
 | Config files (`setup.py`, `next.config.js`, `vite.config.ts`) | Loaded by frameworks |
-| Migrations (`*migrations*`) | Run by migration tools, not imported |
+| Migrations (`*migrations*`, `alembic/versions/`, `db/migrate/`, numbered entries of `migration/`) | Run by migration tools, not imported |
 | Schema/seed files | Data definitions, not code |
 | Fixture directories (`fixtures/`, `testdata/`, `sample_repo/`) | Test data, not production code |
 | Non-code languages (JSON, YAML, Markdown, SQL, Terraform) | No import semantics |
@@ -752,6 +752,8 @@ The MCP `search_codebase` tool applies additional ranking on top of raw search s
 **Step 1: Try semantic search** (vector store, 8-second timeout)
 
 **Step 2: Fallback to FTS** if semantic fails or returns empty
+
+**Name what a concept question asks for.** A "where is X computed" or "how is X built" question lifts the files that define a symbol named only by the question's words (`_bus_factor` for "where is bus factor computed", not `BusFactorPanel`). A question about the entry point lifts the repository's curated entry points, the list `get_overview` serves, and words past "entry point" narrow them by path.
 
 **Step 3: Freshness boost** — recently modified files rank higher:
 

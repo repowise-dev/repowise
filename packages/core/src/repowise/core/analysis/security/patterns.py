@@ -11,6 +11,9 @@ import re
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
+#
+# 8 (0.63): sample passwords and a committed keystore's password rate low
+# (#6244).
 SECURITY_SCANNER_VERSION = 8
 
 

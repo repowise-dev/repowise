@@ -4,7 +4,7 @@ import type { MeasuredFunction, MeasuredResponse } from "@repowise-dev/types/run
 
 import { PerformanceView } from "../../src/health/performance-view";
 import { adapter, opportunity, page } from "./fixtures/performance";
-import { evidenceAdapter, measured, RUNS, runSummary } from "./fixtures/runtime-evidence";
+import { evidenceAdapter, measured, RUNS, runSummary, statementsOnly } from "./fixtures/runtime-evidence";
 
 configure({ asyncUtilTimeout: 5000 });
 beforeAll(async () => {
@@ -223,6 +223,23 @@ describe("Runtime evidence notices", () => {
     expect(screen.getByText(/They may be measured at a commit other than the indexed one/)).toBeTruthy();
   });
 
+  it("never places a benchmark profile, which ranks nothing, as the run short of samples", async () => {
+    const runs = {
+      ...RUNS,
+      runs: [runSummary({ run_id: "run-bench", workload: "go bench", class: "benchmark" })],
+    };
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked", null),
+          listEvidenceRuns: async () => runs,
+        })}
+      />,
+    );
+    expect(await screen.findByText("The stored runs rank no production function.")).toBeTruthy();
+    expect(screen.queryByText(/Profile a workload that runs more repo code/)).toBeNull();
+  });
+
   it("keeps the code-shape order when only a unit-test run is measured", async () => {
     const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
       const view = await measured(opts);
@@ -231,6 +248,22 @@ describe("Runtime evidence notices", () => {
     render(<PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />);
     expect(await screen.findByText("Measured in tests only.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: /Measured cost in/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
+  });
+
+  it("says profiled in tests only, keeping the prompt, when production statement windows are stored", async () => {
+    const getMeasured = vi.fn(async (opts: { runId?: string; limit?: number } = {}) => {
+      const view = await measured(opts);
+      const statements = await statementsOnly(opts);
+      const ours = !opts.runId || opts.runId === "run-pg";
+      return { ...view, measured: null, statements: ours ? (statements.statements ?? null) : null };
+    });
+    render(<PerformanceView adapter={adapter({ getMeasured, listEvidenceRuns: async () => RUNS })} />);
+    await screen.findByRole("list", { name: "Statements in postgres:hosted" });
+    expect(screen.queryByText("Measured in tests only.")).toBeNull();
+    expect(screen.getByText("Profiled in tests only.")).toBeTruthy();
+    expect(screen.getByText(/production statement windows do not rank functions/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Measured in tests/ })).toBeTruthy();
   });
 

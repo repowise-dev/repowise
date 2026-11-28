@@ -84,8 +84,9 @@ async def get_measured(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """Each workload's newest run with its ranked production functions, best
-    rank first: benchmark, entry point, load test and production runs under
-    ``measured``, unit-test runs under ``measured_in_tests``."""
+    rank first: entry point, load test and production runs under
+    ``measured``, unit-test runs under ``measured_in_tests``, and each
+    benchmark's result with the function it measures under ``benchmarks``."""
     await _repo(session, repo_id)
     view = await crud.measured_costs(session, repo_id, limit=limit, run_id=run_id)
     status = "measured" if view is not None else await crud.measured_status(session, repo_id)
@@ -100,7 +101,8 @@ async def get_measured_functions(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """What runtime evidence says about one function, or each function of a
-    file, from its basis run. A function with no row has no evidence."""
+    file, from its basis run, with what its time is and the next step. A
+    function with no row has no evidence."""
     if not symbol_id and not file:
         raise HTTPException(status_code=400, detail="Pass symbol_id or file")
     await _repo(session, repo_id)
@@ -109,7 +111,8 @@ async def get_measured_functions(
     rows = await crud.hotness_for_symbols(
         session, repo_id, [symbol_id] if symbol_id else [], files=files
     )
-    return functions_payload(rows)
+    findings = await crud.step_findings(session, repo_id, rows.values())
+    return functions_payload(rows, findings)
 
 
 @router.get("/{repo_id}/evidence/tests", response_model=SuiteCostResponse)

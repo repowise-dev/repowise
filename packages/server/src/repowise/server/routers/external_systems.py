@@ -23,6 +23,7 @@ from repowise.server.schemas.external_systems import (
     ExternalSystemRelationshipGraphResponse,
     ExternalSystemsResponse,
     ExternalSystemsSummaryResponse,
+    PackageAdvisoriesResponse,
     PackageUsageResponse,
 )
 from repowise.server.services.external_system_relationships import (
@@ -82,6 +83,28 @@ async def external_system_usage(
     repo_root = await local_repo_path(session, repo_id)
     doc = await package_usage(session, repo_id, repo_root, package_key)
     return PackageUsageResponse.model_validate(doc)
+
+
+@router.get(
+    "/{repo_id}/external-systems/{package_key:path}/advisories",
+    response_model=PackageAdvisoriesResponse,
+)
+async def external_system_advisories(
+    repo_id: str,
+    package_key: str,
+    session: AsyncSession = Depends(get_db_session),
+) -> PackageAdvisoriesResponse:
+    """The package's advisories from the last imported advisory document, each
+    with its tier; *package_key* is ``ecosystem:name`` or a bare name."""
+    from repowise.core.inventory.advisory_tiers import tier_advisories
+    from repowise.core.inventory.usage import parse_query
+
+    name, ecosystem = parse_query(package_key)
+    repo_root = await local_repo_path(session, repo_id)
+    rows = await tier_advisories(session, repo_id, repo_root, packages=[(ecosystem, name)])
+    return PackageAdvisoriesResponse(
+        imported=rows is not None, advisories=[r.as_dict() for r in rows or ()]
+    )
 
 
 @router.get(

@@ -1,10 +1,16 @@
 import { vi } from "vitest";
 import type {
+  BenchmarkRow,
+  BenchmarkRun,
   EvidenceRunSummary,
   EvidenceRunsResponse,
   MeasuredResponse,
   MeasuredRow,
   MeasuredRun,
+  RouteRow,
+  RouteRun,
+  StatementRow,
+  StatementRun,
 } from "@repowise-dev/types/runtime-evidence";
 
 /** Runtime evidence shaped exactly like the `/evidence/*` routes return it. */
@@ -43,7 +49,8 @@ export function measuredRow(overrides: Partial<MeasuredRow> = {}): MeasuredRow {
     freshness: "current",
     callers_total: 4,
     callers: ["src/site.py::render_all"],
-    owner: { name: "dana", commit_pct: 0.62 },
+    owner: { name: "dana", line_pct: 0.62 },
+    last_change: null,
     tests: ["tests/test_markdown.py::test_render"],
     on_static_findings: ["perf3_render"],
     ...overrides,
@@ -76,15 +83,15 @@ const CLI_ROWS: MeasuredRow[] = [
   ),
 ];
 
-const BENCH = measuredRun({
-  run_id: "run-bench",
-  workload_class: "benchmark",
-  workload_name: "bench parse",
+const SERVE = measuredRun({
+  run_id: "run-serve",
+  workload_class: "entry_point",
+  workload_name: "cli serve",
   samples: 8904,
   repo_self_share: 0.02,
 });
-const BENCH_ROWS = [
-  measuredRow({ run_id: "run-bench", symbol_id: "src/parse.py::tokenize", file_path: "src/parse.py" }),
+const SERVE_ROWS = [
+  measuredRow({ run_id: "run-serve", symbol_id: "src/parse.py::tokenize", file_path: "src/parse.py" }),
 ];
 const TESTS = measuredRun({
   run_id: "run-tests",
@@ -98,7 +105,7 @@ const TEST_ROWS = [
 
 const ROWS: Record<string, [MeasuredRun, MeasuredRow[]]> = {
   "run-cli": [measuredRun(), CLI_ROWS],
-  "run-bench": [BENCH, BENCH_ROWS],
+  "run-serve": [SERVE, SERVE_ROWS],
   "run-tests": [TESTS, TEST_ROWS],
 };
 
@@ -118,8 +125,61 @@ export async function measured(opts: { runId?: string; limit?: number } = {}): P
     basis: "measured",
     status: "measured",
     command: null,
-    measured: group(["run-cli", "run-bench"]),
+    measured: group(["run-cli", "run-serve"]),
     measured_in_tests: group(["run-tests"]),
+  };
+}
+
+export const BENCH_RUN: BenchmarkRun = {
+  run_id: "run-gobench",
+  workload_class: "benchmark",
+  workload_name: "go test -bench",
+  commit: "4f9c2a1e0b",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+};
+
+/** Rows naming a function come first, as the route orders them. */
+const BENCH_ROWS: BenchmarkRow[] = [
+  {
+    run_id: "run-gobench",
+    benchmark: "BenchmarkParse",
+    benchmark_symbol_id: "parse/parse_test.go::BenchmarkParse",
+    measures: "parse/parse.go::Parse",
+    time: 1234.5,
+    unit: "ns",
+    allocs_per_op: 12,
+    bytes_per_op: 2048,
+  },
+  {
+    run_id: "run-gobench",
+    benchmark: "BenchmarkMisc/small",
+    benchmark_symbol_id: null,
+    measures: null,
+    time: 88,
+    unit: "ns",
+    allocs_per_op: 0,
+    bytes_per_op: null,
+  },
+];
+
+/**
+ * The route with benchmark results stored: `limit` rows of the benchmark run,
+ * whose own run id reads only it. `base` is what the route says about ranked
+ * runs (null for a repository with benchmark results only).
+ */
+export function withBenchmarks(base: typeof measured | null) {
+  return async (opts: { runId?: string; limit?: number } = {}): Promise<MeasuredResponse> => {
+    const benchmarks = {
+      runs: [BENCH_RUN],
+      rows: BENCH_ROWS.slice(0, opts.limit ?? 10),
+      total: BENCH_ROWS.length,
+    };
+    if (opts.runId === BENCH_RUN.run_id || !base) {
+      return { basis: "measured", status: "measured", command: null, measured: null, measured_in_tests: null, benchmarks };
+    }
+    const view = await base(opts);
+    return opts.runId ? view : { ...view, benchmarks };
   };
 }
 
@@ -162,7 +222,7 @@ export const RUNS: EvidenceRunsResponse = {
   reference_commit: "4f9c2a1e0b",
   runs: [
     runSummary(),
-    runSummary({ run_id: "run-bench", workload: "bench parse", class: "benchmark" }),
+    runSummary({ run_id: "run-serve", workload: "cli serve", class: "entry_point" }),
     runSummary({
       run_id: "run-junit",
       kind: "test_timing",
@@ -186,5 +246,131 @@ export function evidenceAdapter() {
   return {
     getMeasured: vi.fn(measured),
     listEvidenceRuns: vi.fn(async () => RUNS),
+  };
+}
+
+export const PROD_CLAIM = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19";
+
+export const STATEMENT_RUN: StatementRun = {
+  run_id: "run-pg",
+  workload_class: "production",
+  workload_name: "postgres:hosted",
+  commit: "ee257d145f19",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+  window_start: "2026-10-30T00:00:00+00:00",
+  window_end: "2026-11-26T00:00:00+00:00",
+  total_ms: 1854.2,
+  statements: 42,
+  unattributed: {
+    ambiguous: { statements: 9, total_ms: 426.5, share: 0.23 },
+    unjoined: { statements: 3, total_ms: 111.3, share: 0.06 },
+  },
+  window: { start: "2026-10-30T00:00:00+00:00", end: "2026-11-26T00:00:00+00:00", base_commit: null, claim: PROD_CLAIM },
+};
+
+function statementRow(name: string, rank: number, share: number, calls: number, mean: number): StatementRow {
+  return {
+    symbol_id: `app/api/repos.py::${name}`,
+    file_path: "app/api/repos.py",
+    lines: [40 + rank, 60 + rank],
+    run_id: "run-pg",
+    rank,
+    share,
+    share_low: null,
+    share_high: null,
+    inclusive: null,
+    samples: null,
+    callers_total: null,
+    callers: [],
+    owner: null,
+    last_change: null,
+    tests: null,
+    verify: "compare this row in the next postgres:hosted window",
+    verify_basis: "workload",
+    statements: { calls, total_ms: calls * mean, mean_ms: mean, statements: 2 },
+  };
+}
+
+const STATEMENT_ROWS: StatementRow[] = [
+  statementRow("explore_repos", 1, 0.33, 6, 102.4),
+  statementRow("ingest_event", 2, 0.17, 346, 0.9),
+  statementRow("record_sighting", 3, 0.11, 88, 2.3),
+];
+
+/**
+ * The route for a repository whose only runtime evidence is production
+ * statement windows: `limit` rows of the statement run.
+ */
+export async function statementsOnly(
+  opts: { runId?: string; limit?: number } = {},
+): Promise<MeasuredResponse> {
+  return {
+    basis: "measured",
+    status: "measured",
+    command: null,
+    measured: null,
+    measured_in_tests: null,
+    statements: {
+      runs: [STATEMENT_RUN],
+      rows: STATEMENT_ROWS.slice(0, opts.limit ?? 10),
+      total: STATEMENT_ROWS.length,
+    },
+  };
+}
+
+export const ROUTE_RUN: RouteRun = {
+  run_id: "run-api",
+  workload_class: "production",
+  workload_name: "api",
+  commit: "ee257d145f19",
+  measured_at: new Date(Date.now() - 86_400_000).toISOString(),
+  age_days: 1,
+  window_start: "2026-10-30T00:00:00+00:00",
+  window_end: "2026-11-26T00:00:00+00:00",
+  total_ms: 9876.4,
+  requests: 1200,
+  routes: 12,
+  unattributed: { unjoined: { routes: 3, total_ms: 493.8, share: 0.05 } },
+  window: { start: "2026-10-30T00:00:00+00:00", end: "2026-11-26T00:00:00+00:00", base_commit: null, claim: PROD_CLAIM },
+};
+
+function routeRow(name: string, rank: number, share: number, route: string, requests: number): RouteRow {
+  return {
+    symbol_id: `app/routers/repos.py::${name}`,
+    file_path: "app/routers/repos.py",
+    lines: [10 + rank, 30 + rank],
+    run_id: "run-api",
+    rank,
+    share,
+    share_low: null,
+    share_high: null,
+    inclusive: null,
+    samples: null,
+    callers_total: null,
+    callers: [],
+    owner: null,
+    last_change: null,
+    tests: null,
+    verify: "compare this row in the next api window",
+    verify_basis: "workload",
+    routes: { requests, total_ms: requests * 12.5, mean_ms: 12.5, p95_ms: 80, errors: rank === 1 ? 2 : 0, routes: [route] },
+  };
+}
+
+/** The route for a repository whose only runtime evidence is production route windows. */
+export async function routesOnly(opts: { runId?: string; limit?: number } = {}): Promise<MeasuredResponse> {
+  const rows = [
+    routeRow("get_repo", 1, 0.41, "GET /repos/{repo_id}", 320),
+    routeRow("list_repos", 2, 0.22, "GET /repos", 175),
+  ];
+  return {
+    basis: "measured",
+    status: "measured",
+    command: null,
+    measured: null,
+    measured_in_tests: null,
+    statements: null,
+    routes: { runs: [ROUTE_RUN], rows: rows.slice(0, opts.limit ?? 10), total: rows.length },
   };
 }

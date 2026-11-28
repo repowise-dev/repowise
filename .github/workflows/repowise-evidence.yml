@@ -92,15 +92,19 @@ jobs:
           token=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=repowise" | jq -r '.value // empty')
           if [ -z "$token" ]; then echo "::warning::Repowise: no OIDC token"; exit 0; fi
-          upload() {  # file, workload, class
+          # A py-spy profile does not say which clock it sampled, and the upload
+          # is refused without one; py-spy without --idle samples on-CPU time.
+          upload() {  # file, workload, class, value kind (profiles that need one)
             if [ ! -s "$1" ]; then echo "::warning::Repowise: $1 was not written"; return 0; fi
+            kind=()
+            if [ -n "${4:-}" ]; then kind=(-F "value_kind=$4"); fi
             curl -sS --fail-with-body --max-time 120 -H "Authorization: Bearer $token" \
               -F "evidence=@$1" -F "repository=$GITHUB_REPOSITORY" -F "commit=$GITHUB_SHA" \
-              -F "workload=$2" -F "class=$3" -F "environment=linux-ci" \
+              -F "workload=$2" -F "class=$3" -F "environment=linux-ci" "${kind[@]}" \
               -F "checkout_root=$GITHUB_WORKSPACE" \
               https://api.repowise.dev/ci/evidence \
               || echo "::warning::Repowise: upload of $1 failed; see the message above."
             echo
           }
-          upload index.speedscope.json "repowise init --mode fast" entry_point
+          upload index.speedscope.json "repowise init --mode fast" entry_point cpu
           upload junit.xml "pytest tests/unit" unit_test

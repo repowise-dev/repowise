@@ -184,6 +184,12 @@
   (expression_statement
     (macro_invocation (token_tree) @import.module) @import.statement))
 
+;; File includes can occur inside an expression as well as at module scope.
+((macro_invocation
+  macro: (identifier) @_include_name
+  (token_tree) @import.module) @import.statement
+ (#any-of? @_include_name "include" "include_str" "include_bytes"))
+
 ;; extern crate foo; / extern crate foo as bar;
 (extern_crate_declaration
   name: (identifier) @import.module

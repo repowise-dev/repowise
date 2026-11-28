@@ -25,7 +25,8 @@ interface Commits {
 }
 
 type RuntimeNotice =
-  | { kind: "tests_only"; workload: string }
+  /** `windows`: the production windows stored too ("statement", "route"); they do not rank functions. */
+  | { kind: "tests_only"; workload: string; windows: string[] }
   | { kind: "ahead"; commits: Commits; showing: boolean; ranksNothing: boolean; command: string | null }
   | { kind: "stale"; command: string | null; older: Commits | null; changed: boolean }
   | { kind: "needs_update"; command: string | null }
@@ -35,13 +36,17 @@ type RuntimeNotice =
 
 const sha7 = (sha: string) => sha.slice(0, 7);
 
+/** A profile that can rank functions: a benchmark profile never does. */
+const ranksFunctions = (r: { kind: string; class: string }) =>
+  r.kind === "profile" && r.class !== "benchmark";
+
 /**
  * Where the newest profile run sits against the index, when it is not at it.
  * Null until the runs are read, so a status notice it would correct waits.
  */
 function newestProfile(view: RuntimeEvidenceView) {
   const runs = view.runs ?? [];
-  const newest = runs.find((r) => r.kind === "profile");
+  const newest = runs.find(ranksFunctions);
   const indexed = view.referenceCommit;
   if (!newest?.commit_sha || !indexed) return null;
   const position = commitPosition(newest, runs, indexed);
@@ -54,7 +59,16 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   const out: RuntimeNotice[] = [];
   const status = view.overview?.status;
   const unranked = status === "stale" || status === "not_ranked" || status === "ahead_of_index";
-  if (!view.run && view.testRun) out.push({ kind: "tests_only", workload: view.testRun.workload_name });
+  if (!view.run && view.testRun) {
+    out.push({
+      kind: "tests_only",
+      workload: view.testRun.workload_name,
+      windows: [
+        view.statementRuns.length > 0 ? "statement" : null,
+        view.routeRuns.length > 0 ? "route" : null,
+      ].filter((w): w is string => w !== null),
+    });
+  }
   // An unranked status is explained by the runs; say no more until they are read.
   if (unranked && view.runs === undefined) return out;
   const newest = newestProfile(view);
@@ -81,7 +95,7 @@ export function runtimeNotices(view: RuntimeEvidenceView): RuntimeNotice[] {
   if (status === "needs_update") out.push({ kind: status, command: view.overview?.command ?? null });
   if (status === "not_ranked" && !newest) {
     const indexed = view.referenceCommit;
-    const latest = view.runs?.find((r) => r.kind === "profile");
+    const latest = view.runs?.find(ranksFunctions);
     out.push({
       kind: status,
       command: view.overview?.command ?? null,
@@ -124,11 +138,15 @@ function NoticeFor({
       return (
         <Notice tone="neutral">
           <strong className="font-semibold text-[var(--color-text-primary)]">
-            Measured in tests only.
+            {notice.windows.length > 0 ? "Profiled in tests only." : "Measured in tests only."}
           </strong>{" "}
           The <code className="font-mono">{notice.workload}</code> profile orders functions within
-          the test run, so the queue keeps its code-shape order. Profile a benchmark or the CLI to
-          rank by real work.
+          the test run
+          {notice.windows.length > 0
+            ? `, and production ${notice.windows.join(" and ")} windows do not rank functions`
+            : ""}
+          , so
+          the queue keeps its code-shape order. Profile a benchmark or the CLI to rank by real work.
           <span className="mt-2 block">
             <AiPromptButton
               label="Copy prompt for your agent"

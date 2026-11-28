@@ -11,16 +11,26 @@ Nothing here reads a store.
 - :func:`measured_payload`: the ``measured`` route from a ``measured_costs``
   view (or ``None``) and the repository's ``measured_status`` token;
 - :func:`functions_payload` / :func:`function_payload`: the ``functions``
-  route from ``symbol_hotness`` rows.
+  route from ``symbol_hotness`` rows, each with its ``next_step``
+  (:mod:`.next_step`) from the static performance findings the host passes;
+- :func:`owner_history_payload`: a measured function's owner and last change
+  from its ``git_function_blame`` row and the newest commit's row;
+- :func:`weighted_callers`: a measured row's production callers, the ones its
+  run measured first with the share each drove.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import json
+import posixpath
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import timedelta
 from typing import Any
 
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
+from .next_step import next_step
 from .status import evidence_status, run_status
 
 
@@ -66,6 +76,8 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
             "command": _command(status),
             "measured": None,
             "measured_in_tests": None,
+            "statements": None,
+            "benchmarks": None,
         }
     return {
         "basis": "measured",
@@ -73,16 +85,77 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
         "command": None,
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
+        "statements": view.get("statements"),
+        # Only when a route run names a handler, so every other payload is unchanged.
+        **({"routes": view["routes"]} if view.get("routes") else {}),
+        "benchmarks": view.get("benchmarks"),
     }
 
 
-def functions_payload(rows: Mapping[str, Any]) -> dict[str, Any]:
-    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id."""
-    return {"functions": [function_payload(row) for _, row in sorted(rows.items())]}
+def owner_history_payload(blame: Any, commit: Any | None) -> dict[str, Any]:
+    """A function's owner and last change from its ``git_function_blame`` row.
+
+    The owner wrote most of the function's current lines (``line_pct`` of
+    them). The last change is the newest commit blame credits a current line
+    to, with *commit* its ``git_commits`` row (``None`` when the commit is
+    older than the indexed window: the sha alone, then). The change number
+    comes from the commit subject. Built only from a function's own row: no
+    row, no owner (never the file's).
+    """
+    from repowise.core.forges import change_number
+
+    try:
+        shas = json.loads(blame.commit_shas_json or "[]")
+    except (TypeError, ValueError):
+        shas = []
+    last = None
+    if isinstance(shas, list) and shas:
+        subject = (commit.subject or None) if commit is not None else None
+        at = commit.committed_at if commit is not None else None
+        if at is not None:
+            # The committer's own calendar day: ``committed_at`` is a UTC instant.
+            at += timedelta(minutes=getattr(commit, "committed_offset_minutes", None) or 0)
+        last = {
+            "sha": str(shas[0]),
+            "date": at.date().isoformat() if at is not None else None,
+            "subject": subject,
+            "pr": change_number(subject) if subject else None,
+        }
+    return {
+        "owner": (
+            {"name": blame.owner_name, "line_pct": blame.owner_line_pct}
+            if blame.owner_name
+            else None
+        ),
+        "last_change": last,
+    }
 
 
-def function_payload(row: Any) -> dict[str, Any]:
-    """One ``symbol_hotness`` row as the route lists it."""
+def functions_payload(
+    rows: Mapping[str, Any], findings: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
+    """The ``functions`` route from ``{symbol_id: symbol_hotness row}``, by id.
+
+    *findings* are the repository's production performance findings as
+    :func:`.next_step.static_finding` dicts (``crud.step_findings``); without
+    them a row's step never says "batch" and never quotes a static finding."""
+    return {"functions": [function_payload(row, findings) for _, row in sorted(rows.items())]}
+
+
+def function_payload(row: Any, findings: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """One ``symbol_hotness`` row as the route lists it, with its next step."""
+    payload = _function_fields(row)
+    step = next_step(payload, file_language(payload["file_path"]), findings)
+    payload["next_step"] = step.as_dict() if step else None
+    return payload
+
+
+def file_language(file_path: str) -> str:
+    """The registry language of *file_path* by its extension; ``""`` when none."""
+    return REGISTRY.from_extension(posixpath.splitext(file_path)[1]) if file_path else ""
+
+
+def _function_fields(row: Any) -> dict[str, Any]:
     return {
         "symbol_id": row.symbol_id,
         "file_path": file_of_symbol(row.symbol_id),
@@ -108,13 +181,56 @@ def function_payload(row: Any) -> dict[str, Any]:
         "wait_share": row.wait_share,
         "library_share": row.library_share,
         "run_unlisted": row.run_unlisted,
+        "inside": json_list(getattr(row, "inside_json", None)),
+        "drivers": json_list(getattr(row, "drivers_json", None)),
     }
 
 
+def weighted_callers(
+    callers: Sequence[str], drivers_json: str | None, k: int
+) -> tuple[list[str], dict[str, float]]:
+    """A measured row's first *k* *callers* and the share each drove.
+
+    *callers* are the function's production callers by the call graph, best
+    first; *drivers_json* is its run's measured callers (``drivers``: up to
+    three, each with the ``symbol`` it joined and its ``share`` of the
+    function's time). The callers the run measured lead, heaviest first, so
+    the caller that drives the cost is named first; the rest keep their
+    order. A measured caller the graph does not list is not added: the list
+    stays the graph's, ordered by what the run saw.
+    """
+    shares: dict[str, float] = {}
+    for driver in json_list(drivers_json) or ():
+        if not isinstance(driver, Mapping):
+            continue
+        symbol, share = driver.get("symbol"), driver.get("share")
+        if isinstance(symbol, str) and isinstance(share, (int, float)):
+            shares[symbol] = max(float(share), shares.get(symbol, 0.0))
+    order = {caller: i for i, caller in enumerate(callers)}
+    ranked = sorted(callers, key=lambda c: (c not in shares, -shares.get(c, 0.0), order[c]))
+    listed = ranked[: max(k, 0)]
+    return listed, {c: shares[c] for c in listed if c in shares}
+
+
+def json_list(text: str | None) -> list[Any] | None:
+    """A stored JSON list column; None when empty or unreadable."""
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, list) and value else None
+
+
 __all__ = [
+    "file_language",
     "function_payload",
     "functions_payload",
+    "json_list",
     "measured_payload",
+    "owner_history_payload",
     "runs_payload",
     "status_payload",
+    "weighted_callers",
 ]

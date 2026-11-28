@@ -18,12 +18,14 @@ from typing import Any
 import structlog
 
 from repowise.core.author_identity import IdentityResolver, build_identity_resolver
+from repowise.core.code_origin import path_origin
 from repowise.core.forges import CHANGE_BODY_MARKERS, ForgeKind, change_number
 
 from ._constants import (
     _COMMIT_CATEGORIES,
     _DECISION_SIGNAL_WORDS,
     _MAX_BLAME_SIZE_BYTES,
+    _MAX_FUNCTION_BLAME_SIZE_BYTES,
     _MAX_SIGNIFICANT_COMMITS,
     _MAX_TOP_AUTHORS,
     HOTSPOT_HALFLIFE_DAYS,
@@ -641,7 +643,13 @@ def _add_blame_ownership(
     One ``git blame --line-porcelain`` pass serves both the primary-owner
     signal and the index ``function_hotspot`` / ``code_age_volatility`` read.
     Files over the size cap are skipped: blame is O(lines) and can block the
-    executor thread. The commit floor only gates whether the index is kept.
+    executor thread. The commit floor and the size cap gate the index the
+    biomarkers read (``"blame_index"``). A file under the floor, or a
+    production file between the size cap and
+    :data:`_MAX_FUNCTION_BLAME_SIZE_BYTES`, keeps its index under
+    ``"history_blame_index"`` instead: its functions get an owner and a last
+    change, and nothing health scores reads it. A file over the size cap keeps
+    its commit-based file owner.
 
     Lines from a coding agent's commit go to the person the commit tally
     credits (:attr:`_CommitRec.credit`). *commits* are the file's walked
@@ -649,19 +657,27 @@ def _add_blame_ownership(
     """
     file_path = meta["file_path"]
     try:
-        if (repo_path / file_path).stat().st_size > _MAX_BLAME_SIZE_BYTES:
+        size = (repo_path / file_path).stat().st_size
+        oversize = size > _MAX_BLAME_SIZE_BYTES
+        if oversize and (
+            size > _MAX_FUNCTION_BLAME_SIZE_BYTES or path_origin(file_path) != "production"
+        ):
             return
-        blame_idx = build_blame_index(repo, file_path, repo_path=repo_path)
+        blame_idx = build_blame_index(
+            repo, file_path, repo_path=repo_path, max_size_bytes=_MAX_FUNCTION_BLAME_SIZE_BYTES
+        )
         if not blame_idx.lines:
             return
         blame_idx.as_of_ts = int(now.timestamp())
-        if meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME:
-            meta["blame_index"] = blame_idx
+        scored = not oversize and meta["commit_count_total"] >= _MIN_COMMITS_FOR_BLAME
+        meta["blame_index" if scored else "history_blame_index"] = blame_idx
         # Blame credits lines to the same identities the commit tally counts.
         blame_idx.authors.update(
             {c.sha: c.credit for c in commits if c.credit and c.sha in blame_idx.authors}
         )
         blame_idx.resolve = authors.resolve
+        if oversize:
+            return
         for name, email in blame_idx.authors.values():
             authors.seen_names.setdefault(authors.resolve(name, email), name)
         blame_key, blame_pct = top_blame_identity(blame_idx, blame_idx.lines)

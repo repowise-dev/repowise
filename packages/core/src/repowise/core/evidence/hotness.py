@@ -40,6 +40,11 @@ Per run (thresholds from the ``evidence.*`` settings, :class:`HotnessRules`):
   ranked. A row measured under another symbol id follows its lineage to the
   current id; evidence is never re-mapped by line or name.
 
+A ``benchmark`` run gets no rows at all: a run gives each benchmark about the
+same time, so a function's share of it tracks how many benchmarks target the
+function, not what it costs the product. Benchmarks speak through their own
+results (``evidence.benchmarks``).
+
 Only ``production`` code (``code_origin``) gets rows: test, tooling and
 generated code stays in the evidence tables and is never listed; each row
 counts how many such functions its run measured (``run_unlisted``). A
@@ -62,6 +67,7 @@ Two read models come out of one derivation (:class:`Hotness`):
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -76,7 +82,9 @@ from .status import run_share, time_split
 #: Tier values, weakest first. None is user copy: a surface words its own claim.
 TIERS = ("measured", "ranked", "lead_candidate")
 #: Workload classes whose evidence may lead the queue (``unit_test`` never does).
-LEAD_CLASSES = frozenset({"benchmark", "entry_point", "load_test", "production"})
+LEAD_CLASSES = frozenset({"entry_point", "load_test", "production"})
+#: The class whose profiles never rank: what it measured is benchmark results.
+BENCHMARK_CLASS = "benchmark"
 
 
 @dataclass(frozen=True)
@@ -145,6 +153,9 @@ class CostFacts:
     total_samples: int | None
     call_count: int | None
     self_samples: int | None = None
+    #: What the function's time went to and what drove it (JSON, as stored).
+    inside_json: str | None = None
+    drivers_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -214,10 +225,13 @@ def derive_hotness(
 
     *costs* holds each run's cost rows by run id, *origins* the
     ``code_origin`` of every current symbol's file and *head_commit* the
-    indexed commit. Pure, so the rules are tested without a store.
+    indexed commit. A ``benchmark`` run is skipped. Pure, so the rules are
+    tested without a store.
     """
     rows_by_symbol: dict[str, list[_Row]] = {}
     for run in runs:
+        if run.workload_class == BENCHMARK_CLASS:
+            continue
         for row in _run_rows(run, costs.get(run.id, ()), current, origins, head_commit, rules):
             rows_by_symbol.setdefault(row.symbol_id, []).append(row)
 
@@ -229,7 +243,9 @@ def derive_hotness(
             for r in leading:
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
-        symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
+        stored = _stored(basis, run_count=len({r.run.id for r in rows}))
+        stored["drivers_json"] = _current_drivers(stored["drivers_json"], current)
+        symbols.append(stored)
     listed = [r for rows in rows_by_symbol.values() for r in rows if r.tier != "measured"]
     # A newer run that ranks nothing never hides the run before it that does.
     newest = newest_runs({r.run.id: r.run for r in listed}.values())
@@ -513,6 +529,22 @@ def _share(value: float | None, total: float | None) -> float | None:
     return min(value / total, 1.0)
 
 
+def _current_drivers(drivers_json: str | None, current: CurrentFunctions) -> str | None:
+    """*drivers_json* with each caller's ``symbol`` checked against the index: one
+    the index no longer holds (renamed, moved, deleted) keeps only its file, as a
+    caller that never joined does. The caller's own lineage is not stored, so it
+    is never followed. With no indexed bodies to check against, kept as stored."""
+    if not drivers_json or not current.digest:
+        return drivers_json
+    drivers = json.loads(drivers_json)
+    for driver in drivers:
+        symbol = driver.get("symbol")
+        if symbol is not None and symbol not in current.digest:
+            del driver["symbol"]
+            driver["path"] = file_of_symbol(symbol)
+    return json.dumps(drivers, sort_keys=True)
+
+
 def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
     run, cost = row.run, row.cost
     shares = not row.ordering_only
@@ -539,6 +571,8 @@ def _stored(row: _Row, *, run_count: int) -> dict[str, Any]:
         "run_count": run_count,
         "evidence_commit_sha": run.commit_sha,
         "measured_at": run.measured_at,
+        "inside_json": cost.inside_json,
+        "drivers_json": cost.drivers_json,
     }
 
 
@@ -608,6 +642,7 @@ async def refresh_symbol_hotness(
 
 
 __all__ = [
+    "BENCHMARK_CLASS",
     "LEAD_CLASSES",
     "TIERS",
     "CostFacts",

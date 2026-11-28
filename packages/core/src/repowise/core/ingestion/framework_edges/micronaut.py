@@ -127,8 +127,7 @@ def _add_micronaut_edges(
 
 class _MicronautHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        in_stack = any(tok in dctx.stack_lower for tok in ("micronaut",))
-        return in_stack or _has_micronaut_imports(dctx.parsed_files)
+        return _has_micronaut_imports(dctx.parsed_files)
 
     def add_edges(
         self,

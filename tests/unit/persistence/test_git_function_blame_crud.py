@@ -160,3 +160,25 @@ async def test_replace_drops_a_reblamed_files_vanished_functions(async_session) 
     rows = {r.symbol_id: r.mod_count for r in await get_git_function_blames(async_session, repo.id)}
     # b.py was not re-blamed, so its row stays.
     assert rows == {"a.py::kept": 4, "a.py::new": 1, "b.py::other": 1}
+
+
+@pytest.mark.asyncio
+async def test_health_readers_skip_history_only_rows(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [
+            _row("a.py::foo", mods=2, commit_shas_json='["s2", "s1"]'),
+            # Blamed for owner and last change only: the biomarkers never saw it.
+            _row("big.py::bar", mods=7, commit_shas_json='["s3"]', history_only=True),
+        ],
+    )
+    await async_session.commit()
+
+    assert await get_git_function_mod_counts(async_session, repo.id) == [2]
+    assert await get_function_commit_shas(async_session, repo.id) == {
+        "a.py": [("foo", 1, 10, ["s2", "s1"])]
+    }
+    # The display readers still list it.
+    assert await count_git_function_blame(async_session, repo.id) == 2

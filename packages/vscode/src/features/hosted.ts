@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { Commands, InternalCommands } from "../constants";
 import type { RepowiseContext } from "../core/context";
 import { hostedStoryUrl } from "../shared/hostedLinks";
+import { runCliInTerminal } from "../core/cliTerminal";
 
 /** globalState key: the post-setup publish prompt has been shown once. */
 const SETUP_PROMPT_SHOWN = "repowise.hosted.setupPromptShown";
@@ -17,13 +18,7 @@ export function registerHosted(
   globalState: vscode.Memento,
 ): vscode.Disposable {
   function runPublish(): void {
-    const cliPath = ctx.config.cliPath();
-    const exe = cliPath ? (cliPath.includes(" ") ? `"${cliPath}"` : cliPath) : "repowise";
-    const terminal =
-      vscode.window.terminals.find((t) => t.name === "Repowise") ??
-      vscode.window.createTerminal("Repowise");
-    terminal.show();
-    terminal.sendText(`${exe} publish`);
+    runCliInTerminal(ctx.config.cliPath(), ["publish"]);
   }
 
   async function offerAfterSetup(): Promise<void> {

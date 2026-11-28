@@ -34,6 +34,7 @@ from repowise.core.generation.entry_points import (
     rank_entry_points,
 )
 from repowise.core.index_scope import load_index_scope, resolve_index_scope
+from repowise.core.ingestion.tech_stack import detect_build_commands, detect_tech_stack
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, without_sources
 from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
@@ -55,7 +56,6 @@ from .data import (
     KGTourStepSummary,
 )
 from .sections import load_sections, resolve_sections
-from .tech_stack import detect_build_commands, detect_tech_stack
 
 # Maximum items per section: the block is read into every agent turn.
 _MAX_MODULES = 6
@@ -658,6 +658,7 @@ def _get_head_short_sha(repo_path: Path) -> str:
             ["git", "rev-parse", "--short", "HEAD"],
             cwd=repo_path,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=5,
         )

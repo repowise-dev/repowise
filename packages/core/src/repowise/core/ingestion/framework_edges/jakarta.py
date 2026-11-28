@@ -158,11 +158,7 @@ def _add_jakarta_edges(
 
 class _JakartaHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        in_stack = any(
-            tok in dctx.stack_lower
-            for tok in ("jakarta", "jakartaee", "javaee", "jaxrs", "cdi", "jpa", "ejb")
-        )
-        return in_stack or _has_jakarta_imports(dctx.parsed_files)
+        return _has_jakarta_imports(dctx.parsed_files)
 
     def add_edges(
         self,

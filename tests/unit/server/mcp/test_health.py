@@ -1839,6 +1839,9 @@ async def test_fix_first_named_page_honours_limit_and_cursor(setup_mcp, health_d
     assert second["items"] == block["items"][1:2]
     # The lead is the queue's, whatever page is shown.
     assert second["lead"] == block["lead"] == dashboard["lead"]
+    # Both say why ``gain`` need not fall down the list.
+    assert block["order"] == dashboard["order"]
+    assert block["order"].startswith("value band")
 
 
 @pytest.mark.asyncio
@@ -3331,3 +3334,34 @@ async def test_dashboard_counts_import_cycles_and_the_static_only_ones(
     await session.execute(update(GraphEdge).where(GraphEdge.id == "ge1").values(module_form=False))
     await session.flush()
     assert (await get_health())["import_cycles"] == {"total": 1, "static_only": 0}
+
+
+@pytest.mark.asyncio
+async def test_meta_says_duplication_is_off_only_while_it_is(setup_mcp, health_data, tmp_path):
+    """Off, both modes say why no DRY finding shows; on (the default), nothing is added."""
+    import json
+
+    from repowise.server.mcp_server import get_health
+
+    default = await get_health(only=["kpis"])
+    assert "duplication" not in default["_meta"]["health_analysis"]
+
+    config = tmp_path / ".repowise" / "config.yaml"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text("health:\n  duplication:\n    enabled: false\n", encoding="utf-8")
+    scoped = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    dashboard = await get_health(only=["kpis"])
+    for result in (scoped, dashboard):
+        assert result["_meta"]["health_analysis"]["duplication"] == (
+            "off: health.duplication.enabled is false"
+        )
+
+    config.write_text("health:\n  duplication:\n    enabled: true\n", encoding="utf-8")
+    back_on = await get_health(only=["kpis"])
+    assert "duplication" not in back_on["_meta"]["health_analysis"]
+    drop = ("timing_ms",)
+    sized = [
+        len(json.dumps({k: v for k, v in r["_meta"].items() if k not in drop}, default=str))
+        for r in (default, back_on)
+    ]
+    assert sized[0] == sized[1]

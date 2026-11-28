@@ -606,17 +606,6 @@ hover, and refactoring plans as CodeLens. One install also registers the MCP ser
 so the same index serves you and your agent. Install from the Marketplace or Open VSX
 and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
 
-<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
-
-**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
-knows while Claude works: the file it is on and how many files depend on it, a change
-review after a turn that edits files (code health, tests to run, other branches on the
-same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
-a map of the repo lit by what Claude searched, opened and edited and what its edits
-reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
-Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
-map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
-
 ---
 
 ## The ten MCP tools
@@ -705,9 +694,10 @@ your company under the AGPL creates no obligation to publish your own code.
 ## Privacy
 
 - **Deterministic or offline mode:** with `--no-prose`, code-derived content stays on
-  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command
-  names and coarse environment only); turn it off with `repowise telemetry disable`,
-  `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, or `REPOWISE_OFFLINE=1`.
+  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command,
+  MCP tool and client names, status, duration and coarse environment, never code,
+  paths or repo names; raw events deleted after 90 days); turn it off with
+  `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, or `REPOWISE_OFFLINE=1`.
   [What's collected →](docs/reference/TELEMETRY.md)
 - **Optional LLM features:** generated prose, decision extraction and refactoring code
   generation send code-derived prompts directly to the provider configured with your

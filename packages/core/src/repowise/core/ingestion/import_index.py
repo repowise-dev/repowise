@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from .models import NamedBinding, ParsedFile
+from .models import Import, NamedBinding, ParsedFile
 
 
 @dataclass(slots=True)
@@ -73,17 +73,20 @@ class ImportNameMaps:
         return binding.source_file if binding is not None else None
 
 
-def build_import_name_maps(parsed_files: dict[str, ParsedFile]) -> ImportNameMaps:
+def build_import_name_maps(
+    parsed_files: dict[str, ParsedFile], implicit: dict[str, list[Import]] | None = None
+) -> ImportNameMaps:
     """Build the shared import-name maps from every file's resolved imports.
 
     Mirrors the historical ``CallResolver._build_indices`` import loop,
     including the ``binding.source_file`` back-fill side effect that
-    downstream barrel-origin chasing relies on.
+    downstream barrel-origin chasing relies on. *implicit* holds the imports a
+    framework writes for a file (Nuxt auto-imports), read after its own.
     """
     maps = ImportNameMaps()
     for path, parsed in parsed_files.items():
         file_wide: set[str] = set()
-        for imp in parsed.imports:
+        for imp in (*parsed.imports, *(implicit or {}).get(path, ())):
             if imp.resolved_file is None:
                 continue
             resolved = imp.resolved_file

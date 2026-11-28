@@ -61,12 +61,16 @@ def outside_lines(repo_path: Path) -> tuple[str, ...]:
     return tuple(target.summary_lines()) if target.repoints else ()
 
 
-def _embedders(run: InitRun) -> tuple[str, str]:
-    """``(free run embedder, model run embedder)``, as the run would resolve them."""
+def _embedders(run: InitRun, provider: str | None = None) -> tuple[str, str]:
+    """``(free run embedder, model run embedder)``, as the run would resolve them.
+
+    *provider* is the model picked on the screen, which can keep the model
+    run's embedder local.
+    """
     from repowise.cli.providers import resolve_embedder, template_run_embedder
     from repowise.cli.providers.embedders import embedder_was_requested
 
-    resolved = resolve_embedder(run.opts.embedder_name, repo_path=run.repo_path)
+    resolved = resolve_embedder(run.opts.embedder_name, repo_path=run.repo_path, provider=provider)
     requested = embedder_was_requested(
         run.opts.embedder_name, load_config(run.repo_path).get("embedder")
     )
@@ -90,7 +94,9 @@ def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
 
     from ._prepare import _editor_options
 
-    free_embedder, model_embedder = _embedders(run)
+    free_embedder, model_embedder = _embedders(
+        run, getattr(answers.selection, "provider_name", None)
+    )
     agents = planned_agents(run.repo_path, _editor_options(run)) if base.editor_setup else ()
     keep_out = _keep_out(run, base.editor_setup)
     return replace(
@@ -186,6 +192,8 @@ def _edit_plan(run: InitRun, scan: Any, editor_setup: bool, answers: _Answers) -
         wiki_style=run.opts.wiki_style,
         language=run.opts.language_opt,
         commit_limit=run.opts.commit_limit,
+        provider=getattr(answers.selection, "provider_name", None),
+        embedder_flag=run.opts.embedder_name,
     )
     _apply_advanced_answers(run, adv)
     if run.opts.run_mode == "fast":

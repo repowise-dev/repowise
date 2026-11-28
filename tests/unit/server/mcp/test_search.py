@@ -1387,12 +1387,12 @@ class TestExactMatchSignal:
 
     @pytest.mark.asyncio
     async def test_a_file_name_in_a_question_gets_no_symbol_verdict(self, setup_mcp):
-        # ``Go`` makes ``plugin.go`` read as a dotted name; it names a file.
+        # ``Go`` is indexed, and ``plugin.go`` still names a file, not ``Go``.
         from repowise.server.mcp_server import search_codebase
 
         await _seed_symbol("Go")
         result = await search_codebase("plugin.go webhook dispatch flow")
-        assert result["mode"] == "hybrid"
+        assert result.get("mode") != "hybrid"
         assert "exactly matches" not in result.get("note", "")
         assert "exact_match" not in result
         named = await search_codebase("service.py AuthService login flow")

@@ -66,7 +66,7 @@ async def refresh_knowledge_graph(
 
         tech_stack: list[dict] = []
         try:
-            from repowise.core.generation.editor_files.tech_stack import detect_tech_stack
+            from repowise.core.ingestion.tech_stack import detect_tech_stack
 
             tech_stack = [
                 {"name": t.name, "version": t.version, "category": t.category}
