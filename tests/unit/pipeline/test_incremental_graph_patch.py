@@ -1569,3 +1569,69 @@ def test_imports_of_a_file_nobody_imports_reach_no_other_file(tmp_path: Path) ->
     assert patched.patch_plan.eligible, patched.patch_plan.reason
     assert "pkg/other.py" not in patched.patch_plan.scope
     _assert_equals_full(tree, patched, tmp_path / "py-oracle")
+
+
+# Objective-C++ beside C++: a platform layer in ``.mm`` that includes a C++
+# header, calls into it, and declares an Objective-C class of its own.
+_OBJCXX_TREE = {
+    **_CPP_TREE,
+    "src/apple/view.h": (
+        "#import <Foundation/Foundation.h>\n"
+        "@interface AcmeView : NSObject\n"
+        "- (int)measure;\n"
+        "@end\n"
+    ),
+    "src/apple/view.mm": (
+        '#import "view.h"\n'
+        '#include "../widget.h"\n'
+        "static int bridge() {\n"
+        "  acme::Widget w;\n"
+        "  return w.twice();\n"
+        "}\n"
+        "@implementation AcmeView\n"
+        "- (int)measure {\n"
+        "  return bridge() + acme::helper(1);\n"
+        "}\n"
+        "@end\n"
+    ),
+}
+_VIEW_MM = "src/apple/view.mm"
+
+
+@pytest.fixture
+def objcxx_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "objcxx"
+    _write(tree, _OBJCXX_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    return tree, _seed_rows(first)
+
+
+def test_a_cpp_edit_that_reaches_an_objective_c_file_is_patched(
+    objcxx_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, seed = objcxx_indexed
+    assert _VIEW_MM in {u for u, _v, _d in seed["edges"]}
+    _replace("src/widget.cpp", "int Widget::twice() const", "long Widget::twice() const")(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    assert _VIEW_MM in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "objcxx-oracle")
+
+
+def test_an_objective_c_body_edit_is_patched(
+    objcxx_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, seed = objcxx_indexed
+    (tree / _VIEW_MM).write_text(
+        _OBJCXX_TREE[_VIEW_MM].replace("return w.twice();", "return w.size();")
+    )
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.patch_plan.refresh
+    assert patched.patch_plan.scope == (_VIEW_MM,)
+    _assert_equals_full(tree, patched, tmp_path / "objcxx-oracle")
