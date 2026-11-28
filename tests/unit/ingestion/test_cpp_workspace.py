@@ -8,6 +8,7 @@ import networkx as nx
 import pytest
 
 from repowise.core.ingestion.graph._import_targets import resolve_import_targets
+from repowise.core.ingestion.graph._stem import build_stem_map
 from repowise.core.ingestion.models import Import
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.cpp import resolve_cpp_import
@@ -134,6 +135,79 @@ def test_stem_fallback_takes_an_extensionless_include_only_by_exact_name(tmp_pat
     ctx.stem_map["format"] = ["third/format.cpp", "third/format.h"]
     assert resolve_cpp_import("format", "app/main.cpp", ctx) is None
     assert resolve_cpp_import("QString", "app/main.cpp", ctx) == "qt/QString"
+
+
+def _stem_ctx(tmp_path: Path, paths: list[str]) -> ResolverContext:
+    return ResolverContext(
+        path_set=set(paths),
+        stem_map=build_stem_map(set(paths)),
+        graph=nx.DiGraph(),
+        repo_path=tmp_path,
+    )
+
+
+def test_path_qualified_include_takes_the_header_whose_path_ends_with_it(tmp_path):
+    # Two headers share a file name; the stem map ranks ``a/`` first.
+    paths = ["a/storage/x.h", "b/storage/x.h", "c/user.cpp"]
+    ctx = _stem_ctx(tmp_path, paths)
+    assert resolve_cpp_import("b/storage/x.h", "c/user.cpp", ctx) == "b/storage/x.h"
+    assert resolve_cpp_import("<b/storage/x.h>", "c/user.cpp", ctx) == "b/storage/x.h"
+    # A suffix matches whole directory names only.
+    ctx = _stem_ctx(tmp_path, ["ab/storage/x.h", "src/user.cpp"])
+    assert resolve_cpp_import("b/storage/x.h", "src/user.cpp", ctx) is None
+
+
+def test_path_qualified_include_tie_goes_to_the_header_nearest_the_importer(tmp_path):
+    paths = [
+        "drivers/gl/storage/texture.h",
+        "servers/render/storage/texture.h",
+        "servers/render/backend/device.cpp",
+        "drivers/gl/rasterizer.cpp",
+    ]
+    ctx = _stem_ctx(tmp_path, paths)
+    assert (
+        resolve_cpp_import("storage/texture.h", "servers/render/backend/device.cpp", ctx)
+        == "servers/render/storage/texture.h"
+    )
+    assert (
+        resolve_cpp_import("storage/texture.h", "drivers/gl/rasterizer.cpp", ctx)
+        == "drivers/gl/storage/texture.h"
+    )
+
+
+def test_path_qualified_include_with_no_suffix_match_has_no_edge(tmp_path):
+    # ``net/x.h`` is not in the repo; another directory's x.h is a different file.
+    paths = ["a/storage/x.h", "b/storage/x.h", "c/user.cpp"]
+    ctx = _stem_ctx(tmp_path, paths)
+    assert resolve_cpp_import("net/x.h", "c/user.cpp", ctx) is None
+    # A leading ``../`` that missed the importer-relative join still matches by suffix.
+    assert resolve_cpp_import("../b/storage/x.h", "c/deep/user.cpp", ctx) == "b/storage/x.h"
+
+
+def test_bare_include_keeps_the_stem_rules(tmp_path):
+    paths = ["a/storage/x.h", "b/storage/x.h", "c/user.cpp"]
+    ctx = _stem_ctx(tmp_path, paths)
+    assert resolve_cpp_import("x.h", "c/user.cpp", ctx) == ctx.stem_map["x"][0]
+
+
+def test_compile_commands_include_dir_wins_over_the_suffix_match(tmp_path, monkeypatch):
+    # ``a/storage/x.h`` is nearer, but the compile database puts ``b/`` on the path.
+    paths = ["a/storage/x.h", "b/storage/x.h", "a/user.cpp"]
+    ctx = _stem_ctx(tmp_path, paths)
+    monkeypatch.setattr(ctx, "extract_include_dirs", lambda _imp: [str(tmp_path / "b")])
+    assert resolve_cpp_import("storage/x.h", "a/user.cpp", ctx) == "b/storage/x.h"
+
+
+def test_target_include_dir_wins_over_the_suffix_match(tmp_path):
+    _write(tmp_path, "CMakeLists.txt", """
+        add_library(app STATIC a/user.cpp)
+        target_include_directories(app PUBLIC b)
+    """)
+    paths = ["a/storage/x.h", "b/storage/x.h", "a/user.cpp", "CMakeLists.txt"]
+    for rel in paths[:3]:
+        _write(tmp_path, rel, "")
+    ctx = _stem_ctx(tmp_path, paths)
+    assert resolve_cpp_import("storage/x.h", "a/user.cpp", ctx) == "b/storage/x.h"
 
 
 def test_project_export_macro_discovery(tmp_path):
