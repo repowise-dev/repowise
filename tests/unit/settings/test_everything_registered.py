@@ -124,7 +124,9 @@ def test_every_repowise_env_var_read_is_registered():
 def test_no_registered_env_var_is_dead():
     seen = {token for token, _, _ in _python_reads() + _typescript_reads()}
     for s in all_settings():
-        if s.env is None:
+        if s.env is None or s.area == "plugins":
+            # A plugin setting's variable is derived, and its source reads it
+            # through source_sync, never by name.
             continue
         name = s.env.name
         assert name in seen or any(

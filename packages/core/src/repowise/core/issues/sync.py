@@ -34,6 +34,7 @@ def issue_request(
 ) -> IssueRequest:
     """The request for *repo_path*: every commit the fix walk reads, with its change number."""
     from repowise.core.forges.changes import change_number
+    from repowise.core.forges.detect import read_remote_ref
     from repowise.core.ingestion.git_indexer import GitIndexer
 
     indexer = GitIndexer(repo_path, read_only=True)
@@ -45,6 +46,7 @@ def issue_request(
         repository_id=repository_id,
         repository_name=repository_name,
         commits=commits,
+        remote=read_remote_ref(repo_path),
         settings=dict(settings or {}),
         credentials=credentials,
     )

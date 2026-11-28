@@ -49,7 +49,8 @@ def test_a_plugin_setting_is_keyed_under_its_plugin() -> None:
 def test_registered_settings_join_every_lookup(installed, monkeypatch) -> None:
     assert settings.get("plugins.synctest.db") == DB
     assert settings.by_env("REPOWISE_PLUGIN_SYNCTEST_TOKEN") == TOKEN
-    assert {s.key for s in settings.settings_in("plugins")} == {DB.key, MODE.key, TOKEN.key}
+    # Beside the built-in forge source's own, which are always declared.
+    assert {s.key for s in settings.settings_in("plugins")} >= {DB.key, MODE.key, TOKEN.key}
     assert DB in settings.all_settings(include_internal=False)
     monkeypatch.setenv(DB.env.name, "from-env")
     assert settings.resolve(DB, {"plugins": {"synctest": {"db": "app"}}}).value == "app"
@@ -175,7 +176,8 @@ def test_check_plugin_can_check_a_loaded_plugin_that_declares_settings(installed
     assert settings.all_settings() == before
     assert settings.get(DB.key) == DB
     assert settings.by_env(TOKEN.env.name) == TOKEN
-    assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 3
+    # The plugin's 3, beside the built-in forge source's 3.
+    assert sum(s.key.startswith(("plugins.", ENV_PREFIX)) for s in before) == 6
 
 
 def test_plugins_json_lists_each_setting_and_source_without_values(

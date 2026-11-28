@@ -963,6 +963,17 @@ plugins:
     team: ENG
 ```
 
+The built-in `forge` issue source is always listed. It reads GitHub or GitLab
+issues and runs only once `REPOWISE_PLUGIN_FORGE_TOKEN` is set (see
+[Issues from GitHub and GitLab](PLUGINS.md#issues-from-github-and-gitlab)).
+
+<!-- BEGIN GENERATED settings:plugins (python scripts/gen_config_docs.py) -->
+| Key | Default | What it does | Env var |
+|-----|---------|--------------|---------|
+| `forge.api_url` | `""` | API endpoint of a self-managed host: GitHub's GraphQL URL (https://ghe.example.com/api/graphql) or GitLab's API root (https://git.example.com/api/v4), https on the remote's host. Empty reads it from the remote. | `REPOWISE_PLUGIN_FORGE_API_URL` (when the file is unset) |
+| `forge.bug_labels` | `[bug, type: bug, type/bug, type::bug, kind/bug, incident]` | Labels that make an issue with no issue type a bug (incident for incident), matched without case. Any other issue is a feature, task or other by its type. | `REPOWISE_PLUGIN_FORGE_BUG_LABELS` (when the file is unset) |
+<!-- END GENERATED settings:plugins -->
+
 ## The `refactoring:` block
 
 Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break
@@ -1698,6 +1709,19 @@ sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
 
 `REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
 as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
+
+### Issue links
+
+<!-- BEGIN GENERATED settings:env-plugins (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does | Config key |
+|----------|---------|--------------|------------|
+| `REPOWISE_PLUGIN_FORGE_TOKEN` | unset | GitHub or GitLab token that can read this repository's pull or merge requests and issues. Setting it turns on the built-in forge issue source. |  |
+| `REPOWISE_PLUGIN_FORGE_API_URL` | unset | API endpoint of a self-managed host: GitHub's GraphQL URL (https://ghe.example.com/api/graphql) or GitLab's API root (https://git.example.com/api/v4), https on the remote's host. Empty reads it from the remote. | `plugins.forge.api_url` (the file wins) |
+| `REPOWISE_PLUGIN_FORGE_BUG_LABELS` | `[bug, type: bug, type/bug, type::bug, kind/bug, incident]` | Labels that make an issue with no issue type a bug (incident for incident), matched without case. Any other issue is a feature, task or other by its type. | `plugins.forge.bug_labels` (the file wins) |
+<!-- END GENERATED settings:env-plugins -->
+
+The token is read from the environment only. Set it where `repowise update`
+runs, as a masked variable in CI.
 
 ### BLAS thread pool
 

@@ -1,4 +1,8 @@
-"""Tracker issues linked to commits: the ``issue-source`` seam and its host side."""
+"""Tracker issues linked to commits: the ``issue-source`` seam and its host side.
+
+The built-in ``forge`` source (GitHub and GitLab issues) is registered here,
+and runs only once its token is set.
+"""
 
 from .sources import (
     DEFECT_TYPES,
@@ -33,3 +37,7 @@ __all__ = [
     "run_issue_fetch",
     "tracker_keys",
 ]
+
+from .forge import ForgeIssues
+
+issue_sources.register(ForgeIssues.name, ForgeIssues())

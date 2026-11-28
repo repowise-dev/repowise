@@ -46,10 +46,13 @@ import contextlib
 import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from repowise.core.evidence.sources import FetchOutcome, SourceRefused, SourceUnavailable
 from repowise.core.registry.plugins import SeamRegistry
+
+if TYPE_CHECKING:
+    from repowise.core.forges.base import RemoteRef
 
 #: Every type a link may carry. Map the tracker's own names onto these.
 ISSUE_TYPES = ("bug", "incident", "feature", "task", "other")
@@ -86,6 +89,10 @@ class IssueRequest:
     settings: Mapping[str, Any] = field(default_factory=dict)
     #: The host's credentials object, passed through untouched and left out of ``repr``.
     credentials: Any = field(default=None, repr=False, compare=False)
+    #: The repository's remote, parsed with the host's ``forges.hosts``
+    #: overrides; None when it has none. A source that reads the forge itself
+    #: (GitHub or GitLab issues) finds the project here.
+    remote: RemoteRef | None = None
 
 
 @dataclass(frozen=True)
