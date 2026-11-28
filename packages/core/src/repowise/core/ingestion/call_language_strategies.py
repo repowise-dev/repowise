@@ -157,6 +157,10 @@ def _is_member_function(symbol: Symbol | None) -> bool:
     )
 
 
+def _is_std_scope(scope: str) -> bool:
+    return scope == "std" or scope.startswith("std::")
+
+
 def _is_free_function(symbol: Symbol | None) -> bool:
     """A function outside every class, not a macro body (``TEST_F``) that may sit in one."""
     return (
@@ -756,16 +760,27 @@ class LanguageStrategiesMixin:
         (``Slice(s)``). A caller named in capitals is a macro body (``TEST_F``),
         which may sit inside a class, and a caller that is not a function may
         be a class whose member bodies the parse folded in, so both are left alone.
+
+        A qualifier no repository type answers to names a namespace or a
+        library class, never the callee's class: ``detail::compare(..)`` is no
+        member ``compare``, nor a ``friend`` defined in a class body, which
+        only argument lookup finds.
         """
         if self._language_of(file_path) not in ("c", "cpp"):
             return False
         scope = call.scope_name or ""
-        if scope == "std" or scope.startswith("std::"):
+        if _is_std_scope(scope):
             return True
-        if call.receiver_call is not None or scope:
+        if call.receiver_call is not None:
             return False
         callee = self._symbols_by_id.get(callee_id)
         caller = self._symbols_by_id.get(call.caller_symbol_id or "")
+        if scope:
+            return (
+                _is_member_function(callee)
+                and bool(self._declared_types_named(bare_type_name(callee.parent_name or "")))
+                and not self._cpp_names_type(scope)
+            )
         if not self._is_cpp_member_function(callee):
             return False
         assert callee is not None
@@ -810,18 +825,22 @@ class LanguageStrategiesMixin:
     ) -> ResolvedCall | None:
         """The one free function of the call's name the caller's file or its includes declare.
 
-        Asked when the flat tiers answered an unqualified call with a member it
-        cannot reach, since that member may have hidden a free one there.
-        Ceiling: namespaces are recorded on no symbol, so a free function in a
-        namespace the caller never opens still answers, as in the flat tiers.
+        Asked when the flat tiers answered a call with a member it cannot
+        reach, since that member may have hidden a free one there. A qualified
+        call takes one only from a namespace its qualifier names.
+        Ceiling: an unqualified call does not check namespaces, so a free
+        function in a namespace the caller never opens still answers, as in
+        the flat tiers.
         """
-        if call.scope_name:
+        scope = call.scope_name
+        if _is_std_scope(scope or ""):
             return None
         found = [
             sym_id
             for path in self._cpp_include_closure(file_path)
             if (sym_id := self._file_top_level.get(path, {}).get(call.target_name))
             and getattr(self._symbols_by_id.get(sym_id), "kind", None) == "function"
+            and (not scope or self._cpp_in_namespace(sym_id, bare_type_name(scope)))
         ]
         settled = self._collapse_declarations(found)
         if len(settled) != 1 or caller_id in settled:
@@ -830,6 +849,71 @@ class LanguageStrategiesMixin:
         if self._symbol_paths_by_id.get(sym_id) == file_path:
             return ResolvedCall(caller_id, sym_id, 0.95, call.line, "same_file")
         return ResolvedCall(caller_id, sym_id, 0.85, call.line, "import_merged")
+
+    def _cpp_namespace_function(
+        self, file_path: str, call: CallSite, caller_id: str, hit: ResolvedCall | None
+    ) -> ResolvedCall | None:
+        """The function namespace-qualified *call* means: *hit* unless that namespace holds another.
+
+        ``detail::compare(..)`` inside a member ``compare`` reads to the flat
+        tiers as recursion, and inside a free ``vformat_to`` as that function.
+        A hit the namespace's blocks do not hold stays when they hold no single
+        rival, since a block a macro opens is no symbol.
+        """
+        if hit is not None and self._cpp_in_namespace(
+            hit.callee_id, bare_type_name(call.scope_name or "")
+        ):
+            return hit
+        return self._cpp_free_rival(file_path, call, caller_id) or hit
+
+    def _cpp_names_repo_namespace(self, file_path: str, call: CallSite) -> bool:
+        """Does C++ *call*'s qualifier name a repository namespace and no type?"""
+        scope = call.scope_name
+        if not scope or self._language_of(file_path) != "cpp" or self._cpp_names_type(scope):
+            return False
+        return self._cpp_namespaces_named(bare_type_name(scope)) != ()
+
+    def _cpp_names_type(self, scope: str) -> bool:
+        """Does qualifier *scope* name a repository class, struct, enum or type alias?"""
+        name = bare_type_name(scope)
+        return bool(self._declared_types_named(name)) or any(
+            self._symbols_by_id[sym_id].kind == "type_alias"
+            for sym_id in self._global_symbols.get(name, ())
+        )
+
+    def _cpp_namespaces_named(self, name: str) -> tuple[tuple[str, int, int], ...]:
+        """``(file, start, end)`` of each C++ namespace block the repository opens as *name*.
+
+        Read from the parsed symbols: the blocks one file reopens share an id.
+        """
+        blocks = self._cpp_namespace_blocks.get(name)
+        if blocks is None:
+            paths = {
+                self._symbol_paths_by_id[sym_id] for sym_id in self._global_symbols.get(name, ())
+            }
+            blocks = self._cpp_namespace_blocks[name] = tuple(
+                (path, symbol.start_line, symbol.end_line)
+                for path in sorted(paths)
+                for symbol in getattr(self._parsed_files.get(path), "symbols", ())
+                if symbol.name == name and symbol.kind == "module" and symbol.language == "cpp"
+            )
+        return blocks
+
+    def _cpp_in_namespace(self, sym_id: str, namespace: str) -> bool:
+        """Is function *sym_id* declared in namespace *namespace*, in a block or as ``namespace::f``?
+
+        Ceiling: a block a macro opens (``BEGIN_NAMESPACE``) is no symbol.
+        """
+        symbol = self._symbols_by_id.get(sym_id)
+        if symbol is None:
+            return False
+        if symbol.parent_name and bare_type_name(symbol.parent_name) == namespace:
+            return True
+        path = self._symbol_paths_by_id.get(sym_id)
+        return any(
+            block_path == path and start <= symbol.start_line <= end
+            for block_path, start, end in self._cpp_namespaces_named(namespace)
+        )
 
     def _is_cpp_member_function(self, symbol: Symbol | None) -> bool:
         """Is *symbol* a member function a bare call from outside its class cannot reach?

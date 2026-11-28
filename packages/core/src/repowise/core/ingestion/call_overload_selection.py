@@ -6,6 +6,7 @@ member by argument count, then by the typed arguments (Java's most-specific rule
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
@@ -517,6 +518,23 @@ def _could_recurse(symbol: Symbol | None, argument_count: int | None) -> bool:
     return symbol.language not in ("java", "csharp", "cpp") or _takes(symbol, argument_count)
 
 
+def _refuses_without_va_list(
+    symbol: Symbol, argument_count: int, argument_types: _ArgumentTypes
+) -> bool:
+    """Does C++ *symbol* take a ``va_list`` at an argument the call passes no ``va_list`` to?
+
+    Only a ``va_list`` variable passes as one, so ``Error("%s", s)`` calls
+    ``Error(const char*, ...)``, never its ``Error(const char*, va_list)`` twin.
+    """
+    if symbol.language != "cpp" or "va_list" not in (symbol.signature or ""):
+        return False
+    passed = argument_types or ()
+    return any(
+        parameter == "va_list" and (passed[i] if i < len(passed) else None) != "va_list"
+        for i, parameter in enumerate(erased_parameter_types(symbol)[:argument_count])
+    )
+
+
 def _takes(symbol: Symbol, argument_count: int) -> bool:
     """Whether *symbol*'s parameters admit *argument_count*; an unread signature does."""
     admitted = signature_parameter_range(symbol.signature or "", symbol.language)
@@ -973,6 +991,13 @@ class OverloadSelectionMixin:
         members = list(members)
         if argument_count is None or any(admitted is None for _, admitted in members):
             return []
+        members = [
+            (member, admitted)
+            for member, admitted in members
+            if not _refuses_without_va_list(
+                self._symbols_by_id[member], argument_count, argument_types
+            )
+        ]
         phases: dict[int, list[str]] = defaultdict(list)
         for member, admitted in members:
             phase = _overload_phase(admitted, argument_count)
@@ -1156,6 +1181,8 @@ class OverloadSelectionMixin:
             return call
         if self._language_of(file_path) == "csharp":
             return replace(call, argument_types=self._csharp_arguments(file_path, call))
+        if self._language_of(file_path) == "cpp":
+            return replace(call, argument_types=self._cpp_va_list_arguments(file_path, call))
         names = call.argument_names
         if not names:
             return call
@@ -1166,6 +1193,26 @@ class OverloadSelectionMixin:
             for literal, name in zip(literals, names, strict=True)
         )
         return replace(call, argument_types=types if any(types) else None)
+
+    def _cpp_va_list_arguments(
+        self, file_path: str, call: CallSite
+    ) -> tuple[str | None, ...] | None:
+        """``va_list`` at each argument the caller declares one, else None; None when none is.
+
+        The only C++ argument type overload choice reads (``_refuses_without_va_list``).
+        Ceiling: a later declarator (``va_list a, b;``) is missed.
+        """
+        if not call.argument_names:
+            return None
+        start, end = self._spans_for(file_path).get(call.caller_symbol_id or "", (1, 0))
+        body = "\n".join(self._text_of(file_path).splitlines()[start - 1 : end])
+        types = tuple(
+            "va_list"
+            if name and re.search(rf"\bva_list\s*&?\s*{re.escape(name)}\b", body)
+            else None
+            for name in call.argument_names
+        )
+        return types if any(types) else None
 
     def _csharp_arguments(self, file_path: str, call: CallSite) -> tuple[str | None, ...] | None:
         """The receiver (``""`` when chained, None when bare), its type, then each argument's shape or type.

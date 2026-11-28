@@ -391,7 +391,10 @@
         "spawned": false,
         "program_call": false,
         "argument_types": null,
-        "argument_names": null,
+        "argument_names": [
+          "x",
+          null
+        ],
         "is_construction": false
       }
     ],

@@ -403,6 +403,7 @@ class CallResolver(
         # C++: {file: files its includes reach}, {class id: template parameter names}.
         self._cpp_include_closures: dict[str, frozenset[str]] = {}
         self._cpp_template_names: dict[str, frozenset[str]] = {}
+        self._cpp_namespace_blocks: dict[str, tuple[tuple[str, int, int], ...]] = {}
         self._mros: dict[str, tuple[str, ...] | None] = {}
         # {type name: [(file, identity, arity)]}, filled by ``_declared_types_named``.
         self._declared_types: dict[str, list[tuple[str, tuple[str, ...], int]]] = {}
@@ -1252,6 +1253,8 @@ class CallResolver(
             return self._resolve_csharp_constructed_type(file_path, call, caller_id)
         if hit is not None and self._cpp_names_no_repo_member(file_path, call, hit.callee_id):
             return self._cpp_free_rival(file_path, call, caller_id)
+        if self._cpp_names_repo_namespace(file_path, call):
+            hit = self._cpp_namespace_function(file_path, call, caller_id, hit)
         alias = self._symbols_by_id.get(hit.callee_id) if hit is not None else None
         if _is_kotlin_alias(alias):
             return self._through_kotlin_alias(alias, call, caller_id)

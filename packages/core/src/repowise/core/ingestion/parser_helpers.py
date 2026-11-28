@@ -599,14 +599,14 @@ _APEX_LITERAL_TYPES = {
 
 
 def _overload_arguments(language: str, arg_nodes: list[Node]) -> list[Node]:
-    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin).
+    """A call's argument expressions, for a language whose overloads read them (Java, Apex, Kotlin, C++).
 
     Read from the argument list already in hand, the way ``_count_arguments``
     counts it.
     """
     if language == "kotlin":
         return _kotlin_positional_arguments(arg_nodes)
-    if language not in ("java", "apex", "csharp") or not arg_nodes:
+    if language not in ("java", "apex", "csharp", "cpp") or not arg_nodes:
         return []
     skip_types = frozenset({"(", ")", ","})
     arguments = [
@@ -689,8 +689,11 @@ def _argument_literal_types(
     """The type of each literal argument, None where an argument is no literal.
 
     None overall when no argument is a literal. C# reports a lambda's and a
-    construction's shape instead (``_csharp_argument_shape``).
+    construction's shape instead (``_csharp_argument_shape``). C++ reads only
+    its named arguments (a ``va_list``), so it reports none.
     """
+    if language == "cpp":
+        return None
     literal_type = {
         "apex": _apex_literal_type,
         "csharp": _csharp_argument_shape,

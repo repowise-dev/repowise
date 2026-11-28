@@ -157,3 +157,118 @@ class TestThreePartQualifiedCallProducesACallSite:
         )
         targets = _call_targets(_build(tmp_path), "caller.cc")
         assert any(t.endswith("free_thing") for t in targets)
+
+
+def _edges(graph) -> set[tuple[str, str]]:
+    return {(s, t) for s, t, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+
+
+class TestNamespaceQualifierNeverNamesAMember:
+    """``detail::compare(..)`` names a namespace's function, not a same-named member."""
+
+    def _repo(self, root: Path) -> None:
+        (root / "base.h").write_text(
+            "#pragma once\n"
+            "namespace detail {\n"
+            "int compare(const char* a, const char* b, int n) { return 0; }\n"
+            "}\n"
+            "class string_view {\n"
+            " public:\n"
+            "  bool starts_with(string_view sv) const {\n"
+            "    return detail::compare(data_, sv.data_, 3) == 0;\n"
+            "  }\n"
+            "  int compare(string_view other) const {\n"
+            "    return detail::compare(data_, other.data_, 3);\n"
+            "  }\n"
+            "  const char* data_;\n"
+            "};\n"
+        )
+
+    def test_a_member_caller_reaches_the_namespace_function(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        edges = _edges(_build(tmp_path))
+        assert ("base.h::string_view::starts_with", "base.h::compare") in edges
+        assert ("base.h::string_view::starts_with", "base.h::string_view::compare") not in edges
+
+    def test_a_same_named_member_caller_is_not_recursion(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        edges = _edges(_build(tmp_path))
+        assert ("base.h::string_view::compare", "base.h::compare") in edges
+
+    def test_a_friend_defined_in_a_class_is_not_qualified_lookup(self, tmp_path: Path) -> None:
+        """Only argument lookup finds a friend its class body defines."""
+        (tmp_path / "big.h").write_text(
+            "#pragma once\n"
+            "class bigint {\n"
+            " public:\n"
+            "  friend int compare(const bigint& a, const bigint& b) { return 0; }\n"
+            "};\n"
+        )
+        (tmp_path / "user.cc").write_text(
+            '#include "big.h"\nint run(const char* a) { return other::compare(a, a, 1); }\n'
+        )
+        assert not _call_targets(_build(tmp_path), "user.cc")
+
+    def test_a_library_namespace_reaches_no_repository_member(self, tmp_path: Path) -> None:
+        (tmp_path / "buf.h").write_text(
+            "#pragma once\nstruct counter {\n  int count(int x) const { return x; }\n};\n"
+        )
+        (tmp_path / "user.cc").write_text(
+            '#include "buf.h"\nint run(int x) { return lib::count(x); }\n'
+        )
+        assert not _call_targets(_build(tmp_path), "user.cc")
+
+    def test_a_namespace_function_wins_over_a_same_named_outer_one(self, tmp_path: Path) -> None:
+        """``detail::vformat_to(..)`` means the namespace's, not the caller file's outer one."""
+        (tmp_path / "base.h").write_text(
+            "#pragma once\nnamespace detail {\nvoid vformat_to(int* buf, int n) {}\n}\n"
+        )
+        (tmp_path / "format.h").write_text(
+            '#pragma once\n#include "base.h"\n'
+            "int vformat(int n) {\n"
+            "  int buf[4];\n"
+            "  detail::vformat_to(buf, n);\n"
+            "  return 0;\n"
+            "}\n"
+            "template <typename It> It vformat_to(It out, int n) { return out; }\n"
+        )
+        assert _call_targets(_build(tmp_path), "format.h") == {"base.h::vformat_to"}
+
+
+class TestVariadicOverloadTakesTheCall:
+    """A ``va_list`` parameter takes only a ``va_list``: ``Error("%s", s)`` is the variadic one."""
+
+    def _repo(self, root: Path) -> None:
+        (root / "util.h").write_text(
+            "#pragma once\n#include <stdarg.h>\n"
+            "void Error(const char* msg, ...);\n"
+            "void Error(const char* msg, va_list ap);\n"
+        )
+        (root / "util.cc").write_text(
+            '#include "util.h"\n'
+            "void Error(const char* msg, va_list ap) {}\n"
+            "void Error(const char* msg, ...) {\n"
+            "  va_list ap;\n"
+            "  va_start(ap, msg);\n"
+            "  Error(msg, ap);\n"
+            "  va_end(ap);\n"
+            "}\n"
+            "void Report(const char* msg, va_list args) { Error(msg, args); }\n"
+        )
+        (root / "main.cc").write_text(
+            '#include "util.h"\nvoid Run(const char* err) {\n  Error("%s", err);\n}\n'
+        )
+
+    def test_a_format_argument_calls_the_variadic_overload(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        assert _call_targets(_build(tmp_path), "main.cc") == {"util.cc::Error#2(char*,[])"}
+
+    def test_a_va_list_local_calls_the_va_list_overload(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        edges = _edges(_build(tmp_path))
+        assert ("util.cc::Error#2(char*,[])", "util.cc::Error#2(char*,va_list)") in edges
+
+    def test_a_va_list_parameter_calls_the_va_list_overload(self, tmp_path: Path) -> None:
+        self._repo(tmp_path)
+        edges = _edges(_build(tmp_path))
+        assert ("util.cc::Report", "util.cc::Error#2(char*,va_list)") in edges
