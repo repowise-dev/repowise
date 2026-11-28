@@ -640,9 +640,7 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     head = erased.rstrip("?")
     framework = shape_of(head) is None
     if argument.startswith("async "):
-        # ``async void`` converts to an ``Action``; no other value-returning delegate.
-        refused = head in _CSHARP_DELEGATES and head != "Action"
-        if framework and refused and not _csharp_may_return_task(parameter, head):
+        if framework and _csharp_refuses_async(parameter, head):
             return False
         argument = argument.removeprefix("async ")
     if argument.startswith("=>") or "`" in argument:
@@ -654,6 +652,14 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     if written == head or shape_of(written) not in ("interface", "value"):
         return True
     return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
+
+
+def _csharp_refuses_async(parameter: str, head: str) -> bool:
+    """Does framework delegate *head* refuse an ``async`` lambda?
+
+    ``async void`` converts to an ``Action``; any other delegate must return a task.
+    """
+    return head in _CSHARP_DELEGATES and head != "Action" and not _csharp_may_return_task(parameter, head)
 
 
 def _csharp_may_return_task(parameter: str, head: str) -> bool:
@@ -989,17 +995,21 @@ class OverloadSelectionMixin:
         if symbol is None or symbol.language != "csharp" or call.argument_count is None:
             return call
         receiver = call.receiver_name or ("" if call.receiver_call is not None else None)
-        if receiver is None or receiver == symbol.parent_name:
+        if receiver is None or receiver == symbol.parent_name or not self._extends_one_type(rep):
             return call
-        # Counted only when every member extends one type: a static sibling, or
-        # one extending another arity of the type, never takes the receiver.
+        return replace(call, argument_count=call.argument_count + 1)
+
+    def _extends_one_type(self, rep: str) -> bool:
+        """Does every member of *rep*'s C# set extend one type?
+
+        A static sibling, or one extending another arity of the type, never
+        takes the receiver as an argument.
+        """
         extended = {
             csharp_extension_receiver(self._symbols_by_id[member].signature or "")
             for member, _ in self._overload_members.get(rep, ())
         }
-        if len(extended) == 1 and None not in extended:
-            return replace(call, argument_count=call.argument_count + 1)
-        return call
+        return len(extended) == 1 and None not in extended
 
     def _partial_constructor(self, callee_id: str, call: CallSite) -> str | None:
         """The one constructor of a C# ``partial`` type, across its files, the call's arguments take.
@@ -1419,17 +1429,23 @@ class OverloadSelectionMixin:
         names = call.argument_names or (None,) * len(call.argument_types or ())
         literals = call.argument_types or (None,) * len(names)
         caller_id = call.caller_symbol_id or ""
-        types = []
-        for literal, name in zip(literals, names, strict=True):
-            # A named argument is ``label:shape``; the label stays, the shape is filled in.
-            label, colon, shape = (literal or "").partition(":")
-            found = (shape if colon else literal) or (
-                self._csharp_argument_type(file_path, caller_id, name) if name else None
-            )
-            types.append(f"{label}:{found or ''}" if colon else found)
+        types = [
+            self._csharp_argument(file_path, caller_id, literal, name)
+            for literal, name in zip(literals, names, strict=True)
+        ]
         if not any(types):
             return None
         return (*self._csharp_receiver(file_path, call), *types)
+
+    def _csharp_argument(
+        self, file_path: str, caller_id: str, literal: str | None, name: str | None
+    ) -> str | None:
+        """One argument's shape, else its name's type; a named one keeps its ``label:``."""
+        label, colon, shape = (literal or "").partition(":")
+        found = (shape if colon else literal) or (
+            self._csharp_argument_type(file_path, caller_id, name) if name else None
+        )
+        return f"{label}:{found or ''}" if colon else found
 
     def _csharp_argument_type(self, file_path: str, caller_id: str, name: str) -> str | None:
         """``_argument_type`` for a C# argument; ``group`N`` for a method group ``owner.Method``.
