@@ -28,6 +28,7 @@ import { formatNumber } from "../lib/format";
 import { FilePath } from "../shared/file-path";
 import { typeMeta } from "./meta";
 import { PreviewBadge } from "../health/preview-badge";
+import { AiPromptButton } from "../health/ai-prompt-button";
 import {
   STATUS_LABEL,
   TRIAGE_STATUSES,
@@ -81,7 +82,7 @@ const GRID =
   // own row and left the labels on a ragged edge, wrapping the type mid-phrase
   // on the wider rows only.
   "grid grid-cols-[8.5rem_minmax(0,1fr)] gap-x-5 gap-y-2 px-3 " +
-  "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_32px]";
+  "lg:grid-cols-[116px_minmax(0,1fr)_150px_104px_96px_auto]";
 
 export function OpportunityRows({
   opportunities,
@@ -282,11 +283,20 @@ function OpportunityRow({
         </span>
       </div>
 
-      <div className="order-6 justify-self-end lg:order-none lg:-mt-1">
+      {/* The agent prompt is the row's one primary verb, so it sits on the
+          row rather than in the overflow: handing the change to an agent is
+          what most readers came to do. */}
+      <div className="order-6 flex items-center gap-1 justify-self-end lg:order-none lg:-mt-1">
+        {onAiPrompt ? (
+          <AiPromptButton
+            onClick={() => onAiPrompt(opportunity)}
+            ariaLabel={`Agent prompt: ${opportunity.file_path}`}
+            className="whitespace-nowrap"
+          />
+        ) : null}
         <RowOverflow
           opportunity={opportunity}
           status={status}
-          onAiPrompt={onAiPrompt}
           onStatusChange={onStatusChange ? setStatus : undefined}
           href={href}
         />
@@ -298,7 +308,8 @@ function OpportunityRow({
 /**
  * The row's second-order verbs.
  *
- * Opening the opportunity is the row itself. Everything else lives here so a
+ * Opening the opportunity is the row itself and the agent prompt sits beside
+ * it. Everything else lives here so a
  * 580-row list is not 580 clusters of controls the reader has to parse before
  * they can read a row - and so each verb can have its real name rather than an
  * abbreviation that only expands for someone who already knows the model.
@@ -306,13 +317,11 @@ function OpportunityRow({
 function RowOverflow({
   opportunity,
   status,
-  onAiPrompt,
   onStatusChange,
   href,
 }: {
   opportunity: RefactoringOpportunity;
   status: OpportunityStatus;
-  onAiPrompt?: ((opportunity: RefactoringOpportunity) => void) | undefined;
   onStatusChange?: ((status: OpportunityStatus) => void) | undefined;
   href?: string | undefined;
 }) {
@@ -346,7 +355,7 @@ function RowOverflow({
     };
   }, [open, close]);
 
-  if (!onAiPrompt && !href && !onStatusChange) return null;
+  if (!href && !onStatusChange) return null;
 
   return (
     <div className="relative" ref={ref}>
@@ -366,19 +375,6 @@ function RowOverflow({
           role="menu"
           className="absolute right-0 top-full z-20 mt-1 w-60 overflow-hidden rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1 shadow-md"
         >
-          {onAiPrompt ? (
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                close();
-                onAiPrompt(opportunity);
-              }}
-              className="block w-full px-3 py-2 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
-            >
-              Copy prompt
-            </button>
-          ) : null}
           {href ? (
             <a
               href={href}

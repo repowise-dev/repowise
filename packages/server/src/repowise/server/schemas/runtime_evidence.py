@@ -262,7 +262,8 @@ class MeasuredRow(_Strict):
     #: absent on a function's row.
     label: str | None = None
     #: Where each field that holds a value came from: ``workload_hotness``
-    #: (``statement_stats`` on a production statement row),
+    #: (``statement_stats`` on a production statement row, ``route_latency``
+    #: on a production route row),
     #: ``symbols``, ``call_graph``, ``run_drivers``, ``function_blame``, the
     #: ``tests_basis``, ``run_inside`` or ``static_finding``, the
     #: ``verify_basis``, ``performance_findings``, ``compare``.
@@ -328,6 +329,72 @@ class StatementGroup(_Strict):
     #: At most ``limit`` rows per run, by statement time.
     rows: list[StatementRow]
     #: Functions across the group's runs before the ``limit`` cut.
+    total: int
+
+
+class RouteFacts(_Strict):
+    """What the requests one handler's routes served did in a production window."""
+
+    requests: int
+    total_ms: float
+    #: Mean time per request across its routes; null with no requests.
+    mean_ms: float | None
+    #: The slowest 95th percentile among its routes; null when none said.
+    p95_ms: float | None
+    #: Failed requests across its routes; null when the source did not say.
+    errors: int | None
+    #: Its routes as ``METHOD template``, costliest first.
+    routes: list[str]
+
+
+class RouteRow(MeasuredRow):
+    """One handler's production requests in one run, as a measured row.
+
+    ``rank`` is by request time and ``share`` is of the window's stored
+    request time; there is no interval, inclusive share, samples or
+    freshness: the route was joined to its handler when it was stored. No
+    ``next_step``: no rule reads a route's cost yet. ``verify`` is the next
+    production window."""
+
+    freshness: MeasuredFreshness | None = None
+    routes: RouteFacts
+
+
+class UnattributedRoutes(_Strict):
+    routes: int
+    total_ms: float
+    #: Of the window's stored request time.
+    share: float | None
+
+
+class RouteRun(_Strict):
+    """A production route workload's newest run."""
+
+    run_id: str
+    workload_class: str
+    workload_name: str
+    #: The newest deployed commit in the window; null when unknown.
+    commit: str | None
+    measured_at: str | None
+    age_days: int | None
+    window_start: str | None
+    window_end: str | None
+    #: All request time, requests and routes the run stored.
+    total_ms: float
+    requests: int
+    routes: int
+    #: Routes on no handler, as ``unjoined``: no stored route matched, more
+    #: than one did, or the handler is inline (``evidence add`` counts each).
+    unattributed: dict[str, UnattributedRoutes]
+    #: The window and deploy in words, as every production run names them.
+    window: ProductionWindow
+
+
+class RouteGroup(_Strict):
+    runs: list[RouteRun]
+    #: At most ``limit`` rows per run, by request time.
+    rows: list[RouteRow]
+    #: Handlers across the group's runs before the ``limit`` cut.
     total: int
 
 
@@ -412,8 +479,19 @@ class MeasuredResponse(_Strict):
     #: Production statement runs: the functions that issue each window's
     #: statements, by statement time. Listed, never leading.
     statements: StatementGroup | None = None
+    #: Production route runs: the handlers that serve each window's routes,
+    #: by request time. Listed, never leading. Sent only when a run names a
+    #: handler; absent otherwise, so every other response is unchanged.
+    routes: RouteGroup | None = None
     #: Benchmark results, per benchmark: a benchmark profile never ranks.
     benchmarks: BenchmarkGroup | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_routes(self, handler):  # no return annotation: keeps the schema
+        data = handler(self)
+        if self.routes is None:
+            data.pop("routes", None)
+        return data
 
 
 InsideKind = Literal["own", "repo", "wait", "import", "native", "library"]

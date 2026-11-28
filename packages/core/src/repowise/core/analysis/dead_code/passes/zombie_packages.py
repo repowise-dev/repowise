@@ -104,7 +104,7 @@ class ZombiePackagePass:
         # and nothing is meant to import it.
         if not self._has_package_manifest(pkg, files):
             return False
-        # A package that ships a program (shebang CLI, JVM ``main``, a root
+        # A package that ships a program (shebang CLI, JVM or C# ``main``, a root
         # with a top-level ``main``) is run, never imported; one such file is
         # enough. A root alone is not (a Rust ``lib.rs`` is the library surface).
         # Test files, build-run source sets and symbol nodes are left out first.

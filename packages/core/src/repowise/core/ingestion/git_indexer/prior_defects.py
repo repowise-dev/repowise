@@ -393,15 +393,31 @@ def _cached_read(
 ) -> tuple[list[str], dict[str, Any]] | None:
     """*rev_range*'s order from git and its records from *cache*, reading only what it lacks.
 
-    ``None`` when so many commits are missing that one full walk is cheaper.
+    A long run of adjacent missing commits (a deeper window, or many new
+    commits) is read with one ranged walk of *rev_range*, as the commit window
+    cache does (:func:`..git_commit_index._patched`); the rest are read by sha.
+    ``None`` when one full walk is cheaper, or when a ranged walk's shas are not
+    exactly the run's.
     """
-    from ..git_commit_index import _MAX_PATCHED_COMMITS, _PATCH_CHUNK
+    from ..git_commit_index import (
+        _MAX_PATCHED_COMMITS,
+        _MAX_WALKED_RUNS,
+        _MIN_WALKED_RUN,
+        _PATCH_CHUNK,
+        _missing_runs,
+    )
 
     if not cache.records:
         return None
     order = repo.git.log(rev_range, "--no-merges", "--format=%H").split()
-    missing = [sha for sha in order if sha not in cache.records]
-    if len(missing) > _MAX_PATCHED_COMMITS:
+    runs = _missing_runs(order, cache.records)
+    long_runs = [(start, end) for start, end in runs if end - start >= _MIN_WALKED_RUN]
+    missing = [
+        sha for start, end in runs if end - start < _MIN_WALKED_RUN for sha in order[start:end]
+    ]
+    if len(missing) > _MAX_PATCHED_COMMITS or len(long_runs) > _MAX_WALKED_RUNS:
+        return None
+    if not _walk_runs(repo, rev_range, order, long_runs, cache.records):
         return None
     for start in range(0, len(missing), _PATCH_CHUNK):
         _, fresh = _read_commits(repo, "--no-walk=unsorted", *missing[start : start + _PATCH_CHUNK])
@@ -409,6 +425,25 @@ def _cached_read(
     if any(sha not in cache.records for sha in order):
         return None
     return order, cache.records
+
+
+def _walk_runs(
+    repo: Any,
+    rev_range: str,
+    order: list[str],
+    runs: list[tuple[int, int]],
+    records: dict[str, Any],
+) -> bool:
+    """Read each run of *order* into *records* with one ranged walk; ``False`` on any mismatch.
+
+    ``--skip`` and ``-N`` count the commits left after ``--no-merges``, as *order* does.
+    """
+    for start, end in runs:
+        walked, fresh = _read_commits(repo, rev_range, f"--skip={start}", f"-{end - start}")
+        if walked != order[start:end]:
+            return False
+        records.update(fresh)
+    return True
 
 
 def _split_record(record: str) -> tuple[tuple[str, str, str, str], str]:

@@ -1087,12 +1087,18 @@ class GitIndexer:
         return out
 
     def capture_new_commit_rows(
-        self, *, since_ts: int | None = None, file_rows_sink: list[dict] | None = None
+        self,
+        *,
+        since_ts: int | None = None,
+        file_rows_sink: list[dict] | None = None,
+        known_shas: set[str] | None = None,
     ) -> list[dict]:
         """Build ``git_commits`` rows for commits newer than *since_ts*.
 
         *file_rows_sink*, when given, is extended with the matching
         ``git_commit_files`` rows from the same walk.
+        When *known_shas* is supplied, commits sharing *since_ts* whose shas
+        are not in *known_shas* are retained (#6150).
 
         The incremental counterpart to the ``commit_sink`` capture on
         ``index_repo``: walks the repo-wide commit index (one ``git log`` pass,
@@ -1122,6 +1128,7 @@ class GitIndexer:
                 set(),
                 commit_sink=sink,
                 since_ts=since_ts,
+                known_shas=known_shas,
                 provenance_classifier=self._provenance_classifier(),
             )
             rows = build_commit_rows(sink)

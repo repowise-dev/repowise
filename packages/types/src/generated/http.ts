@@ -3362,6 +3362,7 @@ export interface MeasuredResponse {
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
   statements?: StatementGroup | null;
+  routes?: RouteGroup | null;
   benchmarks?: BenchmarkGroup | null;
 }
 
@@ -4666,6 +4667,77 @@ export interface RiskScaleRange {
   maximum: number | null;
 }
 
+/** What the requests one handler's routes served did in a production window. */
+export interface RouteFacts {
+  requests: number;
+  total_ms: number;
+  mean_ms: number | null;
+  p95_ms: number | null;
+  errors: number | null;
+  routes: string[];
+}
+
+export interface RouteGroup {
+  runs: RouteRun[];
+  rows: RouteRow[];
+  total: number;
+}
+
+/**
+ * One handler's production requests in one run, as a measured row.
+ *
+ * ``rank`` is by request time and ``share`` is of the window's stored
+ * request time; there is no interval, inclusive share, samples or
+ * freshness: the route was joined to its handler when it was stored. No
+ * ``next_step``: no rule reads a route's cost yet. ``verify`` is the next
+ * production window.
+ */
+export interface RouteRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  routes: RouteFacts;
+}
+
+/** A production route workload's newest run. */
+export interface RouteRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  requests: number;
+  routes: number;
+  unattributed: Record<string, UnattributedRoutes>;
+  window: ProductionWindow;
+}
+
 /** One agent's savings, labelled from the identity registry. */
 export interface SavingsAgentRow {
   agent: string;
@@ -5467,6 +5539,12 @@ export interface TransitiveEntry {
   path: string;
   depth: number;
   via?: string | null;
+}
+
+export interface UnattributedRoutes {
+  routes: number;
+  total_ms: number;
+  share: number | null;
 }
 
 export interface UnattributedStatements {

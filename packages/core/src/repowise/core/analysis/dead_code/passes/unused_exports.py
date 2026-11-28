@@ -167,7 +167,7 @@ class UnusedExportPass:
         # Roots include framework-instantiated files the runtime constructs.
         # Not ``is_file_reachable``: its barrel rescue is scoped to files, and an
         # unused symbol defined in a barrel should still be flagged.
-        # A JVM ``main`` launches its file the same way.
+        # A JVM or C# ``main`` launches its file the same way.
         if is_reachability_root(node_data) or defines_main(self.graph, str(node)):
             return None
         if node_data.get("is_test", False):
@@ -274,7 +274,7 @@ class UnusedExportPass:
             blob = self.ctx._source_map.get(path)
             if blob is None or _COMPUTED_ATTRIBUTE_RE.search(blob):
                 return None
-            tokens |= file_identifiers(blob)
+            tokens |= file_identifiers(blob, path)
         return frozenset(tokens)
 
     def _is_export_candidate(
@@ -283,7 +283,7 @@ class UnusedExportPass:
         """Whether a public symbol is the kind of thing the pass may report."""
         if not self._is_importable_by_name(file_ctx, sym):
             return False
-        return not self._used_without_an_edge(file_ctx.node_data, sym, dynamic_patterns)
+        return not self._used_without_an_edge(file_ctx, sym, dynamic_patterns)
 
     def _is_importable_by_name(self, file_ctx: _ExportFile, sym: dict) -> bool:
         """False for symbols no importer can name: members, intrinsics, declarations."""
@@ -324,9 +324,10 @@ class UnusedExportPass:
         )
 
     def _used_without_an_edge(
-        self, node_data: dict, sym: dict, dynamic_patterns: tuple[str, ...]
+        self, file_ctx: _ExportFile, sym: dict, dynamic_patterns: tuple[str, ...]
     ) -> bool:
         """Uses the graph cannot carry: framework registration, dynamic names, local refs."""
+        node_data = file_ctx.node_data
         sym_name = sym.get("name", "")
         decorators = sym.get("decorators", [])
 
@@ -342,7 +343,7 @@ class UnusedExportPass:
         if self.ctx._name_matches_dynamic(sym_name, dynamic_patterns):
             return True
 
-        if _nested_class_used(node_data, sym):
+        if _nested_class_used(node_data, sym, lambda: self._imported_packages(file_ctx.node)):
             return True
 
         # TS/JS: type names referenced in type positions of the same file.
@@ -354,6 +355,15 @@ class UnusedExportPass:
         # as values, annotations, decorators), see ``ingestion/python_local_refs.py``.
         local_refs = node_data.get("local_refs")
         return bool(local_refs and sym_name in local_refs)
+
+    def _imported_packages(self, node: Any) -> frozenset[str]:
+        """Top-level packages *node* imports, from its ``external:`` edges."""
+        prefix = "external:"
+        return frozenset(
+            str(target)[len(prefix) :].split(".", 1)[0]
+            for target in self.graph.successors(node)
+            if str(target).startswith(prefix)
+        )
 
     def _export_use_evidence(
         self, file_ctx: _ExportFile, sym_id: str, sym: dict
@@ -539,5 +549,5 @@ def _namespace_rescues(file_ctx: _ExportFile, sym_name: str) -> bool:
     if not file_ctx.imported_as_namespace:
         return False
     tokens = file_ctx.namespace_tokens
-    token = searchable_token(sym_name)
+    token = searchable_token(sym_name, path=str(file_ctx.node))
     return tokens is None or not token or token in tokens

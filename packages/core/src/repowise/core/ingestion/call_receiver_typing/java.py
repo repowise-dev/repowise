@@ -129,16 +129,31 @@ class JavaTypeVisibility:
         expect_path = file_of_symbol(expect_id)
         return index is not None and file_of_symbol(sym_id) in index.same_package_files(expect_path)
 
-    def _visible_java_type(self, file_path: str, bare: str, type_file: str) -> bool:
+    def _visible_java_type(
+        self, file_path: str, bare: str, type_file: str, *, wildcard: bool = True
+    ) -> bool:
         """Whether Java lets *file_path* write *bare* for the type in *type_file*.
 
-        Its own file, its package, or a single-type import of that file. A
-        wildcard import is not enough: the name may be another package's.
+        Its own file, its package, a single-type import of that file, or, with *wildcard*,
+        a wildcard import of the package of *type_file*. A type of the file, of its package
+        or of a single-type import shadows a type of the same name that a wildcard import
+        brings in, so a caller that asks for each of several declarations of a name
+        (``_visible_top_level_type``) asks with *wildcard* false first and with it true only
+        when none is seen. A caller that asks for a name the repository declares once
+        (``_inherited_typed_target``) asks with the wildcard at once.
+        A wildcard import of another package is not enough: the name may be its.
         """
         if type_file == file_path or self._import_names.get(file_path, {}).get(bare) == type_file:
             return True
         index = self._get_jvm_index()
-        return index is not None and type_file in index.same_package_files(file_path)
+        if index is None:
+            return False
+        if type_file in index.same_package_files(file_path):
+            return True
+        parsed, package = self._parsed_files.get(file_path), index.package_for_file(type_file)
+        if not wildcard or parsed is None or not package:
+            return False
+        return any(imp.module_path == f"{package}.*" for imp in parsed.imports)
 
     def _read_java_type(self, file_path: str, scope_id: str, spelled: str) -> str:
         """*spelled* as Java reads it in *scope_id*: a member type's id, else its bare name.
@@ -250,18 +265,30 @@ class JavaTypeVisibility:
         return True
 
     def _visible_top_level_type(self, file_path: str, name: str) -> str | None:
-        """The one top-level type *name* that *file_path* sees, by import, file or package."""
+        """The one top-level type *name* that *file_path* sees, by import, file or package.
+
+        A type of the file, of its package or of a single-type import shadows a type of
+        the same name that a wildcard import brings in, so the wildcard is asked last.
+        """
         found = self._class_named(file_path, name)
         if found is not None:
             return found[1]
         if name in self._externally_bound_names(file_path):
             return None
-        ids = {
-            identity[0]
+        top_level = [
+            path
             for path, identity, _ in self._declared_types_named(name)
-            if identity[0] == make_symbol_id(path, name) and self._visible_java_type(file_path, name, path)
-        }
-        return next(iter(ids)) if len(ids) == 1 else None
+            if identity[0] == make_symbol_id(path, name)
+        ]
+        for wildcard in (False, True):
+            ids = {
+                make_symbol_id(path, name)
+                for path in top_level
+                if self._visible_java_type(file_path, name, path, wildcard=wildcard)
+            }
+            if ids:
+                return next(iter(ids)) if len(ids) == 1 else None
+        return None
 
     def _java_member_target(
         self, file_path: str, call: CallSite, caller_id: str, type_id: str

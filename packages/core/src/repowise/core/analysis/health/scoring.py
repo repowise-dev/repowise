@@ -637,10 +637,22 @@ _SCORED_ONLY_IN: dict[str, frozenset[str]] = {
     "error_handling": frozenset({"python"}),
 }
 
+#: File tags whose files are parsed as TypeScript buffers: a Vue or Svelte SFC
+#: blanks its template and style so the script blocks sit at byte-identical
+#: offsets in a valid TS buffer (``languages/specs/vue.py``, ``specs/svelte.py``).
+#: Their per-language cells are therefore the typescript cells; the alias keeps
+#: a ``.vue`` / ``.svelte`` file from scoring differently from the ``.ts`` it
+#: contains (code-health.md §5.4).
+_SCRIPT_LANGUAGE_ALIAS: dict[str, str] = {
+    "vue": "typescript",
+    "svelte": "typescript",
+}
+
 
 def _advisory_in(name: str, language: str | None) -> bool:
     if language is None:
         return False
+    language = _SCRIPT_LANGUAGE_ALIAS.get(language, language)
     if name in _SCORED_ONLY_IN:
         return language not in _SCORED_ONLY_IN[name]
     return language in _ADVISORY_BY_LANGUAGE.get(name, ())

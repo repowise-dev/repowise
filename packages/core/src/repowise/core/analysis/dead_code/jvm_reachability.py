@@ -178,8 +178,21 @@ def _annotation_names(sym: dict[str, Any]) -> set[str]:
     }
 
 
+def _is_csharp_main(sym: dict[str, Any]) -> bool:
+    return (
+        sym.get("name") == "Main"
+        and sym.get("kind") == "method"
+        and "static" in (sym.get("modifiers") or ())
+    )
+
+
 def defines_main(graph: Any, file_node: str) -> bool:
-    """True if *file_node* is a Java or Kotlin file declaring a program ``main``."""
+    """True if *file_node* is a Java, Kotlin or C# file declaring a program ``main``.
+
+    A top-level-statements C# program has no ``Main`` symbol and is not seen here.
+    """
+    if file_node.endswith(".cs"):
+        return any(_is_csharp_main(sym) for sym in _defined_symbols(graph, file_node))
     if not file_node.endswith((".java", ".kt")):
         return False
     is_java = file_node.endswith(".java")

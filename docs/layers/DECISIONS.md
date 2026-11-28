@@ -80,7 +80,10 @@ repowise decision add --agent claude_code --decision D --rationale R \
 The record comes into force when that commit lands on the default branch,
 whether by merge, squash or rebase. A commit reverted on the default branch
 grants nothing. After a commit whose message states a choice, a hook asks the
-agent once a session to record it (`capture_prompt`, on in `full`).
+agent once a session to record it (`capture_prompt`, on in `full`). A session
+that never commits can be asked as it stops instead: `repowise config set
+decisions.stop_prompt true` (off by default) asks once a session, only when the
+session did real work and recorded nothing.
 
 | Flag | Meaning |
 |------|---------|
@@ -297,6 +300,7 @@ Agents get decisions at the moment they matter, with near-zero fixed cost per se
 | Editing a governed file | One line per decision in force (up to three per file, each once a session, at most six a session) |
 | After a commit | The capture prompt when the message states a choice; with `upkeep_prompt` on, the decisions the commit's files are under and the one command to settle each (still holds, replaced, knowingly broken) |
 | `CLAUDE.md` / `AGENTS.md` | One pointer line to `get_why` when any decision is in force, plus the pinned decisions by name |
+| Stopping | Nothing, unless `decisions.stop_prompt` is on: then, once a session that did real work and recorded no decision, a request to record one or reply that there is none |
 | Session start | Nothing, unless `decisions.session_start` is on |
 | `get_context`, `get_risk`, `get_change_risk` | A one-line pointer to `get_why` when a decision governs a named file; `get_risk` flags stale or contradicted governance |
 | `get_answer` | Decisions in force that answer a why-question, cited in the answer |

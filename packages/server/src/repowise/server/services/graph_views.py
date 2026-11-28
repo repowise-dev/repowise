@@ -204,9 +204,21 @@ _CODE_NODE_COLUMNS = (
     GraphNode.pagerank,
     GraphNode.is_entry_point,
 )
-# Entries, one per (repository, exclude rules) at the current index state;
-# older states are dropped on rebuild. Each holds a whole graph in memory.
-_code_graphs = IndexStampCache(4)
+# Rows (nodes plus edges) the cached graphs may hold together. A 119k-node /
+# 397k-edge graph is 516k rows and a few hundred MB of heap, so this keeps the
+# largest repository beside one medium one. Past it the least recently used
+# repository's graph goes; the newest is always kept, however large. A fixed
+# ceiling; make it a setting if a deployment needs more graphs resident.
+_CODE_GRAPH_ROW_BUDGET = 750_000
+
+
+def _code_graph_rows(graph: CodeGraph) -> int:
+    return len(graph.nodes) + len(graph.edges)
+
+
+# One entry per repository, at its current index state and exclude rules.
+# Each holds a whole graph in memory, so the cache is bounded by rows too.
+_code_graphs = IndexStampCache(4, weigh=_code_graph_rows, budget=_CODE_GRAPH_ROW_BUDGET)
 # One build per repository at a time, so a cold burst of requests loads once.
 _code_graph_locks: dict[str, asyncio.Lock] = {}
 
@@ -247,9 +259,10 @@ async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any
         if key in _code_graphs:
             return _code_graphs.get(key)
         loaded = await _build_code_graph(session, repo_id, exclude_spec)
-        # Older index states are never asked for again; other exclude rules
-        # at this state stay.
-        _code_graphs.drop_repo_except(repo_id, key[:3])
+        # One graph per repository: an older index state is never asked for
+        # again, and a second exclude spec is rare and rebuilds in seconds.
+        # Dropped once the build lands, so requests during it still hit.
+        _code_graphs.drop_repo(repo_id)
         return _code_graphs.remember(key, loaded)
 
 
@@ -331,7 +344,7 @@ async def build_architecture_graph(
         langs: dict[str, int] = {}
         for m in members:
             sig = signals.get(m.node_id, EMPTY_SIGNALS)
-            if sig.is_hotspot:
+            if sig.shown_hotspot:
                 hotspot_count += 1
             if sig.is_dead:
                 dead_count += 1

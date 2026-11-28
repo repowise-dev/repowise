@@ -462,6 +462,16 @@ _CAPTURE_HOOK_COMMAND = (
     'printf "%s" "$input" | repowise-augment; fi;; esac'
 )
 
+#: The Stop entry: the opt-in once-a-session ask to record a decision
+#: (``decisions.stop_prompt``). Installed with the other hooks and silent until
+#: a repository turns the switch on; ``--decision-stop`` routes it past the
+#: augment package, so a stop in a repository without the switch pays one
+#: config read. No matcher: Stop has no tool to match.
+_STOP_HOOK_COMMAND = (
+    "if command -v repowise-augment >/dev/null 2>&1; "
+    "then exec repowise-augment --decision-stop; fi"
+)
+
 _AUGMENT = "repowise-augment"
 _REWRITE = "repowise-rewrite"
 
@@ -479,6 +489,11 @@ def _capture_hook_command() -> str:
 
 def _rewrite_hook_command() -> str:
     return hook_shell_command(_REWRITE)
+
+
+def _stop_hook_command() -> str:
+    """:data:`_STOP_HOOK_COMMAND`, pinned to the running install when it can be."""
+    return hook_shell_command(_AUGMENT, "exec {} --decision-stop")
 
 
 #: The gate releases before :data:`_CAPTURE_GATE` wrote: ``git commit`` alone.
@@ -506,8 +521,8 @@ _BARE_COMMANDS = ("repowise augment", _AUGMENT, _REWRITE)
 def _current_command(cmd: str) -> str | None:
     """The command this release writes in place of *cmd*, or None if *cmd* is not ours.
 
-    Only the plain augment, capture and rewrite commands qualify: the coverage
-    and health-gate commands carry a flag and are written elsewhere.
+    Only the plain augment, capture, rewrite and Stop commands qualify: the
+    coverage and health-gate commands carry a flag and are written elsewhere.
     """
     if cmd in ("repowise augment", _AUGMENT) or cmd.endswith(f"exec {_AUGMENT}; fi"):
         return None if " --" in cmd else _augment_hook_command()
@@ -515,6 +530,8 @@ def _current_command(cmd: str) -> str | None:
         return _rewrite_hook_command()
     if cmd.endswith(f"| {_AUGMENT}; fi;; esac"):
         return _capture_hook_command()
+    if cmd.endswith(f"exec {_AUGMENT} --decision-stop; fi"):
+        return _stop_hook_command()
     return None
 
 
@@ -562,7 +579,7 @@ def _refresh_hook_commands(hooks: dict, *, repin: bool) -> bool:
 #: Where :func:`claude_code_hook_commands` says a user-level hook lives. Only
 #: these commands carry a pinned path that ``repowise agents refresh`` rewrites.
 CLAUDE_SETTINGS_LABEL = "~/.claude/settings.json"
-_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure")
+_PLUGIN_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop")
 
 
 def claude_code_hook_commands(repo_path: Path | None = None) -> list[tuple[str, str]]:
@@ -804,6 +821,17 @@ def _backfill_event(hooks: dict, event: str, entry_factory) -> bool:
     return False
 
 
+def _stop_entry() -> dict:
+    return {"hooks": [{"type": "command", "command": _stop_hook_command(), "timeout": 10}]}
+
+
+def _plugin_ships_stop_hook() -> bool:
+    """Whether an enabled repowise plugin already carries the Stop entry."""
+    return any(
+        _has_repowise_hook(entries) for _, entries in _plugin_hook_entries("Stop")
+    )
+
+
 def _failure_entry() -> dict:
     return {
         "matcher": _FAILURE_MATCHER,
@@ -993,8 +1021,9 @@ def install_claude_code_hooks() -> Path | None:
     Read-intelligence notices, and a shell entry asks for a decision after a
     commit and checks freshness after a commit, pull, merge, rebase or
     cherry-pick; SessionStart injects the live index-freshness
-    context block; PostToolUseFailure carries the wrong-path rescue. Existing
-    user hooks are preserved.
+    context block; PostToolUseFailure carries the wrong-path rescue; Stop
+    carries the opt-in decision ask, silent unless a repository turns on
+    ``decisions.stop_prompt``. Existing user hooks are preserved.
     """
     settings_path = _claude_code_settings_path()
 
@@ -1041,6 +1070,8 @@ def install_claude_code_hooks() -> Path | None:
         # AttributeError the OSError handler below would not catch.
         _backfill_event(hooks, "SessionStart", _session_start_entry)
         _backfill_event(hooks, "PostToolUseFailure", _failure_entry)
+        if not _plugin_ships_stop_hook():
+            _backfill_event(hooks, "Stop", _stop_entry)
         # The capture prompt ships on, so its shell entry is part of the
         # install, unless the plugin already runs the same one.
         _sync_capture_entry(post_hooks, not _plugin_ships_capture_hook())
@@ -1670,6 +1701,8 @@ def migrate_claude_code_hooks() -> bool:
         if _backfill_event(hooks, "SessionStart", _session_start_entry):
             changed = True
         if _backfill_event(hooks, "PostToolUseFailure", _failure_entry):
+            changed = True
+        if not _plugin_ships_stop_hook() and _backfill_event(hooks, "Stop", _stop_entry):
             changed = True
         # The capture prompt ships on: add its shell entry, or refresh one an
         # older release wrote, unless the plugin already runs it.

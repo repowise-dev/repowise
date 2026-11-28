@@ -470,13 +470,16 @@ A language absent from the dict runs only the shared tiers. The seam exists so a
 language-specific tier can claim a call *before* a weaker shared one gets it.
 Go's package tier is the load-bearing example: `pkg.Func()` is claimed outright
 by `_resolve_go_package_call`, so a package qualifier never reaches the typed
-fallback and cannot be mistaken for a variable.
+fallback and cannot be mistaken for a variable. `_resolve_go_package_var_call`
+follows it for a receiver that is a package variable or a chain through one
+(`router.RouterGroupApp.System.InitBaseRouter()`), typed hop by hop by
+`languages/go_selector_types.py`.
 
 Registered today:
 
 | Language | `free` | `member` | `member_fallback` |
 |---|---|---|---|
-| Go | same-package | package call | typed receiver |
+| Go | same-package | package call, package variable | typed receiver |
 | Java / Kotlin | JVM same-package | JVM receiver same-package | typed receiver |
 | C# / Python / Swift | — | — | typed receiver |
 | C / C++ | same build target | — | — |
@@ -528,8 +531,9 @@ the same four scopes as an explicit receiver.
 
 The per-language declaration patterns live in
 `ingestion/languages/receiver_types.py` as `_LANGUAGE_PATTERNS`, keyed by tag.
-They are **regexes over comment-stripped source**, not an AST walk. That is a deliberate
-shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
+They are **regexes over comment-stripped source** (for Java, comment-, string- and
+char-literal-stripped: the text of a string declares nothing), not an AST walk. That is a
+deliberate shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
 does not get typed; the upgrade path is an AST-backed local-scope table, which
 was not built because the pattern families cover the idiomatic shapes and the
 measured miss rate did not justify the cost.
@@ -538,7 +542,7 @@ Pattern families today:
 
 | Family | Languages | Shapes |
 |---|---|---|
-| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name`, `var name = new Type()` |
+| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name` (Java also `Type NAME`, a constant), `var name = new Type()` |
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
@@ -791,7 +795,7 @@ dependency surface their syntax supports.
 | Tier | Language | Extensions | Import resolution |
 |------|----------|-----------|-------------------|
 | Full | **Python** | `.py` `.pyi` | Source-root-aware module index (`src/`, monorepo `packages/*/src`, PEP 420), `__init__.py` re-export barrels |
-| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
+| Full | **TypeScript** | `.ts` `.tsx` `.mts` `.cts` | ESM and `require()`, tsconfig and Vite `resolve.alias` path aliases, npm/yarn/pnpm workspaces, `export * from` barrels |
 | Full | **JavaScript** | `.js` `.jsx` `.mjs` `.cjs` | `import` and `require()`, including CommonJS re-export shapes |
 | Full | **Svelte** | `.svelte` | The TS/JS resolver plus SvelteKit's `$lib` and `#` subpath imports |
 | Full | **Vue** | `.vue` | The TS/JS resolver plus config aliases, directory-index components, router `import()` specifiers |
@@ -806,7 +810,7 @@ dependency surface their syntax supports.
 | Full | **Apex** | `.cls` `.trigger` `.apex` | No imports: names resolve within the file's sfdx project, a declared package dependency or a namespace prefix |
 | Good | **C** | `.c` | `#include` via `compile_commands.json` (shares the C++ grammar) |
 | Good | **Swift** | `.swift` | SPM `Package.swift` targets, intra-module type references, `@main` entry points |
-| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references |
+| Good | **PHP** | `.php` | `use` declarations through PSR-4 from every `composer.json`, same-namespace and fully qualified class references, `include` / `require` with an unparenthesized literal path |
 | Good | **Dart** | `.dart` | `import` / `export` / `part`, `package:` via every `pubspec.yaml` |
 | Good | **Object Pascal** | `.pas` `.pp` `.dpr` `.dpk` `.lpr` | `uses` clauses per compiling project: `.dpr`/`.dpk`/`.lpr` `in '...'` paths, `.dproj` search paths and unit scope names, Lazarus `.lpi` unit paths, `.lpk` file lists and unit paths; same-named platform units reach every variant; project files as entry points |
 | Good | **COBOL** | `.cbl` `.cob` `.cobol` `.cpy` `.dcl` (DCLGEN, by content) | `COPY` members to copybooks; literal `CALL`, `PERFORM` and CICS `LINK`/`XCTL` targets, with constants followed; dynamic targets shown as such |
@@ -1181,6 +1185,13 @@ credential's own endpoint is not read.
   objects with no metadata file in the repository get no edge.
 - **Scala import resolution is partial**, and ScalaTest's infix DSL
   (`x shouldBe y`) is not counted as an assertion.
+- **Elixir has no framework edges.** Module references come from `alias`,
+  `import`, `require` and `use` only, so Phoenix routes, endpoint `plug`s,
+  supervisor children, Oban workers, mix tasks and bare module values reach
+  nothing.
+- **PHP computed includes make no edge.** `require_once(...)`, `__DIR__ .`,
+  `"$dir/x.php"` and `$GLOBALS[...] .` paths are not resolved; only an
+  unparenthesized literal path is.
 
 ---
 

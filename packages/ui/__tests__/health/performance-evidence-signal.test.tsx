@@ -318,6 +318,27 @@ describe("Runtime evidence: the run's header", () => {
     );
   });
 
+  it("names an unranked production run's window on its overview line", async () => {
+    const claim = "in production over 2026-10-30 to 2026-11-26, deployed ee257d145f19";
+    render(
+      <PerformanceView
+        adapter={adapter({
+          getMeasured: async () => unranked("not_ranked"),
+          listEvidenceRuns: runsOf([
+            aheadRun,
+            {
+              ...indexedRun,
+              class: "production",
+              window: { start: null, end: null, base_commit: null, claim },
+            },
+          ]),
+        })}
+      />,
+    );
+    const block = (await screen.findByText("982 s wall")).closest("[data-run-overview]") as HTMLElement;
+    expect(within(block).getByText(claim)).toBeTruthy();
+  });
+
   it("names a pruned profile from the ranked run, and copies the host's prompt", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });

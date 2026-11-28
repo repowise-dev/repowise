@@ -163,7 +163,9 @@ def _string_members(value: ast.expr) -> set[str]:
         return _string_members(value.left) | _string_members(value.right)
     if isinstance(value, ast.Set | ast.List | ast.Tuple):
         return {
-            el.value for el in value.elts if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            el.value
+            for el in value.elts
+            if isinstance(el, ast.Constant) and isinstance(el.value, str)
         }
     return set()  # a bare Name — checked where it is defined
 
@@ -229,9 +231,7 @@ def _resolved_call_origins() -> dict[str, set[float]]:
                 continue
             confidence = node.args[2] if len(node.args) > 2 else None
             confs = found.setdefault(origin.value, set())  # type: ignore[attr-defined]
-            if isinstance(confidence, ast.Constant) and isinstance(
-                confidence.value, int | float
-            ):
+            if isinstance(confidence, ast.Constant) and isinstance(confidence.value, int | float):
                 confs.add(float(confidence.value))
     return found
 
@@ -355,9 +355,7 @@ class TestEdgeTypeVocabulary:
         from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
 
         orphans = RESOLUTION_ORIGIN_VALUES - set(_resolved_call_origins())
-        assert not orphans, (
-            f"resolution origin(s) declared with no producer: {sorted(orphans)}"
-        )
+        assert not orphans, f"resolution origin(s) declared with no producer: {sorted(orphans)}"
 
     def test_each_resolution_origin_carries_one_confidence(self) -> None:
         """One origin, one confidence — what makes the stamping auditable.
@@ -375,15 +373,11 @@ class TestEdgeTypeVocabulary:
 
     def test_reads_edge_producer_is_strictly_file_level(self) -> None:
         """`reads` is produced only at the file level: C# member access and Salesforce schema."""
-        producers = [
-            path for path, types in _edge_type_literals().items() if "reads" in types
-        ]
+        producers = [path for path, types in _edge_type_literals().items() if "reads" in types]
         assert sorted(producers) == [
             "packages/core/src/repowise/core/ingestion/languages/csharp_member_reads.py",
             "packages/core/src/repowise/core/ingestion/salesforce_schema.py",
-        ], (
-            f"`reads` edge emitted by unexpected producers: {producers}"
-        )
+        ], f"`reads` edge emitted by unexpected producers: {producers}"
 
 
 # ============================================================================
@@ -713,7 +707,9 @@ class TestNoTestPathCopies:
     """
 
     def test_no_new_test_path_predicates(self) -> None:
-        offenders = {p: names for p, names in _test_path_offenders().items() if p not in _TEST_PATH_KNOWN}
+        offenders = {
+            p: names for p, names in _test_path_offenders().items() if p not in _TEST_PATH_KNOWN
+        }
         assert not offenders, (
             "New test-path predicate(s) outside repowise.core.test_paths:\n"
             + "\n".join(f"  {p}: {', '.join(names)}" for p, names in sorted(offenders.items()))
@@ -738,14 +734,15 @@ class TestNoTestPathCopies:
     def test_a_wrapper_is_not_a_copy(self) -> None:
         """The check must not push call sites into re-deriving to dodge it."""
         wrapper = ast.parse(
-            "def _is_test_path(p):\n"
-            "    return is_test_related_path(p) or p.endswith('.fixture')\n"
+            "def _is_test_path(p):\n    return is_test_related_path(p) or p.endswith('.fixture')\n"
         ).body[0]
         copy = ast.parse("def _is_test_path(p):\n    return '/tests/' in p\n").body[0]
         assert _delegates(wrapper)
         assert not _delegates(copy)
 
-    @pytest.mark.parametrize("name", ["is_test_path", "is_test_support_path", "is_test_related_path"])
+    @pytest.mark.parametrize(
+        "name", ["is_test_path", "is_test_support_path", "is_test_related_path"]
+    )
     def test_shared_module_exports_the_replacements(self, name: str) -> None:
         assert callable(getattr(test_paths, name))
 
@@ -810,12 +807,13 @@ _BARE_TYPE_KNOWN: dict[str, int] = {
     # dotted receiver (`this.a.b`) hop by hop: an instance path, where every
     # segment is a variable or a field and none is discarded, and the `go.py` one that
     # reads the head of a go return type (`pkg.T`) to find the package the
-    # callee's file imports as `pkg`; its tail comes from the shared helper.
+    # callee's file imports as `pkg`; its tail comes from the shared helper. The
+    # second `go.py` site walks a go receiver (`v.f.g`) the same way, hop by hop.
     _PREFIX + "call_resolver.py": 3,
     # Symbol IDs: a type node's file and name, and a method's enclosing class.
     _PREFIX + "call_inheritance.py": 3,
     _PREFIX + "call_receiver_typing/__init__.py": 3,
-    _PREFIX + "call_receiver_typing/go.py": 1,
+    _PREFIX + "call_receiver_typing/go.py": 2,
     _PREFIX + "models.py": 1,
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
@@ -828,6 +826,8 @@ _BARE_TYPE_KNOWN: dict[str, int] = {
     _PREFIX + "dynamic_hints/swift.py": 1,
     # Splits an import statement's package path, not a type reference.
     _PREFIX + "languages/jvm_same_package.py": 1,
+    # Splits a major-version suffix off a go import path (`gopkg.in/yaml.v3`).
+    _PREFIX + "languages/go_selector_types.py": 1,
     # Splits a module-path string (`"pkg.mod.Name"`) into the module it loads
     # and the attribute it reads; the head is a module path, not a qualifier.
     _PREFIX + "dynamic_hints/python_imports.py": 1,
@@ -936,11 +936,17 @@ class TestNoBareTypeNameCopies:
     """
 
     def test_no_new_bare_type_name_expressions(self) -> None:
-        offenders = {p: hits for p, hits in _bare_type_offenders().items() if len(hits) > _BARE_TYPE_KNOWN.get(p, 0)}
+        offenders = {
+            p: hits
+            for p, hits in _bare_type_offenders().items()
+            if len(hits) > _BARE_TYPE_KNOWN.get(p, 0)
+        }
         assert not offenders, (
             "New qualifier-splitting expression(s) outside"
             " repowise.core.ingestion.type_names:\n"
-            + "\n".join(f"  {p}\n    " + "\n    ".join(hits) for p, hits in sorted(offenders.items()))
+            + "\n".join(
+                f"  {p}\n    " + "\n    ".join(hits) for p, hits in sorted(offenders.items())
+            )
             + "\n\nCall bare_type_name / strip_type_arguments / strip_call_arguments from"
             " repowise.core.ingestion.type_names instead. If a site genuinely asks a"
             " different question, say why in the code and add it to _BARE_TYPE_KNOWN in this file."
@@ -1046,7 +1052,8 @@ def _barrel_check_assignment(node: ast.AST) -> list[str]:
     if (
         isinstance(node, ast.Assign)
         and any(
-            isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES" for target in node.targets
+            isinstance(target, ast.Name) and target.id == "BARREL_FILENAMES"
+            for target in node.targets
         )
     ) or (
         isinstance(node, ast.AnnAssign)
@@ -1095,7 +1102,6 @@ def _barrel_offenders() -> dict[str, list[str]]:
 
 
 class TestNoBarrelFilenameCopies:
-
     def test_no_new_barrel_filename_copies(self) -> None:
         offenders = {p: hits for p, hits in _barrel_offenders().items() if p not in _BARREL_KNOWN}
         assert not offenders, (
@@ -1120,7 +1126,9 @@ class TestNoBarrelFilenameCopies:
             ("src/component.tsx", False),
         ],
     )
-    def test_split_file_is_generated_path_covers_all_barrels(self, path: str, expected: bool) -> None:
+    def test_split_file_is_generated_path_covers_all_barrels(
+        self, path: str, expected: bool
+    ) -> None:
         assert _is_generated_path(path) is expected
 
 
@@ -1279,6 +1287,9 @@ _EMBEDDERS = frozenset(_BUILTIN_EMBEDDERS)
 
 #: Path (relative to ``packages/``) -> names it may spell, and why.
 _ALLOWED: dict[str, frozenset[str]] = {
+    # The extras table is keyed by extra name, and the ``litellm`` extra
+    # shares its name with the package it installs.
+    "core/src/repowise/core/extras.py": frozenset({"litellm"}),
     # ``opencode`` is a ``--target`` id as well as a provider.
     "cli/src/repowise/cli/agent_targets/registry.py": frozenset({"opencode"}),
     # Commit-trailer patterns naming the agent that wrote a commit.
@@ -1358,7 +1369,6 @@ def _sources() -> list[SourceFile]:
 
 
 class TestNoProviderNameBranches:
-
     def test_no_module_branches_on_a_provider_name(self):
         sources = _sources()
         unparsed = [src.rel for src in sources if src.tree is None]
@@ -1381,7 +1391,9 @@ class TestNoProviderNameBranches:
         for rel, names in _ALLOWED.items():
             path = PACKAGES / rel
             assert path.is_file(), f"{rel} is gone"
-            found = {node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))}
+            found = {
+                node.value for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))
+            }
             assert found & names, f"{rel} no longer spells any of {sorted(names)}"
 
     @pytest.mark.parametrize(
@@ -1417,7 +1429,9 @@ class TestNoProviderNameBranches:
 # Ceiling: one quantified class per match, so a run split across classes
 # (``[0-9a-f]{20}[0-9a-f]{20}``) passes. Nobody writes a commit id that way;
 # summing adjacent runs is the upgrade if one appears.
-_HEX_RUN = re.compile(r"\[(?=[^\]]*(?:a-f|A-F))(?=[^\]]*(?:0-9|\\d))(?:[0-9a-fA-F-]|\\d)+\]\{(\d*)(,?)(\d*)\}")
+_HEX_RUN = re.compile(
+    r"\[(?=[^\]]*(?:a-f|A-F))(?=[^\]]*(?:0-9|\\d))(?:[0-9a-fA-F-]|\\d)+\]\{(\d*)(,?)(\d*)\}"
+)
 
 
 def _admits_a_full_sha(text: str) -> bool:
