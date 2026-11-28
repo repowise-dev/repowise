@@ -200,6 +200,63 @@ class TestGoFunctionValues:
         assert not _inbound(graph, "handlers/handlers.go::Index", "references")
 
 
+class TestGoFieldChainReferences:
+    """A method passed as an argument through a field chain (``app.A.Create``).
+
+    The chain is typed the way calls type it — head from the parameter, each
+    hop from its struct field — so the handler gets a ``references`` edge and
+    never a ``calls`` edge. The struct is spelled on one line, as gofmt keeps
+    it, which the field scan used to miss entirely (#6483).
+    """
+
+    @staticmethod
+    def _layout(tmp_path: Path, app_struct: str) -> None:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")
+        (tmp_path / "handlers").mkdir()
+        (tmp_path / "handlers" / "api.go").write_text(
+            "package handlers\n\n"
+            "type Api struct{}\n\n"
+            "func (a *Api) List() {}\n\n"
+            "func (a *Api) Create() {}\n"
+        )
+        (tmp_path / "handlers" / "more.go").write_text(
+            "package handlers\n\n"
+            'import "net/http"\n\n'
+            f"{app_struct}\n\n"
+            "func Mount(mux *http.ServeMux, a *Api, app *App) {\n"
+            '\tmux.HandleFunc("/list", a.List)\n'
+            '\tmux.HandleFunc("/create", app.A.Create)\n'
+            "}\n"
+        )
+
+    def test_a_chain_typed_handler_gets_one_reference_edge(self, tmp_path: Path) -> None:
+        self._layout(tmp_path, "type App struct{ A *Api }")
+        graph = _build(tmp_path)
+        assert _inbound(graph, "handlers/api.go::Api::List", "references") == {
+            "handlers/more.go::Mount"
+        }
+        assert _inbound(graph, "handlers/api.go::Api::Create", "references") == {
+            "handlers/more.go::Mount"
+        }
+        assert not _inbound(graph, "handlers/api.go::Api::Create", "calls")
+
+    def test_a_multi_line_chain_types_the_same_way(self, tmp_path: Path) -> None:
+        self._layout(tmp_path, "type App struct {\n\tA *Api\n}")
+        graph = _build(tmp_path)
+        assert _inbound(graph, "handlers/api.go::Api::Create", "references") == {
+            "handlers/more.go::Mount"
+        }
+        assert not _inbound(graph, "handlers/api.go::Api::Create", "calls")
+
+    def test_an_untyped_chain_gets_no_edge(self, tmp_path: Path) -> None:
+        # No type named ``Other`` is declared anywhere, so the hop types
+        # nothing and the reference resolves nowhere.
+        self._layout(tmp_path, "type App struct{ A *Other }")
+        graph = _build(tmp_path)
+        assert not _inbound(graph, "handlers/api.go::Api::Create", "references")
+        assert not _inbound(graph, "handlers/api.go::Api::Create", "calls")
+
+
 class TestRustFunctionValues:
     def test_callback_argument_is_a_reference(self, tmp_path: Path) -> None:
         (tmp_path / "main.rs").write_text(
