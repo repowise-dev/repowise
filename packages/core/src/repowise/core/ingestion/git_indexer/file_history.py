@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -487,6 +488,97 @@ def _add_windows(
     meta["avg_commit_size"] = total_churn / c90 if c90 > 0 else 0.0
 
 
+_BACKPORT_TAG_RE = re.compile(
+    r"\[(?:PR\s*#(\d+)[^\]]*backport|[^\]]*\bbackport\b[^\]]*)\]", re.IGNORECASE
+)
+_BACKPORT_PREFIX_RE = re.compile(
+    r"^backport\s+(?:of\s+)?(?:#\d+|v?\d+\.\d+|to\s+)", re.IGNORECASE
+)
+_REVERT_RE = re.compile(r"^revert\b", re.IGNORECASE)
+_PR_PAREN_RE = re.compile(r"\(#(\d+)\)")
+_PR_TAG_RE = re.compile(r"#(\d+)")
+
+
+def _extract_backport_pr(
+    subject: str,
+    parens: list[str],
+    tag_match: re.Match[str] | None,
+) -> str | None:
+    if len(parens) >= 2:
+        return parens[0]
+    if tag_match and tag_match.group(1):
+        return tag_match.group(1)
+    if parens:
+        return parens[0]
+    all_prs = _PR_TAG_RE.findall(subject)
+    return all_prs[0] if all_prs else None
+
+
+def _commit_change_key(subject: str, sha: str = "") -> tuple[str, bool, str | None]:
+    """Return ``(change_id, is_backport, pr_number)`` for *subject*.
+
+    A backport subject carries the original PR number alongside the backport PR,
+    e.g. ``[PR #13930/b1f6c87b backport][3.14] ... (#13942)`` or
+    ``... (#13833) (#13836)``.
+    """
+    parens = _PR_PAREN_RE.findall(subject)
+    is_revert = bool(_REVERT_RE.search(subject))
+    tag_match = _BACKPORT_TAG_RE.search(subject)
+    prefix_match = _BACKPORT_PREFIX_RE.search(subject)
+
+    is_backport = (
+        not is_revert
+        and (len(parens) >= 2 or bool(tag_match) or bool(prefix_match))
+    )
+
+    if is_backport:
+        original_pr = _extract_backport_pr(subject, parens, tag_match)
+        ckey = f"pr:{original_pr}" if original_pr else f"backport:{sha}"
+        return ckey, True, original_pr
+
+    # Ordinary non-backport commits are keyed by sha so distinct commits
+    # sharing a PR suffix (e.g. from GitHub rebase-and-merge) count individually.
+    ckey = f"sha:{sha}"
+    pr_num = parens[-1] if parens else None
+    return ckey, False, pr_num
+
+
+def _group_by_author_change(
+    authored: list[_CommitRec],
+    credited: list[tuple[str, str]],
+    resolve: IdentityResolver,
+    seen_names: dict[str, str],
+) -> dict[tuple[str, str], list[_CommitRec]]:
+    by_change: dict[tuple[str, str], list[_CommitRec]] = {}
+    pr_keys: dict[tuple[str, str], str] = {}
+    parsed: list[tuple[_CommitRec, str, str, bool, str | None]] = []
+
+    for c, (name, email) in zip(authored, credited, strict=True):
+        key = resolve(name, email)
+        seen_names.setdefault(key, name)
+        ckey, is_bp, pr_num = _commit_change_key(c.subject, c.sha)
+        parsed.append((c, key, ckey, is_bp, pr_num))
+
+    for c, key, ckey, is_bp, pr_num in parsed:
+        if not is_bp:
+            by_change.setdefault((key, ckey), []).append(c)
+            if pr_num and (key, pr_num) not in pr_keys:
+                pr_keys[(key, pr_num)] = ckey
+
+    for c, key, ckey, is_bp, pr_num in parsed:
+        if not is_bp:
+            continue
+        target = pr_keys.get((key, pr_num)) if pr_num else None
+        if target:
+            by_change[(key, target)].append(c)
+        else:
+            if pr_num:
+                pr_keys[(key, pr_num)] = ckey
+            by_change.setdefault((key, ckey), []).append(c)
+
+    return by_change
+
+
 @dataclass
 class _Authors:
     """Per-identity commit counts and first/last commit times.
@@ -522,15 +614,22 @@ class _Authors:
         if resolve is None:
             resolve = build_identity_resolver(credited)
         authors = cls(resolve)
-        for c, (name, email) in zip(authored, credited, strict=True):
-            key = resolve(name, email)
+
+        # Count one commit per change: backports to release branches of the same
+        # change/fix must not count as multiple commits for the author.
+        by_author_change = _group_by_author_change(
+            authored, credited, resolve, authors.seen_names
+        )
+
+        for (key, _ckey), group in by_author_change.items():
             authors.counts[key] += 1
-            authors.seen_names.setdefault(key, name)
-            if c.ts >= recent_since_ts:
+            if any(c.ts >= recent_since_ts for c in group):
                 authors.recent_counts[key] += 1
-            if c.ts > 0:
-                authors.last_ts[key] = max(authors.last_ts.get(key, c.ts), c.ts)
-                authors.first_ts[key] = min(authors.first_ts.get(key, c.ts), c.ts)
+            valid_ts = [c.ts for c in group if c.ts > 0]
+            if valid_ts:
+                authors.last_ts[key] = max(authors.last_ts.get(key, 0), max(valid_ts))
+                authors.first_ts[key] = min(authors.first_ts.get(key, valid_ts[0]), min(valid_ts))
+
         return authors
 
     def name(self, key: str) -> str:
