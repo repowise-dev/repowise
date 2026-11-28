@@ -30,7 +30,7 @@ SPEC = LanguageSpec(
     # A pip application declares its dependencies in requirements files and no
     # distribution: ``backend/requirements.txt`` beside ``backend/app.py``.
     manifest_globs=("requirements*.txt",),
-    lock_files=("poetry.lock", "uv.lock"),
+    lock_files=("poetry.lock", "uv.lock", "pdm.lock"),
     generated_suffixes=("_pb2.py", "_pb2_grpc.py"),
     shebang_tokens=("python",),
     blocked_dirs=(

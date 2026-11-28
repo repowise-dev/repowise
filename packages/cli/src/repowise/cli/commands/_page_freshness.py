@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -67,7 +68,7 @@ async def stale_page_count(repo_path: Path, *, model_written: bool | None = None
             written = Page.page_type.in_(MODEL_WRITTEN_PAGE_TYPES)
             query = query.where(written if model_written else ~written)
             count = int((await session.execute(query)).scalar_one())
-            free = await _stale_model_free_count(session, stale)
+            free = sum((await stale_model_free_counts(session, stale)).values())
             return count - free if model_written else count + free
     except SQLAlchemyError:
         return None
@@ -75,9 +76,11 @@ async def stale_page_count(repo_path: Path, *, model_written: bool | None = None
         await engine.dispose()
 
 
-async def _stale_model_free_count(session: Any, stale: tuple) -> int:
-    """Stale model-free pages: metadata is read only for the types that can be one."""
+async def stale_model_free_counts(session: Any, stale: tuple) -> Counter[str]:
+    """Stale model-free pages by type: metadata is read only for the types that can be one."""
     rows = await session.execute(
-        select(Page.metadata_json).where(*stale, Page.page_type.in_(MODEL_FREE_PAGE_TYPES))
+        select(Page.page_type, Page.metadata_json).where(
+            *stale, Page.page_type.in_(MODEL_FREE_PAGE_TYPES)
+        )
     )
-    return sum(map(is_model_free, rows.scalars()))
+    return Counter(page_type for page_type, meta in rows if is_model_free(meta))

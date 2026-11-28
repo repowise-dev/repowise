@@ -230,6 +230,28 @@ def _is_python_method_eval(masked_source: str, match: re.Match) -> bool:
     return not qualifier and prefix.endswith(".") and not prefix.endswith("...")
 
 
+def _is_php_method_call(masked_source: str, match: re.Match[str]) -> bool:
+    """Whether a PHP ``eval(`` match is a method call, not the language construct.
+
+    PHP's ``eval`` is a construct called bare, ``eval($code)``. After ``->``,
+    ``?->`` or ``::`` it is a method, such as Redis ``EVAL`` running a Lua
+    script (``$this->redis->eval($script)``, ``Redis::eval(...)``).
+
+    A ``->`` can also be the tail of a decrement: ``$n-->eval($x)`` is
+    ``($n--) > eval($x)``, a bare eval. PHP's lexer pairs a run of dashes into
+    ``--`` from the left, so the last dash before ``>`` starts an arrow only
+    when the run is odd.
+    """
+    eval_at = masked_source.rfind("eval", match.start(), match.end())
+    before = masked_source[:eval_at].rstrip()
+    if before.endswith("::"):
+        return True
+    if not before.endswith("->"):
+        return False
+    dashes = len(before[:-1]) - len(before[:-1].rstrip("-"))
+    return dashes % 2 == 1
+
+
 def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> list[dict]:
     """Find executable eval/exec calls with AST or bounded lexical fallback.
 
@@ -281,11 +303,14 @@ def _call_findings(file_path: str, source: str, masked: Callable[[], str]) -> li
         snippet = _snippet(lines[lineno - 1]) if lineno <= len(lines) else ""
         findings.append({"kind": kind, "severity": severity, "snippet": snippet, "line": lineno})
 
+    is_php = file_path.lower().endswith(".php")
     for pattern, kind, severity in _CALL_PATTERNS:
         if kind == "exec_call" and not is_python:
             continue  # handled below, gated on child_process
         for match in pattern.finditer(masked_source):
             if kind == "eval_call" and is_python and _is_python_method_eval(masked_source, match):
+                continue
+            if is_php and kind == "eval_call" and _is_php_method_call(masked_source, match):
                 continue
             add(kind, severity, match.start())
 

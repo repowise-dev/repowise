@@ -210,6 +210,36 @@ class TestScanFile:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
+            # PHP's eval is a construct called bare; after ->, ?-> or :: it is a
+            # method, such as Redis EVAL running a Lua script (#6294).
+            ("<?php\neval($code);\n", {"eval_call"}),
+            ("<?php\n$r = eval ('return 1;');\n", {"eval_call"}),
+            ("<?php\nreturn $this->redis->eval($script, [], 0);\n", set()),
+            ("<?php\n$c->eval('return 1');\n", set()),
+            ("<?php\n$c?->eval($script);\n", set()),
+            ("<?php\n$c -> eval($script);\n", set()),
+            ("<?php\nRedis::eval($script, [], 0);\n", set()),
+            ("<?php\n$r = $c->eval($s); eval($code);\n", {"eval_call"}),
+            # A decrement, then a comparison: ($n--) > eval($x) is a bare eval.
+            ("<?php\nif ($n-->eval($x)) {}\n", {"eval_call"}),
+            ("<?php\nif ($n-- > eval($x)) {}\n", {"eval_call"}),
+            # Three dashes lex as -- then ->: a method call after a decrement.
+            ("<?php\n$n--->eval($x);\n", set()),
+        ],
+    )
+    def test_php_method_eval_is_not_an_eval_call(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("src/r.php", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    def test_method_eval_outside_php_is_still_an_eval_call(self) -> None:
+        # Only PHP changes: in JavaScript a receiver's eval stays reported.
+        source = "this.redis.eval(script);\n"
+        assert [f["kind"] for f in scan_source("calls.js", source)] == ["eval_call"]
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
             ('import { exec } from "child_process";\nexec(cmd);\n', {"exec_call"}),
             ('const cp = require("child_process");\ncp.execSync(cmd);\n', {"exec_call"}),
             # execFile passes argv and runs no shell, like subprocess without shell=True.
