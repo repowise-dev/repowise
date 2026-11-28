@@ -25,7 +25,7 @@ from repowise.core.analysis.health.signals import file_signals
 from repowise.core.analysis.health.trends import file_trend
 from repowise.core.analysis.patch_coverage import file_on_disk_freshness
 from repowise.core.attribution import attribution_enabled
-from repowise.core.exclusion import build_exclude_spec
+from repowise.core.exclusion import build_exclude_spec, node_is_excluded
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 from repowise.core.persistence import crud
@@ -56,6 +56,21 @@ router = APIRouter(
     tags=["files"],
     dependencies=[Depends(verify_api_key)],
 )
+
+
+def _partner_path(partner: Any) -> str | None:
+    """The file path a co-change partner record names, if it names one.
+
+    Records carry ``file_path`` (``path`` on older rows); a bare string is a
+    path already. ``None`` when the entry names no file, so the caller keeps
+    a record it cannot judge rather than dropping data on a shape guess.
+    """
+    if isinstance(partner, str):
+        return partner
+    if isinstance(partner, dict):
+        path = partner.get("file_path") or partner.get("path")
+        return path if isinstance(path, str) else None
+    return None
 
 
 def _json_or(raw: str | None, default: Any) -> Any:
@@ -167,9 +182,18 @@ async def files_index(
     # page behind it, so its row rendered as a wall of em-dashes linking to a
     # 404. Dropped before the percentile is taken, so ranking a file against a
     # node the reader can never open cannot skew where it lands.
+    # Files the repo rules exclude are stale rows the same way: the file was
+    # tracked, then added to `.gitignore` (or `exclude_patterns`), and the
+    # index was never rebuilt. Dropped with the external/framework nodes, so
+    # neither the rows, `total`, `languages` nor the percentile sees them.
+    exclude_spec = build_exclude_spec(repo.local_path)
     all_nodes = await crud.get_all_file_metrics(session, repo_id)
-    nodes = [n for n in all_nodes if not is_external(n.node_id)]
-    degrees = await crud.get_graph_metrics(session, repo_id)
+    nodes = [
+        n
+        for n in all_nodes
+        if not is_external(n.node_id) and not node_is_excluded(n.node_id, exclude_spec)
+    ]
+    degrees = await crud.get_graph_metrics(session, repo_id, exclude_spec=exclude_spec)
     metrics_by_path = {m.file_path: m for m in await crud.get_health_metrics(session, repo_id)}
     git_by_path = await crud.get_all_git_metadata(session, repo_id)
     # The stored report, not the copy the health pass took of it.
@@ -451,7 +475,15 @@ async def file_detail(
         git = _hotspot_from_row(git_meta).model_dump(mode="json")
         git["significant_commits"] = _json_or(git_meta.significant_commits_json, [])
         git["top_authors"] = _json_or(git_meta.top_authors_json, [])
-        git["co_change_partners"] = _json_or(git_meta.co_change_partners_json, [])
+        # Partners in files the repo rules exclude are stale rows, like the
+        # excluded nodes the index drops: the partner was recorded before the
+        # file was excluded. Filtered with the same spec the dependents list
+        # above uses, so the two halves of the git block agree.
+        git["co_change_partners"] = [
+            partner
+            for partner in _json_or(git_meta.co_change_partners_json, [])
+            if not node_is_excluded(_partner_path(partner), exclude_spec)
+        ]
         # symbol_id -> counted fixes that landed in it. Joined here rather than
         # onto HotspotResponse so the hotspots list does not carry a per-symbol
         # map on every row; only this page has symbols to spend it on.
