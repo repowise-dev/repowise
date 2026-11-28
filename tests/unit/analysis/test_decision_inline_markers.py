@@ -65,9 +65,7 @@ async def test_each_decision_is_scoped_to_its_own_marker(tmp_path):
         ]
     )
 
-    decisions = await DecisionExtractor(
-        repo_path=tmp_path, provider=provider
-    ).scan_inline_markers()
+    decisions = await DecisionExtractor(repo_path=tmp_path, provider=provider).scan_inline_markers()
 
     by_title = {d.title: d for d in decisions}
     assert len(by_title) == 2
@@ -99,9 +97,7 @@ async def test_unattributable_decision_gets_no_span_rather_than_a_neighbours(tmp
         ]
     )
 
-    decisions = await DecisionExtractor(
-        repo_path=tmp_path, provider=provider
-    ).scan_inline_markers()
+    decisions = await DecisionExtractor(repo_path=tmp_path, provider=provider).scan_inline_markers()
 
     assert len(decisions) == 1
     assert decisions[0].evidence_line is None
@@ -114,13 +110,9 @@ async def test_single_marker_file_needs_no_hint(tmp_path):
         "# DECISION: pin the driver to 2.x because 3.x drops the sync API\n",
         encoding="utf-8",
     )
-    provider = _StubProvider(
-        [{"title": "Pin the driver", "decision": "pin the driver to 2.x"}]
-    )
+    provider = _StubProvider([{"title": "Pin the driver", "decision": "pin the driver to 2.x"}])
 
-    decisions = await DecisionExtractor(
-        repo_path=tmp_path, provider=provider
-    ).scan_inline_markers()
+    decisions = await DecisionExtractor(repo_path=tmp_path, provider=provider).scan_inline_markers()
 
     assert len(decisions) == 1
     assert decisions[0].evidence_line == 1
@@ -141,6 +133,38 @@ async def test_affected_files_skip_doc_links_and_co_change_partners(tmp_path):
     # Stored once in path order, so one partner is a predecessor and one a successor.
     g.add_edge("aaa.py", "app.py", edge_type="co_changes")
     g.add_edge("app.py", "zzz.py", edge_type="co_changes")
+    for file_node in ("main.py", "app.py", "aaa.py", "zzz.py"):
+        g.nodes[file_node]["node_type"] = "file"
+    provider = _StubProvider([{"title": "Pin the driver", "decision": "pin the driver to 2.x"}])
+
+    decisions = await DecisionExtractor(
+        repo_path=tmp_path, provider=provider, graph=g
+    ).scan_inline_markers()
+
+    assert len(decisions) == 1
+    assert set(decisions[0].affected_files) == {"app.py", "main.py"}
+
+
+async def test_affected_files_skip_symbols_and_external_packages(tmp_path):
+    """Symbol nodes and ``external:`` packages are not affected files (#5698).
+
+    They carry no git metadata, so staleness would otherwise count every
+    inline-marker record as changed from the first index.
+    """
+    import networkx as nx
+
+    (tmp_path / "app.py").write_text(
+        "# DECISION: pin the driver to 2.x because 3.x drops the sync API\n",
+        encoding="utf-8",
+    )
+    g: nx.DiGraph[str] = nx.DiGraph()
+    g.add_edge("main.py", "app.py", edge_type="imports")
+    g.add_edge("app.py", "app.py::run", edge_type="defines")
+    g.add_edge("external:requests", "app.py", edge_type="imports")
+    g.nodes["main.py"]["node_type"] = "file"
+    g.nodes["app.py"]["node_type"] = "file"
+    g.nodes["app.py::run"]["node_type"] = "symbol"
+    # ``external:`` nodes get no ``node_type`` attribute at all.
     provider = _StubProvider([{"title": "Pin the driver", "decision": "pin the driver to 2.x"}])
 
     decisions = await DecisionExtractor(

@@ -192,9 +192,7 @@ def _infer_tags(text: str) -> list[str]:
     ]
 
 
-def _snippet_for(
-    decision: ExtractedDecision, batch: Sequence[tuple[str, str]]
-) -> tuple[str, str]:
+def _snippet_for(decision: ExtractedDecision, batch: Sequence[tuple[str, str]]) -> tuple[str, str]:
     """The ``(file, prose)`` a comment decision came from, by file stem in its text.
 
     Best effort: the batch's first snippet when no stem matches.
@@ -717,9 +715,7 @@ class DecisionExtractor:
 
         if self._graph is None:
             return []
-        return scan_conventions(
-            self._graph, self._parsed_files, self._source_map, self._repo_path
-        )
+        return scan_conventions(self._graph, self._parsed_files, self._source_map, self._repo_path)
 
     def _top_central_files(self, n: int) -> list[str]:
         """Top-*n* file nodes by centrality (existing on disk).
@@ -743,6 +739,7 @@ class DecisionExtractor:
             if p.is_file() and p.suffix.lower() not in _BINARY_EXTENSIONS:
                 out.append(node)
         return out
+
     # ------------------------------------------------------------------
     # Anti-hallucination substring gate
     # ------------------------------------------------------------------
@@ -939,12 +936,22 @@ class DecisionExtractor:
 
         # A doc naming the file, or a file that changes with it, is not one the decision affects.
         graph = without_non_code_edges(self._graph)
+
+        # Symbols and ``external:`` packages have no git metadata, so counting
+        # them as affected files marks every inline-marker record stale from
+        # the first index. Keep real file nodes only, like ``file_subgraph``.
+        def _is_file_node(node: str) -> bool:
+            try:
+                return graph.nodes[node].get("node_type") == "file"
+            except KeyError:
+                return False
+
         neighbors: set[str] = set()
         if file_path in graph:
-            neighbors.update(graph.successors(file_path))
-            neighbors.update(graph.predecessors(file_path))
+            neighbors.update(n for n in graph.successors(file_path) if _is_file_node(n))
+            neighbors.update(n for n in graph.predecessors(file_path) if _is_file_node(n))
         neighbors.discard(file_path)
-        return list(neighbors)[:20]  # Cap at 20
+        return sorted(neighbors)[:20]  # Cap at 20
 
     def _infer_modules(self, file_paths: list[str]) -> list[str]:
         """Infer the module paths a record governs from the files it names."""
