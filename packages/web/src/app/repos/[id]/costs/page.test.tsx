@@ -45,7 +45,6 @@ vi.mock("next/link", () => ({
 import CostsPage from "./page";
 import { jobsNotSetUp, nudgeHref, pickSavingsNudge } from "./savings-nudge";
 import { checkAgents, connectedAgentIds } from "./savings-checks";
-import { ACCOUNTING_METHOD_VERSION } from "@repowise-dev/ui/savings";
 
 function makeSavings(overrides: Partial<Savings> = {}): Savings {
   return {
@@ -167,17 +166,6 @@ describe("costs page", () => {
     expect(ageDays).toBeGreaterThan(6.9);
     expect(ageDays).toBeLessThan(7.1);
     expect(mocks.listCosts).toHaveBeenLastCalledWith(mocks.repoId.current, { by: "operation", since });
-  });
-
-  it("writes the reset-notice dismissal under repository and accounting version", async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: "Dismiss the savings accounting notice" }));
-    await waitFor(() => expect(screen.queryByText(/Savings accounting has been upgraded/)).toBeNull());
-    expect(
-      window.localStorage.getItem(
-        `repowise:savings-reset-dismissed:${mocks.repoId.current}:v${ACCOUNTING_METHOD_VERSION}`,
-      ),
-    ).toBe("1");
   });
 
   it("says spend is unaffected when only savings failed", async () => {

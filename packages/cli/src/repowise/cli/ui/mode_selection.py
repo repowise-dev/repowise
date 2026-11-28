@@ -343,7 +343,7 @@ def _prompt_generation(
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
-    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]
+    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,
@@ -536,13 +536,15 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
         console,
         "Search",
         "Full-text search always works. Semantic search needs an embedder;\n"
-        "  ollama is the keyless one, and the hosted ones charge per page.",
+        "  ollama and fastembed are the keyless ones, and the hosted ones charge per page.",
     )
     console.print()
     result["embedder"] = click.prompt(
         "  Embedder for semantic search (mock = full-text only)",
         default="mock",
-        type=click.Choice(["mock", "ollama", "gemini", "openai", "openrouter", "edenai"]),
+        type=click.Choice(
+            ["mock", "ollama", "fastembed", "gemini", "openai", "openrouter", "edenai"]
+        ),
     )
 
 

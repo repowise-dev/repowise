@@ -20,6 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ....evidence.format_v1 import is_import_row
 from ....evidence.query_counts import strongest
 from ....ingestion.symbol_identity import file_of_symbol
 from ...execution_roles import COLD_ROLES, ENTRY_ROLES, hottest_role
@@ -116,6 +117,9 @@ class PerformanceOpportunity:
     may_lead: bool
     # Other causes observed on the same lines; see :mod:`.siblings`.
     siblings: tuple[dict[str, Any], ...] = ()
+    # A measured hotspot's ``evidence.action_row`` row (JSON form): why, next
+    # step, drivers, tests and verify. ``None`` for every other cause.
+    measured_row: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -149,6 +153,7 @@ class PerformanceOpportunity:
             "fix": self.fix.as_dict() if self.fix else None,
             "may_lead": self.may_lead,
             "siblings": [dict(entry) for entry in self.siblings],
+            **({"measured_row": self.measured_row} if self.measured_row is not None else {}),
         }
 
 
@@ -410,9 +415,19 @@ def _assemble(
 _TOP_PLACE_POINTS = 3
 
 
-def _measured_hotspot(symbol_id: str, workload: str, rank: int | None) -> PerformanceOpportunity:
+def _measured_hotspot(
+    symbol_id: str, workload: str, rank: int | None, row: Mapping[str, Any] | None = None
+) -> PerformanceOpportunity:
     """A work item for a function a leading workload measured above the lead
     bar where no static finding names a cause.
+
+    *row* is the function's ``evidence.action_row`` row (JSON form) from that
+    workload's run. Its next step, when a rule fired on what the run measured
+    inside the function (``evidence.next_step``), is the item's why and its
+    one step, and only then may the item lead: a measured item says what to
+    do before it is the first thing to fix. Without one it stays listed with
+    the generic step, never first. Unit-test and benchmark runs never get
+    here (*hot* is a leading workload's tier), so they never lead either.
 
     The run is the proof of cost (``confirmed`` ``measured``) and of reach
     (``measured``), so it is plan-ready work in production, never a guess:
@@ -460,10 +475,13 @@ def _measured_hotspot(symbol_id: str, workload: str, rank: int | None) -> Perfor
         "measured": workload,
         "confirmed": "measured",
     }
+    step = (row or {}).get("next_step")
     fix = PerformanceFix(
         "reduce_measured_self_time",
         "advisory",
-        f"The {workload} run measured this function above the lead bar and no "
+        f"The {workload} run measured this function above the lead bar: {step['why']}."
+        if step
+        else f"The {workload} run measured this function above the lead bar and no "
         "static check names the cause: profile it to find the repeated work.",
     )
     return PerformanceOpportunity(
@@ -507,7 +525,8 @@ def _measured_hotspot(symbol_id: str, workload: str, rank: int | None) -> Perfor
         rank_factors=factors,
         why_ranked=why_ranked(factors, inputs),
         fix=fix,
-        may_lead=may_lead(marker, set(), facets),
+        may_lead=may_lead(marker, set(), facets) and step is not None,
+        measured_row=dict(row) if row is not None else None,
     )
 
 
@@ -516,9 +535,10 @@ def measured_hotspots(
     measured: Mapping[str, str],
     hot: frozenset[str],
     ranks: Mapping[str, int] | None = None,
+    rows: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[PerformanceOpportunity]:
     """One :func:`_measured_hotspot` per function in *hot* that no static
-    cause owns.
+    cause owns, carrying its action row from *rows* (by symbol id).
 
     A static group whose live member's loop owner is the function already
     carries the measurement (:func:`_confirmed`, read off the same live
@@ -533,10 +553,18 @@ def measured_hotspots(
         for members in groups.values()
         for f in ([m for m in members if not _inert(m)] or members)
     }
+    # An import row (``<path>::<module>``) is no function to profile for
+    # repeated work; it speaks on the measured view only. Ceiling: no queue item
+    # for import time until a rule can say which import the run did not need.
     return [
-        _measured_hotspot(symbol_id, measured[symbol_id], (ranks or {}).get(symbol_id))
+        _measured_hotspot(
+            symbol_id,
+            measured[symbol_id],
+            (ranks or {}).get(symbol_id),
+            (rows or {}).get(symbol_id),
+        )
         for symbol_id in sorted(hot - owned)
-        if symbol_id in measured and "::" in symbol_id
+        if symbol_id in measured and "::" in symbol_id and not is_import_row(symbol_id)
     ]
 
 
@@ -551,6 +579,7 @@ def build_performance_opportunities(
     in_tests: Mapping[str, str] | None = None,
     hot_in_tests: frozenset[str] = frozenset(),
     ranks: Mapping[str, int] | None = None,
+    measured_rows: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[PerformanceOpportunity]:
     """Group, link, and rank performance rows in one deterministic pass.
 
@@ -567,13 +596,13 @@ def build_performance_opportunities(
     ``measured_in_tests`` when nothing stronger confirms the cause. A
     function in *hot* that no static cause owns becomes a measured hotspot
     of its own (:func:`measured_hotspots`), ordered by *ranks*, its best
-    place in a leading workload's run.
+    place in a leading workload's run, carrying its row from *measured_rows*.
     """
     cap = max(0, evidence_limit)
     opportunities: list[PerformanceOpportunity] = []
     sites: dict[str, set[Any]] = {}
     groups = group_observations(findings)
-    for opportunity in measured_hotspots(groups, measured or {}, hot, ranks):
+    for opportunity in measured_hotspots(groups, measured or {}, hot, ranks, measured_rows):
         opportunities.append(opportunity)
         sites[opportunity.opportunity_id] = set()
     for key, members in groups.items():

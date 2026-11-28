@@ -177,7 +177,7 @@ class _Profile:
                     ProfileFrame(
                         path=path,
                         line=line,
-                        language=frame_language(path),
+                        language=frame_language(path, name),
                         function=name,
                         start_line=start if start > 0 else None,
                     )

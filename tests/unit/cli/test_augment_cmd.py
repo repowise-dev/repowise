@@ -99,7 +99,7 @@ def _session_start(runner: CliRunner, cwd: Path, monkeypatch: pytest.MonkeyPatch
 def test_claude_session_start_gives_a_plugin_only_install_the_call_first_line(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from repowise.core.agent_steer import AGENT_STEER
+    from repowise.core.agent_steer import AGENT_STEER_DEFERRED as AGENT_STEER
 
     _init_repowise_repo(tmp_path)
 
@@ -221,111 +221,230 @@ def test_edit_post_tool_use_stays_silent_without_codex_client(
     assert result.output == ""
 
 
+def _age(path: Path, seconds: float) -> None:
+    import os
+    import time
+
+    then = time.time() - seconds
+    os.utime(str(path), (then, then))
+
+
 def test_claim_emission_cleans_up_expired_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import os
-    import time
-
-    from repowise.cli.commands.augment_cmd.command import _claim_emission
+    from repowise.cli.commands.augment_cmd.command import _claim_emission, _marker_dir
 
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
-
-    active = tmp_path / ".repowise-augment-active"
-    expired = tmp_path / ".repowise-augment-expired"
+    marker_dir = _marker_dir()
+    active = marker_dir / "active"
+    expired = marker_dir / "expired"
     active.write_text("active", encoding="utf-8")
     expired.write_text("expired", encoding="utf-8")
+    _age(expired, 20)
 
-    now = time.time()
-    os.utime(str(expired), (now - 20, now - 20))
-    os.utime(str(active), (now, now))
-
-    claimed = _claim_emission("test_event", "test_context")
-    assert claimed is True
+    assert _claim_emission("test_event", "test_context") is True
 
     assert not expired.exists()
     assert active.exists()
 
 
-def test_claim_emission_cleanup_is_throttled_by_timestamp_file(
+def test_claim_emission_never_lists_the_system_temp_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The system temp dir can hold 100k+ entries; listing it stalls the hook."""
     import os
-    import time
 
-    from repowise.cli.commands.augment_cmd.command import _SWEEP_THROTTLE_FILE, _claim_emission
+    from repowise.cli.commands.augment_cmd.command import _claim_emission, _marker_dir
 
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    listed: list[Path] = []
+    real_scandir = os.scandir
 
-    # First run creates the throttle stamp
-    claimed1 = _claim_emission("event_1", "ctx_1")
-    assert claimed1 is True
-    stamp_path = tmp_path / _SWEEP_THROTTLE_FILE
-    assert stamp_path.exists()
+    def spy_scandir(path: object = ".") -> object:
+        listed.append(Path(os.fspath(path)))
+        return real_scandir(path)
 
-    # Create an expired marker while throttle stamp is fresh
-    expired_during_throttle = tmp_path / ".repowise-augment-expired-during-throttle"
-    expired_during_throttle.write_text("old", encoding="utf-8")
-    now = time.time()
-    os.utime(str(expired_during_throttle), (now - 20, now - 20))
+    # Spies record rather than raise: _claim_emission fails open on any
+    # exception, which would swallow an assertion raised inside it.
+    def spy_listdir(path: object = ".") -> list[str]:
+        listed.append(Path(os.fspath(path)))
+        return []
 
-    # Second run is within TTL window, so sweep is throttled and does not delete it
-    claimed2 = _claim_emission("event_2", "ctx_2")
-    assert claimed2 is True
-    assert expired_during_throttle.exists()
+    def spy_path_listing(self: Path, *args: object, **kwargs: object) -> object:
+        listed.append(self)
+        return iter(())
 
-    # Age the throttle stamp beyond the TTL window
-    os.utime(str(stamp_path), (now - 20, now - 20))
+    monkeypatch.setattr(os, "scandir", spy_scandir)
+    monkeypatch.setattr(os, "listdir", spy_listdir)
+    monkeypatch.setattr(Path, "glob", spy_path_listing)
+    monkeypatch.setattr(Path, "iterdir", spy_path_listing)
+    unrelated = tmp_path / "someone-elses-file"
+    unrelated.write_text("x", encoding="utf-8")
+    _age(unrelated, 20)
 
-    # Third run performs the sweep and unlinks the expired marker
-    claimed3 = _claim_emission("event_3", "ctx_3")
-    assert claimed3 is True
-    assert not expired_during_throttle.exists()
+    assert _claim_emission("event", "ctx") is True
+
+    assert listed == [_marker_dir()]
+    assert unrelated.exists()
+    assert len(list(real_scandir(_marker_dir()))) == 2  # marker + stamp
+
+
+def test_claim_emission_cleanup_is_rate_limited(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.cli.commands.augment_cmd import command
+    from repowise.cli.commands.augment_cmd.command import (
+        _SWEEP_INTERVAL_SECONDS,
+        _SWEEP_STAMP_NAME,
+        _claim_emission,
+        _marker_dir,
+    )
+
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    sweeps: list[Path] = []
+    real_sweep = command._sweep_dir
+
+    def counting_sweep(marker_dir: Path, now: float, max_delete: int) -> bool:
+        sweeps.append(marker_dir)
+        return real_sweep(marker_dir, now, max_delete)
+
+    monkeypatch.setattr(command, "_sweep_dir", counting_sweep)
+
+    for i in range(5):
+        assert _claim_emission(f"event_{i}", "ctx") is True
+    assert len(sweeps) == 1
+    stamp = _marker_dir() / _SWEEP_STAMP_NAME
+    assert stamp.exists()
+
+    # An expired marker survives while the stamp is inside the interval.
+    expired = _marker_dir() / "expired"
+    expired.write_text("old", encoding="utf-8")
+    _age(expired, 20)
+    _age(stamp, _SWEEP_INTERVAL_SECONDS / 2)
+    assert _claim_emission("event_mid", "ctx") is True
+    assert len(sweeps) == 1
+    assert expired.exists()
+
+    # Once the interval has passed, the next claim sweeps it.
+    _age(stamp, _SWEEP_INTERVAL_SECONDS + 1)
+    assert _claim_emission("event_late", "ctx") is True
+    assert len(sweeps) == 2
+    assert not expired.exists()
+    assert stamp.exists()
 
 
 def test_cleanup_stale_markers_direct(tmp_path: Path) -> None:
-    import os
-    import time
-
     from repowise.cli.commands.augment_cmd.command import _cleanup_stale_markers
 
-    active = tmp_path / ".repowise-augment-active"
-    expired = tmp_path / ".repowise-augment-expired"
+    active = tmp_path / "active"
+    expired = tmp_path / "expired"
     active.write_text("active", encoding="utf-8")
     expired.write_text("expired", encoding="utf-8")
+    _age(expired, 20)
 
-    now = time.time()
-    os.utime(str(expired), (now - 20, now - 20))
-    os.utime(str(active), (now, now))
-
-    _cleanup_stale_markers(tmp_path, now)
+    _cleanup_stale_markers(tmp_path, __import__("time").time())
 
     assert not expired.exists()
     assert active.exists()
+
+
+def test_capped_sweep_retries_soon_so_a_backlog_drains(tmp_path: Path) -> None:
+    import time
+
+    from repowise.cli.commands.augment_cmd.command import (
+        _BACKLOG_RETRY_SECONDS,
+        _SWEEP_STAMP_NAME,
+        _cleanup_stale_markers,
+    )
+
+    def remaining() -> int:
+        return len([p for p in tmp_path.iterdir() if p.name.startswith("expired-")])
+
+    for i in range(5):
+        target = tmp_path / f"expired-{i}"
+        target.write_text("x", encoding="utf-8")
+        _age(target, 20)
+
+    now = time.time()
+    _cleanup_stale_markers(tmp_path, now, max_delete=3)
+    assert remaining() == 2
+
+    # Cap hit: the next claim inside the retry window still does not sweep...
+    _cleanup_stale_markers(tmp_path, now + _BACKLOG_RETRY_SECONDS / 2, max_delete=3)
+    assert remaining() == 2
+
+    # ...but one after it does, and draining restores the hourly throttle.
+    later = now + _BACKLOG_RETRY_SECONDS + 1
+    _cleanup_stale_markers(tmp_path, later, max_delete=3)
+    assert remaining() == 0
+    # Not capped this time, so the stamp is fresh rather than backdated.
+    assert (tmp_path / _SWEEP_STAMP_NAME).stat().st_mtime >= now - 1
 
 
 def test_claim_emission_takeover_stale_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import hashlib
-    import os
-    import time
 
-    from repowise.cli.commands.augment_cmd.command import _claim_emission
+    from repowise.cli.commands.augment_cmd.command import _claim_emission, _marker_dir
 
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
 
     event = "ev"
     ctx = "ctx"
     key = hashlib.sha1(f"{event}\x00{ctx}".encode(), usedforsecurity=False).hexdigest()[:16]
-    marker = tmp_path / f".repowise-augment-{key}"
+    marker = _marker_dir() / key
     marker.write_text("existing", encoding="utf-8")
 
-    now = time.time()
     # Marker is recent -> claim returns False
-    os.utime(str(marker), (now, now))
+    _age(marker, 0)
     assert _claim_emission(event, ctx) is False
 
     # Marker is stale -> claim takes it over and returns True
-    os.utime(str(marker), (now - 20, now - 20))
+    _age(marker, 20)
     assert _claim_emission(event, ctx) is True
+
+
+def test_marker_dir_refuses_a_symlink_and_never_sweeps_through_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A planted symlink in a shared temp dir must not steer the sweep's unlinks."""
+    import os
+
+    from repowise.cli.commands.augment_cmd import command
+
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    precious = victim / "precious"
+    precious.write_text("keep", encoding="utf-8")
+    _age(precious, 20)
+    getuid = getattr(os, "getuid", None)
+    name = command._MARKER_DIR_NAME if getuid is None else f"{command._MARKER_DIR_NAME}-{getuid()}"
+    try:
+        (temp / name).symlink_to(victim, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks need extra privileges on this platform")
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(temp))
+
+    assert command._marker_dir() is None
+    assert command._claim_emission("event", "ctx") is True  # fail-open
+    assert precious.exists()
+    assert list(victim.iterdir()) == [precious]
+
+
+def test_marker_dir_is_private_to_the_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import stat
+
+    from repowise.cli.commands.augment_cmd.command import _MARKER_DIR_NAME, _marker_dir
+
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX uid and mode bits")
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+
+    marker_dir = _marker_dir()
+
+    assert marker_dir == tmp_path / f"{_MARKER_DIR_NAME}-{os.getuid()}"
+    assert stat.S_IMODE(marker_dir.stat().st_mode) & 0o077 == 0

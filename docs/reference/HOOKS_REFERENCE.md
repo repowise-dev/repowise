@@ -10,20 +10,23 @@ hand. For what each hook does and when it fires, see [HOOKS.md](../agent/HOOKS.m
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `repowise-augment` (guarded) | `~/.claude/settings.json` |
-| Claude Code | `PreToolUse` (opt-in) | `Bash\|PowerShell` | `repowise-rewrite` | `~/.claude/settings.json` |
+| Claude Code | `PreToolUse` (command rewrite, on by default) | `Bash\|PowerShell` | `repowise-rewrite` (guarded in the plugin) | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` (decision capture prompt, stale-wiki notice) | `Bash\|PowerShell` | `repowise-augment`, only when the payload holds `git commit`, `git pull`, `git merge`, `git rebase` or `git cherry-pick` (guarded) | `~/.claude/settings.json`, or the plugin's `hooks.json` |
+| Claude Code | `Stop` (opt-in decision stop prompt) | none | `repowise-augment --decision-stop` (guarded) | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | `repowise-augment --coverage-only` (guarded) | the repo's `.claude/settings.local.json` |
 | Claude Code | `PreToolUse` (opt-in health gate) | `Bash\|PowerShell` | `repowise-augment --health-gate` (guarded) | the repo's `.claude/settings.local.json` |
 | Codex | `PreToolUse` (opt-in) | the shell tool | `repowise-rewrite --agent codex` | `~/.codex/hooks.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | `repowise-augment --client codex` | the repo's `.codex/hooks.json` |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | `repowise-augment --client codex` | the repo's `.codex/hooks.json` |
 
-Which switch turns each opt-in entry on:
+Which switch turns each optional entry on or off:
 
 | Entry | Switch |
 |-------|--------|
-| Command rewrite | `repowise hook rewrite install`, or Yes at the `repowise init` prompt |
+| Command rewrite (Claude Code) | On by default: `repowise init` installs it (an interactive run asks, default Yes; `--yes` or no terminal installs it), and the Claude Code plugin's `hooks.json` ships it. `repowise init --no-distill-hook` (or `--no-editor-setup`) leaves it off, a repo that opted out stays off, and `repowise hook rewrite uninstall` removes it. `repowise hook rewrite install` adds it by hand |
+| Command rewrite (Codex) | Opt in: `repowise hook rewrite install`, which also writes the Codex entry when `~/.codex` exists |
 | Decision capture prompt | On by default; `init` and the plugin install the entry, `repowise decision config capture-prompt --off` turns it off for one repo ([decisions](../layers/DECISIONS.md)). The entry is per install; a shell call that names none of those Git operations costs one shell start and never starts Python |
+| Decision stop prompt | Off by default; `init` and the plugin install the entry, `repowise config set decisions.stop_prompt true` turns it on for one repo. With it off, a stop costs one read of `.repowise/config.yaml` |
 | Coverage re-ingest | `hooks.coverage_reingest: true` in `.repowise/config.yaml`, applied by the next `repowise coverage add`, `init` or `update` ([test intelligence](../layers/TEST_INTELLIGENCE.md)) |
 | Health gate | `repowise hook health-gate install`, which writes `hooks.health_gate: true` and the entry together |
 

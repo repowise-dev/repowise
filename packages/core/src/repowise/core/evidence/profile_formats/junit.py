@@ -87,11 +87,18 @@ def combine(reports: Iterable[bytes]) -> bytes:
 def to_v1(data: bytes) -> dict[str, Any]:
     """The whole file as a v1 ``test_timing`` document; entries are checked by the v1 parser."""
     root = _parse(data)
+    # cargo-nextest names the test binary (a crate) as the classname, never a
+    # module path: a crate named like one of its files must not place its tests
+    # there, so its cases stay unplaced. Ceiling: Rust tests keep their timing
+    # but no file until binary ids map to crate roots.
+    by_binary = root.tag == "testsuites" and root.get("name") == "nextest-run"
     seen_classes: set[str] = set()
     tests: list[dict[str, Any]] = []
     for case, suite_file in _cases(root):
         classname = (case.get("classname") or "").strip()
         entry = _entry(case, classname, suite_file)
+        if by_binary:
+            entry.pop("classname", None)
         entry["first_in_class"] = classname not in seen_classes
         seen_classes.add(classname)
         tests.append(entry)

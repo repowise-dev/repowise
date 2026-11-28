@@ -681,6 +681,55 @@ async def tests_covering_files(
     return await _covering(session, repository_id, source_files)
 
 
+async def tests_running_spans(
+    session: AsyncSession,
+    repository_id: str,
+    spans: dict[str, tuple[str, int, int]],
+) -> dict[str, list[tuple[str, str | None, int]]]:
+    """The tests the per-test map saw run each span: ``{key: [(test_id, test_file, lines)]}``.
+
+    *spans* is ``{key: (source_file, start_line, end_line)}``, a function's
+    lines; ``lines`` is how many covered lines of the span, its first line
+    left out, the test ran. Each
+    file's row is read once for every span in it, its ranges checked as spans,
+    never expanded. A key is absent when its file has no map row or it is a
+    one-line Python function (unknown, never "no test"); ``[]`` means the map
+    has the file and no test ran a line of the span. Ceiling: spans are the index's lines, so a map measured at
+    another commit is off by the lines that moved in between.
+    """
+    by_file: dict[str, list[tuple[str, int, int]]] = {}
+    for key, (path, start, end) in spans.items():
+        # A Python ``def`` line runs when its module is imported, so a test
+        # that only imported it would read as running the function; a body
+        # line is what a call runs. A one-line Python function has no line of
+        # its own a call runs, so the map cannot say: it stays unknown.
+        # Ceiling: decorator lines above the ``def`` still count.
+        if end > start:
+            by_file.setdefault(path, []).append((key, start + 1, end))
+        elif not path.endswith(".py"):
+            by_file.setdefault(path, []).append((key, start, end))
+    hits: dict[str, list[tuple[int, int]]] = {}
+    for row in await _source_rows(session, repository_id, set(by_file)):
+        wanted = by_file[row.source_file]
+        for key, _, _ in wanted:
+            hits[key] = []
+        for no, ranges in _decode_tests(row.tests_json):
+            parsed = _spans(ranges)
+            for key, start, end in wanted:
+                ran = sum(
+                    min(hi, end) - max(lo, start) + 1
+                    for lo, hi in parsed
+                    if lo <= end and hi >= start
+                )
+                if ran:
+                    hits[key].append((no, ran))
+    numbers = {no for found in hits.values() for no, _ in found}
+    names = await _tests_by_no(session, repository_id, numbers)
+    return {
+        key: [(*names[no], ran) for no, ran in found if no in names] for key, found in hits.items()
+    }
+
+
 async def covered_source_files(
     session: AsyncSession,
     repository_id: str,

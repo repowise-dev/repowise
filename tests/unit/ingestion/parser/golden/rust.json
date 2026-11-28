@@ -559,6 +559,8 @@
         "is_module_declaration": false,
         "type_only": false,
         "deferred": false,
+        "guarded": false,
+        "module_form": false,
         "scopes": null
       }
     ],
@@ -814,7 +816,7 @@
         "line": 18,
         "argument_count": null,
         "receiver_call": null,
-        "start_byte": 0,
+        "start_byte": 854,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -831,7 +833,7 @@
         "line": 57,
         "argument_count": null,
         "receiver_call": null,
-        "start_byte": 0,
+        "start_byte": 1929,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

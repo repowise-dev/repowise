@@ -291,6 +291,21 @@ export function opportunityEvidenceLine(opportunity: PerformanceOpportunity): st
   return opportunity.file_path;
 }
 
+/**
+ * A cause a leading run measured above the lead bar with no static finding
+ * behind it. Its stored observations are empty: the run is its evidence.
+ */
+export function isMeasuredHotspot(opportunity: PerformanceOpportunity): boolean {
+  return opportunity.biomarker_type === "measured_hotspot";
+}
+
+/** `3 observations`, or `measured run` for a cause no static finding backs. */
+export function observationsText(opportunity: PerformanceOpportunity): string {
+  if (isMeasuredHotspot(opportunity)) return "measured run";
+  const n = opportunity.observations_total;
+  return `${formatNumber(n)} observation${n === 1 ? "" : "s"}`;
+}
+
 /** `12 call sites across 3 files`, with the singulars right. */
 export function affectedSummary(opportunity: PerformanceOpportunity): string {
   const sites = opportunity.affected_call_sites_total;

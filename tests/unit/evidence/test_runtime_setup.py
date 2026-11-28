@@ -92,7 +92,7 @@ def _python(root: Path, *, scripts: str = 'app = "app.cli:main"\n', extra: str =
 
 
 def _targets(root: Path, inputs: RuntimeInputs | None = None, commit: str | None = SHA) -> list[dict]:
-    (stack,) = detect_repo_stacks(root)
+    (stack,) = [s for s in detect_repo_stacks(root) if not s.root]
     return runtime_targets(stack, root, inputs or RuntimeInputs(), commit)
 
 
@@ -392,7 +392,8 @@ def test_paths_a_shell_would_misread_never_reach_a_command(tmp_path: Path) -> No
     (node / "package.json").write_text(
         '{"name": "x", "bin": {"x": "bin/x.js; curl evil"}, "scripts": {"test": "jest"}}'
     )
-    assert _targets(node) == []
+    # Only the test suite: the bin path never reaches a command.
+    assert [t["workload"] for t in _targets(node)] == ["node tests"]
 
 
 def test_an_unknown_launcher_runs_plain_python(tmp_path: Path) -> None:
@@ -524,6 +525,24 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
     code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
 
     assert stack.test.startswith("pytest tests/unit ") and stack.test_paths == ("tests/unit",)
+    assert code == 0
+    assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
+
+
+@pytest.mark.parametrize("name", ["enterprise", "enterprise edition", "enterprise(ee)&x@2"])
+def test_the_suite_profile_never_collects_a_nested_unit(tmp_path: Path, name: str) -> None:
+    # The nested unit's conftest imports what only its own install brings.
+    _python(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a():\n    pass\n")
+    nested = tmp_path / name
+    (nested / "tests").mkdir(parents=True)
+    (nested / "pyproject.toml").write_text('[project]\nname = "enterprise"\n')
+    (nested / "tests" / "conftest.py").write_text("import missing_enterprise_server\n")
+    (nested / "tests" / "test_e.py").write_text("def test_e():\n    pass\n")
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
     assert code == 0
     assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
@@ -680,7 +699,7 @@ def test_node_bins_get_a_cpu_profile_and_typescript_is_refused(tmp_path: Path) -
     )
     (tmp_path / "bin").mkdir()
 
-    js, ts = _targets(tmp_path)
+    js, ts, _suite = _targets(tmp_path)
 
     # One directory per target: every process and worker thread writes its own
     # profile there, cleaned first, and the ingest line takes the directory.
@@ -776,7 +795,7 @@ def test_a_workload_measured_at_head_is_not_asked_for_again(tmp_path: Path) -> N
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured)
 
     assert plan["next_call"]["purpose"].startswith("Profile python tests (unit_test)")
-    done = RuntimeInputs(measured=frozenset({("app", SHA), ("python tests", SHA)}))
+    done = RuntimeInputs(measured=frozenset({("app", SHA), ("python tests", SHA), ("pytest tests", SHA)}))
     last = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=done, coverage_commit=SHA)
     assert last["next_call"] is None
     assert last["reason"].startswith("Evidence at this commit is ingested")
@@ -871,18 +890,18 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
     assert ARGS_PLACEHOLDER in plan["next_call"]["optional"]["purpose"]
     # Measured and covered, only the entry points are left: next_call stays, with no steps,
     # so an agent that stops at null never stops before them.
-    measured = RuntimeInputs(measured=frozenset({("python tests", SHA)}))
+    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("pytest tests", SHA)}))
     left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert left["next_call"]["steps"] == [] and left["reason"] is None
     assert left["next_call"]["optional"] == plan["next_call"]["optional"]
     # Once a run of an entry point is stored at this commit under filled arguments, it is
     # not asked for again; a run stored under the unfilled name does not count.
     measured = RuntimeInputs(measured=frozenset({
-        ("python tests", SHA), ("app build", SHA), ("tool <args>", SHA),
+        ("python tests", SHA), ("pytest tests", SHA), ("app build", SHA), ("tool <args>", SHA),
     }))
     left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert left["next_call"]["optional"]["workloads"] == ["tool"]
-    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("app build", SHA), ("tool x", SHA)}))
+    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("pytest tests", SHA), ("app build", SHA), ("tool x", SHA)}))
     done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert done["next_call"] is None
     assert done["reason"] == "Evidence at this commit is ingested; nothing left to run."
@@ -890,13 +909,13 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
 
 def test_a_server_waiting_for_requests_is_named_in_next_call_until_measured(tmp_path: Path) -> None:
     _asgi(tmp_path)
-    inputs = RuntimeInputs(entry_files=("app/main.py",), measured=frozenset({("python tests", SHA)}))
+    inputs = RuntimeInputs(entry_files=("app/main.py",), measured=frozenset({("python tests", SHA), ("pytest tests", SHA)}))
 
     left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs, coverage_commit=SHA)
 
     assert left["next_call"]["steps"] == [] and left["next_call"]["optional"]["workloads"] == ["serve app.main:app"]
     inputs = RuntimeInputs(
-        entry_files=("app/main.py",), measured=frozenset({("python tests", SHA), ("serve app.main:app", SHA)})
+        entry_files=("app/main.py",), measured=frozenset({("python tests", SHA), ("pytest tests", SHA), ("serve app.main:app", SHA)})
     )
     assert evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs, coverage_commit=SHA)["next_call"] is None
 
@@ -918,13 +937,15 @@ def test_the_offer_is_what_the_plan_prints_an_ingest_line_for(tmp_path: Path) ->
 
 
 def test_a_unit_with_nothing_to_profile_offers_nothing_and_says_so(tmp_path: Path) -> None:
-    # A Jest unit: coverage, but no entry point, benchmark or suite recipe to profile.
+    # A Jest unit whose script sets its environment: coverage and timings, but no entry
+    # point, benchmark or plain runner line to profile.
     (tmp_path / "package.json").write_text(
-        '{"name": "web", "scripts": {"test": "jest"}, "devDependencies": {"jest": "29"}}'
+        '{"name": "web", "scripts": {"test": "NODE_ENV=test jest"}, "devDependencies": {"jest": "29"}}'
     )
 
     assert runtime_offer(tmp_path, units=None, runtime=RuntimeInputs(), head=SHA) == []
-    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs(), coverage_commit=SHA)
+    timed = RuntimeInputs(measured=frozenset({("jest tests", SHA)}))
+    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=timed, coverage_commit=SHA)
     assert done["next_call"] is None
     assert done["reason"].startswith("Coverage at this commit is ingested. No unit has an entry point")
 
@@ -949,6 +970,49 @@ def test_a_node_ingest_line_names_the_directory_of_per_process_profiles(
     )
     (tmp_path / "bin").mkdir()
 
-    (js,) = _targets(tmp_path)
+    js, _suite = _targets(tmp_path)
 
     assert js["ingest"].startswith('repowise evidence add .repowise/node-bin-fx-js --workload "node bin/fx.js')
+
+
+def test_a_javascript_suite_is_profiled_through_its_runners_own_script(tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"name": "web", "scripts": {"test": "mocha --require test/env test/"}, '
+        '"devDependencies": {"mocha": "11"}}'
+    )
+    (tmp_path / "package-lock.json").write_text("{}")
+    js = RuntimeInputs(test_files=("test/a.js", "test/b.js"))
+
+    (suite,) = _targets(tmp_path, js)
+
+    # node runs the runner itself, so the profile holds the tests, not npm.
+    assert suite["command"] == (
+        "node --cpu-prof --cpu-prof-dir=.repowise/node-tests node_modules/mocha/bin/mocha.js --require test/env test/"
+    )
+    assert suite["prerequisites"] == ["npm ci", "git clean -fqx -- .repowise/node-tests"]
+    assert suite["ingest"].startswith('repowise evidence add .repowise/node-tests --workload "node tests" --class unit_test')
+    (ts,) = _targets(tmp_path, RuntimeInputs(test_files=("test/a.ts", "test/b.ts", "test/c.js")))
+    assert ts["command"] is None and "TypeScript" in ts["reason"]
+
+
+def test_a_maven_unit_is_told_how_to_record_a_jvm_run_but_never_led_to_one(tmp_path: Path) -> None:
+    (tmp_path / "pom.xml").write_text("<project><artifactId>fx</artifactId></project>")
+
+    (jvm,) = _targets(tmp_path)
+
+    assert jvm["class"] == "entry_point"
+    assert jvm["command"] == (
+        "jfr print --events jdk.ExecutionSample --stack-depth 64 "
+        ".repowise/jvm-run.jfr > .repowise/jvm-run.jfr.txt"
+    )
+    # The recorder goes in through JAVA_TOOL_OPTIONS: surefire's argLine is often pinned.
+    recording = (tmp_path / ".repowise/jvm-run.jfr").as_posix()
+    assert f"JAVA_TOOL_OPTIONS=-XX:StartFlightRecording=filename={recording},settings=profile" in jvm["reason"]
+    assert "unit tests mostly measure JUnit" in jvm["reason"]
+    assert jvm["reason"].endswith(
+        f'repowise evidence add .repowise/jvm-run.jfr.txt --workload "jvm run" --class load_test --commit {SHA}'
+    )
+    # Shown, not offered: the agent picks and starts the run, so no step and no <args>.
+    assert jvm["ingest"] is None and ARGS_PLACEHOLDER not in jvm["command"]
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+    assert all("jfr" not in s["run"] for s in (plan["next_call"] or {}).get("steps", ()))

@@ -32,7 +32,7 @@ export function riskLede(risk: ChangeRiskBlock): RiskLede {
   const score = risk.score.toFixed(1);
   const sentence =
     risk.risk_percentile != null
-      ? `Riskier than ${Math.round(risk.risk_percentile)}% of this repo's recent commits, by size and spread.`
+      ? `Larger than ${Math.round(risk.risk_percentile)}% of this repo's recent commits, by size and spread.`
       : `Change risk ${score} of 10, by size and spread.`;
   const raising = risk.drivers.filter((d) => d.value !== null && d.contribution > 0).slice(0, 2);
   return {

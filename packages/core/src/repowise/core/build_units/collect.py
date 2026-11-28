@@ -12,6 +12,7 @@ from repowise.core.build_units.adapters import (
     cargo,
     dart,
     dotnet,
+    elixir,
     go,
     gradle,
     manifest_roots,
@@ -44,6 +45,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("dart", dart.units),
     ("swift", swift.units),
     ("pascal", pascal.units),
+    ("elixir", elixir.units),
 )
 
 

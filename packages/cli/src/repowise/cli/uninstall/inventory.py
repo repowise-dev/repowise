@@ -221,7 +221,7 @@ def _mentions_repowise(path: Path) -> bool:
     failure this command exists to prevent.
 
     **Directories are searched, not skipped.** Exactly one of the eighteen paths
-    the six targets describe is a directory, ``~/.codex/prompts``, and it is the
+    the six targets describe is a directory, ``$CODEX_HOME/prompts``, and it is the
     only evidence that Codex user scope is wired when the hooks file is JSONC or
     absent. Answering False for it left eighteen prompt files on disk under
     "everything selected is gone".
@@ -229,7 +229,7 @@ def _mentions_repowise(path: Path) -> bool:
     try:
         if path.is_dir():
             # Unsorted, so a directory with more entries than the cap does not
-            # depend on where `repowise-` falls alphabetically. `~/.codex/prompts`
+            # depend on where `repowise-` falls alphabetically. `$CODEX_HOME/prompts`
             # is documented as a flat global directory shared with every other
             # tool the user has installed, so it can be large.
             #
@@ -276,7 +276,7 @@ def _agent_items(repo_path: Path) -> list[Item]:
     Existence alone is far worse. Only three of the eighteen paths the six
     targets describe are repowise-exclusive. The rest are files that exist for
     anyone who has ever run the host at all: ``~/.claude/settings.json``,
-    ``~/.codex/hooks.json``, ``.vscode/extensions.json``, ``AGENTS.md``,
+    ``$CODEX_HOME/hooks.json``, ``.vscode/extensions.json``, ``AGENTS.md``,
     ``.mcp.json``. Keying on existence listed every one of them in a repo where
     repowise had never been installed, pre-ticked the agent group, and had the
     runner call ``uninstall`` for scopes detection never found.

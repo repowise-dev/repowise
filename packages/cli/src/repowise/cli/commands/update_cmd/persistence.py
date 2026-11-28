@@ -12,6 +12,7 @@ import contextlib
 import math
 import os
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.core.analysis.health import health_analyzer_changed
+from repowise.core.analysis.security.patterns import security_scanner_changed
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.pipeline.incremental.repair import record_repair_marker
@@ -606,7 +608,7 @@ def _persist_index_only_update(
     history_window_changed: bool = False,
     deferred_page_scope: str | None = None,
     deferred_page_paths: list[str] | None = None,
-    stamp_config: bool = True,
+    stale_config_buckets: Collection[str] = (),
     timings: PhaseTimings | None = None,
     unchecked_repair: dict | None = None,
 ) -> None:
@@ -620,6 +622,11 @@ def _persist_index_only_update(
 
     ``stamp_renderer`` False keeps the stored renderer fingerprint: the full
     re-render a renderer change asked for failed, so the next run retries it.
+
+    ``stale_config_buckets`` names dependency buckets whose work this run did
+    not finish (a deferred-docs run leaves ``generation`` stale): their hashes
+    are kept from the stored state so the next run sees exactly those buckets
+    as changed, instead of the whole config (#5944).
 
     ``timings`` is the run's phase table. Its ``run`` row is closed here, at
     the state write, and the whole table lands in ``state.json`` as
@@ -680,6 +687,7 @@ def _persist_index_only_update(
     from repowise.core.repo_config import config_dependency_fingerprints
 
     from .command import _current_renderer_fingerprint
+    from .config_changes import retain_stale_buckets
 
     last_full_rescore_at, health_analyzer_version, security_scanner_version = (
         _rescore_stale_findings(
@@ -694,22 +702,24 @@ def _persist_index_only_update(
             timings=timings,
         )
     )
+    stored_dependency_fps = state.get("config_dependency_fingerprints")
+    stamped_dependency_fps = retain_stale_buckets(
+        stored_dependency_fps,
+        (
+            dependency_fingerprints
+            if dependency_fingerprints is not None
+            else config_dependency_fingerprints(repo_path)
+        ),
+        stale_config_buckets,
+    )
     new_state = {
         **state,
         "last_sync_commit": head,
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": (
-            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
-        ),
-        "config_dependency_fingerprints": (
-            state.get("config_dependency_fingerprints")
-            if not stamp_config
-            else dependency_fingerprints
-            if dependency_fingerprints is not None
-            else config_dependency_fingerprints(repo_path)
-        ),
+        "config_fingerprint": config_fingerprint(repo_path),
+        "config_dependency_fingerprints": stamped_dependency_fps,
         # Record the renderer this run rendered with. Without this an index-only
         # update that regenerated stale file pages leaves the stored fingerprint
         # at its old value, so ``renderer_changed`` stays true and every later
@@ -736,9 +746,7 @@ def _persist_index_only_update(
         # where it is and record the range, exactly like a failed step: the
         # next update re-covers it, and the repair marker is what stops it
         # being skipped forever (#5410).
-        record_repair_marker(
-            new_state, state, [*failed_steps, "Deleted-file prune (refused)"]
-        )
+        record_repair_marker(new_state, state, [*failed_steps, "Deleted-file prune (refused)"])
         new_state["last_sync_commit"] = state.get("last_sync_commit")
         new_state["last_docs_commit"] = state.get("last_docs_commit")
         console.print(
@@ -1091,6 +1099,13 @@ def _run_full_health_rescore(
     with contextlib.suppress(Exception):
         run_async(graph_builder.compute_metrics_parallel())
 
+    # The re-score rewrites the graph node rows from this graph, which has no
+    # co-change edges, and saves no snapshot: the stored metric memo no longer
+    # stands for those rows, so the next update computes and writes them.
+    from repowise.core.pipeline.incremental.graph_seed import discard_snapshot_metrics
+
+    discard_snapshot_metrics(repo_path)
+
     try:
         with timed(timings, "rescore"):
             run_async(
@@ -1222,20 +1237,6 @@ def parser_changed(repo_path: Path) -> bool:
         return False
 
 
-def security_scanner_changed(state: dict) -> bool:
-    """Whether the stored security findings were written by a different scanner.
-
-    Unlike :func:`health_analyzer_changed`, a state file with no stamp **is** a
-    change: the stamp arrived after 0.55.0 (#3086), so an unstamped store was
-    written by an older scanner. Reading absence as current would also keep it
-    unstamped forever, since only the rescan this gates writes the stamp.
-    ``init`` stamps every fresh index, so a new install never reads as stale.
-    """
-    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
-
-    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
-
-
 def renderer_changed(
     stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
 ) -> bool:
@@ -1351,30 +1352,9 @@ async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: lis
     scan. ``replace_findings`` only ever deletes/replaces working-tree rows
     (``commit_sha`` empty); history rows from ``scan --history`` are untouched.
     """
-    from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
-    from repowise.core.persistence import (
-        create_engine,
-        create_session_factory,
-        get_session,
-        init_db,
-        upsert_repository,
-    )
+    from repowise.core.pipeline.persist import rescan_repo_security
 
     parsed_files, source_map, _graph_builder, _repo_structure, _file_count = _build_repo_graph(
         repo_path, exclude_patterns, collect_sources=True
     )
-
-    url = get_db_url_for_repo(repo_path)
-    engine = create_engine(url)
-    try:
-        await init_db(engine)
-        sf = create_session_factory(engine)
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
-            await SecurityScanner(session, repo.id).replace_findings(
-                findings_by_file, scanned_paths
-            )
-    finally:
-        await engine.dispose()
+    await rescan_repo_security(repo_path, parsed_files, source_map)

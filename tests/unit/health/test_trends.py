@@ -14,6 +14,7 @@ from repowise.core.analysis.health.trends import (
     drop_unscoped_fields,
     file_score_series,
     file_trend,
+    latest_per_day,
     recent_kpis,
     snapshot_fields,
     snapshot_file_maps,
@@ -35,7 +36,8 @@ class _S:
 
 
 def _ts(n: int) -> datetime:
-    return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=n)
+    # A day apart: the drawn trend keeps one snapshot per day (latest_per_day).
+    return datetime(2026, 1, 1, tzinfo=UTC) + timedelta(days=n)
 
 
 def _series(values: list[float]) -> list[_S]:
@@ -122,6 +124,37 @@ def test_recent_kpis_orders_newest_first():
     rows = recent_kpis(_series([5.0, 6.0, 7.0]), limit=10)
     scores = [r["hotspot_health"] for r in rows]
     assert scores == [7.0, 6.0, 5.0]
+
+
+def test_latest_per_day_keeps_the_newest_snapshot_of_each_day():
+    day = datetime(2026, 11, 23, tzinfo=UTC)
+    early, late = _S(day, 8.8, 8.8), _S(day + timedelta(hours=9), 8.6, 8.6)
+    before = _S(day - timedelta(days=1), 8.0, 8.0)
+    undated = _S(None, 7.0, 7.0)  # type: ignore[arg-type]
+
+    assert latest_per_day([before, early, late]) == [before, late]
+    assert latest_per_day([undated, before]) == [undated, before]
+    assert latest_per_day([]) == []
+
+
+def test_recent_kpis_draws_one_row_per_day():
+    """Two snapshots on one day (a re-run, a deeper history pass) were two
+    rows with the same date; the trend now has one row for that day, the later."""
+    day = datetime(2026, 11, 23, tzinfo=UTC)
+    snaps = [
+        _S(day - timedelta(days=1), 8.0, 8.0),
+        _S(day + timedelta(hours=1), 8.8, 8.8),
+        _S(day + timedelta(hours=10), 8.7, 8.7),
+    ]
+
+    rows = recent_kpis(snaps, limit=10)
+
+    assert [(r["taken_at"][:10], r["average_health"]) for r in rows] == [
+        ("2026-11-23", 8.7),
+        ("2026-11-22", 8.0),
+    ]
+    # The limit counts days, not runs.
+    assert len(recent_kpis(snaps, limit=1)) == 1
 
 
 def test_recent_kpis_carries_the_drift_count_only_when_asked():
@@ -708,3 +741,12 @@ def test_recent_kpis_carries_the_analyzer_version_only_when_asked():
     assert "analyzer_version" not in recent_kpis(snaps)[0]
     rows = recent_kpis(snaps, analyzer_version=True)
     assert [r["analyzer_version"] for r in rows] == [42, None]
+
+
+def test_recent_kpis_keeps_every_run_when_asked():
+    """The CLI's table of runs keeps two same-day runs, each with its version."""
+    day = datetime(2026, 11, 23, tzinfo=UTC)
+    snaps = [_S(day, 8.8, 8.8), _S(day + timedelta(hours=9), 8.6, 8.6)]
+
+    assert len(recent_kpis(snaps, per_day=False)) == 2
+    assert len(recent_kpis(snaps)) == 1

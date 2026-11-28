@@ -249,4 +249,13 @@ SETTINGS: tuple[Setting, ...] = (
         "Where the machine's cache signing key lives.",
         internal=True,
     ),
+    _s(
+        "contracts.in_repo",
+        "bool",
+        False,
+        "Extract this repo's HTTP, gRPC, socket and topic contracts into "
+        ".repowise/contracts.json on init and update, and link callers to routes across its services.",
+        # Read by the next init or update. wiki.db does not depend on it, so
+        # turning it on or off rebuilds nothing (``state_only`` in repo_config).
+    ),
 )

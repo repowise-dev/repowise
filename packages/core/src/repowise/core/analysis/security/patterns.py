@@ -11,7 +11,23 @@ import re
 # the same way ``HEALTH_ANALYZER_VERSION`` forces a full health re-score
 # (#3072). Without this, a scanner fix only ever reaches a file a user
 # happens to edit.
-SECURITY_SCANNER_VERSION = 7
+#
+# 8 (0.63): sample passwords and a committed keystore's password rate low
+# (#6244).
+SECURITY_SCANNER_VERSION = 8
+
+
+def security_scanner_changed(state: dict) -> bool:
+    """Whether the stored security findings were written by a different scanner.
+
+    *state* is the repo's ``state.json``. Unlike ``health_analyzer_changed``, a
+    state file with no stamp **is** a change: the stamp arrived after 0.55.0
+    (#3086), so an unstamped store was written by an older scanner. Reading
+    absence as current would also keep it unstamped forever, since only the
+    rescan this gates writes the stamp. ``init`` stamps every fresh index, so
+    a new install never reads as stale.
+    """
+    return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
 
 
 # ---------------------------------------------------------------------------

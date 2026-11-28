@@ -431,7 +431,10 @@ def perf_check_command(
                         fmt, "baseline", f"baseline {against_name!r} has no workload {workload!r}"
                     )
                 base = {**base, "workloads": {workload: base["workloads"][workload]}}
-            result = perf_check.compare(base, _current_snapshot(repo_path, workload, fmt))
+            head = _current_snapshot(repo_path, workload, fmt)
+            result = perf_check.compare(base, head)
+            if result["verdict"] == "regressed":
+                result["causes"] = _regression_causes(repo_path, base, head, result["regressed"])
             _emit_check(result, against_name, fmt)
     except BaselineError as exc:
         cannot_evaluate(fmt, "baseline", str(exc))
@@ -536,6 +539,67 @@ def _emit_snapshot_saved(name: str, path: Path, snap: dict, fmt: str) -> None:
         click.echo(f"  {workload}: {count} benchmarks")
 
 
+def _regression_causes(
+    repo_path: Path, base: dict, head: dict, regressed: list[dict]
+) -> list[dict]:
+    """Per regressed workload, the commits between the baseline's run and the run
+    now that changed what its regressed benchmarks ran (``evidence.compare``'s
+    cause line). Best effort: a check never fails on it."""
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.evidence.compare import cause_words
+    from repowise.core.evidence.compare_history import benchmark_cause
+    from repowise.core.persistence.crud import benchmark_results
+
+    keys: dict[str, set[str]] = {}
+    for change in regressed:
+        keys.setdefault(change["workload"], set()).add(change["benchmark"])
+
+    async def read() -> list[dict]:
+        out: list[dict] = []
+        async with repo_index_session(repo_path) as opened:
+            if opened is None:
+                return out
+            session, repo_id = opened
+            for name, benchmarks in sorted(keys.items()):
+                before, now = base["workloads"].get(name), head["workloads"].get(name)
+                if before is None or now is None:
+                    continue
+                rows = await benchmark_results(session, [now["run_id"]])
+                functions = sorted(
+                    {r.symbol_id for r in rows if r.benchmark_key in benchmarks and r.symbol_id}
+                )
+                cause = await benchmark_cause(
+                    session,
+                    repo_id,
+                    repo_path,
+                    before.get("commit_sha"),
+                    now.get("commit_sha"),
+                    functions,
+                )
+                if cause is not None:
+                    out.append(
+                        {
+                            "workload": name,
+                            "line": cause_words(cause),
+                            "commits": [
+                                {
+                                    "sha": c.sha,
+                                    "subject": c.subject,
+                                    "pr": c.pr,
+                                    "functions": list(c.functions),
+                                }
+                                for c in cause.commits
+                            ],
+                        }
+                    )
+        return out
+
+    try:
+        return run_async(read())
+    except Exception:  # the verdict stands without its cause
+        return []
+
+
 def _emit_check(result: dict, name: str, fmt: str) -> None:
     if result["verdict"] == "cannot_judge":
         cannot_evaluate(fmt, "cannot_judge", f"nothing to judge against {name!r}: {result['reason']}")
@@ -552,6 +616,8 @@ def _emit_check(result: dict, name: str, fmt: str) -> None:
                 f"  {change['change']:<9} {change['workload']}: {change['benchmark']} "
                 f"allocs/op {change['base']:g} -> {change['head']:g}"
             )
+        for cause in result.get("causes", ()):
+            click.echo(f"  {cause['workload']}: {cause['line']}")
         notices = notice_console(fmt)
         dropped = [f"{d['workload']}: {d['benchmark']}" for d in result["dropped"]]
         for names, words in (

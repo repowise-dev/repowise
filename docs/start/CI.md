@@ -663,21 +663,42 @@ everything with the reason, and the step still passes.
 
 GitHub Actions. With `checks: ""` the action runs no gate.
 
+The index is saved twice per default-branch commit: `repowise-<sha>-early`
+right after it builds, then `repowise-<sha>-full` once the per-test map is
+added. A pull request opened while the tests still run gets its base's graph
+from the early entry instead of an older commit's index. The restore keys
+prefer full, then early, then the newest older index. Without the per-test
+map steps, the early entry is the only one and the restore keys still find it.
+GitHub evicts entries unused for 7 days or past the repository's 10 GB
+cache limit; a large index can be pruned sooner with `gh cache delete`.
+
 ```yaml
 # .github/workflows/repowise-index.yml
 on: {push: {branches: [main]}}
 jobs:
   index:
     runs-on: ubuntu-latest
+    # No background writer left in .repowise while the cache saves it.
+    env: {REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"}
     steps:
       - uses: actions/checkout@v7
         with: {fetch-depth: 0}
       - uses: actions/cache/restore@v6
-        with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
+        with:
+          path: .repowise
+          key: repowise-${{ github.sha }}-full
+          restore-keys: |
+            repowise-${{ github.sha }}-
+            repowise-
       - run: pip install repowise
       - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
       - uses: actions/cache/save@v6
-        with: {path: .repowise, key: "repowise-${{ github.sha }}"}
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-early"}
+      # The per-test map: your test command with per-test contexts (pytest-cov).
+      - run: pytest --cov --cov-context=test
+      - run: repowise coverage add .coverage
+      - uses: actions/cache/save@v6
+        with: {path: .repowise, key: "repowise-${{ github.sha }}-full"}
 ```
 
 ```yaml
@@ -685,7 +706,12 @@ jobs:
 - uses: actions/checkout@v7
   with: {fetch-depth: 0}
 - uses: actions/cache/restore@v6
-  with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
+  with:
+    path: .repowise
+    key: repowise-${{ github.event.pull_request.base.sha }}-full
+    restore-keys: |
+      repowise-${{ github.event.pull_request.base.sha }}-
+      repowise-
 - id: select
   uses: repowise-dev/repowise@main
   with: {checks: "", impacted-tests: true, impacted-tests-runner: pytest}
@@ -702,7 +728,17 @@ everything.
 GitLab: `repowise-impacted-tests` writes the arguments to
 `impacted-tests.txt` and `RUN_ALL_TESTS` to a dotenv report.
 
+GitLab keeps one cache entry under a fixed key, so the two saves are two
+jobs: `repowise-index` saves the index as soon as it builds, and
+`repowise-per-test-map` adds the map after the tests and saves it again. The
+map job takes the index from the index job's artifact, so the map lands on
+the same commit's index. The last job to save wins, so a slow pipeline can
+briefly leave an older commit's index in the cache until the next push.
+
 ```yaml
+variables:
+  REPOWISE_COMMIT_HEALTH_BACKGROUND: "0"  # no background writer in .repowise while the cache saves
+
 repowise-index:
   image: python:3.12
   variables: {GIT_DEPTH: "0"}
@@ -710,6 +746,20 @@ repowise-index:
     - pip install repowise
     - if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
   cache: {key: repowise-index, paths: [.repowise/], policy: pull-push}
+  artifacts: {paths: [.repowise/], expire_in: 1 day}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# After a default-branch test job that runs `pytest --cov --cov-context=test`
+# and keeps `.coverage` as an artifact.
+repowise-per-test-map:
+  image: python:3.12
+  stage: .post
+  needs: [repowise-index, test]
+  script:
+    - pip install repowise
+    - repowise coverage add .coverage
+  cache: {key: repowise-index, paths: [.repowise/], policy: push}
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -749,11 +799,15 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
   `*.yaml`, `*.json`, shell scripts.
 - `.repowise/config.yaml`, or a path `tests.full_run_on` matches.
 - A non-code file in a test tree.
-- A file with no known test, or only a filename guess.
+- A file with no known test, or only a filename guess (a file new in the
+  change selects its own scope, below).
+- A file new in the change that no changed file names and no existing code
+  sits beside.
 - A route through a test helper no test imports, unless every known test is
   selected anyway (the reasons say so).
-- Any Python test helper while a conftest or pytest config loads plugins by
-  name.
+- Any Python test helper while a conftest or pytest config loads by name a
+  plugin that may be a module of the repository (`pytest_plugins`, `-p name`).
+  An installed plugin or a pytest builtin (`pytester`) does not count.
 - A missing or unreadable index, or a per-test map at its row cap.
 - A deleted file no known test used.
 - A query or data file no code names.
@@ -767,6 +821,7 @@ Full flag reference: [CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-i
 | nested `package.json`, lockfile or `go.mod` | tests under its directory and those reaching code there |
 | root lockfile, manifest or runner config; Python, Ruby, PHP, Gradle or Maven dependency files (pip requirements included); `tsconfig`; jest or vitest config | its whole ecosystem |
 | production package `__init__.py` | tests reaching any module under it |
+| code file new in the change | tests reaching the changed files naming it in their added lines and the existing code in its directory (migrations, plugins and routes load by directory) |
 | doc, template, query, stylesheet, image or nested data file | tests reaching code that names it (outside comments and docstrings) |
 | doc, template, stylesheet or image no code names | its package's tests; Markdown, reST or AsciiDoc in no package and a top-level directory without code needs none |
 | `conftest.py`, test package `__init__.py`, imported test helper | tests under or importing it |
@@ -845,8 +900,8 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
   a variable, a request name in a string, `exec`/`eval`/`compile`, config
-  `usefixtures`), the conftest loads plugins or is
-  unreadable, or the index predates this; the reasons name the cause.
+  `usefixtures`), the conftest loads a plugin that may be a repository module
+  or is unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
 
@@ -875,10 +930,18 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
 
 It is used as is. Files changed in between whose imports or module-name
 strings moved (outside Python and JavaScript/TypeScript, any non-whitespace
-change) add the tests reaching them; CI config and test data do not, since
-neither is imported. Everything runs when that commit is not in the clone,
-over 1,000 files changed in between, or one is a lockfile, manifest, build or
-test config, or `.repowise/config.yaml`.
+change) are re-read. A Python or JavaScript/TypeScript file adds the tests
+reaching it only when it may now lead to the change: the imports it gained,
+resolved the way the indexer resolves them, or a file its gained strings
+name, reach a changed file in the index (through other such files too), or
+it reached one before. The walk stops at test files, as selection does. Any
+other language, a file that no longer parses, one that gained a dynamic-load
+marker or a package-listing loop, one whose imports or strings (gained or
+not) name a file added since, a test file or helper, and a production
+`__init__.py` always add the tests reaching them. CI config and test data add
+none, since neither is imported. Everything runs when that commit is not in the clone, over 1,000 files
+changed in between, or one is a lockfile, manifest, build or test config, or
+`.repowise/config.yaml`.
 
 ### Ceilings and expectations
 
@@ -890,7 +953,12 @@ test config, or `.repowise/config.yaml`.
 - The subset is only as small as the code is loosely coupled: on this
   repository the graph alone picks over 80% of test files, since most tests
   import something importing the change. Real savings need a per-test map
-  measured at the change's base; `selected.basis` shows what drove each pick.
+  measured at the change's base or head. With one, a measured test answers for
+  a changed Python file: a change inside function bodies runs the tests covering
+  those functions, and a module-level change the tests that ran code reading a
+  name it binds or import one
+  ([details](../architecture/test-intelligence.md#module-level-changes)). Tests the map never ran
+  keep the graph's answer; `selected.basis` shows what drove each pick.
 
 ## When a gate exits 2
 

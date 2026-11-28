@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 import httpx
 import pytest
 
-from repowise.core.providers.embedding.ollama import OllamaEmbedder
+from repowise.core.providers.embedding.ollama import OllamaEmbedder, OllamaModelMissingError
 
 
 def test_registry_keeps_mock_and_adds_ollama() -> None:
@@ -285,6 +285,18 @@ async def test_a_width_larger_than_the_model_names_the_setting() -> None:
     # A configuration error, not one bad input: nothing on it reads as an HTTP status.
     assert getattr(exc_info.value, "status_code", None) is None
     assert getattr(exc_info.value, "response", None) is None
+
+
+async def test_a_model_that_was_never_pulled_names_the_pull_command() -> None:
+    _FakeAsyncClient.error_response = _refusal(
+        404, json={"error": 'model "embeddinggemma" not found, try pulling it first'}
+    )
+    embedder = OllamaEmbedder(model="embeddinggemma")
+
+    with pytest.raises(OllamaModelMissingError) as exc_info:
+        await embedder.embed(["hello"])
+
+    assert "`ollama pull embeddinggemma`" in str(exc_info.value)
 
 
 async def test_another_refusal_keeps_its_status_and_adds_the_reason() -> None:

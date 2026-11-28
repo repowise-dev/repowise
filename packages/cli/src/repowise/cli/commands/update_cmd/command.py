@@ -21,7 +21,12 @@ import click
 import structlog
 
 from repowise.cli._setup import configure_cli_logging
-from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
+from repowise.cli.commands._index_outcome import (
+    record_index_outcome,
+    refresh_read_snapshots,
+    refresh_repo_contracts,
+    refresh_stale_routes,
+)
 from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     adopt_moved_repo_best_effort,
@@ -31,6 +36,7 @@ from repowise.cli.helpers import (
     ensure_repowise_dir,
     find_workspace_root,
     get_head_commit,
+    get_repowise_dir,
     load_config,
     load_state,
     release_update_lock,
@@ -45,6 +51,7 @@ from repowise.cli.helpers import (
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
+from repowise.core.cache_seal import sweep_orphan_temps
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.ingestion.git_indexer import (
     GIT_HISTORY_BACKFILL_REWALK,
@@ -93,6 +100,7 @@ from .reporting import (
     _render_update_report,
     render_changed_files,
     render_header,
+    render_slower,
     show_full_completion,
 )
 from .stale_targets import (
@@ -199,6 +207,10 @@ def _finish_outcome(
             keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
+        with timed(timings, "routes"):
+            refresh_stale_routes(repo_path)
+        # Opt-in; off, it reads one setting and writes nothing (no timing row).
+        refresh_repo_contracts(repo_path)
     with timed(timings, "editor_files"):
         _refresh_editor_stamp(repo_path, agents_md, degraded)
 
@@ -924,7 +936,6 @@ def _raise_missing_sync_base(run: UpdateRun, exc: Exception) -> None:
     raise reasoned_error(message, reason="missing_sync_base") from exc
 
 
-
 def _raise_no_sync_base(run: UpdateRun) -> NoReturn:
     hint = ""
     upstream_ws = find_workspace_root(run.repo_path)
@@ -1166,8 +1177,8 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         from .catch_up import catch_up_command
 
         console.print(
-            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
-            "left stale refresh with the next commit, or now with "
+            f"[dim]{run.stale_pages_planned} page(s) the last update at this commit left "
+            "stale will refresh with the next commit, or now with "
             f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
         )
     if not opts.dry_run:
@@ -1378,6 +1389,9 @@ def _prepare_locked_run(opts: UpdateOptions, run: UpdateRun) -> None:
         save_state(repo_path, state)
 
     _assess_store_upgrade(opts, run)
+    from .page_history import trim_page_history
+
+    trim_page_history(repo_path, dry_run=opts.dry_run)
 
     # This run only reaches changed files, so name the command for missing slots.
     from .commit_limit_notice import surface_pinned_commit_limit
@@ -1420,9 +1434,14 @@ def _announce_upgrade_actions(verdict) -> None:
 
 
 def _nothing_to_do(run: UpdateRun) -> bool:
+    # ``generation_changed`` alone (a run after a deferred-docs one, with no
+    # file changes) is not nothing to do: the page generation the deferred run
+    # skipped is still pending, so the run must fall through to the full path
+    # that finishes it instead of stamping every bucket as current (#5944).
     return not (
         run.file_diffs
         or run.config.changed
+        or run.config.generation_changed
         or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
@@ -2103,7 +2122,12 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        # A deferred-docs run still finished the traversal, git and health
+        # work the config edit asked for; only the generation bucket stays
+        # stale, so the next run re-renders pages without re-indexing (#5944).
+        stale_config_buckets=(
+            ("generation",) if (pages.docs_deferred and config.generation_changed) else ()
+        ),
         timings=run.timings,
     )
 
@@ -2232,6 +2256,8 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
         run.repo_path,
         reasoning=opts.reasoning,
         interactive=_docs_provider_prompt_allowed(run.emitter),
+        # --yes answers no questions, so it never installs a package either.
+        allow_install=not opts.yes,
     )
 
     # Persist this update's model spend to llm_costs, as init does.
@@ -2619,6 +2645,9 @@ def run_update(
     deferred = _acquire_update_lock(run)
     if deferred is not None:
         return deferred
+    # Temp files killed cache writes left; the age guard spares one in flight.
+    if not opts.dry_run:
+        sweep_orphan_temps(get_repowise_dir(run.repo_path))
     _prepare_locked_run(opts, run)
 
     _stage(run, "detect_changes")
@@ -2639,7 +2668,6 @@ def run_update(
         return _emit_done(run, UpdateOutcome.DRY_RUN)
     _analyze_changes(run)
     _refresh_knowledge_graph_stage(run)
-    if run.index_only:
-        return _index_only_update(opts, run)
-
-    return _docs_update(opts, run)
+    outcome = _index_only_update(opts, run) if run.index_only else _docs_update(opts, run)
+    render_slower(run.repo_path)
+    return outcome

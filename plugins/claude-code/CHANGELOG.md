@@ -2,6 +2,25 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## Unreleased
+
+### Removed
+- Lens is no longer part of the plugin: the `hooks/lens/` mod, its `modules` entry in `hooks.json` and its six `lens_*` settings are gone. Its source moved to [repowise-dev/claude-lens](https://github.com/repowise-dev/claude-lens), an experimental project you can build and load yourself. The commands, skills, hooks and MCP server are unchanged.
+
+## 0.62.0
+
+### Added
+- `/repowise:coverage` routes "setup" to `repowise coverage setup`, which prints the test command with coverage per build unit and the exact `coverage add` line, and "export" to `repowise coverage export` (#5830, #5924).
+- `/repowise:reindex` and `/repowise:init` list the `fastembed` embedder: in-process semantic search with no key, after `pip install "repowise[local-embed]"` on Python 3.11 and 3.12 (#6168).
+
+### Changed
+- The `CLAUDE.md` block `repowise init` writes, and the session-start line, lead with a scoped "call Repowise first" rule: for a how, where or why question, or which files a task involves, call a Repowise tool before Grep or reading files, pass the rule to subagents and use what it returned (#6170).
+- `/repowise:init` asks only what a step needs (install, an optional docs model, the cost, the restart) and ends on who to restart and what to ask first (#5921, #5960).
+- `/repowise:search` describes `auto` as the default mode and the limit as the `search_codebase` default (#5898).
+
+### Fixed
+- The Lens bundle reads a savings report that carries no figures as zero (#5954).
+
 ## 0.61.0
 
 ### Added
@@ -135,8 +154,8 @@ All notable changes to the Repowise Claude Code plugin are documented here.
   `get_change_risk`, `get_why`, `get_answer`), and sends Claude nothing
   without a button press. Ask questions that do not start with "why" go to
   `get_answer`, which may use the model your repo configures. See
-  [docs/agent/LENS.md](../../docs/agent/LENS.md) and its
-  [footprint](../../docs/agent/LENS.md#footprint).
+  [the Lens guide](https://github.com/repowise-dev/claude-lens/blob/main/docs/GUIDE.md) and its
+  [footprint](https://github.com/repowise-dev/claude-lens/blob/main/docs/GUIDE.md#footprint).
 
 ### Changed
 - The `code-health` skill leads a "what should I refactor?" answer with the

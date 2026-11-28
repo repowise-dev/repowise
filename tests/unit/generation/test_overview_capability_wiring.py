@@ -257,6 +257,72 @@ async def test_a_summary_from_the_store_corroborates_when_this_run_wrote_none(tm
     assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
 
 
+async def test_a_keyless_template_index_still_corroborates_a_scoped_overview(tmp_path):
+    """Keyless ``init`` builds docs from code and embeds nothing, so a later
+    scoped model run (``generate --page repo_overview``) opens an empty store.
+    The module summaries are still in the database, loaded as prior pages."""
+    from repowise.core.generation.page_generator import PriorPage
+
+    store = _Store()
+    run = _run(tmp_path, store=store)
+    run.gen._prior_pages = {
+        "module_page:src": PriorPage(
+            source_hash="h",
+            model_name="template",
+            provider_name="template",
+            # A template module page opens with its directory, not prose; the
+            # persisted summary is what carries the description.
+            content="# src\n\nsrc\n\n## Files\n",
+            summary="Scores a diff by the change risk of the files it touches.",
+        )
+    }
+    await build_level6_coros(run)
+
+    assert store.asked == ["src"]
+    assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
+
+
+async def test_a_store_that_cannot_answer_still_leaves_the_database(tmp_path):
+    from repowise.core.generation.page_generator import PriorPage
+
+    run = _run(tmp_path, store=_Store(fail=True))
+    run.gen._prior_pages = {
+        "module_page:src": PriorPage(
+            source_hash="h",
+            model_name="template",
+            content="",
+            summary="Scores a diff by the change risk of the files it touches.",
+        )
+    }
+    with capture_logs() as logs:
+        await build_level6_coros(run)
+
+    assert any(e["event"] == "generation.overview_corroboration_store_read_failed" for e in logs)
+    assert "Change risk" in [c.term for c in run.gen.overview_kwargs["capabilities"]]
+
+
+async def test_a_dependency_summary_comes_from_the_database_when_the_store_has_none(tmp_path):
+    """The same gap for a regenerated file's dependencies."""
+    from repowise.core.generation.page_generator import PriorPage
+    from repowise.core.generation.page_generator.levels import _prefetch_dependency_summaries
+
+    graph = nx.DiGraph()
+    graph.add_edge("src/blast_radius.py", "src/graph.py")
+    run = _run(tmp_path, store=_Store())
+    run.graph = graph
+    run.code_files = run.parsed_files
+    run.gen._prior_pages = {
+        "file_page:src/graph.py": PriorPage(
+            source_hash="h",
+            model_name="template",
+            content="# graph.py\n\nResolves imports into a directed graph.\n",
+        ),
+    }
+    await _prefetch_dependency_summaries(run)
+
+    assert "directed graph" in run.completed_page_summaries["src/graph.py"]
+
+
 async def test_this_run_wins_over_the_store(tmp_path):
     """A page written a moment ago is fresher than the one in the store, and
     asking for it again would be a round-trip for a worse answer."""

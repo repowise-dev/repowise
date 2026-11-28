@@ -82,8 +82,8 @@ class PerformanceHealthService:
 
     Lists, counts, facets and the headline leave out what a language gate holds
     back unless ``include_unverified``; a lookup by id never does. They leave
-    out the causes runtime evidence alone minted unless
-    ``include_measured_hotspots`` (the agent surface shows no evidence).
+    out the measured hotspots with no next step to lead with unless
+    ``include_measured_hotspots`` (the agent surface: ``crud.agent_hidden``).
     """
 
     def __init__(

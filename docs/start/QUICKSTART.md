@@ -5,8 +5,8 @@ from that index. The default run needs no API key, makes no model calls and
 sends nothing off your machine.
 
 > Looking for one command's flags? See the
-> [CLI Reference](../reference/CLI_REFERENCE.md). For everyday workflows, see
-> the [User Guide](USER_GUIDE.md).
+> [CLI Reference](../reference/CLI_REFERENCE.md). For how the pieces fit
+> together, see the [User Guide](USER_GUIDE.md).
 
 ## Choose your path
 
@@ -45,8 +45,12 @@ repowise init
 and an opt-in model line with what a model adds and costs. Enter starts the
 free run, which builds the documentation from code: no key, no model calls.
 `m` picks a model, `e` edits the plan (advanced options, agents, the
-post-commit hook), `s` connects only this repo, and `q` quits. A detected API
-key or logged-in agent CLI is named on the model line and used only after `m`.
+post-commit hook, keeping machine-specific files out of git), `s` connects
+only this repo when the global MCP entry would move, and `q` quits. A detected
+API key or logged-in agent CLI is named on the model line and used only after
+`m`. When Claude Code is installed, init asks one more question once the index
+is built: whether to turn on the hooks that compact what your agent reads
+(default Yes; `--no-distill-hook` leaves them off).
 
 `repowise init --yes --no-prose` does the free run with no questions. Without
 `--no-prose`, `--yes` uses a model when an API key is configured, with the
@@ -81,7 +85,7 @@ default; add a model whenever you like from the dashboard or with
 
 | What | Where | When |
 |---|---|---|
-| MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
+| MCP server entry | `.vscode/mcp.json` (plus `.vscode/extensions.json`); a project `.mcp.json` only when the global Claude Code entry below does not serve this repo | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
 | Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default, added when absent; never moved off another repo it serves. One whose repo no longer exists is re-pointed here (the plan screen shows the move and `s` keeps it) |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |
@@ -107,7 +111,10 @@ Other hosts need one more command, run after `init`:
 | Windsurf | `repowise agents add --target=windsurf --yes` |
 | Any other MCP client | `repowise agents print-config claude-code`, then paste the entry into its MCP config |
 
-`repowise agents` lists every supported host and whether it is wired.
+`repowise agents` lists every supported host and whether it is wired. Claude
+Code lists all ten MCP tools. Other clients list the five core tools by
+default, which keeps each request small; `repowise config set mcp.tools
+standard` lists all ten there too.
 Per-host details: [Agent integrations](../agent/INTEGRATIONS.md). On Claude
 Code, the plugin adds slash commands and skills:
 
@@ -142,8 +149,9 @@ repowise risk main..HEAD   # size and bug-fix record for your branch
 
 ## Agent path
 
-A person can hand setup to their agent by pasting this line into Claude Code,
-Codex, Cursor, VS Code Copilot, OpenCode, Hermes or any MCP client:
+A person can hand setup to their agent by pasting this line into any of the
+nine supported hosts (Claude Code, Codex CLI, VS Code, Cursor, OpenCode,
+Hermes, GitHub Copilot CLI, Kiro, Windsurf) or any other MCP client:
 
 ```text
 Read https://docs.repowise.dev/setup.md and set up Repowise in this repository.
@@ -193,50 +201,11 @@ That runbook follows the steps below. An agent can also follow them directly.
 
 ## Modes and upgrades
 
-`repowise status` shows which mode an index is in.
-
-| Mode | Reached by | You get | Not yet | Add it with |
-|---|---|---|---|---|
-| Index only | `init --mode fast` | graph, essential git history, health, dead code | documentation, full git history (blame, co-change) | `repowise update --full` (no key needed) |
-| Built from code | `init --no-prose`, or no key | graph, full git history, health, dead code, documentation built from code, decisions from markers and ADRs, full-text search | written documentation, decisions from PRs, history and comments | `repowise generate` (needs a model) |
-| Written by \<model\> | a model run, or an upgrade above | all of the above, written documentation, decisions from PRs, history and comments | nothing | |
-| Semantic search, on top of either documentation mode | an embedder (see [the matrix](#providers-and-embedders)) | search by meaning as well as by text | | `repowise reindex --embedder <name>` |
-
-`repowise update --full` with a model configured goes straight from Index only
-to Written by \<model\>. Every upgrade reuses the index you already have and
-shows a cost estimate before any model call.
-
-### What a model adds
-
-- Written documentation: subsystem and architecture pages that explain how the
-  code fits together, in place of pages built from code.
-- Decisions read from pull requests, git history and code comments.
-  `repowise generate` reads the ones a keyless run skipped.
-- Synthesized answers from `get_answer` and the dashboard chat.
-
-Semantic search needs an embedder, which is separate from the model. Without
-one, search is full-text, and every run names the command that turns it on.
-
-### Providers and embedders
-
-| Provider | Credential | Embedder of its own |
-|---|---|---|
-| `gemini` | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | yes |
-| `openai` | `OPENAI_API_KEY` | yes |
-| `openrouter` | `OPENROUTER_API_KEY` | yes |
-| `edenai` | `EDENAI_API_KEY` | yes |
-| `ollama` | none (local) | yes, with `OLLAMA_EMBEDDING_MODEL` |
-| `anthropic`, `deepseek`, `kimi`, `litellm` | `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `KIMI_API_KEY`, `LITELLM_API_KEY` | no |
-| `claude_cli`, `codex_cli`, `opencode` | your logged-in subscription | no |
-
-When nothing names an embedder, repowise takes the first one with a key set,
-in the order gemini, openai, openrouter, ollama, edenai, and every model run
-prints which embedder it uses and why. init reads each logged-in Claude Code,
-Codex or OpenCode's auth status and offers it with its call count, time and
-billing (plan quota, or per token for an API key), Claude Code first. A Codex
-signed in through ChatGPT stays in the picker but is not offered. An agent
-CLI is used only when you pick it or pass `--provider`. Keys, models and base URLs:
-[Config](../reference/CONFIG.md).
+The free index is one of three modes, and each upgrade reuses it: `repowise
+update --full` fills in an Index only run, and `repowise generate` adds
+written documentation behind a cost estimate. Semantic search needs an
+embedder, separate from the model. The mode table, costs, and every provider
+and embedder: [Modes, costs and providers](MODES.md).
 
 ## Keeping it fresh
 
@@ -260,7 +229,8 @@ the main checkout: [Worktrees](../scale/WORKTREES.md).
 
 | Goal | Read |
 |---|---|
-| Everyday workflows: before a PR, in CI, changing provider | [User Guide](USER_GUIDE.md) |
+| How the index, agent, CLI and dashboard fit together | [User Guide](USER_GUIDE.md) |
+| Modes, costs, providers and embedders | [Modes, costs and providers](MODES.md) |
 | What each MCP tool answers | [MCP Tools](../agent/MCP_TOOLS.md) |
 | Context that arrives without the agent asking | [Hooks](../agent/HOOKS.md) |
 | Fewer tokens on test and build output | [Distill](../agent/DISTILL.md) |

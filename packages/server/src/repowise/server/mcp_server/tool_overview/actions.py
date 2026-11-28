@@ -47,8 +47,12 @@ def without_evidence(view: dict[str, Any], ids: frozenset[str]) -> dict[str, Any
 
     The agent surface carries no runtime evidence yet, so an action on a
     cause minted from a measurement alone stays on the people's surfaces.
-    Ceiling: a horizon keeps the actions it stored, so one taken out is not
-    replaced by the next.
+    The head refills: a horizon holds ``KEEP_PER_HORIZON`` ranked actions and
+    the overview shows the first ``_PER_HORIZON`` left. Ceiling: the Fix-first
+    rule stores actions for its top ``FIX_FIRST_ACTIONS`` items only, so a
+    hidden one there is not replaced by the next Fix-first item; another
+    rule's action takes the place. Keeping a spare would grow the stored view
+    every surface reads.
     """
     if not ids:
         return view
@@ -127,7 +131,7 @@ async def _build_next_actions(
             view = await load_actions_view(
                 session, repository.id, setup=setup, **_cross_repo_cut(alias)
             )
-            hidden = await measured_hotspot_ids(session, repository.id)
+            hidden = await measured_hotspot_ids(session, repository.id, without_step=True)
         return compact_actions_view(without_evidence(view, hidden), full=full), None
     except Exception as exc:
         logger.warning("get_overview: next actions unavailable: %s", exc)

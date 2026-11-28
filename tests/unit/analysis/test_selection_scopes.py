@@ -439,6 +439,46 @@ def test_a_blob_read_that_stops_early_does_not_read_as_unmoved(tmp_path) -> None
     assert _unread(tmp_path, specs, None) == set()  # nothing read: the caller fails closed
 
 
+def test_a_gap_reads_what_each_rewired_file_may_newly_reach(tmp_path) -> None:
+    """Rewired gap files get their gained imports resolved at the base; added files are named."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.test_collection import _rewired_gap
+
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def commit(files: dict[str, str]) -> str:
+        for name, text in files.items():
+            (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / name).write_text(text, encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-q", "-m", "c")
+        return git("rev-parse", "HEAD")
+
+    git("init", "-q")
+    indexed = commit({"src/a.py": "X = 1\n", "src/b.py": "import os\n", "src/y.py": "Y = 1\n"})
+    # The gap: b.py gains an import; a file is added. Then the change edits a.py.
+    commit({"src/b.py": "import os\nfrom src import y\n", "src/new.py": "N = 1\n"})
+    commit({"src/a.py": "X = 2\n"})
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+    out = {"indexed_commit": indexed}
+    files = {"src/a.py", "src/b.py", "src/y.py"}
+    _, rewired, rewirings, added = _rewired_gap(tmp_path, change, _NONE, files, out, None)
+    assert sorted(out["index_gap"]) == ["src/b.py", "src/new.py"]
+    assert rewired == ["src/b.py"] and added == {"src/new.py"}
+    assert rewirings["src/b.py"].imports == {"src/y.py"}
+    # Without the indexed files nothing is worked out, and every rewired file stays.
+    assert _rewired_gap(tmp_path, change, _NONE, None, out, None)[2] == {}
+
+
 def test_read_checkout_with_a_head_answers_exists_for_that_commit(tmp_path) -> None:
     """A change read from another worktree's branch: its tests exist at its head, not on disk."""
     import subprocess
@@ -516,6 +556,152 @@ def test_an_empty_untracked_code_file_needs_no_tests(tmp_path) -> None:
     sel = select_tests(SelectionInput(list(only), (), _tiers(), _NONE, scopes=only))
     assert not sel.run_all
     assert "1 changed file(s) are new and empty: no tests needed." in sel.reasons
+
+
+def _new_file_plan(tracked, added, edits=None):
+    """``plan_scopes`` for a committed change adding *added* and editing *edits* (added lines)."""
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import Checkout, plan_scopes
+    from repowise.core.pytest_roots import read_pytest_roots
+
+    edits = edits or {}
+    files = {p: FileDiff(path=p, added=["x = 1"]) for p in added}
+    files.update({p: FileDiff(path=p, added=list(lines)) for p, lines in edits.items()})
+    checkout = Checkout(
+        sorted({*tracked, *added}), [], read_pytest_roots([]), lambda _p: "", lambda _p: True
+    )
+    change = ChangeSet(files, set(), "t", "b", "h", set(added))
+    return plan_scopes(change, _NONE, checkout)
+
+
+def _select_new(changed, plan, *rows, known):
+    inp = SelectionInput(changed, (), _tiers(*rows), _NONE, scopes=plan.scopes, known_tests=known)
+    return select_tests(inp)
+
+
+def test_a_new_file_named_by_a_changed_file_runs_that_files_tests() -> None:
+    """The changed module importing the new one stands for it: no full run."""
+    from repowise.core.analysis.selection_scopes import NEW_FILE
+
+    new, app = "src/feature/newmod.py", "src/app.py"
+    tracked = [app, "tests/test_app.py", "tests/test_other.py"]
+    plan = _new_file_plan(tracked, [new], {app: ["from src.feature import newmod"]})
+    scope = plan.scopes[new]
+    assert scope.basis == NEW_FILE and not scope.run_all
+    assert scope.routes == (new, app)
+    known = ["tests/test_app.py", "tests/test_other.py"]
+    sel = _select_new([new, app], plan, (app, "tests/test_app.py"), known=known)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_app.py",)
+    assert sel.basis[new] == NEW_FILE
+    assert any("is new in this change, named by src/app.py" in r for r in sel.reasons)
+    # A chain of added modules reaches the changed file at its top.
+    helper = "src/feature/deep/helper.py"
+    edits = {app: ["from src.feature import newmod"], new: ["from .deep import helper"]}
+    chained = _new_file_plan(tracked, [new, helper], edits)
+    assert chained.scopes[helper].routes == (helper, app, new)
+    # A comment, or the word used as a plain name, loads nothing.
+    edits = {app: ["# newmod comes later", "newmod = 1", "x = 1  # import newmod"]}
+    assert _new_file_plan(tracked, [new], edits).scopes[new].run_all
+    web = "web/src/main.ts"
+    edits = {web: ["const x = 1 // import newmod", "/* from 'newmod' */"]}
+    assert _new_file_plan([*tracked, web], [new], edits).scopes[new].run_all
+    # A stem naming its directory is named by the directory, never by the stem.
+    index = "web/widgets/index.ts"
+    other = {web: ['import x from "../other/index"']}
+    assert _new_file_plan([web], [index], other).scopes[index].run_all
+    named = {web: ['import w from "./widgets"']}
+    assert _new_file_plan([web], [index], named).scopes[index].routes == (index, web)
+
+
+def test_a_new_file_beside_code_with_tests_runs_the_tests_reaching_its_siblings() -> None:
+    """A directory-loaded file (a plugin) runs what reaches the code beside it, walked as one route."""
+    new, old = "src/plugins/fresh.py", "src/plugins/existing.py"
+    plan = _new_file_plan([old, "src/plugins/README.md", "tests/test_plugins.py"], [new])
+    scope = plan.scopes[new]
+    assert not scope.run_all
+    assert scope.routes == (new, "src/plugins/*")
+    assert plan.groups["src/plugins/*"] == (old,)
+    assert "src/plugins/*" in plan.routes
+    known = ["tests/test_plugins.py", "tests/test_core.py"]
+    sel = _select_new([new], plan, ("src/plugins/*", "tests/test_plugins.py"), known=known)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_plugins.py",)
+    assert any("beside 1 existing code file(s) in src/plugins/" in r for r in sel.reasons)
+
+
+def test_a_new_file_nothing_names_and_nothing_sits_beside_runs_everything() -> None:
+    """No namer and no sibling: no test can be known to load it."""
+    new = "src/lonely/thing.py"
+    plan = _new_file_plan(["src/app.py", "tests/test_app.py"], [new])
+    assert plan.scopes[new].run_all
+    sel = _select_new([new], plan, known=["tests/test_app.py"])
+    assert sel.run_all
+    assert sel.reasons[0] == (
+        f"{new} changed: it is new in this change, no changed file names it and no "
+        "existing code sits beside it."
+    )
+    # Siblings no test reaches leave its tests unknown too.
+    beside = _new_file_plan(["src/lonely/other.py", "tests/test_app.py"], [new])
+    sel = _select_new([new], beside, known=["tests/test_app.py"])
+    assert sel.run_all
+    assert "and no such test is known" in sel.reasons[0]
+
+
+def test_a_new_migration_runs_the_tests_reaching_the_migrations_beside_it() -> None:
+    """Alembic loads versions by directory; no file names a new one by its file name."""
+    versions = "alembic/versions"
+    new = f"{versions}/0042_add_column.py"
+    old = (f"{versions}/0040_init.py", f"{versions}/0041_users.py")
+    plan = _new_file_plan([*old, "alembic/env.py", "tests/test_migrations.py"], [new])
+    assert not plan.scopes[new].run_all
+    assert plan.groups[f"{versions}/*"] == old
+    known = ["tests/test_migrations.py", "tests/test_core.py"]
+    sel = _select_new([new], plan, (f"{versions}/*", "tests/test_migrations.py"), known=known)
+    assert not sel.run_all, sel.reasons
+    assert sel.test_files == ("tests/test_migrations.py",)
+
+
+def test_new_test_code_and_files_another_scope_takes_keep_their_rules() -> None:
+    """A new test runs itself, a new package init has its package scope, build config runs all."""
+    from repowise.core.analysis.selection_scopes import NEW_FILE
+
+    added = ["tests/test_new.py", "src/pkg/newsub/__init__.py", "Makefile", "src/pkg/new.py"]
+    # Code a tool loads by its file name, which no import names, can change any test.
+    added += ["src/pkg/playwright.config.ts", "src/pkg/jest.setup.js", "src/pkg/setupTests.ts"]
+    plan = _new_file_plan(["src/pkg/__init__.py", "src/pkg/core.py"], added)
+    assert {p for p, s in plan.scopes.items() if s.basis == NEW_FILE} == {"src/pkg/new.py"}
+    assert plan.scopes["src/pkg/newsub/__init__.py"].basis == "package-importers"
+
+
+def test_change_set_and_plan_scopes_find_a_committed_new_file(tmp_path) -> None:
+    """Over git: the commit's added file gets the new-file scope, named by its importer."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import change_set
+    from repowise.core.analysis.selection_scopes import NEW_FILE
+    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+
+    def git(*args):
+        who = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+        subprocess.run(["git", *who, *args], cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "core.py").write_text("x = 1\n", encoding="utf-8")
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "base")
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "fresh.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "pkg" / "core.py").write_text("from lib import fresh\nx = 1\n", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-qm", "add")
+
+    change = change_set(str(tmp_path), "HEAD~1..HEAD")
+    assert change.added == {"lib/fresh.py"}
+    scope = plan_scopes(change, _NONE, read_checkout(tmp_path)).scopes["lib/fresh.py"]
+    assert scope.basis == NEW_FILE
+    assert scope.routes == ("lib/fresh.py", "pkg/core.py")
 
 
 def test_an_owner_package_scope_routes_through_one_package_walk(tmp_path) -> None:

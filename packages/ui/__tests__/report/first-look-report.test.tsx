@@ -137,6 +137,32 @@ function renderReport(props: Partial<Parameters<typeof FirstLookReport>[0]> = {}
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("FirstLookReport, sections it could not collect", () => {
+  const unavailable = { ownership: "No checkout to read history from.", coverage: "No coverage report stored." };
+
+  it("names each one with its reason and links the ones the shell has a page for", () => {
+    renderReport({ report: report({ unavailable }) });
+    const block = screen.getByRole("heading", { name: "Not in this report" }).closest("section")!;
+    expect(within(block).getByText("No checkout to read history from.")).toBeInTheDocument();
+    expect(within(block).getByText("No coverage report stored.")).toBeInTheDocument();
+    expect(within(block).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/r/ownership"]);
+  });
+
+  it("takes the host's page for a section", () => {
+    renderReport({
+      report: report({ unavailable }),
+      unavailableHref: (section) => (section === "coverage" ? "/host/coverage" : null),
+    });
+    const block = screen.getByRole("heading", { name: "Not in this report" }).closest("section")!;
+    expect(within(block).getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/host/coverage"]);
+  });
+
+  it("adds nothing when every section was read", () => {
+    renderReport();
+    expect(screen.queryByRole("heading", { name: "Not in this report" })).toBeNull();
+  });
+});
+
 describe("FirstLookReport", () => {
   it("reads as one document: strip, Start here, then sections in report order", () => {
     const { container } = renderReport();
@@ -269,6 +295,14 @@ describe("FirstLookReport", () => {
     expect(onRewrite).toHaveBeenCalledOnce();
   });
 
+  it("spends orange on one point only, the measured lift, and keeps the rewrite violet", () => {
+    const { container } = renderReport({ canRewrite: true, onRewrite: vi.fn(), rewriteCost: 0.01 });
+    const orange = [...container.querySelectorAll("[class*='accent-primary'], [class*='accent-muted']")];
+    expect(orange.map((el) => el.textContent)).toEqual(["8.3×"]);
+    expect(screen.getByText("measured").className).toContain("text-tertiary");
+    expect(screen.getByRole("button", { name: /Rewrite/ }).className).toContain("color-model");
+  });
+
   it("draws the header contours from the commit, the same every time", () => {
     expect(contourPaths("c1203324")).toEqual(contourPaths("c1203324"));
     expect(contourPaths("c1203324")).not.toEqual(contourPaths("9f2e1aa0"));
@@ -276,12 +310,24 @@ describe("FirstLookReport", () => {
 });
 
 describe("RepoReportCard", () => {
-  it("shows progress since the first look, the top three and a way in", () => {
+  it("is one line: progress since the first look, the lead item and a way in, with no list", () => {
     render(<RepoReportCard report={report()} href="/r/first-look" />);
     expect(screen.getByRole("heading", { name: "Repo report" })).toBeInTheDocument();
     expect(screen.getByText(/new since Nov 20, 2026/).textContent).toMatch(/1 resolved · 1 acknowledged · 1 new since/);
-    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.getByTitle("Rotate 2 hard-coded credentials.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open report/ })).toHaveAttribute("href", "/r/first-look");
+  });
+
+  it("drops a zero acknowledged count, and the progress without a first look", () => {
+    const r = report();
+    for (const s of r.sections) s.items = s.items.map((i) => (i.status === "acknowledged" ? { ...i, status: "open" } : i));
+    const { unmount } = render(<RepoReportCard report={r} href="/r/first-look" />);
+    expect(screen.getByText(/new since/).textContent).not.toMatch(/acknowledged/);
+    unmount();
+    render(<RepoReportCard report={report({ baseline: { stamp: null, resolved: [] } })} href="/r/first-look" />);
+    expect(screen.queryByText(/resolved/)).toBeNull();
+    expect(screen.getByRole("link", { name: /Open report/ })).toBeInTheDocument();
   });
 });
 

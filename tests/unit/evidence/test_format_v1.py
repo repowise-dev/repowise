@@ -47,9 +47,48 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
     assert first == {
         "path": "src/app/cli.py", "function": "build", "line": 40, "self_value": 12.0,
         "total_value": 410.0, "self_samples": None, "total_samples": 410, "call_count": None,
+        "inside": None, "drivers": None,
     }
     # Unknown stays unknown: no self value, no line, never a zero.
     assert (second["path"], second["self_value"], second["line"]) == ("src/app/io.py", None, None)
+
+
+def test_a_profile_entry_reads_inside_and_drivers_heaviest_first_and_drops_bad_items() -> None:
+    inside = [
+        {"name": "Path.stat", "kind": "library", "share": 0.15},
+        {"name": "Path.is_file", "kind": "library", "share": 0.57},
+        {"name": "x", "kind": "magic", "share": 0.1},  # unknown kind
+        {"name": "y", "kind": "own", "share": 1.5},  # not a share
+        {"kind": "own", "share": 0.1},  # no name
+        {"name": "(own code)", "kind": "own", "share": 0.03},
+        {"name": "rglob", "kind": "library", "share": 0.25},
+    ]
+    drivers = [
+        {"function": "main", "path": "src/app/main.py", "line": 3, "share": 0.4},
+        {"function": "pytest_pyfunc_call", "share": 0.6},
+        {"function": "bad", "path": "../outside.py", "share": 0.1},
+        "not an object",
+    ]
+    doc = parse_evidence(
+        _doc(symbols=[{"path": "a.py", "function": "f", "self": 1, "inside": inside,
+                       "drivers": drivers}])
+    )
+    (entry,) = doc.entries
+    assert entry["inside"] == [
+        {"name": "Path.is_file", "kind": "library", "share": 0.57},
+        {"name": "rglob", "kind": "library", "share": 0.25},
+        {"name": "Path.stat", "kind": "library", "share": 0.15},
+    ]
+    assert entry["drivers"] == [
+        {"function": "pytest_pyfunc_call", "share": 0.6},
+        {"function": "main", "path": "src/app/main.py", "line": 3, "share": 0.4},
+    ]
+    # Not a list, or nothing valid in it: absent, and the entry still reads.
+    bad = parse_evidence(
+        _doc(symbols=[{"path": "a.py", "function": "f", "self": 1, "inside": {"a": 1},
+                       "drivers": [{"function": "g"}]}])
+    )
+    assert (bad.entries[0]["inside"], bad.entries[0]["drivers"]) == (None, None)
 
 
 @pytest.mark.parametrize(

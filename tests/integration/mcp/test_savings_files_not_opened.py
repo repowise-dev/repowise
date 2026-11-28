@@ -98,6 +98,7 @@ async def test_failing_file_bookkeeping_never_changes_the_reply(
 
 def test_an_ambiguous_symbol_credits_only_files_with_a_rendered_body(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from repowise.server.mcp_server._savings import reads
     from repowise.server.mcp_server.tool_symbol.ambiguous import _finish_ambiguous
@@ -110,5 +111,5 @@ def test_an_ambiguous_symbol_credits_only_files_with_a_rendered_body(
         "_meta": {},
     }
     over_budget = [{"file": "b.py", "fetch_with": "ref"}]
-    _finish_ambiguous(response, 1, over_budget, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
+    _finish_ambiguous(response, 1, over_budget, tmp_path, {"a.py": "x = 1\n", "b.py": "y = 2\n"})
     assert noted == ["a.py"]

@@ -64,6 +64,8 @@ export function UnavailableQueue({ summary }: { summary: PerformanceOpportunityS
 export function ConnectEvidenceState({
   found,
   variant = "empty",
+  prompt = buildConnectEvidencePrompt,
+  hint,
 }: {
   found?: readonly string[] | null | undefined;
   /**
@@ -71,6 +73,10 @@ export function ConnectEvidenceState({
    * place above the fold, and the row says why nothing in it is measured.
    */
   variant?: "empty" | "row";
+  /** The text the button copies. Omitted, the `repowise evidence setup` prompt. */
+  prompt?: (() => string) | undefined;
+  /** The line under the button. Omitted, it names `repowise evidence setup`; null drops it. */
+  hint?: React.ReactNode;
 }) {
   if (variant === "row") {
     return (
@@ -84,7 +90,7 @@ export function ConnectEvidenceState({
         </p>
         <AiPromptButton
           label="Copy prompt for your agent"
-          copyText={() => buildConnectEvidencePrompt()}
+          copyText={() => prompt()}
         />
       </div>
     );
@@ -112,11 +118,15 @@ export function ConnectEvidenceState({
         ) : null}
         <AiPromptButton
           label="Copy prompt for your agent"
-          copyText={() => buildConnectEvidencePrompt()}
+          copyText={() => prompt()}
         />
-        <p className="text-xs text-[var(--color-text-tertiary)]">
-          Or run <code className="font-mono">repowise evidence setup</code> yourself.
-        </p>
+        {hint !== undefined ? (
+          hint
+        ) : (
+          <p className="text-xs text-[var(--color-text-tertiary)]">
+            Or run <code className="font-mono">repowise evidence setup</code> yourself.
+          </p>
+        )}
       </div>
     </EmptyState>
   );
@@ -129,12 +139,14 @@ export function ConnectEvidenceState({
 export function ConnectEvidenceRow({
   runtimeEvidence,
   hasCauses,
+  prompt,
 }: {
   runtimeEvidence: { connected: boolean } | null;
   hasCauses: boolean;
+  prompt?: (() => string) | undefined;
 }) {
   if (!runtimeEvidence || runtimeEvidence.connected || !hasCauses) return null;
-  return <ConnectEvidenceState variant="row" />;
+  return <ConnectEvidenceState variant="row" prompt={prompt} />;
 }
 
 /**

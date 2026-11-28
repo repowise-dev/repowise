@@ -38,6 +38,7 @@ def ts_report():
         builder.add_file(parser.parse_file(fi, source))
 
     graph = builder.build()
+    builder.add_framework_edges([])
     analyzer = DeadCodeAnalyzer(graph, git_meta_map={})
     return analyzer.analyze({"min_confidence": 0.0})
 
@@ -97,7 +98,7 @@ class TestTsSampleNoFalsePositives:
     def test_next_app_router_files_not_unreachable(self, ts_report) -> None:
         unreachable = _paths(ts_report, DeadCodeKind.UNREACHABLE_FILE)
         # ``app/page.tsx`` and ``app/route.ts`` are filesystem-convention
-        # entry points and must not be flagged.
+        # entry points of the package that depends on ``next``.
         for fname in ("page.tsx", "route.ts"):
             assert not any(f"app/{fname}" in p for p in unreachable)
 

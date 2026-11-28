@@ -857,7 +857,7 @@ class ContextAssembler:
     ) -> SccPageContext:
         """Assemble context for the scc_page template."""
         cycle_parts = " → ".join(scc_files)
-        cycle_description = f"Circular dependency cycle: {cycle_parts}"
+        cycle_description = f"Static import cycle: {cycle_parts}"
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
 
         scc_set = set(scc_files)

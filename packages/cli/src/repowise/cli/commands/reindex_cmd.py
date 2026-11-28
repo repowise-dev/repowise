@@ -22,7 +22,9 @@ _INPUT_TOO_LONG_RETRIES = 4
 @click.argument("path", required=False, default=None)
 @click.option(
     "--embedder",
-    type=click.Choice(["gemini", "openai", "openrouter", "ollama", "edenai", "mock", "auto"]),
+    type=click.Choice(
+        ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock", "auto"]
+    ),
     default="auto",
     help="Embedder to use. 'auto' keeps the repo's embedder, or detects one from env keys "
     "when the repo has none or only the keyless mock.",
@@ -88,6 +90,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
 
     # --- Create LanceDB vector store ---
     lance_dir = Path(repo_path) / ".repowise" / "lancedb"
+    _refuse_mock_over_semantic_store(lance_dir, embedder_impl)
     try:
         from repowise.core.persistence.vector_store import LanceDBVectorStore
     except ImportError:
@@ -125,15 +128,20 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         f"Found [bold]{len(pages)}[/bold] wiki pages and [bold]{len(decisions)}[/bold] decision records to index."
     )
 
+    from repowise.core.persistence.vector_store.lancedb_store import clear_keyless_store_mark
+
     if total == 0:
         console.print("[yellow]Nothing to index. Run 'repowise init' first.[/yellow]")
         await engine.dispose()
+        # Nothing left to re-embed, so ``update`` must stop proposing it.
+        clear_keyless_store_mark(lance_dir)
         return
 
     # --- Embed and upsert pages in batches ---
     # The recipe is shared with generation and ``doctor --repair`` so a page
     # reindexed here gets the same vector it would have got from any of them.
     from repowise.core.persistence.vector_store import embed_item
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
 
     indexed = 0
     failed = 0
@@ -156,7 +164,7 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
             errors, or failed writes one page at a time multiplies an outage
             into hours of duplicate work.
             """
-            nonlocal indexed, failed, warned
+            nonlocal indexed, failed
             try:
                 await vector_store.embed_batch(items)
                 indexed += len(items)
@@ -165,22 +173,31 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 successful, retry_items, terminal = _batch_recovery_plan(exc, items)
                 indexed += successful
 
+            missing = _missing_model(terminal)
+            if missing is not None:
+                # Every later request fails the same way: stop on the first one,
+                # with no per-page warnings in front of the one line that fixes it.
+                failed += len(terminal) + len(retry_items)
+                return missing
+
             for (page_id, _text, _meta), stage, exc in terminal:
-                failed += 1
-                warned += 1
-                if warned <= 3:
-                    warn(f"  failed to embed {page_id} during {stage}: {exc}")
+                _note_failure(f"  failed to embed {page_id} during {stage}: {exc}")
 
             for page_id, text, meta in retry_items:
                 try:
                     await _embed_one_with_input_recovery(vector_store, (page_id, text, meta))
                     indexed += 1
                 except Exception as exc:
-                    failed += 1
-                    warned += 1
-                    if warned <= 3:
-                        warn(f"  failed to embed {page_id}: {exc}")
+                    _note_failure(f"  failed to embed {page_id}: {exc}")
             return next((exc for _item, stage, exc in terminal if stage == "embedding"), None)
+
+        def _note_failure(message: str) -> None:
+            """Count one failed item; only the first three are printed."""
+            nonlocal failed, warned
+            failed += 1
+            warned += 1
+            if warned <= 3:
+                warn(message)
 
         # Pages — one batched embed per slice instead of one embedder
         # round-trip per page (a large wiki paid thousands of serial calls).
@@ -222,7 +239,11 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 consecutive_provider_failures = 0
             else:
                 consecutive_provider_failures += 1
-                if consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES:
+                # A missing model fails every request alike: no second batch needed.
+                if (
+                    consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES
+                    or isinstance(provider_failure, OllamaModelMissingError)
+                ):
                     provider_circuit_error = provider_failure
                     break
 
@@ -257,7 +278,11 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
                 consecutive_provider_failures = 0
             else:
                 consecutive_provider_failures += 1
-                if consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES:
+                # A missing model fails every request alike: no second batch needed.
+                if (
+                    consecutive_provider_failures >= _PROVIDER_FAILURE_CIRCUIT_SLICES
+                    or isinstance(provider_failure, OllamaModelMissingError)
+                ):
                     provider_circuit_error = provider_failure
                     break
 
@@ -265,11 +290,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     await engine.dispose()
 
     if provider_circuit_error is not None:
-        raise click.ClickException(
-            "Embedding provider failed in two consecutive batches; stopped the reindex "
-            "so the same failure is not repeated across the corpus. "
-            f"Last error: {provider_circuit_error}"
-        )
+        raise click.ClickException(_circuit_message(provider_circuit_error))
+    # Nothing failed, so the keyless marker has done its job; kept, it would
+    # propose this re-embed on every ``update`` of a wiki whose pages all sit
+    # below the information floor (no table is ever written). After a failure
+    # it stays, and the next ``update`` retries, as it did over a mock table.
+    if not failed:
+        clear_keyless_store_mark(lance_dir)
 
     # Record the embedder we actually built the table with. Without this, a
     # repo indexed keyless keeps `embedder: mock` in config.yaml, and the next
@@ -303,6 +330,49 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
         raise click.Abort()
 
 
+def _refuse_mock_over_semantic_store(lance_dir, embedder_impl: object) -> None:
+    """Stop before mock vectors replace a store a real embedder built.
+
+    The store's writer refuses that write itself (``MockWouldReplaceStoreError``);
+    asked here first, through the guard ``build_vector_store`` uses, the run
+    stops before it reads a page, with one message instead of a failure per
+    batch, and names the one step that replaces the store on purpose.
+    """
+    from repowise.cli.providers.vector_store import _mock_would_clobber, existing_vector_dim
+
+    if not _mock_would_clobber(lance_dir, embedder_impl):
+        return
+    raise click.ClickException(
+        f"The search index at {lance_dir} holds {existing_vector_dim(lance_dir)}-wide "
+        "vectors from a real embedder, and mock test vectors would replace every one "
+        "of them, so its vectors were kept. To refresh it, name the embedder that "
+        "built it: repowise reindex --embedder <name>. To replace it with test "
+        "vectors anyway, delete that folder and run this reindex again."
+    )
+
+
+def _circuit_message(error: Exception) -> str:
+    """Why the reindex stopped early: a missing model says its own fix."""
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
+
+    if isinstance(error, OllamaModelMissingError):
+        return str(error)
+    return (
+        "Embedding provider failed in two consecutive batches; stopped the reindex "
+        "so the same failure is not repeated across the corpus. "
+        f"Last error: {error}"
+    )
+
+
+def _missing_model(
+    terminal: list[tuple[tuple[str, str, dict], str, Exception]],
+) -> Exception | None:
+    """The first failure that says the local model server lacks the model, if any."""
+    from repowise.core.providers.embedding.ollama import OllamaModelMissingError
+
+    return next((exc for _i, _s, exc in terminal if isinstance(exc, OllamaModelMissingError)), None)
+
+
 def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
     """Make config.yaml and state.json describe the embedder the table now holds."""
     from repowise.cli.helpers import load_config_for_write, save_config_partial
@@ -316,19 +386,15 @@ def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
     config = load_config_for_write(repo_path)
     pinned = str(config.get("embedder") or "").strip().lower()
     before = (config_fingerprint(repo_path), config_dependency_fingerprints(repo_path))
-    # A model pinned for the old embedder would be read as the new one's; the
-    # same embedder keeps its pin (#2627).
-    changed = pinned != embedder_name
+    used = _model_used(repo_path, embedder_name)
     save_config_partial(
-        repo_path, embedder=embedder_name, **({"embedding_model": None} if changed else {})
+        repo_path,
+        embedder=embedder_name,
+        **_model_pin_update(used, changed=pinned != embedder_name),
     )
-    model = str(config.get("embedding_model") or "").strip()
-    if changed and model:
-        # A pin binds to the embedder named beside it, so the embed never read it.
-        warn(
-            f"Removed embedding_model: {model} from config.yaml: it was pinned for "
-            f"{pinned or 'no embedder'}, so this run did not use it."
-        )
+    _warn_model_pin_change(
+        str(config.get("embedding_model") or "").strip(), used, pinned, embedder_name
+    )
     # The embed this config change asks `update` for has just been done, but
     # only in full on a clean run. After a partial switch the stale fingerprint
     # makes `update` rebuild; a partial run with the same embedder changes no
@@ -336,6 +402,47 @@ def _record_embedder(repo_path, embedder_name: str, *, clean: bool) -> None:
     if clean:
         carry_config_fingerprints(repo_path, before)
     _stamp_scope(repo_path, embedder_name, clean=clean)
+
+
+def _model_used(repo_path, embedder_name: str) -> str | None:
+    """The model the embed used; ``None`` for the mock or the embedder's default."""
+    from repowise.core.providers.embedding.resolve import embedding_model_for
+
+    if embedder_name == "mock":
+        return None
+    return embedding_model_for(embedder_name, repo_path)
+
+
+def _model_pin_update(used: str | None, *, changed: bool) -> dict:
+    """The ``embedding_model`` change for config.yaml.
+
+    The model the embed used is pinned so the MCP server and `update` embed with
+    it too: a model set only in this shell (OLLAMA_EMBEDDING_MODEL=...) was
+    otherwise lost, and every later query embedded with the default. With none,
+    a pin left from another embedder is cleared, since it would be read as the
+    new one's; the same embedder keeps its pin (#2627).
+    """
+    if used:
+        return {"embedding_model": used}
+    return {"embedding_model": None} if changed else {}
+
+
+def _warn_model_pin_change(old: str, used: str | None, pinned: str, embedder_name: str) -> None:
+    """One line when the run replaced or removed a model pin that was there."""
+    if not old or old == used:
+        return
+    if pinned != embedder_name:
+        # A pin binds to the embedder named beside it, so the embed never read it.
+        warn(
+            f"Removed embedding_model: {old} from config.yaml: it was pinned for "
+            f"{pinned or 'no embedder'}, so this run did not use it."
+        )
+    elif used:
+        # The environment outranks the pin, so the embed used another model.
+        warn(
+            f"embedding_model in config.yaml changed from {old} to {used}: "
+            "this run embedded with the model the environment names."
+        )
 
 
 def _stamp_scope(repo_path, embedder_name: str, *, clean: bool) -> None:
@@ -366,7 +473,6 @@ def _stamp_scope(repo_path, embedder_name: str, *, clean: bool) -> None:
 def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
     """Resolve, build and announce the embedder; exit when auto finds none."""
     from repowise.cli.providers.embedders import build_embedder, semantic_search_setup_hint
-    from repowise.core.providers.embedding.base import MockEmbedder
     from repowise.core.providers.embedding.resolve import (
         embedder_reason,
         resolve_reindex_embedder,
@@ -388,14 +494,16 @@ def _embedder_for(repo_path, embedder_name: str) -> tuple[str, object]:
             )
             raise click.exceptions.Exit(1)
 
-    embedder_impl = build_embedder(embedder_name, repo_path)
-    # A named backend that could not be built fell back to mock: an error, not
-    # a run to finish with test vectors.
-    if isinstance(embedder_impl, MockEmbedder) and embedder_name != "mock":
+    # A named backend that cannot be built is an error, not a run to finish
+    # with test vectors. build_embedder has said why; exit 1 the way the
+    # nothing-found case above does.
+    embedder_impl = build_embedder(embedder_name, repo_path, fallback=False)
+    if embedder_impl is None:
         console.print(
-            "[red]No real embedder available. Set a real embedder key, configure Ollama, or pass --embedder mock for test vectors.[/red]"
+            "[red]Nothing was re-embedded.[/red] Fix the embedder above, or pass "
+            "[bold]--embedder mock[/bold] for test vectors."
         )
-        raise click.Abort()
+        raise click.exceptions.Exit(1)
     if embedder_name == "mock":
         console.print(
             f"Embedder: [yellow]mock[/yellow] ({reason}). Test vectors, no semantic search."

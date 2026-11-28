@@ -13,7 +13,7 @@ policy, lifecycle, provenance), `packages/core/src/repowise/core/sessions/`
 `policy.py` resolves `decisions.mode` first. `_MODE_DEFAULTS` is the one table
 of the defaults each mode gives the finer switches (`agent_acceptance`,
 `capture_prompt`, `require_approval`, `sync`, `session_start`,
-`upkeep_prompt`); a key stated in the config wins over its row, and
+`upkeep_prompt`, `stop_prompt`); a key stated in the config wins over its row, and
 `to_config_block` writes only keys that differ from the mode's row. Derived
 gates read the mode, not the stored keys: `captures` (mode `full` and
 `enabled`) gates every machine source, update mining and landing acceptance;
@@ -39,11 +39,12 @@ or `update` will run.
 | `session_discovery` | no | yes | off |
 | `conventions` | yes | no | off |
 | `cli` | yes | no | always (not switchable) |
+| `agent` | yes | no | always (not switchable) |
 
 A source with no deterministic stage reports `skipped_no_provider` when no
 model is configured; a hybrid source falls back to its deterministic stage.
-`session_discovery` and `conventions` were added after the presets existed, so
-a stored preset that enumerates its sources does not silently gain them.
+A stored preset that enumerates its sources does not silently gain
+`session_discovery` or `conventions`.
 
 Source details:
 
@@ -254,6 +255,14 @@ the capture prompt (two or more decision signals in the message, once a
 session, never for a commit a record already cites) and, with
 `upkeep_prompt`, the decisions in force over the commit's files (at most
 three, each once a session).
+
+`cli/decision_stop_hook.py` answers the Stop event when `stop_prompt` is on
+(`repowise-augment --decision-stop`, routed before the augment package
+imports). It blocks one stop a session: never with `stop_hook_active`, only
+when the `hook_runs` ledger shows an edit or at least `MIN_TOOL_CALLS` calls
+for the session, and only when no `agent` or `cli` record was created since the
+transcript's first timestamp. The ledger row (surface `capture`, category
+`stop_prompt`) is the once-per-session claim.
 
 Every delivered line is recorded in the sessions sidecar
 (`core/sessions/deliveries.py` counts them per decision for `decision list`

@@ -690,7 +690,8 @@ async def test_canonical_emitter_reference_inventory(
                         min_confidence="low", finding_id=ref.value
                     )
                     assert resolved["resolved"] is True
-                    assert resolved["finding"] == ref.expected_object
+                    # The lookup carries every listed field, plus the detail.
+                    assert ref.expected_object.items() <= resolved["finding"].items()
                 elif target == "get_health" and ref.kind == "finding":
                     resolved = await get_health(finding_id=ref.value)
                     assert resolved["resolved"] is True
@@ -906,7 +907,7 @@ async def test_finding_and_plan_ids_are_stable_and_resolve_in_one_call(
         min_confidence="low", finding_id=dead_finding["id"]
     )
     assert dead_lookup["resolved"] is True
-    assert dead_lookup["finding"] == dead_finding
+    assert dead_finding.items() <= dead_lookup["finding"].items()
 
     # Storage UUID replacement cannot move any public identifier.
     health_row = (await session.execute(select(HealthFinding))).scalars().first()

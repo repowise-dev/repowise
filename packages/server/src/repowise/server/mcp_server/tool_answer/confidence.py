@@ -276,12 +276,19 @@ def _retrieval_corpus(hits: list[dict], *, include_paths: bool = False) -> str:
                 v = s.get(key)
                 if v:
                     parts.append(str(v))
+        # Implementation bodies the prompt showed beside the page (grounding.py).
+        for g in h.get("_grounding") or []:
+            parts.append(f"{g.get('name', '')}\n{g.get('source', '')}")
+            if include_paths and g.get("path"):
+                parts.append(str(g["path"]))
         # A concept-anchored hit's rationale comment was selected for containing
         # the question's number; without it the value/frame gates would flag the
         # correct number the answer echoes as invented.
         cr = h.get("_concept_rationale")
         if isinstance(cr, dict) and cr.get("comment"):
             parts.append(str(cr["comment"]))
+        # The file's bug-fix record the prompt showed (fix_history.py).
+        parts.extend(h.get("_fix_history") or ())
         if include_paths:
             for a in h.get("_anchor_symbols") or []:
                 v = a.get("name")
@@ -700,6 +707,62 @@ def _unserved_words(question: str, hits: list[dict]) -> bool:
     return any(not any(_stem_hit(t, s) for s in served) for t in _question_words(question))
 
 
+def off_topic_words(
+    question: str, answer_text: str, hits: list[dict], question_ids: Collection[str] = ()
+) -> list[str]:
+    """Question words nothing retrieved carries, when the answer rests on none of it.
+
+    "What is the capital of France" against a codebase retrieves pages that
+    share a stray word ("capital" in a naming helper), and synthesis answers
+    from general knowledge. Three facts together mark that reply: a word the
+    question asks about is in no hit; no code name the question writes
+    (*question_ids*) is in one; and nothing the answer adds, outside the
+    sentences admitting a gap, is in the text it was shown, neither a word nor
+    a number. A grounded answer repeats what it read (names, paths, values);
+    this one cannot. ``[]`` when any fact fails, so an answer that uses its
+    evidence is never held here.
+    """
+    words = _question_words(question)
+    served = hit_stems(hits)
+    unserved = [w for t, w in words.items() if not any(_stem_hit(t, s) for s in served)]
+    # Hits with no text but their paths give nothing to judge the answer by.
+    untitled = [{k: v for k, v in h.items() if k != "title"} for h in hits]
+    if not unserved or not _retrieval_corpus(untitled).strip():
+        return []
+    corpus = _retrieval_corpus(hits, include_paths=True)
+    if _names_retrieved_code(answer_text, hits, corpus.lower(), question_ids):
+        return []
+    return unserved if _adds_only_unshown(answer_text, set(words), served, corpus) else []
+
+
+def _names_retrieved_code(
+    answer_text: str, hits: list[dict], corpus_lower: str, question_ids: Collection[str]
+) -> bool:
+    """Whether a code name the question writes, or a file or code term the
+    answer cites, is in what retrieval showed."""
+    text = answer_text.lower()
+    paths = [(h.get("target_path") or "").lower() for h in hits]
+    if any(p and (p in text or p.rsplit("/", 1)[-1] in text) for p in paths):
+        return True
+    spans = re.findall(r"`([^`]+)`", answer_text)
+    terms = (*question_ids, *spans, *_distinctive_terms(answer_text))
+    return any(t.lower() in corpus_lower for t in terms)
+
+
+def _adds_only_unshown(
+    answer_text: str, asked: set[str], served: list[set[str]], corpus: str
+) -> bool:
+    """Whether the answer adds words or numbers to the question, outside its
+    admissions, and retrieval showed none of them."""
+    claims = [s for s in _sentences(answer_text) if not _is_admission(s)]
+    claimed = {t for s in claims for t in _text_words(s) if not _stem_hit(t, asked)}
+    numbers = {n for s in claims for n in _asserted_numbers(s)}
+    shown = set().union(*served)
+    if any(_stem_hit(t, shown) for t in claimed) or numbers & _numbers_in(corpus):
+        return False
+    return bool(claimed or numbers)
+
+
 def _question_words(question: str) -> dict[str, str]:
     return {t: w for t, w in _text_words(question).items() if t not in _QUESTION_FRAME_STEMS}
 
@@ -780,6 +843,7 @@ def _degraded_confidence(
     *,
     lead_outside_top: bool = False,
     graph_answered: bool = False,
+    body_answered: bool = False,
 ) -> str:
     """Grade a synthesis-less payload on what a caller can act on, not on prose.
 
@@ -800,12 +864,17 @@ def _degraded_confidence(
 
     ``graph_answered`` (a caller question the call graph answered) grades
     "medium" on its own: the answer then leads with graph edges, not retrieval.
+    ``body_answered`` (the answer leads with the live body of the code the
+    question names, and that body carries the question's words) grades
+    "medium" over a weak retrieval: exact-name resolution found the body, not
+    the ranking that rated weak. A body whose file hybrid retrieval ranks
+    outside its top still grades "low", as any other lead.
     """
     if reason == "no-llm-provider" and graph_answered:
         return "medium"
     if reason != "no-llm-provider" or lead_outside_top:
         return "low"
-    return "low" if retrieval_quality == "weak" else "medium"
+    return "low" if retrieval_quality == "weak" and not body_answered else "medium"
 
 
 def _is_question_named_body_cut_by_us(entry: dict, question_ids: set[str]) -> bool:
@@ -878,6 +947,9 @@ class _Grade(NamedTuple):
     under_floor: bool = False
     #: The answer text stops mid-sentence (see :func:`answer_cut_off`).
     cut_off: bool = False
+    #: Question words nothing retrieved carries, under an answer resting on none
+    #: of what was retrieved (:func:`off_topic_words`): there is no answer here.
+    off_topic: tuple[str, ...] = ()
 
 
 @dataclass
@@ -917,6 +989,7 @@ class _GradeState:
     unhydrated_names: tuple[str, ...] = ()
     stop_reason: str | None = None
     cut_off: bool = False
+    off_topic: tuple[str, ...] = ()
 
     @functools.cached_property
     def value_line(self) -> dict | None:
@@ -1093,6 +1166,22 @@ def _question_names_constant(question: str, question_ids: set[str], sym: dict, h
     return all(
         _stem_hit(t, page) for t in _question_words(question) if t not in _VALUE_ASK_STEMS
     )
+
+
+def _off_topic_gate(s: _GradeState) -> None:
+    """The question asks about something the repository does not hold, and the
+    answer came from somewhere other than what was retrieved.
+
+    Low whatever retrieval looked like: dominance between unrelated pages says
+    nothing, and a served body the question did not name does not either.
+    """
+    if s.served_named_body:
+        return
+    s.off_topic = tuple(
+        off_topic_words(s.question, s.answer_text, s.hits, s.question_ids)
+    )
+    if s.off_topic:
+        s.confidence = "low"
 
 
 def _hedge_gate(s: _GradeState) -> None:
@@ -1372,6 +1461,7 @@ def _non_dominant_ceiling(s: _GradeState) -> None:
 #: high, so one problem never pushes a response down two levels. Coverage runs
 #: late so a more specific gate writes the note.
 _GRADE_GATES = (
+    _off_topic_gate,
     _hedge_gate,
     _absent_name_gate,
     _cut_off_gate,
@@ -1487,6 +1577,7 @@ def _grade_answer(
         unhydrated_names=s.unhydrated_names,
         under_floor=dominant and not (vouched or earn_high),
         cut_off=s.cut_off,
+        off_topic=s.off_topic,
         confidence=s.confidence,
         high_reason=high_reason,
         second_score=_confidence_score(hits[1]) if len(hits) >= 2 else 0.0,

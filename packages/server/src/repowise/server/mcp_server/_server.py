@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import sqlite3
 import weakref
 from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, NoReturn
 
 import anyio
@@ -35,6 +37,7 @@ from repowise.core.providers.embedding.base import (
     warm_query_embedder,
 )
 from repowise.core.providers.embedding.caching import CachingEmbedder
+from repowise.core.providers.embedding.registry import install_spec
 from repowise.core.registry.instructions import server_instructions
 from repowise.server import __version__
 from repowise.server.mcp_server import _code_drift, _state
@@ -112,6 +115,11 @@ _EMBEDDER_REMEDIATION: dict[str, str] = {
         "(and `pip install google-genai`)"
     ),
     "ollama": "start Ollama, pull an embedding model, and set OLLAMA_BASE_URL if not local",
+    # The same install line build_embedder and the setup hint print.
+    "fastembed": (
+        f"run `pip install {install_spec('fastembed')}` in the environment the MCP server "
+        "runs from"
+    ),
     "openrouter": "set OPENROUTER_API_KEY in the MCP server's environment (and `pip install openai`)",
 }
 
@@ -342,6 +350,13 @@ async def _cancel_task(task: asyncio.Task) -> None:
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError, Exception):
         await task
+
+
+async def _stop_index_warmup() -> None:
+    """Cancel the idle cache warmup before the store it reads closes."""
+    from repowise.server.mcp_server import _warmup
+
+    await _warmup.stop()
 
 
 async def _abort_startup(*tasks: asyncio.Task) -> None:
@@ -722,6 +737,7 @@ async def _lifespan(server: FastMCP):
 
         yield
 
+        await _stop_index_warmup()
         await _cancel_task(_release_task)
         await _cancel_task(_warm_task)
         _state._lancedb_ready = None
@@ -776,6 +792,7 @@ async def _lifespan(server: FastMCP):
 
     yield
 
+    await _stop_index_warmup()
     await _cancel_task(_release_task)
     await _cancel_task(_bg_task)
     await _cancel_task(_warm_task)
@@ -852,6 +869,9 @@ class _RepowiseMCP(FastMCP):
         return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        from repowise.server.mcp_server import _warmup
+
+        _warmup.call_started()
         principal = self._request_principal()
         if principal is not None:
             from mcp.server.fastmcp.exceptions import ToolError
@@ -890,7 +910,8 @@ _client_instructions: Callable[[str], str] | None = None
 
 #: Clients that repeat the instructions under every tool they list (Codex
 #: appends them to each tool it discovers), so a full text is paid once per
-#: tool. They get the brief text: the first line and the setup line.
+#: tool. They get the brief text: the first line alone, since a line repeated
+#: under every tool reads as tool output and agents relay it.
 _PER_TOOL_INSTRUCTION_CLIENTS = frozenset({"codex"})
 
 
@@ -907,6 +928,9 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     enabled = _tool_selection.apply_tool_selection(mcp, repo_path=repo_path, override=tools)
     workspace = bool(_tool_selection._selected_surface and _tool_selection._selected_surface[0])
     repo_line = decisions_line(repo_path)
+    indexed = _has_index(repo_path, workspace=workspace)
+    root = None if workspace else _root_outside_cwd(repo_path)
+    member_roots = _member_roots_outside_cwd(repo_path) if workspace else ()
 
     def text(served: Iterable[str], *, brief: bool = False) -> str:
         return server_instructions(
@@ -915,6 +939,9 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
             workspace=workspace,
             extra=_setup_extra(repo_path),
             brief=brief,
+            indexed=indexed,
+            root=root,
+            member_roots=member_roots,
         )
 
     mcp._mcp_server.instructions = text(enabled)
@@ -928,6 +955,87 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
 
     _client_instructions = for_client
     return enabled
+
+
+def _has_index(repo_path: str | None, *, workspace: bool) -> bool | None:
+    """Whether the served repo (in a workspace, any member) holds an indexed
+    repository; ``None`` when that cannot be read, which keeps the no-index line.
+
+    Any repository row counts: a store whose one row names another path (an
+    index built elsewhere and moved here) is still served (``_default_repo``).
+    A read-only stdlib read, so the handshake never writes or waits on a lock.
+    """
+    if not repo_path or get_configured_db_url() is not None:
+        return None  # a configured store is not this directory's to judge
+    paths = [repo_path]
+    if workspace:
+        ws_root, ws_config, _alias = _detect_workspace(repo_path)
+        if ws_config is None:
+            return None
+        paths = [str(ws_root / entry.path) for entry in ws_config.repos]
+    # One read per member until one is indexed; a workspace has a handful.
+    # An unreadable member does not hide an indexed one after it.
+    unknown = False
+    for path in paths:
+        found = _store_has_repository(get_repo_db_path(path))
+        if found:
+            return True
+        unknown = unknown or found is None
+    return None if unknown else False
+
+
+def _store_has_repository(db: Path) -> bool | None:
+    """Whether the store at *db* has a repository row; ``None`` when unreadable."""
+    if not db.is_file():
+        return False
+    try:
+        with contextlib.closing(
+            sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=0.5)
+        ) as conn:
+            return conn.execute("SELECT 1 FROM repositories LIMIT 1").fetchone() is not None
+    except sqlite3.Error:
+        return None
+
+
+def _member_roots_outside_cwd(repo_path: str | None) -> list[tuple[str, str]]:
+    """Each workspace repo's (alias, root) whose root does not hold the cwd.
+
+    Workspace replies give paths relative to their repo (the call's ``repo``,
+    or a row's ``repo`` on ``repo="all"``); an agent can join the two into a
+    file only when it knows each root.
+    """
+    if not repo_path:
+        return []
+    ws_root, ws_config, _alias = _detect_workspace(repo_path)
+    if ws_config is None:
+        return []
+    try:
+        cwd = Path.cwd().resolve()
+        roots = [(e.alias, (ws_root / e.path).resolve()) for e in ws_config.repos]
+    except OSError:
+        return []
+    return [(alias, str(root)) for alias, root in roots if not cwd.is_relative_to(root)]
+
+
+def _root_outside_cwd(repo_path: str | None) -> str | None:
+    """The served root when the server runs outside it, else ``None``.
+
+    Replies give repo-relative paths. An agent whose working directory is the
+    root (how hosts launch a project's servers) resolves them as they are; one
+    working from elsewhere needs the root named. A worktree served from its
+    main checkout's index answers for the worktree, so that is the root.
+    """
+    if not repo_path:
+        return None
+    from repowise.server.mcp_server import _checkout
+
+    caller = _checkout._server_caller
+    try:
+        root = Path(caller.caller if caller else repo_path).resolve()
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    return None if cwd.is_relative_to(root) else str(root)
 
 
 def _setup_extra(repo_path: str | None) -> list[str]:
@@ -971,6 +1079,18 @@ class _ClientSession(ServerSession):
             except Exception:
                 _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
         await super()._received_request(responder)
+
+    async def _received_notification(self, notification: Any) -> None:
+        await super()._received_notification(notification)
+        # The client has the initialize reply: build the index caches while it
+        # reads the tool list and its model plans the first call.
+        if (
+            isinstance(notification.root, mcp_types.InitializedNotification)
+            and self._init_options.server_name == mcp.name
+        ):
+            from repowise.server.mcp_server import _warmup
+
+            _warmup.start()
 
 
 # The low-level server builds each session from this module name; there is no
@@ -1232,9 +1352,7 @@ def run_mcp(
     try:
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
-        from repowise.server.mcp_server import ensure_full_surface
-
-        ensure_full_surface()
+        # Selection imports and attaches only the tools it can enable.
         _select_surface(repo_path, tools)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)

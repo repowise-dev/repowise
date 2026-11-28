@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 
 from repowise.core.persistence.crud import get_decision_health_summary
-from repowise.core.persistence.models import DecisionRecord, GitMetadata
+from repowise.core.persistence.models import DecisionRecord, GitMetadata, HealthFileMetric
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -80,7 +80,9 @@ async def _add_decision(
         await session.flush()
 
 
-async def _add_hotspot(session, repo_id: str, path: str, score: float | None) -> None:
+async def _add_hotspot(
+    session, repo_id: str, path: str, score: float | None, origin: str | None = None
+) -> None:
     session.add(
         GitMetadata(
             repository_id=repo_id,
@@ -89,6 +91,8 @@ async def _add_hotspot(session, repo_id: str, path: str, score: float | None) ->
             temporal_hotspot_score=score,
         )
     )
+    if origin is not None:
+        session.add(HealthFileMetric(repository_id=repo_id, file_path=path, code_origin=origin))
     await session.flush()
 
 
@@ -175,11 +179,14 @@ async def test_a_governed_hotspot_is_still_excluded(async_session):
     assert health["ungoverned_hotspots"] == ["src/ungoverned.py"]
 
 
-async def test_a_test_file_is_never_an_ungoverned_hotspot(async_session):
+async def test_a_held_origin_is_never_an_ungoverned_hotspot(async_session):
+    """The stored origin decides, as on the Code Health hotspot list: tests and
+    build scripts are left out, a production file stays."""
     repo = await insert_repo(async_session)
-    await _add_hotspot(async_session, repo.id, "tests/test_hot.py", 0.99)
-    await _add_hotspot(async_session, repo.id, "src/conftest.py", 0.95)
-    await _add_hotspot(async_session, repo.id, "src/warm.py", 0.10)
+    await _add_hotspot(async_session, repo.id, "tests/test_hot.py", 0.99, origin="test")
+    await _add_hotspot(async_session, repo.id, "app/build.gradle.kts", 0.96, origin="build")
+    await _add_hotspot(async_session, repo.id, "src/conftest.py", 0.95, origin="test")
+    await _add_hotspot(async_session, repo.id, "src/warm.py", 0.10, origin="production")
 
     health = await get_decision_health_summary(async_session, repo.id)
 

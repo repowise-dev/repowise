@@ -35,7 +35,7 @@ export function ContourPattern({ sha }: { sha: string | null | undefined }) {
       viewBox="0 0 560 260"
       aria-hidden
       data-decoration
-      className="pointer-events-none absolute right-[-40px] top-0 -z-10 h-[260px] w-[min(560px,90%)] text-[var(--color-accent-primary)] opacity-[0.16] [mask-image:linear-gradient(to_left,black_30%,transparent)] print:hidden"
+      className="pointer-events-none absolute right-[-40px] top-0 -z-10 h-[260px] w-[min(560px,90%)] text-[var(--color-text-tertiary)] opacity-[0.22] [mask-image:linear-gradient(to_left,black_30%,transparent)] print:hidden"
     >
       {paths.map((d, i) => (
         <path key={i} d={d} fill="none" stroke="currentColor" strokeWidth={1} />

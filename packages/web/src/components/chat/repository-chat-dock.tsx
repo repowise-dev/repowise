@@ -16,17 +16,10 @@ import { useTranslations } from "next-intl";
 import { NoProviderReason } from "./no-provider-reason";
 import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
-// Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
-// five controls and spacing). Keep a small measured clearance above it.
-export const REPOSITORY_GRAPH_DOCK_INSET = "12.5rem";
-
 /** Architecture `?view=` values that render a table, not the Sigma canvas.
  *  `deps` is the legacy spelling of `packages`. Absent or unrecognised means
- *  the Map tab, which is the default landing view.
- *
- *  `tree` renders no canvas either: it is the same file graph as an outline.
- *  Nothing is anchored in the bottom-right corner there, so lifting the pill
- *  would open the same 200px of dead space this set exists to close. */
+ *  the Map tab, which is the default landing view. `tree` is the same file
+ *  graph as an outline: no canvas, so nothing in the bottom-right corner. */
 const ARCHITECTURE_VIEWS_WITHOUT_CANVAS = new Set([
   "coupling",
   "packages",
@@ -36,19 +29,17 @@ const ARCHITECTURE_VIEWS_WITHOUT_CANVAS = new Set([
 ]);
 
 /**
- * Lift the dock only where something is actually beneath it.
+ * Hide the minimized pill on Architecture's Map canvas only.
  *
- * The clearance exists for exactly one element: Sigma's zoom/fit/layout stack,
- * anchored bottom-right on Architecture's Map tab. It used to key off the chat
- * context kind alone, which raised the pill 200px on two surfaces with nothing
- * under it — the Knowledge Graph, whose only bottom-anchored control sits
- * bottom-LEFT, and Architecture's Coupling, Third-party and Symbols tabs,
- * which render tables and mount no canvas at all.
+ * Sigma anchors its zoom/fit/layout stack bottom-right there, and its height
+ * above the viewport bottom moves with the legend footer, so no fixed lift
+ * clears it. The breadcrumb's Ask link and the chat shortcut stay as the ways
+ * in, and an opened dock still renders as usual. Every other page keeps the
+ * pill.
  */
-export function getRepositoryDockCollisionInset(kind: string, view?: string) {
-  if (kind !== "architecture") return undefined;
-  if (view && ARCHITECTURE_VIEWS_WITHOUT_CANVAS.has(view)) return undefined;
-  return REPOSITORY_GRAPH_DOCK_INSET;
+export function hidesRepositoryDockPill(kind: string, view?: string) {
+  if (kind !== "architecture") return false;
+  return !(view && ARCHITECTURE_VIEWS_WITHOUT_CANVAS.has(view));
 }
 
 export function RepositoryChatDock() {
@@ -85,7 +76,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
   const upgrade = useModelUpgrade(chat.repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((provider) => provider.configured);
-  const collisionInset = getRepositoryDockCollisionInset(
+  const hidePill = hidesRepositoryDockPill(
     chat.pageContext.kind,
     searchParams.get("view") ?? undefined,
   );
@@ -127,7 +118,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
           ? `/repos/${chat.repoId}/chat?conversation=${encodeURIComponent(chat.conversationId)}`
           : `/repos/${chat.repoId}/chat`,
       )}
-      {...(collisionInset ? { collisionInset } : {})}
+      hidePill={hidePill}
       onDismiss={() => setChatDockHidden(true)}
       unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}

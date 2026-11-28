@@ -67,7 +67,13 @@ def _target_risk(
         "targets": list(targets),
         "changed_files": list(changed_files) or None,
         # Every block the card prints; --format json also keeps the PR blast radius.
-        "include": ["churn", "owners", "blast"],
+        "include": [
+            "churn",
+            "owners",
+            "blast",
+            # Orientation for a multi-file question; beside one named file it is noise.
+            *(["hotspots"] if len(targets) > 1 and not changed_files else []),
+        ],
     }
 
     def _factory():

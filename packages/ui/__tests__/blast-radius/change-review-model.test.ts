@@ -7,7 +7,7 @@ describe("riskLede", () => {
   it("leads with the rank and names what raised it", () => {
     const lede = riskLede(makeReview().risk);
     expect(lede.priority).toBe("high");
-    expect(lede.sentence).toBe("Riskier than 82% of this repo's recent commits, by size and spread.");
+    expect(lede.sentence).toBe("Larger than 82% of this repo's recent commits, by size and spread.");
     // Only drivers that raised the score, strongest first.
     expect(lede.drivers).toBe("Mostly 400 lines added and 6 files touched.");
     expect(lede.detail).toMatch(/^Change risk 6\.3 of 10 on a fixed scale/);

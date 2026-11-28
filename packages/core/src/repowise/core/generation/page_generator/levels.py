@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
@@ -60,11 +61,16 @@ def build_level01_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
     # ---- Level 1: symbol_spotlight (allow-set filtered) ----
     parsed_by_path: dict[str, Any] = {p.file_info.path: p for p in run.parsed_files}
     top_symbols: list[tuple[Any, Any]] = []
+    chosen_ids = getattr(run.selection, "spotlight_symbol_ids", None) or {}
     for file_path, sym_name in run.selection.symbol_spotlights:
         pf = parsed_by_path.get(file_path)
         if pf is None:
             continue
-        sym = next((s for s in pf.symbols if s.name == sym_name), None)
+        # A file can declare the name more than once, so prefer the symbol that
+        # won the ranking over whichever comes first in the file.
+        same_name = [s for s in pf.symbols if s.name == sym_name]
+        chosen_id = chosen_ids.get((file_path, sym_name))
+        sym = next((s for s in same_name if s.id == chosen_id), None) or next(iter(same_name), None)
         if sym is not None:
             top_symbols.append((sym, pf))
 
@@ -115,10 +121,49 @@ def _topo_order_code_files(run: _GenerationRun) -> None:
         pass  # Keep existing priority order on any failure
 
 
+async def _earlier_summaries(
+    run: _GenerationRun,
+    paths: list[str],
+    page_type: str,
+    on_store_error: Callable[[Exception], None],
+) -> dict[str, str]:
+    """``path -> summary`` of pages this run did not write: the store's, else the database's.
+
+    The store holds one only where a run embedded the page. A keyless run that
+    builds docs from code embeds nothing, so a later model run regenerating a
+    few pages finds the rest only in the database: the stored ``summary`` of
+    the prior pages loaded from it. A store that cannot answer is reported to
+    *on_store_error* and the database still answers. Never raises.
+    """
+    out: dict[str, str] = {}
+    if run.vector_store is not None and paths:
+        try:
+            batch = await run.vector_store.get_page_summaries_by_paths(paths)
+        except Exception as exc:
+            on_store_error(exc)
+            batch = {}
+        out = {
+            path: summary
+            for path, payload in batch.items()
+            if (summary := (payload or {}).get("summary"))
+        }
+    prior_pages = getattr(run.gen, "_prior_pages", None) or {}
+    for path in paths:
+        if path in out:
+            continue
+        prior = prior_pages.get(compute_page_id(page_type, path))
+        if prior is None or getattr(prior, "freshness_status", "") == "tombstone":
+            continue
+        summary = getattr(prior, "summary", "") or _extract_summary(
+            getattr(prior, "content", "") or "", skip_metadata=True
+        )
+        if summary:
+            out[path] = summary
+    return out
+
+
 async def _prefetch_dependency_summaries(run: _GenerationRun) -> None:
-    """Batch-prefetch dependency summaries from the vector store in one call."""
-    if run.vector_store is None:
-        return
+    """Batch-prefetch dependency summaries of pages this run did not write."""
     needed_deps: set[str] = set()
     for p in run.code_files:
         path_ = p.file_info.path
@@ -132,14 +177,13 @@ async def _prefetch_dependency_summaries(run: _GenerationRun) -> None:
             needed_deps.add(dep)
     if not needed_deps:
         return
-    try:
-        batch = await run.vector_store.get_page_summaries_by_paths(list(needed_deps))
-        for dep_path, payload in batch.items():
-            summary = payload.get("summary") if payload else None
-            if summary:
-                run.completed_page_summaries[dep_path] = summary
-    except Exception as exc:
+
+    def _store_failed(exc: Exception) -> None:
         log.debug("rag.batch_dep_prefetch_failed", error=str(exc))
+
+    run.completed_page_summaries.update(
+        await _earlier_summaries(run, sorted(needed_deps), "file_page", _store_failed)
+    )
 
 
 async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
@@ -517,7 +561,7 @@ async def _module_summaries(run: _GenerationRun) -> dict[str, str]:
         if run.completed_page_summaries.get(mg.key)
     }
     missing = [mg.key for mg in groups if mg.key not in summaries]
-    if missing and run.vector_store is not None:
+    if missing:
         summaries.update(await _stored_summaries(run, missing))
 
     log.info(
@@ -531,10 +575,9 @@ async def _module_summaries(run: _GenerationRun) -> dict[str, str]:
 
 
 async def _stored_summaries(run: _GenerationRun, missing: list[str]) -> dict[str, str]:
-    """Summaries the store holds for pages this run did not write. Never raises."""
-    try:
-        batch = await run.vector_store.get_page_summaries_by_paths(missing)
-    except Exception as exc:
+    """Summaries of module pages this run did not write (store, else database). Never raises."""
+
+    def _store_failed(exc: Exception) -> None:
         # Reach, not correctness. Said out loud because a quietly thinner
         # corpus reads downstream as "the structure does not name this".
         log.warning(
@@ -543,12 +586,8 @@ async def _stored_summaries(run: _GenerationRun, missing: list[str]) -> dict[str
             wanted=len(missing),
             error=str(exc),
         )
-        return {}
-    return {
-        path: summary
-        for path, payload in batch.items()
-        if (summary := (payload or {}).get("summary"))
-    }
+
+    return await _earlier_summaries(run, missing, "module_page", _store_failed)
 
 
 def _doc_sources(run: _GenerationRun) -> dict[str, bytes]:

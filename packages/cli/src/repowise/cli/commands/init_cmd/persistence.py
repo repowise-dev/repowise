@@ -223,7 +223,12 @@ async def persist_result(
         tombstone_absent_file_pages,
     )
     from repowise.core.pipeline.cleanup_debt import clear_cleanup_debt, record_cleanup_debt
-    from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
+    from repowise.core.pipeline.persist import (
+        persist_routes,
+        persist_statement_sites,
+        persist_symbol_analysis,
+        sweep_store_hygiene,
+    )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
@@ -286,6 +291,10 @@ async def persist_result(
                         session, repo.id, getattr(result, "parsed_files", None)
                     )
                 await persist_analysis(result, session, repo.id)
+            with timed(timings, "persist.routes"):
+                await persist_routes(result, session, repo.id)
+            with timed(timings, "persist.statement_sites"):
+                await persist_statement_sites(result, session, repo.id)
             # Commit boundary 2 of 5: analysis.
             with timed(timings, "persist.commit.analysis"):
                 await session.commit()
@@ -416,13 +425,16 @@ async def persist_result(
         await engine.dispose()
         raise
 
-    # After commit, so the scan never holds the write lock; the rest drains in the background.
+    # After commit, so the scan never holds the write lock. No background drain:
+    # an init that has returned must leave wiki.db alone, since callers archive or
+    # cache it at once (a drain wrote into the store for minutes after a workspace
+    # init exited). What the inline budget leaves, the next update scans.
     if not index_done:
         from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
 
         with timed(timings, "persist.commit_health"):
             await refresh_commit_health_after_update(
-                sf, persisted_repo_id, str(repo_path), background=True
+                sf, persisted_repo_id, str(repo_path), background=False
             )
 
     # Stamp the analysis (+ generation) phases in the resume ledger now that
@@ -570,7 +582,9 @@ def _stamp_full_init_scope(
     from repowise.cli.providers import semantic_search_command, semantic_search_status
 
     semantic = semantic_search_status(
-        embedder_name_resolved, getattr(result, "embed_failed_pages", 0)
+        embedder_name_resolved,
+        getattr(result, "embed_failed_pages", 0),
+        getattr(result, "vector_store", None),
     )
     stamp_index_scope(
         state,

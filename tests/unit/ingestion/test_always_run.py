@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from repowise.core.ingestion.always_run import (
@@ -13,6 +11,7 @@ from repowise.core.ingestion.always_run import (
     own_code,
     stamp_always_run,
 )
+from tests.unit._timing import assert_linear_growth
 
 _OWN = OwnCode(
     commands=frozenset({"tool", "tool-hook"}),
@@ -120,13 +119,20 @@ def test_a_test_beside_the_code_may_walk_its_own_directory() -> None:
     assert _reason("test/tools/boundary.test.ts", text) is None
 
 
-def test_a_large_cli_test_file_is_judged_fast() -> None:
+def _cli_test_file(calls: int) -> str:
     lines = ["import subprocess"]
-    lines += [f"cmd = ['git', 'log', '-{i}']" for i in range(2000)]
-    lines += ["def test_x():"] + [f"    subprocess.run(cmd, cwd='d{i}')" for i in range(1000)]
-    start = time.perf_counter()
-    assert _reason("tests/test_cli_big.py", "\n".join(lines)) is None
-    assert time.perf_counter() - start < 2
+    lines += [f"cmd = ['git', 'log', '-{i}']" for i in range(2 * calls)]
+    lines += ["def test_x():"] + [f"    subprocess.run(cmd, cwd='d{i}')" for i in range(calls)]
+    return "\n".join(lines)
+
+
+def test_a_large_cli_test_file_is_judged_in_linear_time() -> None:
+    assert _reason("tests/test_cli_big.py", _cli_test_file(1000)) is None
+    assert_linear_growth(
+        lambda text: _reason("tests/test_cli_big.py", text),
+        _cli_test_file(250),
+        _cli_test_file(1000),
+    )
 
 
 def test_a_walk_inside_a_helper_counts_when_the_helper_is_given_a_source_root() -> None:
@@ -302,11 +308,12 @@ def test_jvm_tests_are_judged() -> None:
     assert not is_judged_test("src/main/java/org/x/Owner.java")
 
 
-def test_an_unclosed_string_full_of_backslashes_is_fast() -> None:
-    text = "import subprocess\nsubprocess.run(['x', '" + "\\\\" * 5000 + "\n"
-    start = time.perf_counter()
-    assert _reason("tests/test_win.py", text) is None
-    assert time.perf_counter() - start < 1
+def test_an_unclosed_string_full_of_backslashes_is_read_in_linear_time() -> None:
+    def text(pairs: int) -> str:
+        return "import subprocess\nsubprocess.run(['x', '" + "\\\\" * pairs + "\n"
+
+    assert _reason("tests/test_win.py", text(5000)) is None
+    assert_linear_growth(lambda t: _reason("tests/test_win.py", t), text(20_000), text(80_000))
 
 
 def test_own_code_takes_console_scripts_and_reads_bins_and_production_modules() -> None:

@@ -196,7 +196,12 @@ def structural_page_summary(plans: list[Any]) -> str:
     return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
-def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
+def announce_file_page_cap(
+    parsed_files: list[Any],
+    gen_config: Any,
+    *,
+    git_meta_map: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Say so when the file bucket is being bounded, and how to undo it.
 
     A cap the user chose needs no explanation, but the one the size policy applies
@@ -204,12 +209,12 @@ def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
     are printed, since a run that emits fewer pages than there are files should say
     which files it kept and how to ask for all of them.
     """
-    from repowise.core.generation.selection import auto_file_page_cap, count_documentable_files
+    from repowise.core.generation.selection import auto_file_page_cap, count_eligible_file_pages
 
     requested = getattr(gen_config, "max_file_pages", None)
     if requested == 0:
         return  # explicitly uncapped: nothing is being held back
-    documentable = count_documentable_files(parsed_files)
+    documentable = count_eligible_file_pages(parsed_files, git_meta_map)
     cap = requested if requested else auto_file_page_cap(documentable)
     if not cap or cap >= documentable:
         return
@@ -306,6 +311,37 @@ def _generation_cost_tracker(
     return build_cost_tracker(repo_path, result.repo_name)
 
 
+def _run_vector_store(repo_path: Path, embedder_impl: Any, *, summaries: bool, verbose: bool) -> Any:
+    """The store this run embeds into.
+
+    A model run reads earlier pages' summaries back from it (*summaries*); a
+    template run does not, so a keyless one builds no LanceDB store at all and
+    gets a throwaway in-memory one. Holding that on ``result`` lets the run's
+    search scope read the embedder off it, so a named embedder that fell back
+    to keyless is not reported as semantic search being available. ``None``
+    stays ``None`` over a real index (the clobber refusal), which persistence
+    must still clean.
+    """
+    from repowise.cli.providers.vector_store import _mock_would_clobber
+    from repowise.core.providers.embedding import is_semantic_embedder
+
+    if verbose:
+        # Opening the store can take seconds on a large index; say so.
+        with progress_steps(console) as steps, steps.step("vector_store"):
+            store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
+    else:
+        store = build_vector_store(repo_path, embedder_impl, summaries=summaries)
+    if (
+        store is None
+        and not is_semantic_embedder(embedder_impl)
+        and not _mock_would_clobber(repo_path / ".repowise" / "lancedb", embedder_impl)
+    ):
+        from repowise.core.persistence.vector_store import InMemoryVectorStore
+
+        store = InMemoryVectorStore(embedder_impl)
+    return store
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -353,22 +389,23 @@ def run_repo_generation(
     from ._generation_persist import run_generation_with_persistence
 
     if verbose:
-        announce_file_page_cap(result.parsed_files, gen_config)
+        announce_file_page_cap(
+            result.parsed_files,
+            gen_config,
+            git_meta_map=getattr(result, "git_meta_map", None),
+        )
 
     embedder_impl: Any = build_embedder(embedder_name_resolved, repo_path)
+    deterministic = bool(getattr(gen_config, "deterministic", False))
     # One run, one store: ``init`` builds it before the pipeline and it arrives
     # on ``result``. Only a caller whose embedder matches
     # ``embedder_name_resolved`` may pre-set it.
     vector_store: Any = getattr(result, "vector_store", None)
-    if vector_store is None and verbose:
-        # Opening the store can take seconds on a large index; say so.
-        with progress_steps(console) as steps, steps.step("vector_store"):
-            vector_store = build_vector_store(repo_path, embedder_impl)
-    elif vector_store is None:
-        vector_store = build_vector_store(repo_path, embedder_impl)
+    if vector_store is None:
+        vector_store = _run_vector_store(
+            repo_path, embedder_impl, summaries=not deterministic, verbose=verbose
+        )
     result.vector_store = vector_store
-
-    deterministic = bool(getattr(gen_config, "deterministic", False))
 
     # Cost tracker backed by the real DB so every LLM call is persisted to the
     # llm_costs table. Attached to the provider unconditionally (all providers

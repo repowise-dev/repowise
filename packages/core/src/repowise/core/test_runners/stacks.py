@@ -29,6 +29,7 @@ from __future__ import annotations
 import configparser
 import fnmatch
 import json
+import os
 import posixpath
 import re
 from collections.abc import Callable, Iterable, Mapping
@@ -101,6 +102,9 @@ class Stack:
     root: str = ""
     #: The test paths ``test`` names, relative to ``root``; empty when the runner picks.
     test_paths: tuple[str, ...] = ()
+    #: Directories below ``root`` that ``test`` keeps the runner from collecting: nested
+    #: units that run their own tests, relative to ``root``.
+    test_ignores: tuple[str, ...] = ()
     #: Where the runner writes JUnit XML (a file, or a directory of files), relative to
     #: ``root``; empty when repowise does not know how this runner writes it.
     junit_report: str = ""
@@ -111,6 +115,11 @@ class Stack:
     #: The variable that starts each test path in the report with the unit's directory, for a
     #: runner that writes paths relative to where it runs; repowise reads them repo-relative.
     junit_path_prefix: str = ""
+    #: ``NAME=value`` words ``test`` needs in its environment (any shell sets them its own way).
+    env: str = ""
+    #: The JavaScript test runner's own command line (``mocha --check-leaks test/``,
+    #: ``vitest run``) when the test script is that runner alone; empty otherwise.
+    suite: str = ""
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -130,6 +139,28 @@ class Stack:
         """:attr:`junit_env`, plus the unit's directory under :attr:`junit_path_prefix` below the root."""
         prefix = f"{self.junit_path_prefix}={quote_arg(self.root + '/')}" if self.junit_path_prefix and self.root else ""
         return " ".join(v for v in (self.junit_env, prefix) if v)
+
+    def environ(self) -> dict[str, str]:
+        """:attr:`env` as a mapping."""
+        return dict(word.split("=", 1) for word in self.env.split())
+
+    def junit_environ(self) -> dict[str, str]:
+        """:meth:`junit_vars` as a mapping, values unquoted, for a caller that sets the environment itself."""
+        env = dict(word.split("=", 1) for word in self.junit_env.split())
+        if self.junit_path_prefix and self.root:
+            env[self.junit_path_prefix] = self.root + "/"
+        return env
+
+    def with_junit(self, command: str) -> str | None:
+        """*command* writing the unit's JUnit XML (or ``go test -json``) too; None when it cannot.
+
+        None without a known report, and for a command chaining a second step
+        with ``&&`` (a c8 report): the flag goes at the end, which would hand
+        it to that step. The environment :meth:`junit_vars` names is the caller's.
+        """
+        if not self.junit_report or (self.junit_flag and "&&" in command):
+            return None
+        return f"{command} {self.junit_flag}" if self.junit_flag else command
 
     def report_paths(self) -> tuple[str, ...]:
         """The report globs, repo-relative."""
@@ -192,6 +223,8 @@ def _insert(line: str, *edits: tuple[int, str]) -> str:
 _PYTEST = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?(?:pytest|py\.test)(?![\w.-])")
 _PYTEST_ONE_FILE = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?pytest\s+(?:-\S+\s+)*\S+(?:\.py|::\S+)(?:\s|$)")
 _UV_RUN = re.compile(r"\buv\s+run\b")
+#: The coverage.py tracer that records dynamic (per-test) contexts on every Python.
+_CTRACE = "COVERAGE_CORE=ctrace"
 _ENV_RUN = re.compile(r"\b(poetry|pdm|hatch|pipenv)\s+run\b")
 
 
@@ -473,12 +506,18 @@ def _installs_xdist(paths: list[str], files: dict[str, str]) -> bool:
     return any(re.search(r"pytest[-_]xdist", json.dumps(t)) for t in tables if t)
 
 
-def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+def _python(root: set[str], paths: list[str], files: dict[str, str], nested: tuple[str, ...] = ()) -> Stack:
+    """The unit's pytest run. *nested* are the Python units below it that run their own tests,
+    relative to it: *paths* no longer holds their files, and the run ignores them, since their
+    tests often import what only their own unit installs."""
     reqs = sorted(p for p in root if _REQUIREMENTS.fullmatch(p))
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
-    args = _pytest_args(paths, files)
+    tests = _pytest_args(paths, files)
+    # Named test paths are tests directories, which hold no unit of their own.
+    ignores = () if tests else nested
+    args = tests + "".join(f" --ignore={quote_arg(n)}" for n in ignores)
     # pytest-xdist where the printed install brings it spreads the coverage run over
     # every core (pytest-cov combines the workers' data), unless the config already
     # picks a worker count.
@@ -496,10 +535,14 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     # The standalone pip and hatch install lines already bring pytest-cov.
     test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
     requires = _run_lines(test.prepare) + installs
+    # coverage.py runs on sys.monitoring by default from Python 3.14, which records no per-test
+    # contexts and warns (an error under ``filterwarnings = error``); its C tracer records them.
+    env = _CTRACE if "--cov-context=test" in test.text else ""
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
-        notes=tuple(notes), requires=requires, test_paths=tuple(args.split()), pattern=_PYTEST,
+        notes=tuple(notes), requires=requires, test_paths=tuple(tests.split()), test_ignores=ignores, pattern=_PYTEST,
         skip=_PYTEST_ONE_FILE, editor=editor, junit_report="junit.xml", junit_flag="--junitxml=junit.xml",
+        env=env,
     )
 
 
@@ -545,6 +588,13 @@ _NODE_EXEC = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}
 #: runs it as it is: no environment, chain, quoting, expansion, redirection, comment, or a bare
 #: ``--`` that would turn the flags appended after it into test patterns.
 _PLAIN_RUNNER = re.compile(r"(?:jest|vitest)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
+#: The same, Mocha too: the runner's own command line, which ``node`` can run (:attr:`Stack.suite`).
+_PLAIN_SUITE = re.compile(r"(?:jest|vitest|mocha)(?:\s+(?!--(?:\s|$))[^\s'\"`$\\<>&|;()#]+)*")
+#: Mocha's own ``xunit`` reporter writes the JUnit XML, replacing the console reporter. Test
+#: paths are relative to where Mocha runs from Mocha 11.6 on; older releases write them
+#: absolute, and those tests keep their timing without a file.
+_MOCHA_JUNIT = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+_BARE_DASHES = re.compile(r"(?<!\S)--(?!\S)")
 #: The test script ``npm init`` writes, which runs nothing.
 _NO_TESTS = "no test specified"
 #: Where a trailing shell comment starts: the arguments a package manager appends land inside it.
@@ -652,12 +702,17 @@ def _root_add_flag(pm: str, workspace: bool, berry: bool) -> str:
     return {"pnpm": "-w", "yarn": "" if berry else "-W"}.get(pm, "")
 
 
-def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
+def _provider_package(deps: dict) -> str | None:
+    """The Vitest coverage provider to install, at the package's Vitest version; None when it has one."""
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
-        return ()
+        return None
     spec = str(deps.get("vitest") or "")
-    pkg = f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
-    return _dev_install(pm, pkg, workspace)
+    return f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
+
+
+def _vitest_provider(pm: str, deps: dict, workspace: str = "") -> tuple[str, ...]:
+    pkg = _provider_package(deps)
+    return _dev_install(pm, pkg, workspace) if pkg else ()
 
 
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
@@ -674,7 +729,10 @@ def _edit_script(
 ) -> CommandEdit:
     """Coverage for a package script whose *runner* is known."""
     if runner == "c8":
-        return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
+        # pnpm reads ``pnpm test --flag`` as its own option, so the JUnit flag appended later
+        # needs ``pnpm run test``.
+        run_word = [(m.start(3), "run ")] if m.group(1) == "pnpm" and not m.group(2) else []
+        return CommandEdit(_insert(line, (m.start(), _C8), *run_word), "coverage/lcov.info")
     if runner.startswith("report:"):
         # The tool keeps its raw data after the run, so its report command writes lcov from it.
         report = f" && npx --yes {runner[len('report:'):]} report --reporter=lcov"
@@ -743,7 +801,14 @@ def _node_manager(root: set[str], berry: bool) -> tuple[str, str]:
     return "npm", "npm ci" if "package-lock.json" in root else "npm install"
 
 
-def _node_setup(root: set[str], package: dict, pm: str, install: str) -> tuple[str, ...]:
+def _node_setup(root: set[str], package: dict, pm: str, install: str | None) -> tuple[str, ...]:
+    """The CI steps that set up Node and install the package; *install* None for a package
+    manager Repowise does not know, whose install is left to the workflow's author."""
+    if install is None:
+        version_file = next((f for f in (".nvmrc", ".node-version") if f in root), None)
+        return ("- uses: actions/setup-node@v4", "  with:",
+                f"    node-version-file: {version_file}" if version_file else "    node-version: lts/*",
+                f"# set up {pm} and install the dependencies with it here")
     setup: list[str] = []
     if pm == "pnpm":
         setup.append("- uses: pnpm/action-setup@v4")
@@ -869,9 +934,9 @@ def _reporter_install(test: CommandEdit | None, runner: str | None, pm: str, dep
     return _dev_install(pm, f"jest-junit@{_JEST_JUNIT_MAJOR}", workspace)
 
 
-def _node_junit(runner: str | None) -> dict[str, str]:
-    """The :class:`Stack` JUnit fields for *runner*."""
-    flag = _NODE_JUNIT_FLAGS.get(runner or "", "")
+def _node_junit(runner: str | None, mocha: str = "") -> dict[str, str]:
+    """The :class:`Stack` JUnit fields for *runner*; *mocha* is the flag when Mocha runs under c8."""
+    flag = mocha or _NODE_JUNIT_FLAGS.get(runner or "", "")
     jest = runner == "jest"
     return {
         "junit_report": "junit.xml" if flag else "",
@@ -915,9 +980,78 @@ def _hooks_note(pm: str, hooks: tuple[str, ...]) -> tuple[str, ...]:
             f"script{'s' if len(hooks) > 1 else ''}.{first}",)
 
 
+def _suite(scripts: dict, deps: dict) -> str:
+    """:attr:`Stack.suite`: the test script past its exec wrapper (``nub exec --node vitest run``
+    is ``vitest run``) when that is a plain runner line, or the runner the package depends on
+    when it has no test script; ``""`` otherwise."""
+    name, _ = _test_script(scripts)
+    if name:
+        script = _EXEC_WRAPPER.sub("", _uncommented(str(scripts[name]))[0].strip())
+        return script if _PLAIN_SUITE.fullmatch(script) else ""
+    return "vitest run" if "vitest" in deps else "jest" if "jest" in deps else ""
+
+
+def _runs_mocha(scripts: dict) -> bool:
+    """Whether the test script's runner, the one c8 wraps, is Mocha."""
+    name, runner = _test_script(scripts)
+    if runner != "c8":
+        return False
+    return _command_words(_uncommented(str(scripts[name]))[0].split("&&")[-1])[:1] == ["mocha"]
+
+
+def _mocha_junit(pm: str, test: CommandEdit | None) -> str:
+    """Mocha's JUnit flag for *test*: after the ``--`` npm needs to hand it to the script."""
+    if test is None:
+        return ""
+    return ("-- " if pm == "npm" and not _BARE_DASHES.search(test.text) else "") + _MOCHA_JUNIT
+
+
+def _pinned_manager(package: dict) -> str | None:
+    """The package manager ``packageManager`` pins (``nub@0.8.3``) when Repowise does not know it."""
+    name = str(package.get("packageManager") or "").split("@", 1)[0].strip()
+    return name if name and name not in _NODE_EXEC else None
+
+
+def _pinned_node(root: set[str], package: dict, pinned: str, scripts: dict, deps: dict) -> Stack:
+    """A package whose pinned package manager Repowise does not know.
+
+    No install is printed: its commands are that tool's. Jest and Vitest run through
+    ``npx --no``, which fails at once on a runner that is not installed instead of
+    fetching one; Mocha runs under c8 (fetched as on every other Mocha unit), which
+    starts ``mocha`` from ``node_modules`` and fails when it is not there. With no
+    plain runner line (:attr:`Stack.suite`) there is no command.
+    """
+    suite = _suite(scripts, deps)
+    head = suite.split()[0] if suite else None
+    setup = _node_setup(root, package, pinned, None)
+    needs = [f"`{pkg.strip(chr(34))}`" for pkg in (
+        _provider_package(deps) if head == "vitest" else None,
+        f"jest-junit@{_JEST_JUNIT_MAJOR}" if head == "jest" and "jest-junit" not in deps else None,
+    ) if pkg]
+    with_extra = f" and {' and '.join(needs)}" if needs else ""
+    refusal = (f"`package.json` pins `{pinned}` as its package manager, which Repowise does not know, "
+               f"so it prints no install: install the dependencies{with_extra} with {pinned} first.")
+    if head is None:
+        return Stack("node", None, pinned, setup=setup, notes=(
+            refusal[:-1] + ", then run the tests with an lcov reporter and JUnit XML.",))
+    if head == "mocha":
+        test, runner = f"{_C8}{suite}", "c8"
+    else:
+        base = f"npx --no {suite}"
+        test, runner = _edit_direct_runner(base, _NODE.search(base), head, "npm", deps, "").text, head
+    return Stack(
+        "node", runner, pinned, "coverage/lcov.info", setup=setup, test=test, notes=(refusal,),
+        suite=suite, **_node_junit(runner, _MOCHA_JUNIT if head == "mocha" else ""),
+    )
+
+
 def _node(root: set[str], files: dict[str, str]) -> Stack | None:
     """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
+    if pinned := _pinned_manager(package):
+        if not scripts.get("test") and not _suite(scripts, deps):
+            return None
+        return _pinned_node(root, package, pinned, scripts, deps)
     berry = _yarn_berry(root, package, files.get(_YARN_LOCK, ""))
     pm, install = _node_manager(root, berry)
     base, runner, hooks = _node_base(pm, scripts, deps)
@@ -938,7 +1072,8 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
                           reporter=bool(reporter), hooks=_hooks_note(pm, hooks)),
         # The install comes first: the runner and the coverage provider live in node_modules.
         requires=(install, *_run_lines(prepare)) if test else (), pattern=_NODE, editor=editor,
-        **_node_junit(runner),
+        suite=_suite(scripts, deps),
+        **_node_junit(runner, _mocha_junit(pm, test) if _runs_mocha(scripts) else ""),
     )
 
 
@@ -947,6 +1082,8 @@ def _node(root: set[str], files: dict[str, str]) -> Stack | None:
 # ---------------------------------------------------------------------------
 
 _GO = re.compile(r"(?<![\w-])go\s+test(?![\w-])")
+#: Where the Go test run writes its ``go test -json`` events, relative to the unit.
+_GO_TEST_JSON = "go-test.json"
 
 
 def _edit_go(line: str, m: re.Match) -> CommandEdit:
@@ -969,11 +1106,41 @@ def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
         "go", "go test", "go", "coverage.out",
         setup=("- uses: actions/setup-go@v5", "  with:", "    go-version-file: go.mod"),
         test="go test -coverprofile=coverage.out ./...", pattern=_GO, editor=_edit_go,
+        # test2json events on stdout; ``>`` reads the same in sh and PowerShell, and the
+        # reader takes the UTF-16 PowerShell 5 writes.
+        junit_report=_GO_TEST_JSON, junit_flag=f"-json > {_GO_TEST_JSON}",
     )
 
 
 _CARGO = re.compile(r"(?<![\w-])cargo\s+(\+\S+\s+)?(test|nextest\s+run)(?![\w-])")
 _LLVM_COV = ("- uses: taiki-e/install-action@cargo-llvm-cov",)
+_NEXTEST_CONFIG = ".config/nextest.toml"
+_NEXTEST_NOTE = (
+    "cargo-nextest writes test timings through a JUnit report. Add to `.config/nextest.toml`:\n\n"
+    "  [profile.ci]\n"
+    "  [profile.ci.junit]\n"
+    "  path = \"junit.xml\""
+)
+
+
+def _nextest_junit(text: str) -> tuple[str, str] | None:
+    """The (profile, junit_path) configured in nextest.toml, or None."""
+    data = parse_toml_or_none(text)
+    if not isinstance(data, dict):
+        return None
+    profiles = data.get("profile")
+    if not isinstance(profiles, dict):
+        return None
+    order = ["ci"] + [p for p in sorted(profiles) if p != "ci"]
+    for name in order:
+        prof = profiles.get(name)
+        if isinstance(prof, dict):
+            junit = prof.get("junit")
+            if isinstance(junit, dict) and (path := junit.get("path")):
+                stripped = str(path).strip()
+                if stripped:
+                    return name, stripped
+    return None
 
 
 def _edit_cargo(line: str, m: re.Match) -> CommandEdit:
@@ -989,10 +1156,25 @@ def _rust(root: set[str], files: dict[str, str]) -> Stack:
     setup = () if root & {"rust-toolchain", "rust-toolchain.toml"} else (
         "- uses: dtolnay/rust-toolchain@stable", "  with:", "    components: llvm-tools-preview")
     workspace = " --workspace" if "[workspace]" in files.get("Cargo.toml", "") else ""
+    nextest = _nextest_junit(files.get(_NEXTEST_CONFIG, ""))
+    if nextest is not None:
+        profile, path = nextest
+        test = f"cargo llvm-cov nextest --profile {profile}{workspace} --lcov --output-path lcov.info"
+        junit_report = f"target/nextest/{profile}/{path}"
+        prepare = (*_LLVM_COV, "- uses: taiki-e/install-action@cargo-nextest")
+        requires = ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
+        notes = ()
+    else:
+        test = f"cargo llvm-cov{workspace} --lcov --output-path lcov.info"
+        junit_report = ""
+        prepare = _LLVM_COV
+        requires = ("cargo install cargo-llvm-cov",)
+        notes = (_NEXTEST_NOTE,)
     return Stack(
         "rust", "cargo test", "cargo", "lcov.info", setup=setup,
-        test=f"cargo llvm-cov{workspace} --lcov --output-path lcov.info", prepare=_LLVM_COV,
-        requires=("cargo install cargo-llvm-cov",), pattern=_CARGO, editor=_edit_cargo,
+        test=test, prepare=prepare, notes=notes,
+        requires=requires, pattern=_CARGO, editor=_edit_cargo,
+        junit_report=junit_report,
     )
 
 
@@ -1032,8 +1214,9 @@ def _maven(root: set[str], files: dict[str, str]) -> Stack:
     return Stack(
         "java", "maven", "maven", reports, setup=(*_JAVA_SETUP, "    cache: maven"), test=test.text,
         notes=tuple(notes), pattern=_MVN, skip=_MVN_SKIP, editor=editor,
-        # Surefire writes one file per test class; a multi-module build writes one directory per module.
-        junit_report="" if "<modules>" in pom else "target/surefire-reports",
+        # Surefire writes one file per test class; a multi-module build writes one directory per
+        # module, which ``evidence add`` reads through the glob.
+        junit_report="**/target/surefire-reports/*.xml" if "<modules>" in pom else "target/surefire-reports",
     )
 
 
@@ -1095,7 +1278,7 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
         prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", workstation=workstation,
         pattern=_GRADLE,
         skip=re.compile(r"-x\s+test\b"), editor=partial(_edit_gradle, jacoco=jacoco, reports=reports),
-        junit_report="" if multi else "build/test-results/test",
+        junit_report="**/build/test-results/test/*.xml" if multi else "build/test-results/test",
     )
 
 
@@ -1296,7 +1479,7 @@ def _manifest_stacks(name: str) -> frozenset[str]:
 @cache
 def _read_names() -> frozenset[str]:
     """Every manifest and runner config detection reads at a unit root."""
-    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN}
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN, _NEXTEST_CONFIG}
     for tag in _LANGUAGE_STACKS:
         spec = REGISTRY.get(tag)
         if spec is not None:
@@ -1476,6 +1659,13 @@ def _sdk_pin(root: str, present: set[str]) -> str | None:
     )
 
 
+def _nextest_config(root: str, present: set[str]) -> str | None:
+    """The ``.config/nextest.toml`` cargo-nextest uses at *root*: the nearest one at or above it."""
+    return next(
+        (p for d in (root, *reversed(_ancestors(root))) if (p := _join(d, _NEXTEST_CONFIG)) in present), None
+    )
+
+
 def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
     """*paths* below *root*, rebased; a .NET root leaves out nested .NET roots' files."""
     rel = [r for p in paths if (r := _under(root, p)) is not None]
@@ -1483,6 +1673,30 @@ def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set
         return rel
     inner = [r for other, s in roots.items() if "dotnet" in s and other != root and (r := _under(root, other))]
     return [p for p in rel if not any(p.startswith(i + "/") for i in inner)]
+
+
+def _runs_python(root: str, found: _Units, paths: list[str], files: Mapping[str, str]) -> bool:
+    """Whether the unit at *root* prints its own pytest run."""
+    if "python" not in found.roots.get(root, ()) or not _runs_at("python", root, found, files):
+        return False
+    rel = _listing_at(root, "python", paths, found.roots)
+    names = {p for p in rel if "/" not in p}
+    # The repository root keeps its guess when pip's own spelling names its requirements.
+    if not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names):
+        return True
+    return _has_pytest_suite(names, rel, {r: t for p, t in files.items() if (r := _under(root, p)) is not None})
+
+
+def _collects_tests(paths: list[str], files: Mapping[str, str]) -> bool:
+    """Whether a pytest run over *paths* finds a test file by its ``python_files`` names."""
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    return any(p.endswith(".py") and roots.may_collect_name(p) for p in paths)
+
+
+def _nested(root: str, runs: Iterable[str]) -> tuple[str, ...]:
+    """The outermost of the unit roots *runs* below *root*, relative to it."""
+    below = sorted(r for other in runs if (r := _under(root, other)))
+    return tuple(r for r in below if not any(r.startswith(f"{o}/") for o in below))
 
 
 def detect_stacks(
@@ -1503,6 +1717,7 @@ def detect_stacks(
     paths = sorted(set(paths))
     present = set(paths)
     found = _units(paths, units, repo_root)
+    python_runs = {r for r in found.roots if _runs_python(r, found, paths, files)}
     stacks: list[Stack] = []
     for root in sorted(found.roots, key=lambda r: (r.count("/") + bool(r), r)):
         texts = {r: text for p, text in files.items() if (r := _under(root, p)) is not None}
@@ -1510,6 +1725,16 @@ def detect_stacks(
         for stack in _ORDER:
             if stack in found.roots[root] and _runs_at(stack, root, found, files):
                 rel = _listing_at(root, stack, paths, found.roots)
+                build = _BUILDERS[stack]
+                if stack == "python":
+                    if root not in python_runs:
+                        continue
+                    # A nested unit that runs its own tests is not this unit's to collect or cover.
+                    nested = _nested(root, python_runs)
+                    rel = [p for p in rel if not any(p.startswith(f"{n}/") for n in nested)]
+                    if nested and not _collects_tests(rel, texts):
+                        continue  # its only tests were the nested units'; the run would collect none
+                    build = partial(_python, nested=nested)
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
@@ -1517,11 +1742,9 @@ def detect_stacks(
                     texts = {**texts, _YARN_LOCK: files[lock]}
                 if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
                     texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
-                # The repository root keeps its guess when pip's own spelling names its requirements.
-                pip_root = not root and any(_PIP_REQUIREMENTS.fullmatch(n) for n in names)
-                if stack == "python" and not pip_root and not _has_pytest_suite(names, rel, texts):
-                    continue
-                built = _BUILDERS[stack](names, rel, texts)
+                if stack == "rust" and (cfg := _nextest_config(root, present)) in files:
+                    texts = {**texts, _NEXTEST_CONFIG: files[cfg]}
+                built = build(names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
         tooling = len(here) > 1 and here[-1].language == "node" and not here[-1].test
@@ -1558,7 +1781,32 @@ def files_to_read(
                 wanted.append(pin)
         if "node" in stacks and (lock := _governing_yarn_lock(root, present)) is not None:
             wanted.append(lock)
+        if "rust" in stacks and (cfg := _nextest_config(root, present)) is not None:
+            wanted.append(cfg)
     return list(dict.fromkeys(wanted))
+
+
+def _listing(root: Path) -> list[str]:
+    """The checkout's files, repo-relative POSIX, from a walk that stops where indexing stops.
+
+    Ingestion's boundary test prunes each directory (``.gitignore``,
+    ``.git/info/exclude``, ``.repowiseIgnore``, nested checkouts), so a large
+    ignored download or a worktree folder is never listed and its manifests
+    start no stack; one git still tracks files in lists only those. Paths are cut from each directory's string once: a pathlib
+    ``relative_to`` per file cost most of the walk.
+    """
+    from ..ingestion.traverser import FileTraverser
+
+    traverser = FileTraverser(root)
+    top = str(root.absolute())
+    cut = len(top.rstrip("\\/")) + 1
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in walk_repo(top, prune_dirs=INDEX_BLOCKED_DIRS):
+        rel = str(dirpath)[cut:].replace(os.sep, "/")
+        prefix = f"{rel}/" if rel else ""
+        dirnames[:] = [d for d in dirnames if not traverser.dir_chain_skipped(Path(prefix + d))]
+        paths += [prefix + name for name in traverser.kept_files(rel, filenames)]
+    return paths
 
 
 def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = None) -> list[Stack]:
@@ -1568,11 +1816,7 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
     empty index counts as none. Blocking file reads.
     """
     root = Path(repo_path)
-    paths = [
-        (Path(dirpath) / name).relative_to(root).as_posix()
-        for dirpath, _, filenames in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
-        for name in filenames
-    ]
+    paths = _listing(root)
     index = units if units is not None and units.units else None
     files: dict[str, str] = {}
     for path in files_to_read(paths, index, str(root)):

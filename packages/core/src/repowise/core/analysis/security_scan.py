@@ -93,7 +93,6 @@ from repowise.core.analysis.security.masking import (
     source_lines,
 )
 from repowise.core.analysis.security.paths import (
-    _DECLARATION_SUFFIXES,
     _LOW_SEVERITY_PATH_TOKENS,
     _MACHINE_ORIGINS,
     _NON_SHIPPING_ORIGINS,
@@ -116,6 +115,7 @@ from repowise.core.analysis.security.patterns import (
     SECRET_KINDS,
     SECURITY_SCANNER_VERSION,
     SYMBOL_NAME_KINDS,
+    security_scanner_changed,
 )
 from repowise.core.analysis.security.refinements import (
     _NOT_FOR_SECURITY,

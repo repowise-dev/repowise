@@ -159,6 +159,9 @@ class PriorPage:
     #: Persisted ``freshness_status``. A ``tombstone`` row is kept for its
     #: inbound links, not served as a page.
     freshness_status: str = ""
+    #: Persisted ``summary``: what a later run reads for a page it does not
+    #: rewrite when the vector store holds none (a keyless index embeds nothing).
+    summary: str = ""
 
 
 class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):

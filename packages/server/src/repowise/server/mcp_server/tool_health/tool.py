@@ -44,6 +44,7 @@ from repowise.server.mcp_server._workspace_routing import (
 )
 from repowise.server.mcp_server.tool_health.analysis_meta import (
     _attach_analyzer_version,
+    _attach_duplication_off,
     _attach_health_analysis_meta,
     _attach_repository_analysis_meta,
 )
@@ -272,6 +273,7 @@ async def get_health(
         else:
             _attach_health_analysis_meta(result["_meta"], data.pop.all_metrics)
             await _attach_analyzer_version(session, repository, result["_meta"])
+        _attach_duplication_off(result["_meta"], ctx.path)
         _attach_gated(result["_meta"], data)
         _attach_preview(result)
         _attach_withheld(result, data)

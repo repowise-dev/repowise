@@ -820,6 +820,14 @@ class TestGoCallAssignments:
         body = "func f() {\n\td, err := New()\n}"
         assert scan_call_assignments(body, "go") == (CallAssignment(2, "d", None, "New"),)
 
+    def test_a_generic_call(self) -> None:
+        body = "func f() {\n\tx := New[T](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", None, "New"),)
+
+    def test_a_generic_qualified_call_with_nested_type_args(self) -> None:
+        body = "func f() {\n\tx := pkg.New[Pair[int, string]](cfg)\n}"
+        assert scan_call_assignments(body, "go") == (CallAssignment(2, "x", "pkg", "New"),)
+
     def test_arguments_may_span_lines_and_quote_parens(self) -> None:
         body = 'func f() {\n\td := New(\n\t\t")", `(`,\n\t)\n\td.Run()\n}'
         assert [a.name for a in scan_call_assignments(body, "go")] == ["d"]

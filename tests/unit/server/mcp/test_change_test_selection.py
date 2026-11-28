@@ -675,8 +675,13 @@ def test_a_lagging_index_that_fills_most_of_the_suite_reads_degraded(tmp_path, g
         # Most of the suite under a run-everything verdict: no tail is stored.
         assert collector.empty
     else:
-        assert block["status"] == "selected"
-        assert not collector.empty
+        # Without a lag to explain it, get_change_risk says what get_risk says.
+        assert block["status"] == "run_all" and block["run_all"] is True
+        assert block["reasons"] == ["selection_covers_most_of_suite: 15 of 20 test files."]
+        assert block["summary"].startswith(
+            "Run every test: selection_covers_most_of_suite: 15 of 20 test files."
+        )
+        assert collector.empty
 
 
 def test_a_run_all_list_holding_most_of_the_suite_stores_no_tail(tmp_path) -> None:
