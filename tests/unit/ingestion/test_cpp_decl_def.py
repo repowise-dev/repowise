@@ -287,6 +287,89 @@ class TestTypeDeclarationFlag:
         assert graph.nodes["t.hh::fn"]["is_declaration"] is False
 
 
+# A header that names third-party and sibling types without defining them, then
+# defines its own class: the shape of almost every large C++ header.
+_FORWARD_HEADER = """#pragma once
+class btCollisionDispatcher;
+struct btDbvtBroadphase;
+enum class Mode : int;
+template <class T> class Holder;
+namespace ai { class AIGraph; }
+class World {
+  class Impl;
+ public:
+  void tick(btCollisionDispatcher* d);
+};
+"""
+
+
+class TestTypeDeclarationIsNoSymbolOfItsFile:
+    """``class Env;`` keeps its graph node but is not what its file defines."""
+
+    _FORWARD = frozenset(
+        {"btCollisionDispatcher", "btDbvtBroadphase", "Mode", "Holder", "AIGraph", "Impl"}
+    )
+
+    def _parse(self, tmp_path: Path, files: dict[str, str]):
+        for name, text in files.items():
+            (tmp_path / name).write_text(text)
+        parser = ASTParser()
+        return {
+            fi.path: parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+            for fi in FileTraverser(tmp_path).traverse()
+        }
+
+    def test_only_the_defined_class_is_stored(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(tmp_path, {"world.hpp": _FORWARD_HEADER})["world.hpp"]
+        assert {s.name for s in parsed.symbols if s.is_declaration} >= self._FORWARD
+        stored = {s.name for s in id_holders(parsed.symbols)}
+        assert not stored & self._FORWARD
+        assert {"World", "tick", "ai"} <= stored
+
+    def test_the_definition_in_another_header_is_stored(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(
+            tmp_path,
+            {"world.hpp": _FORWARD_HEADER, "mode.hpp": "enum class Mode : int { A, B };\n"},
+        )
+        stored = {s.id for pf in parsed.values() for s in id_holders(pf.symbols)}
+        assert "mode.hpp::Mode" in stored
+        assert "world.hpp::Mode" not in stored
+
+    def test_the_graph_keeps_the_declaration(self, tmp_path: Path) -> None:
+        # Call resolution and dead code read it there, by ``is_declaration``.
+        (tmp_path / "world.hpp").write_text(_FORWARD_HEADER)
+        graph = _build(tmp_path)
+        assert graph.nodes["world.hpp::btCollisionDispatcher"]["is_declaration"] is True
+
+    def test_c_tag_declaration_is_not_stored_but_its_typedef_is(self, tmp_path: Path) -> None:
+        from repowise.core.ingestion.symbol_identity import id_holders
+
+        parsed = self._parse(
+            tmp_path, {"h.c": "struct s;\ntypedef struct handle handle;\nstruct real { int x; };\n"}
+        )["h.c"]
+        assert {s.name for s in id_holders(parsed.symbols)} == {"handle", "real"}
+
+    def test_the_file_page_leads_with_the_defined_class(self, tmp_path: Path) -> None:
+        import networkx as nx
+
+        from repowise.core.generation.context_assembler import ContextAssembler
+        from repowise.core.generation.models import GenerationConfig
+        from repowise.core.generation.page_generator.file_facts import file_facts
+
+        parsed = self._parse(tmp_path, {"world.hpp": _FORWARD_HEADER})["world.hpp"]
+        graph = nx.DiGraph()
+        graph.add_node("world.hpp")
+        ctx = ContextAssembler(GenerationConfig()).assemble_file_page(
+            parsed, graph, {}, {}, {}, _FORWARD_HEADER.encode()
+        )
+        assert not {s["name"] for s in ctx.symbols} & self._FORWARD
+        assert file_facts(ctx)["defines"][0] == "`World`"
+
+
 def _resolver(tmp_path: Path, files: dict[str, str], includes: dict[str, set[str]]):
     """A resolver over *files*, with the include map spelled out by hand."""
     from repowise.core.ingestion.call_resolver import CallResolver

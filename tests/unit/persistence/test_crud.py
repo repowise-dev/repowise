@@ -513,12 +513,15 @@ async def test_batch_upsert_symbols_stores_the_implementation_of_an_overload_set
 
 
 # Symbols that share one id: the method beside the field Lombok adds after it, two
-# functions of one erasure, and a C++ definition before its declaration.
+# functions of one erasure, and a C++ definition before its declaration. A type
+# forward declaration holds a graph node but no stored row.
 _SHARED_IDS = {
     "L.java": ("java", "@lombok.extern.slf4j.Slf4j\nclass L {\n  void log(String m) { }\n}\n"),
     "F.kt": ("kotlin", 'fun f(xs: List<String>) { }\n@JvmName("g")\nfun f(xs: List<Int>) { }\n'),
     "c.hpp": ("cpp", "void g() { }\nvoid g();\n"),
+    "fwd.hpp": ("cpp", "class Env;\nenum class Mode : int;\nclass Db { };\n"),
 }
+_FORWARD_DECLARED = {"fwd.hpp::Env", "fwd.hpp::Mode"}
 
 
 @pytest.mark.parametrize("writer", ["batch_upsert_symbols", "reconcile_symbols_for_files"])
@@ -570,8 +573,11 @@ async def test_a_shared_id_stores_the_symbol_its_graph_node_holds(async_session,
     assert stored == {
         node: (data["kind"], data["start_line"])
         for node, data in graph.nodes(data=True)
-        if data.get("node_type") == "symbol" and data["kind"] != "module"
+        if data.get("node_type") == "symbol"
+        and data["kind"] != "module"
+        and node not in _FORWARD_DECLARED
     }
+    assert set(graph.nodes) >= _FORWARD_DECLARED
 
 
 # ---------------------------------------------------------------------------
