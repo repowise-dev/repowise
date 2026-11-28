@@ -170,6 +170,20 @@ An exception raised from `register()` (or at import) also marks the plugin
 Each plugin row also says whether the plugin is `configured`. `missing` lists
 each required [setting](#settings-for-a-plugin) that has no value, with the
 command that sets it, so you or an agent can finish setup from the listing.
+`settings` lists every setting the plugin declares with `set` true or false
+(never the value), `next_command` is the one command to run next, and
+`version` is the installed package version. A top-level `sources` list holds
+each source on a fetching seam with its `plugin` (`null` for one built into
+repowise), whether it is `configured`, and `last_sync` (`at`, `state`,
+`stored_at`, `batches`, `message`) from its last
+[sync](#syncing-a-source).
+
+The web UI shows the same listing on the repository's Settings > Plugins page,
+with a Sync now button for each configured source. The page reads
+`GET /api/repos/{id}/plugins`, which returns this JSON, so an agent can call
+it too. `POST /api/repos/{id}/plugins/sync` starts a sync of one source
+(`{"source": "<name>"}`) or of every configured one (`{}`) and answers `202`
+before it finishes.
 
 ## Check the contracts
 

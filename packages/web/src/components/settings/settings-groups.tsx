@@ -14,6 +14,7 @@ export const SETTINGS_GROUPS = [
   "models",
   "sync",
   "coverage",
+  "plugins",
   "all",
   "server",
   "display",
@@ -22,7 +23,7 @@ export const SETTINGS_GROUPS = [
 
 export type SettingsGroupId = (typeof SETTINGS_GROUPS)[number];
 
-/** General, Coverage and All settings are per repository, so global settings has none of them. */
+/** General, Coverage, Plugins and All settings are per repository, so global settings has none of them. */
 export const GLOBAL_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
   "setup",
   "agents",
@@ -41,6 +42,7 @@ export const REPO_SETTINGS_GROUPS: readonly SettingsGroupId[] = [
   "models",
   "sync",
   "coverage",
+  "plugins",
   "all",
 ];
 

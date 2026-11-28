@@ -4081,6 +4081,53 @@ export interface PlanRoute {
   minutes?: number | null;
 }
 
+/** A required setting with no value, and the one command that sets it. */
+export interface PluginMissingSetting {
+  key: string;
+  fix: string;
+}
+
+/** One installed plugin and what it registered. */
+export interface PluginRow {
+  name: string;
+  source: string;
+  target: string;
+  status: string;
+  error?: string | null;
+  seams?: string[];
+  storage?: PluginStorage;
+  version?: string | null;
+  configured?: boolean;
+  missing?: PluginMissingSetting[];
+  settings?: PluginSettingState[];
+  next_command?: string | null;
+}
+
+/** One setting a plugin declares. ``set`` says it has a value; the value is never sent. */
+export interface PluginSettingState {
+  key: string;
+  env?: string | null;
+  secret?: boolean;
+  set: boolean;
+}
+
+/** Storage revisions a plugin registered, as ``namespace:revision``. */
+export interface PluginStorage {
+  applied?: string[];
+  pending?: string[];
+}
+
+/** What ``repowise plugins --format json`` prints, plus this server's running syncs. */
+export interface PluginsResponse {
+  api_version: number;
+  plugins?: PluginRow[];
+  sources?: SourceRow[];
+  seams?: Record<string, SeamRow>;
+  document_extractors?: Record<string, string>;
+  syncing?: string[];
+  sync_error?: string | null;
+}
+
 /**
  * What the map is counting.
  *
@@ -4905,6 +4952,11 @@ export interface SavingsResponse {
   checks?: SavingsCheckRow[];
 }
 
+export interface SeamRow {
+  default?: string | null;
+  implementations?: string[];
+}
+
 export interface SearchResultResponse {
   page_id: string;
   title: string;
@@ -5226,6 +5278,36 @@ export interface SlowTest {
   outcome: string | null;
   first_in_class: boolean | null;
   workload: string;
+}
+
+/** How a source's last sync ended. */
+export interface SourceLastSync {
+  at?: string | null;
+  state?: string | null;
+  stored_at?: string | null;
+  batches?: number | null;
+  message?: string | null;
+}
+
+/** One source on a fetching seam. ``plugin`` is ``None`` for a built-in source. */
+export interface SourceRow {
+  source: string;
+  seam: string;
+  plugin?: string | null;
+  configured: boolean;
+  message?: string | null;
+  next_command: string;
+  last_sync?: SourceLastSync | null;
+}
+
+export interface SourcesSyncAccepted {
+  accepted?: boolean;
+  syncing?: string[];
+}
+
+/** Sync one source by name, or every configured source when ``source`` is omitted. */
+export interface SourcesSyncRequest {
+  source?: string | null;
 }
 
 /** What the statements one function issues did in a production window. */

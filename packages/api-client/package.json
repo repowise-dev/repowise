@@ -45,6 +45,7 @@
     "./owners": "./src/owners.ts",
     "./pages": "./src/pages.ts",
     "./platform": "./src/platform.ts",
+    "./plugins": "./src/plugins.ts",
     "./providers": "./src/providers.ts",
     "./refactoring": "./src/refactoring.ts",
     "./reports": "./src/reports.ts",

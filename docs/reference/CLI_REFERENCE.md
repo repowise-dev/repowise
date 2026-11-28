@@ -2585,7 +2585,8 @@ repowise telemetry disable               # or: enable
 List plugins from `repowise.plugins` entry points and `REPOWISE_PLUGINS`: loaded or why not, seams registered,
 implementation per seam. Plugin commands load only for an unknown command name or a command listing. Each plugin
 also says whether it is configured and, for each required setting it declares that has no value, the command that
-sets it (`configured` and `missing` in JSON).
+sets it (`configured` and `missing` in JSON). The JSON also lists each plugin's declared `settings` (set or not, never
+the value), its `next_command` and `version`, and every fetching source under `sources` with its `last_sync`.
 
 ```bash
 repowise plugins --format json

@@ -71,6 +71,7 @@ INTERNAL_TAGS = frozenset(
         "overview",
         "owners",
         "platform",
+        "plugins",
         "providers",
         "reports",
         "runtime-evidence",
