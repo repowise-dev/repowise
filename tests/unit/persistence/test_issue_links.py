@@ -230,3 +230,16 @@ async def test_a_kept_outcomes_item_is_dropped_so_it_reads_again(async_session):
     assert [i.kind for i in cached_evidence(row).items] == ["health_delta"]
     assert json.loads(row.evidence_json)["change_id"] == "pr-1"
     assert await forget_kept_outcomes(async_session, repo.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_bug_key_that_changes_on_a_commit_is_a_defect_change(async_session):
+    repo = await insert_repo(async_session)
+    await store_issue_links(async_session, repo.id, [_link(A, "ENG-1")], source="t")
+
+    result = await store_issue_links(
+        async_session, repo.id, [_link(A, "ENG-2")], source="t", covered_shas=[A]
+    )
+
+    # Still a fix, but it may now count on a file another ENG-2 commit holds.
+    assert result["defect_changed"] == [A]

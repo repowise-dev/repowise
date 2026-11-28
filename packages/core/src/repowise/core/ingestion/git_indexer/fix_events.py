@@ -40,11 +40,12 @@ __all__ = ["build_fix_events"]
 def build_fix_events(walk: FixWalk) -> list[dict]:
     """Rows for every fix-commit x file in *walk*.
 
-    An update passes a walk already narrowed to the fix commits it has never
-    seen (:func:`~.prior_defects.collect_fix_commits`'s ``skip_shas``), so
-    nothing is rebuilt. A commit-file pair that repeats an issue the file
-    already counts is stored as :data:`ISSUE_REPEAT`: the update never skips a
-    commit an issue links to, so the walk holds every commit that decides it.
+    An update passes a walk narrowed to the fix commits it has never seen
+    (:func:`~.prior_defects.collect_fix_commits`'s ``skip_shas``), plus every
+    commit an issue links to, which it rebuilds each time. A commit-file pair
+    that repeats an issue the file already counts is stored as
+    :data:`ISSUE_REPEAT`; since linked commits are never skipped, the walk
+    holds every commit that decides which pair that is.
     """
     if not walk.fixes:
         return []

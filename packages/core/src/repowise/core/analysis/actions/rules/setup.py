@@ -193,9 +193,9 @@ def sources_unsynced(facts: SetupFacts) -> RuleOutcome:
         rule,
         title=title,
         impact=(
-            "Its settings are set, but it has not fetched yet. Sync it, then run "
-            "`repowise update` so the index uses what it fetched; later updates "
-            "sync it themselves."
+            "It is configured but has never synced. Run the sync, then "
+            "`repowise update` to count what it found; later updates sync it "
+            "on their own."
         ),
         why=(WhyFact("sources", ", ".join(names)),),
         surface="setup",

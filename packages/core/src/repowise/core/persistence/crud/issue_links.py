@@ -56,7 +56,7 @@ async def store_issue_links(
     *links* no longer holds are removed. Leave it None for a partial fetch,
     which only adds. ``defect_changed`` lists the commits whose fix status
     moved (a bug or incident link came or went), the ones an index already
-    holding them must re-walk.
+    holding them must re-walk; a bug key that changes on a commit counts too.
     """
     async with session.begin_nested():
         return await _store(session, repository_id, links, source, covered_shas)
@@ -118,7 +118,7 @@ async def _store(
     return {
         "stored": len(values),
         "removed": len(stale),
-        "defect_changed": sorted(before ^ after),
+        "defect_changed": sorted({sha for sha, _ in before ^ after}),
     }
 
 
@@ -405,8 +405,8 @@ async def record_linked_issues(
     """A Change Record's ``metadata.linked_issues`` with the stored tracker facts.
 
     The bare keys as the record holds them when no stored link touches it.
-    A fix that a linked bug made one gets that issue as its ``category_basis``,
-    in place, since the row alone cannot name it.
+    When the change is a fix only because a bug is linked to it, that issue
+    becomes its ``category_basis``, in place: the row alone cannot name it.
     """
     keys = record["metadata"]["linked_issues"]
     shas = [record["head_sha"], *record["commits"]]
@@ -450,17 +450,24 @@ async def _change_rows(
     return rows
 
 
-async def _defect_shas(session: AsyncSession, repository_id: str, shas: set[str]) -> set[str]:
-    found: set[str] = set()
+async def _defect_shas(
+    session: AsyncSession, repository_id: str, shas: set[str]
+) -> set[tuple[str, str]]:
+    """``(sha, issue key)`` of the bug or incident links on *shas*.
+
+    Pairs, not shas: a commit whose bug changes from one issue to another
+    stays a fix but may count differently (``prior_defects.issue_repeats``).
+    """
+    found: set[tuple[str, str]] = set()
     for chunk in _chunks(sorted(shas)):
         result = await session.execute(
-            select(IssueLink.commit_sha).where(
+            select(IssueLink.commit_sha, IssueLink.issue_key).where(
                 IssueLink.repository_id == repository_id,
                 IssueLink.commit_sha.in_(chunk),
                 IssueLink.issue_type.in_(sorted(DEFECT_TYPES)),
             )
         )
-        found.update(result.scalars().all())
+        found.update((sha, key) for sha, key in result.all())
     return found
 
 
