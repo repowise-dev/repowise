@@ -9,7 +9,7 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 | Job | Pull request | Push to `main` and nightly |
 |-----|--------------|----------------------------|
 | Python 3.12 tests (shard 1/3, shard 2/3, shard 3/3) | when Python-relevant files change | yes |
-| Python 3.11 tests, Python 3.13 tests | no | yes |
+| Python 3.11 tests, Python 3.13 tests (shard 1/2, shard 2/2 each) | no | yes |
 | Python tests (summary) | always | always |
 | tree-sitter floor, Footprint, Windows smoke test, Python lint (ruff), Documentation drift | when Python-relevant files change | yes |
 | Web UI lint + type check | when web files change | yes |
@@ -36,6 +36,8 @@ version.
 ## Shards
 
 On a pull request, the Python 3.12 unit tests run in three shards with coverage.
+Pushes and the nightly run add Python 3.11 and 3.13 in two shards each, without
+coverage or test reports.
 `--shard K/N` (defined in `tests/conftest.py`) keeps whole test files together,
 so `--dist loadfile` still holds. Files listed in `tests/shard_weights.json` are
 packed by their recorded seconds, heaviest first, into the lightest shard; any
