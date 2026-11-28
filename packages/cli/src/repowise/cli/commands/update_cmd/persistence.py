@@ -29,7 +29,11 @@ from repowise.cli.helpers import (
 )
 from repowise.core.analysis.health import health_analyzer_changed
 from repowise.core.analysis.security.patterns import security_scanner_changed
-from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+from repowise.core.ingestion.git_indexer import (
+    GIT_HISTORY_VERSION,
+    GIT_HISTORY_VERSION_KEY,
+    git_history_stale,
+)
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.pipeline.incremental.repair import record_repair_marker
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
@@ -1298,10 +1302,14 @@ def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: li
 def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     """Whether a full health re-score is due this update.
 
-    Two independent triggers:
+    Three independent triggers:
 
     * the analyzer changed since these rows were written — re-score now, so a
       correction lands on the next update rather than waiting out the timer;
+    * this update re-reads the whole git history over rows a stamped walk
+      wrote (rules changed, or a linked bug issue came or went): every file's
+      git rows move, prior-defect counts among them, and a finding scored over
+      the old rows would outlive them;
     * the periodic idle-file cadence (#728).
 
     The version check is deliberately ahead of the ``head_ts`` guard: an
@@ -1312,6 +1320,8 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     recovered baseline.
     """
     if health_analyzer_changed(state):
+        return True
+    if GIT_HISTORY_VERSION_KEY in state and git_history_stale(state):
         return True
     if head_ts is None:
         return False

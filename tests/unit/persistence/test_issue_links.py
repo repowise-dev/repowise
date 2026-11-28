@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from repowise.core.issues import StoredLink
 from repowise.core.persistence.crud.issue_links import (
+    cite_prior_defect_issues,
     fix_issue_quotes,
     load_tracker_fixes,
     store_issue_links,
@@ -58,7 +59,7 @@ async def test_a_partial_fetch_only_adds(async_session):
 
     assert {k for _, k, _, _ in await _stored(async_session)} == {"ENG-1", "ENG-2"}
     assert result["removed"] == 0
-    assert await load_tracker_fixes(async_session, repo.id) == {A, B}
+    assert await load_tracker_fixes(async_session, repo.id) == {A: {"ENG-1"}, B: {"ENG-2"}}
 
 
 @pytest.mark.asyncio
@@ -163,3 +164,82 @@ async def test_with_no_links_left_a_linked_flag_goes_and_the_rule_stays(async_se
     monkeypatch.setattr(crud, "upsert_git_commits_bulk", lambda *a: writes.append(a))
     await reconcile_issue_fix_flags(async_session, repo.id)
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_prior_defect_finding_cites_its_linked_issue(async_session):
+    repo = await insert_repo(async_session)
+    async_session.add(
+        FixEvent(
+            repository_id=repo.id,
+            fix_sha=A,
+            file_path="cart.py",
+            shape_kind="code_fix",
+            old_ranges_json="[]",
+            committed_at=datetime(2026, 7, 1, tzinfo=UTC),
+        )
+    )
+    await async_session.flush()
+    await store_issue_links(async_session, repo.id, [_link(A, "ENG-1", title="Cart")], source="t")
+    rows = [
+        {"biomarker_type": "prior_defect", "file_path": "cart.py", "details": {"n": 1}},
+        {"biomarker_type": "prior_defect", "file_path": "other.py", "details": {"n": 1}},
+        {"biomarker_type": "high_complexity", "file_path": "cart.py", "details": {}},
+    ]
+
+    await cite_prior_defect_issues(async_session, repo.id, rows)
+
+    assert rows[0]["details"] == {"n": 1, "linked_issues": ["ENG-1 (bug): Cart"]}
+    # No link behind the file, or not a defect finding: left as it was.
+    assert rows[1]["details"] == {"n": 1}
+    assert rows[2]["details"] == {}
+
+
+@pytest.mark.asyncio
+async def test_a_kept_outcomes_item_is_dropped_so_it_reads_again(async_session):
+    import json
+
+    from repowise.core.changes.collect import cached_evidence, forget_kept_outcomes
+    from repowise.core.changes.evidence import ChangeEvidence, EvidenceItem
+    from repowise.core.persistence.crud.changes import dump_evidence
+    from repowise.core.persistence.models import Change
+
+    repo = await insert_repo(async_session)
+    kept = ChangeEvidence(
+        "pr-1",
+        A,
+        "2026-01-02T00:00:00+00:00",
+        [
+            EvidenceItem("health_delta", "Health delta", "ok", "measured"),
+            EvidenceItem("outcomes", "Outcomes", "ok", "measured", value={"as_of": A, "days": 30}),
+        ],
+    )
+    row = Change(
+        repository_id=repo.id,
+        change_id="pr-1",
+        identity_kind="pr",
+        identity_value="1",
+        shape="squash",
+        head_sha=A,
+        evidence_json=dump_evidence(kept.to_dict()),
+    )
+    async_session.add(row)
+    await async_session.flush()
+
+    assert await forget_kept_outcomes(async_session, repo.id) == 1
+    assert [i.kind for i in cached_evidence(row).items] == ["health_delta"]
+    assert json.loads(row.evidence_json)["change_id"] == "pr-1"
+    assert await forget_kept_outcomes(async_session, repo.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_bug_key_that_changes_on_a_commit_is_a_defect_change(async_session):
+    repo = await insert_repo(async_session)
+    await store_issue_links(async_session, repo.id, [_link(A, "ENG-1")], source="t")
+
+    result = await store_issue_links(
+        async_session, repo.id, [_link(A, "ENG-2")], source="t", covered_shas=[A]
+    )
+
+    # Still a fix, but it may now count on a file another ENG-2 commit holds.
+    assert result["defect_changed"] == [A]

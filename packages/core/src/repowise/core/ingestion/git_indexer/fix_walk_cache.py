@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +49,7 @@ def _code_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def _shas_digest(shas: frozenset[str]) -> str:
+def _shas_digest(shas: Iterable[str]) -> str:
     return hashlib.sha256(" ".join(sorted(shas)).encode()).hexdigest()
 
 
@@ -90,7 +91,7 @@ class FixWalkCache:
         repo: Any,
         *,
         writable: bool = True,
-        tracker_fixes: frozenset[str] = frozenset(),
+        tracker_fixes: Collection[str] = frozenset(),
     ) -> FixWalkCache | None:
         """The cache under *cache_dir*; ``None`` when this repository cannot use one.
 

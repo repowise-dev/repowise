@@ -105,9 +105,7 @@ def _manifest(
     from repowise.core.analysis.change_health.sources import GitRevisionSource, filter_changes
 
     pair = GitRevisionSource(repo_root, hunks=False).resolve(revspec)
-    changes = filter_changes(
-        pair.changes, extensions=extensions, exclude_patterns=exclude_patterns
-    )
+    changes = filter_changes(pair.changes, extensions=extensions, exclude_patterns=exclude_patterns)
     return {c.path: c.status for c in changes}
 
 
@@ -518,6 +516,36 @@ async def _resolve_kept(
     return await _keep_resolved(session, repo_id, row, evidence, catalog, items)
 
 
+async def forget_kept_outcomes(session: Any, repo_id: str) -> int:
+    """Drop the ``outcomes`` item from every kept checklist; returns how many changed.
+
+    For a change in what counts as a fix with HEAD where it was (a linked bug
+    came or went): the kept item's stamp still matches, so it would never be
+    read again. Without the item a checklist reads its outcomes on next use.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.crud.changes import dump_evidence
+    from repowise.core.persistence.models import Change
+
+    rows = (
+        await session.execute(
+            select(Change).where(Change.repository_id == repo_id, Change.evidence_json.is_not(None))
+        )
+    ).scalars()
+    dropped = 0
+    for row in rows:
+        kept = cached_evidence(row)
+        if kept is None or kept.item("outcomes") is None:
+            continue
+        kept = replace(kept, items=[i for i in kept.items if i.kind != "outcomes"])
+        row.evidence_json = dump_evidence(kept.to_dict())
+        dropped += 1
+    if dropped:
+        await session.flush()
+    return dropped
+
+
 def cached_evidence(row: Any) -> ChangeEvidence | None:
     """The kept checklist, or ``None`` when there is none in this schema."""
     raw = getattr(row, "evidence_json", None)
@@ -808,9 +836,7 @@ def _workspace(
             "provider_file": lk.provider_file,
         }
         for lk in store.contract_links
-        if lk.provider_repo == alias
-        and lk.provider_file in touched
-        and lk.consumer_repo != alias
+        if lk.provider_repo == alias and lk.provider_file in touched and lk.consumer_repo != alias
     ]
     return contracts, consumers
 
@@ -923,6 +949,7 @@ async def _change_outcomes(
     )
     from repowise.core.git_refs import is_shallow
     from repowise.core.persistence.crud import get_change
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
 
     head, days = key
     stamp = {"as_of": head, "days": days}
@@ -939,8 +966,9 @@ async def _change_outcomes(
     for link in links:
         later = await get_change(session, repo_id, link.sha)
         rows.append({**link.to_dict(), "change_id": later.change_id if later else None})
+    tracker_fixes = await load_tracker_fixes(session, repo_id)
     try:
-        rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days)
+        rate = await asyncio.to_thread(file_fix_rate, repo_root, head, target, days, tracker_fixes)
         rate_unknown = None
     except OutcomeUnknownError as exc:
         rate, rate_unknown = None, str(exc)

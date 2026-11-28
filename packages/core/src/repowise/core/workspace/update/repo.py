@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from ...ingestion.git_indexer import git_history_stale
+from ...ingestion.git_indexer import GIT_HISTORY_VERSION_KEY, git_history_stale
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from .state import commit_exists, get_head_commit, read_repo_state
 
@@ -804,7 +804,10 @@ async def _try_incremental_update(
             include_working_tree=include_working_tree,
             force_full_git=git_history_stale(state),
             products_sink=products_sink,
-            rescore_health=rescore_health,
+            # A history re-walk moves every file's git rows; re-score them all,
+            # as ``update_cmd.persistence.full_rescore_due`` does.
+            rescore_health=rescore_health
+            or (GIT_HISTORY_VERSION_KEY in state and git_history_stale(state)),
             rescan_security=rescan_security,
         )
     except DocumentExtractionError:

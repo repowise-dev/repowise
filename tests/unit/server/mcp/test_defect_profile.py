@@ -212,3 +212,17 @@ def test_risk_summary_clause_leads_with_fixes_and_closes_its_separator():
 def test_risk_summary_clause_singularizes_one_fix():
     clause = _fix_clause({"fix_count": 1, "window": "6 months", "last_fix_days_ago": 2})
     assert clause == "1 bug fix in 6 months, last 2d before the indexed commit, "
+
+
+def test_risk_summary_clause_names_the_linked_issues():
+    clause = _fix_clause(
+        {
+            "fix_count": 2,
+            "window": "6 months",
+            "last_fix_days_ago": 3,
+            "linked_issues": ["ENG-42 (bug): Checkout fails", "#7 (incident)"],
+        }
+    )
+    assert clause == (
+        "2 bug fixes in 6 months (linked ENG-42, #7), last 3d before the indexed commit, "
+    )

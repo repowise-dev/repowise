@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -20,7 +20,7 @@ from ._constants import _DEFAULT_CO_CHANGE_COMMIT_LIMIT, _MAX_PARTNERS_PER_FILE
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .fix_shape_cache import FixShapeCache
 from .fix_walk_cache import FixWalkCache
-from .prior_defects import PriorDefects, compute_prior_defects
+from .prior_defects import PriorDefects, TrackerFixes, compute_prior_defects
 from .records import _CommitRec, _should_skip_index
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ class SignalPass:
     cache_dir: Path | None = None
     cache_writable: bool = False
     # Commits a stored bug or incident issue names; the fix walk counts them.
-    tracker_fixes: frozenset[str] = frozenset()
+    tracker_fixes: TrackerFixes = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

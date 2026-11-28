@@ -182,7 +182,7 @@ repowise sources sync --source forge
 ```
 
 A commit linked to a `bug` or `incident` issue then counts as a fix in prior
-defects, change risk and health. How commits are matched to issues, which
+defects, change risk and health, once per issue per file. How commits are matched to issues, which
 labels count as bugs, and how to point it at a self-managed host are in
 [Issues from GitHub and GitLab](PLUGINS_REFERENCE.md#issues-from-github-and-gitlab).
 

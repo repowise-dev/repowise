@@ -58,8 +58,10 @@ from .fix_shape_cache import FixShapeCache
 from .fix_walk_cache import FixWalkCache
 from .function_blame import build_blame_index
 from .prior_defects import (
+    NO_TRACKER_FIXES,
     FixWalk,
     PriorDefects,
+    TrackerFixes,
     collect_fix_commits,
     compute_prior_defects,
     window_commits,
@@ -284,7 +286,7 @@ class GitIndexer:
         record_episodes: bool = False,
         max_workers: int | None = None,
         read_only: bool = False,
-        tracker_fixes: frozenset[str] = frozenset(),
+        tracker_fixes: TrackerFixes = NO_TRACKER_FIXES,
     ) -> None:
         self.repo_path = Path(repo_path)
         # Normalised here, the one place every caller's config value meets
@@ -305,8 +307,8 @@ class GitIndexer:
         self.max_workers = max_workers
         # Commits a stored bug or incident issue names (``issue_links``): the
         # fix walk counts them as fixes. Read from the index by the caller,
-        # never fetched here.
-        self.tracker_fixes = frozenset(tracker_fixes)
+        # never fetched here. Keyed by sha, with the issue keys on each.
+        self.tracker_fixes: TrackerFixes = dict(tracker_fixes)
         # Read once: which forge's merge messages name a commit's PR or MR.
         self.forge = detect_forge(self.repo_path)
 
@@ -1262,7 +1264,11 @@ class GitIndexer:
                 repo,
                 tracked,
                 as_of_ts=self._resolve_as_of_ts(repo),
-                skip_shas=known_shas,
+                # A commit an issue links to is rebuilt every time: whether it
+                # counts on a file depends on the issue's other commits.
+                skip_shas=(
+                    None if known_shas is None else set(known_shas) - set(self.tracker_fixes)
+                ),
                 walk_cache=self._fix_walk_cache(repo),
                 tracker_fixes=self.tracker_fixes,
             )

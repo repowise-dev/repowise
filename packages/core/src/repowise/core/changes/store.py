@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -51,12 +51,21 @@ def stored_files(files_json: str | None) -> list[tuple[str, int, int]]:
     ]
 
 
+def linked_bug(shas: Iterable[str], tracker_fixes: Mapping[str, frozenset[str]]) -> str | None:
+    """The key of a bug or incident issue linked to one of *shas*, the first commit's first."""
+    for sha in shas:
+        if keys := tracker_fixes.get(sha):
+            return min(keys)
+    return None
+
+
 def change_row(
     change: ReconstructedChange,
     *,
     provenance: tuple[str, int, int] | None,
     source: str,
     metadata: ChangeMetadata | None,
+    bug: str | None = None,
 ) -> dict[str, Any]:
     meta = metadata or ChangeMetadata()
 
@@ -85,7 +94,7 @@ def change_row(
         # Labels arrive with the metadata, after reconstruction chose a category.
         # Read from the files the row keeps, as reconcile_categories reads them.
         "category": classify_change(
-            change.title, change.files[:MAX_STORED_FILES], meta.labels
+            change.title, change.files[:MAX_STORED_FILES], meta.labels, bug
         ).category,
         "provenance": provenance[0] if provenance else None,
         "provenance_agent": provenance[1] if provenance else None,
@@ -174,6 +183,7 @@ async def refresh_changes(
         link_unlinked_changes,
         upsert_changes,
     )
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
@@ -199,12 +209,14 @@ async def refresh_changes(
                 session, repo_id, [s for c in changes for s in c.commit_shas]
             )
         source_name, metadata = await _read_metadata(repo_path, changes)
+        tracker_fixes = await load_tracker_fixes(session, repo_id)
         rows = [
             change_row(
                 c,
                 provenance=change_provenance(c.commit_shas, labels) if labels is not None else None,
                 source=source_name,
                 metadata=metadata.get(c.change_id),
+                bug=linked_bug([c.head_sha, *c.commit_shas], tracker_fixes),
             )
             for c in changes
         ]
@@ -223,15 +235,18 @@ async def reconcile_categories(session: Any, repo_id: str) -> int:
     """Re-label commits and changes the current classifiers read differently.
 
     Pure regex over stored subjects, and over change titles, files and labels,
-    so an update keeps both columns in step without a re-index.
+    so an update keeps both columns in step without a re-index. A change a
+    stored bug or incident issue links to is a fix (see :func:`classify_change`).
     """
     from sqlalchemy import update
 
     from repowise.core.ingestion.git_indexer._constants import classify_commit_category
     from repowise.core.persistence.crud import get_category_inputs, upsert_git_commits_bulk
+    from repowise.core.persistence.crud.issue_links import load_tracker_fixes
     from repowise.core.persistence.models import Change
 
     commits, changes = await get_category_inputs(session, repo_id)
+    tracker_fixes = await load_tracker_fixes(session, repo_id)
     commit_rows = [
         {"sha": sha, "category": label}
         for sha, subject, category in commits
@@ -240,9 +255,12 @@ async def reconcile_categories(session: Any, repo_id: str) -> int:
     if commit_rows:
         await upsert_git_commits_bulk(session, repo_id, commit_rows)
     moved = 0
-    for change_id, title, category, files_json, labels_json in changes:
+    for change_id, title, category, files_json, labels_json, head_sha, shas_json in changes:
         label = classify_change(
-            title or "", stored_files(files_json), json.loads(labels_json or "null")
+            title or "",
+            stored_files(files_json),
+            json.loads(labels_json or "null"),
+            linked_bug([head_sha, *json.loads(shas_json or "[]")], tracker_fixes),
         ).category
         if label != category:
             moved += 1
@@ -258,6 +276,7 @@ __all__ = [
     "MAX_STORED_FILES",
     "change_provenance",
     "change_row",
+    "linked_bug",
     "reconcile_categories",
     "refresh_changes",
     "stored_files",

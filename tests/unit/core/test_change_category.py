@@ -6,6 +6,7 @@ import pytest
 
 from repowise.core.changes.category import (
     SIGNAL_FRAGMENT,
+    SIGNAL_ISSUE,
     SIGNAL_LABEL,
     SIGNAL_TITLE,
     classify_change,
@@ -97,3 +98,10 @@ def test_no_project_signal_keeps_the_title_rule():
     basis = classify_change("fix(parser): reject a third coding", [("a.py", 3, 1)], None)
     assert (basis.category, basis.signal, basis.value) == ("fix", SIGNAL_TITLE, None)
     assert classify_change("Speed up the parser", [("a.py", 3, 1)]).category == "other"
+
+
+def test_a_linked_bug_makes_a_fix_after_the_project_signals():
+    basis = classify_change("Handle empty carts", [("a.py", 1, 1)], None, "ENG-42")
+    assert (basis.category, basis.signal, basis.value) == ("fix", SIGNAL_ISSUE, "ENG-42")
+    # A label the project put on the change still decides first.
+    assert classify_change("x", [("a.py", 1, 1)], ["feature"], "ENG-42").category == "feature"
