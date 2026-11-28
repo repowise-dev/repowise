@@ -1,0 +1,17 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.acme.billing</groupId>
+    <artifactId>billing-parent</artifactId>
+    <version>1.0.0</version>
+  </parent>
+  <artifactId>billing-service</artifactId>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from repowise.core.symbol_spans import innermost, symbol_at, symbols_overlapping
+from repowise.core.symbol_spans import enclosing_chains, innermost, symbol_at, symbols_overlapping
 
 
 @dataclass(frozen=True)
@@ -95,3 +95,22 @@ def test_innermost_drops_spans_that_contain_another() -> None:
     assert innermost(SPANS) == [NESTED, OTHER]
     same = _S("same", 5, 12)
     assert innermost([METHOD, same]) == [METHOD, same]
+
+
+def test_enclosing_chains_lists_the_outers_of_each_span_outermost_first() -> None:
+    assert enclosing_chains(reversed(SPANS)) == [[CLASS], [CLASS, METHOD], [CLASS], []]
+
+
+def test_enclosing_chains_nest_same_line_spans_only_where_told() -> None:
+    # ``interface Cb { class In { void w() {} } }`` on one line, where only a
+    # direct parent is told.
+    cb, nested, member, outer = _S("Cb", 3, 3), _S("In", 3, 3), _S("w", 3, 3), _S("Api", 1, 9)
+    spans = [member, nested, cb, outer]
+    assert enclosing_chains(spans) == [[outer], [outer], [outer], []]
+    told = {(cb, nested), (nested, member)}
+    assert enclosing_chains(spans, lambda up, down: (up, down) in told) == [
+        [outer, cb, nested],
+        [outer, cb],
+        [outer],
+        [],
+    ]

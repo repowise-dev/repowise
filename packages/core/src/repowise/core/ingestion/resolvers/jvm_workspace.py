@@ -390,8 +390,8 @@ def _scan_jpms_exports(
     """Scan ``module-info.java`` files for ``exports <pkg>;`` directives.
 
     Keyed by module directory (relative to repo_root). For paths containing
-    ``/src/``, the module directory is the path before ``/src/``; for root
-    or top-level module files, it is the enclosing directory (or ``""`` for root).
+    ``/src/``, the module directory is the path before ``/src/`` (``""`` for a
+    ``src/`` at the root); for any other, it is the enclosing directory.
     Ignores test ``module-info.java`` files and comments/strings.
     """
     out: dict[str, set[str]] = {}
@@ -406,8 +406,8 @@ def _scan_jpms_exports(
             continue
         if "/src/test/" in rel or rel.startswith("src/test/") or "/test/" in rel:
             continue
-        if "/src/" in rel:
-            mod_dir = rel.split("/src/", 1)[0]
+        if "/src/" in f"/{rel}":
+            mod_dir = f"/{rel}".split("/src/", 1)[0].lstrip("/")
         else:
             mod_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
         try:

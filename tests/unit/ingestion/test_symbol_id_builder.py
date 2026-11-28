@@ -11,6 +11,7 @@ from repowise.core.ingestion.symbol_identity import (
     local_symbol_id,
     make_symbol_id,
     module_symbol_id,
+    scope_names,
 )
 from repowise.core.ingestion.traverser import FileInfo
 
@@ -87,3 +88,5 @@ def test_helpers() -> None:
     assert file_of_symbol("a.py") == "a.py"
     assert local_symbol_id("a.py::C::m#1") == "C::m#1"
     assert local_symbol_id("a.py") == ""
+    assert scope_names("A.java::Api::once#0::Runnable::run") == ["Api", "once", "Runnable"]
+    assert scope_names("A.java::Api") == []
