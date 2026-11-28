@@ -462,12 +462,14 @@ def _in_static_release_dir(dirs: list[str]) -> bool:
 
 
 # Engine trees shelve copied C and C++ libraries in ``external/``, ``extern/``
-# or ``contrib/`` at any depth (``Gems/<gem>/External/<lib>/``), but the same
+# or ``contrib/`` at any depth (``plugins/<name>/External/<lib>/``), but the same
 # names hold a monorepo's own libraries (``libs/external/<lib>/``) or modules
 # about external services. The path cannot tell them apart; the copy's own
 # license file can, in a directory between the shelf and the file. That needs
-# the checkout, so path-only callers keep the path rules' answer. Ceiling: a
-# copy that ships only a README (no license file) stays production.
+# the checkout, so path-only callers keep the path rules' answer. A source file
+# named like a license (``license_check.cpp``) is not one, and the search starts
+# below the innermost shelf. Ceiling: a copy that ships only a README or a
+# ``licenses/`` folder stays production.
 _LIBRARY_SHELF_TOKENS = frozenset({"external", "externals", "extern", "contrib"})
 _LICENSE_FILE_RE = re.compile(r"^(?:licen[cs]e|copying|unlicense)(?:[-_.].*)?$")
 
@@ -479,19 +481,18 @@ def _in_licensed_library(
         return False
     parts = normalized.split("/")
     root = os.fspath(repo_root)
-    for i, d in enumerate(dirs):
-        if d in _LIBRARY_SHELF_TOKENS:
-            return any(
-                _has_license_file(os.path.join(root, *parts[: j + 1]))
-                for j in range(i + 1, len(dirs))
-            )
-    return False
+    shelves = [i for i, d in enumerate(dirs) if d in _LIBRARY_SHELF_TOKENS]
+    return bool(shelves) and any(
+        _has_license_file(os.path.join(root, *parts[: j + 1]))
+        for j in range(shelves[-1] + 1, len(dirs))
+    )
 
 
 # Memoised per folder for the process, with ``_is_docs_site``'s ceiling.
 @lru_cache(maxsize=4096)
 def _has_license_file(folder: str) -> bool:
-    return any(_LICENSE_FILE_RE.match(n) for n in _entry_names(folder)[0])
+    code = _code_suffixes()
+    return any(_LICENSE_FILE_RE.match(n) and not n.endswith(code) for n in _entry_names(folder)[0])
 
 
 # A copied library is recognisable by its header only in the directories a

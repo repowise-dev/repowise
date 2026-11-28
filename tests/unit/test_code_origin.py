@@ -660,14 +660,11 @@ def _library(root, path: str, license_dir: str | None) -> None:
     ("path", "license_dir"),
     [
         (
-            "Gems/ImGui/External/ImGui/v1.82/imgui/imgui.cpp",
-            "Gems/ImGui/External/ImGui/v1.82/imgui",
+            "Plugins/Overlay/External/ImGui/v1.82/imgui/imgui.cpp",
+            "Plugins/Overlay/External/ImGui/v1.82/imgui",
         ),
-        (
-            "Code/Framework/AzCore/External/TaskflowArray/Array.h",
-            "Code/Framework/AzCore/External/TaskflowArray",
-        ),
-        ("Gems/AtomTressFX/External/Code/src/Math/Color.h", "Gems/AtomTressFX/External/Code"),
+        ("Engine/Core/External/TaskDeque/Deque.h", "Engine/Core/External/TaskDeque"),
+        ("Plugins/Hair/External/Code/src/Math/Color.h", "Plugins/Hair/External/Code"),
         ("libs/extern/zstd/lib/zstd.c", "libs/extern/zstd"),
         ("src/contrib/minizip/unzip.c", "src/contrib/minizip"),
         ("contrib/boost/libs/core/x.hpp", "contrib/boost"),
@@ -702,6 +699,25 @@ def test_external_shelf_without_a_licensed_library_stays_production(
     tmp_path, path: str, license_dir: str | None
 ) -> None:
     _library(tmp_path, path, license_dir)
+    assert code_origin(path, repo_root=tmp_path) == "production"
+
+
+@pytest.mark.parametrize(
+    ("path", "marker"),
+    [
+        # A source file named like a license is the library's own code.
+        ("contrib/mymod/other.cpp", "contrib/mymod/license_check.cpp"),
+        ("libs/external/net/x.cpp", "libs/external/net/license.h"),
+        # A license above an inner shelf belongs to the outer module, not the library.
+        ("contrib/ours/external/lib/a.c", "contrib/ours/LICENSE"),
+    ],
+)
+def test_license_marker_must_be_a_license_under_the_innermost_shelf(
+    tmp_path, path: str, marker: str
+) -> None:
+    _library(tmp_path, path, None)
+    (tmp_path / marker).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / marker).write_text("x")
     assert code_origin(path, repo_root=tmp_path) == "production"
 
 
