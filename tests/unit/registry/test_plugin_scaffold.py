@@ -121,18 +121,62 @@ def test_each_template_is_the_example_in_plugins_md(seam):
     )
 
 
-def test_agents_md_names_every_step_for_a_fetching_seam(tmp_path):
+@pytest.mark.parametrize(
+    ("seam", "check"),
+    [
+        ("issue-source", "repowise changes show <sha>"),
+        ("issue-source", "repowise context <one of those files> --format json"),
+        ("evidence-source", "repowise evidence status --format json"),
+    ],
+)
+def test_agents_md_runs_update_then_checks_the_effect_for_a_fetching_seam(seam, check, tmp_path):
     dest = tmp_path / "pkg"
-    _new("evidence-source", "--name", "pg", "--dir", str(dest))
+    _new(seam, "--name", "pg", "--dir", str(dest))
     agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
-    for step in (
+    steps = [
         'pip install -e ".[test]"',
         "repowise plugins check",
         "repowise config set plugins.pg.url",
         "export REPOWISE_PLUGIN_PG_TOKEN=",
         "repowise sources sync --source pg",
+        "repowise update\n",
+        check,
+    ]
+    positions = [agents.find(step) for step in steps]
+    assert -1 not in positions, dict(zip(steps, positions, strict=True))
+    assert positions == sorted(positions)
+    done = agents.split("## Done when", 1)[1]
+    assert "`repowise update` has run" in done
+    assert check.split(" <", 1)[0] in done
+
+
+def test_agents_md_carries_the_installed_contract_and_links_the_installed_version(tmp_path):
+    import inspect
+
+    from repowise.core import __version__
+    from repowise.core.issues import sources
+
+    dest = tmp_path / "pkg"
+    _new("issue-source", "--name", "acme", "--dir", str(dest))
+    agents = (dest / "AGENTS.md").read_text(encoding="utf-8")
+    readme = (dest / "README.md").read_text(encoding="utf-8")
+
+    for cls in (sources.IssueSource, sources.IssueRequest, sources.IssueLink):
+        assert inspect.getsource(cls).strip() in agents
+    for rule in (
+        "`SourceUnavailable`",
+        "`SourceRefused`",
+        "def plugin_setting(",
+        "ISSUE_TYPES = (",
     ):
-        assert step in agents
+        assert rule in agents
+    # The docstring's reST reads as Markdown.
+    assert ":class:" not in agents.split("From `", 1)[0]
+    tag = f"/blob/v{__version__}/docs/reference/"
+    assert f"{tag}PLUGINS_REFERENCE.md" in agents
+    assert f"{tag}PLUGINS.md" in readme
+    for text in (agents, readme):
+        assert "/blob/main/" not in text and ".md#" not in text
 
 
 def test_an_unknown_seam_is_refused_with_the_supported_list(tmp_path):

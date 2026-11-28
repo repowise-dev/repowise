@@ -4,15 +4,29 @@ Each seam's module template is the matching example in
 ``docs/reference/PLUGINS_REFERENCE.md`` with the plugin name as ``${plugin}``. A test
 renders every template with the name the doc uses and compares it to the doc's
 code block, so change the two together.
+
+AGENTS.md carries the seam's contract as the installed repowise defines it:
+the "The contract:" notes of the seam module's docstring and the source of the
+types a plugin implements or returns, read at scaffold time. An agent then
+never depends on a doc page that may describe another version.
 """
 
 from __future__ import annotations
 
+import importlib
+import inspect
+import re
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
-DOCS_URL = "https://github.com/repowise-dev/repowise/blob/main/docs/reference/PLUGINS_REFERENCE.md"
+#: The plugin reference (AGENTS.md) and guide (README) at the tag of the
+#: installed version; file roots only, since sections may move between files.
+DOCS_URL = (
+    "https://github.com/repowise-dev/repowise/blob/v${version}/docs/reference/PLUGINS_REFERENCE.md"
+)
+GUIDE_URL = "https://github.com/repowise-dev/repowise/blob/v${version}/docs/reference/PLUGINS.md"
 
 _ISSUE_SOURCE = """\
 import json
@@ -144,7 +158,14 @@ The source reads two settings: `${url_key}` (plain, kept in
 environment only). It receives them as `request.settings[URL.key]` and
 `request.credentials[TOKEN.key]`. Add or rename settings with
 `plugin_setting(...)`, and list each one in both `settings = (...)` and
-`register_settings(...)`."""
+`register_settings(...)`. Remove `TOKEN` from all three places if your system
+needs no token."""
+
+# What the contract section shows for a fetching seam besides its own module.
+_FETCH_CONTRACT = (
+    ("repowise.core.evidence.sources", ("SourceUnavailable", "SourceRefused")),
+    ("repowise.core.settings.plugins", ("plugin_setting",)),
+)
 
 
 @dataclass(frozen=True)
@@ -155,12 +176,17 @@ class SeamTemplate:
     #: One line for the README title and the package description.
     summary: str
     module: str
-    #: Section of PLUGINS_REFERENCE.md that documents the contract.
-    anchor: str
     #: Markdown for AGENTS.md: what to change in the stub.
     finish: str
     #: Whether ``repowise sources sync`` runs it (it declares settings).
     fetches: bool
+    #: (module, names) pairs whose source AGENTS.md shows as the contract; the
+    #: first module's docstring also gives its "The contract:" notes.
+    contract: tuple[tuple[str, tuple[str, ...]], ...]
+    #: Markdown for AGENTS.md: the commands that show the plugin worked, after update.
+    verify: str = ""
+    #: Markdown bullets for AGENTS.md "Done when", after update.
+    done: str = ""
 
 
 SEAMS: dict[str, SeamTemplate] = {
@@ -168,7 +194,6 @@ SEAMS: dict[str, SeamTemplate] = {
         default_name="mytracker",
         summary="Links commits to tracker issues, so a commit tied to a bug counts as a fix",
         module=_ISSUE_SOURCE,
-        anchor="writing-an-issue-source",
         finish="""\
 1. Change `_issue` to call your tracker's API for one issue key, and `TYPES`
    to map the tracker's issue types onto `bug`, `incident`, `feature`, `task`
@@ -183,12 +208,39 @@ SEAMS: dict[str, SeamTemplate] = {
 """
         + _FETCH_FINISH,
         fetches=True,
+        contract=(
+            (
+                "repowise.core.issues.sources",
+                ("IssueSource", "IssueRequest", "IssueCommit", "IssueLink", "ISSUE_TYPES"),
+            ),
+            *_FETCH_CONTRACT,
+        ),
+        verify="""\
+`repowise update` re-reads git history once the links change, so a commit
+linked to a `bug` or `incident` issue counts as a fix from then on. Check one
+commit your tracker links to an issue:
+
+```bash
+repowise changes show <sha>
+git show --name-only --format= <sha>
+repowise context <one of those files> --format json
+```
+
+`changes show` prints a `linked issues:` line with the key, type and title.
+For a `bug` or `incident` issue, the file's `fix_history` lists it under
+`linked_issues` and its `fix_count` includes the commit.
+""",
+        done="""\
+- `repowise changes show <sha>` prints `linked issues:` with your issue for a
+  commit the tracker links.
+- For a bug, `repowise context <file> --format json` lists the issue under
+  `fix_history.linked_issues`.
+""",
     ),
     "evidence-source": SeamTemplate(
         default_name="statements",
         summary="Fetches production statement statistics as repowise evidence",
         module=_EVIDENCE_SOURCE,
-        anchor="writing-an-evidence-source",
         finish="""\
 1. Change `fetch` and `_get` to read from your service. The stub expects a
    JSON page with `entries` (already in the `repowise-evidence-v1`
@@ -203,12 +255,33 @@ SEAMS: dict[str, SeamTemplate] = {
 """
         + _FETCH_FINISH,
         fetches=True,
+        contract=(
+            (
+                "repowise.core.evidence.sources",
+                ("EvidenceSource", "SourceRequest", "SourceBatch"),
+            ),
+            *_FETCH_CONTRACT,
+        ),
+        verify="""\
+Check that the runs were stored:
+
+```bash
+repowise evidence status --format json
+```
+
+`runs_stored` counts runs by kind (`statement_stats` for the stub) and
+`workloads` has one row per workload your batches name (`prod db` for the
+stub).
+""",
+        done="""\
+- `repowise evidence status --format json` counts your kind under
+  `runs_stored` and lists your workload under `workloads`.
+""",
     ),
     "authorizer": SeamTemplate(
         default_name="roles",
         summary="Decides which repositories and tools each caller of `repowise serve` may use",
         module=_AUTHORIZER,
-        anchor="authenticator-and-authorizer",
         finish="""\
 1. Change `can_access_repo` and `can_use_tool` to your access rules. The stub
    reads `roles` and `repo_ids` from `principal.claims`, which your
@@ -219,6 +292,7 @@ SEAMS: dict[str, SeamTemplate] = {
    `REPOWISE_SEAM_AUTHORIZER=${plugin}` when you start `repowise serve` or
    the MCP server.""",
         fetches=False,
+        contract=(("repowise.server.auth", ("Authorizer", "Principal", "Action")),),
     ),
 }
 
@@ -284,8 +358,8 @@ repowise plugins check
 ```
 
 ${configure}
-The contract this plugin follows is in
-[PLUGINS_REFERENCE.md](${docs}#${anchor}).
+How to write, test and publish a plugin is in the
+[plugin guide](${guide}).
 """
 
 _README_CONFIGURE_FETCH = """\
@@ -321,8 +395,15 @@ to make it talk to the real system.
 
 ${finish}
 
-The full contract is in ${docs}#${anchor}. Keep `MIN_PLUGIN_API_VERSION` at
-the end of the module.
+Keep `MIN_PLUGIN_API_VERSION` at the end of the module.
+
+## The contract
+
+As repowise ${version}, the version installed here, defines it in
+`${contract_module}`. The plugin reference for this version, with examples,
+is ${docs}.
+
+${contract}
 
 ## Install and verify
 
@@ -335,7 +416,8 @@ pytest
 ```
 
 `repowise plugins check` must list `pass` for `${seam}:${plugin}`. A
-`fail` line names the rule that broke and how to fix it. Add
+`fail` line names the rule that broke and how to fix it. `skipped` next to a
+setting only means it has no value yet. Add
 `--format json` to either `repowise plugins` command for output a script can
 read.
 ${run}
@@ -355,16 +437,21 @@ has no `.repowise` folder):
 ${set_url}
 export ${token_env}=<token>
 repowise sources sync --source ${plugin}
+repowise update
 ```
 
 The token is read from the environment on every run and never written to a
 file. `repowise plugins` lists each setting that still has no value, with the
 command that sets it. `repowise sources sync` prints, for each source, what
 it stored or why not, and the command to run next. `repowise update` runs the
-same sync, so once it is configured nothing else is needed.
-"""
+same sync before it updates the index, and so does every later update.
 
-_AGENTS_DONE_FETCH = "- `repowise sources sync --source ${plugin}` reports `stored`.\n"
+${verify}"""
+
+_AGENTS_DONE_FETCH = """\
+- `repowise sources sync --source ${plugin}` reports `stored`.
+- `repowise update` has run after it.
+${seam_done}"""
 
 
 def valid_name(name: str) -> bool:
@@ -391,6 +478,81 @@ def render_module(seam: str, plugin: str) -> str:
     return Template(SEAMS[seam].module).substitute(plugin=plugin)
 
 
+def _markdown(text: str) -> str:
+    """reST markup from a docstring as Markdown: roles and double backticks."""
+    text = re.sub(
+        r":\w+:`(~?)\.?([\w.]+)`",
+        lambda m: f"`{m[2].rsplit('.', 1)[-1] if m[1] else m[2]}`",
+        text,
+    )
+    return text.replace("``", "`")
+
+
+def _contract_notes(module_name: str) -> str:
+    """The "The contract:" bullets of *module_name*'s docstring, as Markdown."""
+    doc = importlib.import_module(module_name).__doc__ or ""
+    _, found, rest = doc.partition("The contract:\n")
+    if not found:
+        return ""
+    lines = []
+    for line in rest.strip("\n").splitlines():
+        if line and not line.startswith(("* ", "  ")):
+            break
+        lines.append(line)
+    return _markdown("\n".join(lines).strip())
+
+
+class _Bare(str):
+    """Text that ``inspect`` prints without quotes, for a string annotation."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return str(self)
+
+
+def _bare(annotation: object) -> object:
+    return _Bare(annotation) if isinstance(annotation, str) else annotation
+
+
+def _source_of(obj: object, name: str) -> str:
+    """A class's source, a function's signature and docstring, a constant's value."""
+    if inspect.isclass(obj):
+        try:
+            return textwrap.dedent(inspect.getsource(obj)).rstrip()
+        except OSError:
+            # An install without .py files: name the class, the docstring
+            # notes above still state the rules.
+            return f"class {name}: ...  # source not installed, see {obj.__module__}"
+    if inspect.isfunction(obj):
+        sig = inspect.signature(obj)
+        # Annotations are strings under `from __future__ import annotations`;
+        # show them bare and keep string defaults quoted.
+        signature = str(
+            sig.replace(
+                parameters=[
+                    p.replace(annotation=_bare(p.annotation)) for p in sig.parameters.values()
+                ],
+                return_annotation=_bare(sig.return_annotation),
+            )
+        )
+        body = f'"""{inspect.cleandoc(obj.__doc__)}"""' if obj.__doc__ else "..."
+        doc = textwrap.indent(body, "    ")
+        return f"def {name}{signature}:\n{doc}"
+    return f"{name} = {obj!r}"
+
+
+def render_contract(seam: str) -> str:
+    """The contract section of AGENTS.md for *seam*, read from the installed repowise."""
+    contract = SEAMS[seam].contract
+    parts = [_contract_notes(contract[0][0])]
+    for module_name, names in contract:
+        module = importlib.import_module(module_name)
+        code = "\n\n\n".join(_source_of(getattr(module, n), n) for n in names)
+        parts.append(f"From `{module_name}`:\n\n```python\n{code}\n```")
+    return "\n\n".join(p for p in parts if p)
+
+
 def _values(seam: str, plugin: str) -> dict[str, str]:
     from repowise.core import __version__
     from repowise.core.registry.plugins import PLUGIN_API_VERSION
@@ -407,8 +569,11 @@ def _values(seam: str, plugin: str) -> dict[str, str]:
         "package": package_name(plugin),
         "dist": dist_name(plugin),
         "summary": spec.summary,
-        "anchor": spec.anchor,
-        "docs": DOCS_URL,
+        "version": __version__,
+        "docs": Template(DOCS_URL).substitute(version=__version__),
+        "guide": Template(GUIDE_URL).substitute(version=__version__),
+        "contract_module": spec.contract[0][0],
+        "contract": render_contract(seam),
         "api": str(PLUGIN_API_VERSION),
         "repowise_min": f"{major}.{minor}",
         "url_key": url.key,
@@ -416,6 +581,8 @@ def _values(seam: str, plugin: str) -> dict[str, str]:
         "set_url": set_command(url.key, "https://example.com"),
     }
     values["finish"] = _fill(spec.finish, values)
+    values["verify"] = spec.verify
+    values["seam_done"] = spec.done
     values["configure"] = _fill(
         _README_CONFIGURE_FETCH if spec.fetches else _README_CONFIGURE_SEAM, values
     )
