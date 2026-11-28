@@ -963,6 +963,13 @@ class TestClassScope:
         source = "class C {\nprivate final CacheLoader loader;\n}"
         assert fields(source, "java", [])["loader"] == "CacheLoader"
 
+    def test_a_java_field_named_by_capitals(self) -> None:
+        source = (
+            "class C {\npublic static final ImmutableSet<Kind>\n"
+            "    KINDS = ImmutableSet.of(Kind.A);\n}"
+        )
+        assert fields(source, "java", [])["KINDS"] == "ImmutableSet"
+
     def test_a_local_inside_a_method_is_not_a_field(self) -> None:
         source = "class C {\nvoid run() {\nCacheLoader loader = a();\n}\n}"
         assert fields(source, "java", [(2, 4)]) == {}

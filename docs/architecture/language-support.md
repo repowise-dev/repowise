@@ -531,8 +531,9 @@ the same four scopes as an explicit receiver.
 
 The per-language declaration patterns live in
 `ingestion/languages/receiver_types.py` as `_LANGUAGE_PATTERNS`, keyed by tag.
-They are **regexes over comment-stripped source**, not an AST walk. That is a deliberate
-shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
+They are **regexes over comment-stripped source** (for Java, comment-, string- and
+char-literal-stripped: the text of a string declares nothing), not an AST walk. That is a
+deliberate shortcut. The ceiling is that a declaration a regex cannot see is a receiver that
 does not get typed; the upgrade path is an AST-backed local-scope table, which
 was not built because the pattern families cover the idiomatic shapes and the
 measured miss rate did not justify the cost.
@@ -541,7 +542,7 @@ Pattern families today:
 
 | Family | Languages | Shapes |
 |---|---|---|
-| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name`, `var name = new Type()` |
+| C-family | Java, C#, Kotlin (partly), Swift (partly) | `Type name` (Java also `Type NAME`, a constant), `var name = new Type()` |
 | Go | Go | parameters, `name := Type{}`, `var name Type` |
 | Kotlin | Kotlin | `name: Type`, `= Type(...)` |
 | Swift | Swift | `name: Type`, `= Type(...)` |
