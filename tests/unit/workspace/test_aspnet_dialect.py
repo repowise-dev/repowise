@@ -237,4 +237,3 @@ public class HostController : ApiController
     contracts = _extract(content)
     assert "http::GET::/api/ping" in contracts
     assert len(contracts) == 1
-

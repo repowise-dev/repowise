@@ -17,8 +17,10 @@ with the graph-edge builder that reads the same call for its handler argument.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from typing import TYPE_CHECKING
 
+from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
 from repowise.core.ingestion.framework_routes import aspnet_groups, aspnet_routes
 
 from ..base import line_at
@@ -32,8 +34,9 @@ if TYPE_CHECKING:
 
     from ..base import ScanContext
 
+# Read on the masked code just past a class's attribute block.
 _CLASS_DECL_RE = re.compile(
-    r"""(?:(?:public|private|protected|internal|abstract|sealed|static|partial)\s+)*class\s+\w+""",
+    r"""\s*(?:(?:public|private|protected|internal|abstract|sealed|static|partial)\s+)*class\s+\w+""",
     re.IGNORECASE,
 )
 
@@ -56,219 +59,48 @@ _ASPNET_ACTION_ROUTE_RE = re.compile(
 )
 
 
-def _scan_attribute_spans(content: str) -> list[tuple[int, int]]:
-    """Scan `content` for all top-level attribute list `[...]` character spans.
-
-    Respects string literals, verbatim strings, character literals, and comments.
+def _attribute_blocks(code: str) -> list[tuple[int, int]]:
+    """The ``[...]`` runs of *code* (comments and strings blanked, offsets kept):
+    outermost brackets, with lists separated only by whitespace merged, so
+    ``[HttpGet]`` and ``[Route("x")]`` on the lines above an action are one block.
     """
-    spans: list[tuple[int, int]] = []
-    i = 0
-    n = len(content)
-    while i < n:
-        c = content[i]
-        # Line comment
-        if c == "/" and i + 1 < n and content[i + 1] == "/":
-            nl = content.find("\n", i + 2)
-            i = n if nl == -1 else nl + 1
-            continue
-        # Block comment
-        if c == "/" and i + 1 < n and content[i + 1] == "*":
-            end = content.find("*/", i + 2)
-            i = n if end == -1 else end + 2
-            continue
-        # Verbatim string @"..." or $@"..."" or @$""
-        if (c == "@" and i + 1 < n and content[i + 1] == '"') or (
-            c == "$" and i + 2 < n and content[i + 1] == "@" and content[i + 2] == '"'
-        ) or (
-            c == "@" and i + 2 < n and content[i + 1] == "$" and content[i + 2] == '"'
-        ):
-            i = content.find('"', i) + 1
-            while i < n:
-                if content[i] == '"':
-                    if i + 1 < n and content[i + 1] == '"':
-                        i += 2
-                        continue
-                    i += 1
-                    break
-                i += 1
-            continue
-        # Regular or interpolated string "..."
-        if c == '"' or (c == "$" and i + 1 < n and content[i + 1] == '"'):
-            i = content.find('"', i) + 1
-            while i < n:
-                if content[i] == "\\":
-                    i += 2
-                    continue
-                if content[i] == '"':
-                    i += 1
-                    break
-                i += 1
-            continue
-        # Character literal '...'
-        if c == "'":
-            i += 1
-            while i < n:
-                if content[i] == "\\":
-                    i += 2
-                    continue
-                if content[i] == "'":
-                    i += 1
-                    break
-                i += 1
-            continue
-        # Opening bracket
-        if c == "[":
-            start = i
-            i += 1
-            depth = 1
-            while i < n and depth > 0:
-                ch = content[i]
-                if ch == "/" and i + 1 < n and content[i + 1] == "/":
-                    nl = content.find("\n", i + 2)
-                    i = n if nl == -1 else nl + 1
-                    continue
-                if ch == "/" and i + 1 < n and content[i + 1] == "*":
-                    end = content.find("*/", i + 2)
-                    i = n if end == -1 else end + 2
-                    continue
-                if (ch == "@" and i + 1 < n and content[i + 1] == '"') or (
-                    ch == "$" and i + 2 < n and content[i + 1] == "@" and content[i + 2] == '"'
-                ) or (
-                    ch == "@" and i + 2 < n and content[i + 1] == "$" and content[i + 2] == '"'
-                ):
-                    i = content.find('"', i) + 1
-                    while i < n:
-                        if content[i] == '"':
-                            if i + 1 < n and content[i + 1] == '"':
-                                i += 2
-                                continue
-                            i += 1
-                            break
-                        i += 1
-                    continue
-                if ch == '"' or (ch == "$" and i + 1 < n and content[i + 1] == '"'):
-                    i = content.find('"', i) + 1
-                    while i < n:
-                        if content[i] == "\\":
-                            i += 2
-                            continue
-                        if content[i] == '"':
-                            i += 1
-                            break
-                        i += 1
-                    continue
-                if ch == "'":
-                    i += 1
-                    while i < n:
-                        if content[i] == "\\":
-                            i += 2
-                            continue
-                        if content[i] == "'":
-                            i += 1
-                            break
-                        i += 1
-                    continue
-                if ch == "[":
-                    depth += 1
-                elif ch == "]":
-                    depth -= 1
-                    if depth == 0:
-                        i += 1
-                        spans.append((start, i))
-                        break
-                i += 1
-            continue
-        i += 1
-    return spans
-
-
-def _is_whitespace_or_comments(text: str) -> bool:
-    i = 0
-    n = len(text)
-    while i < n:
-        if text[i] in " \t\r\n":
-            i += 1
-            continue
-        if text.startswith("//", i):
-            nl = text.find("\n", i + 2)
-            i = n if nl == -1 else nl + 1
-            continue
-        if text.startswith("/*", i):
-            end = text.find("*/", i + 2)
-            if end == -1:
-                return True
-            i = end + 2
-            continue
-        return False
-    return True
-
-
-def _find_class_mappings(content: str, spans: list[tuple[int, int]]) -> list[tuple[int, str]]:
-    """Extract (class_start_pos, route_prefix) for classes preceded by Route/RoutePrefix."""
-    if not spans:
-        return []
     blocks: list[tuple[int, int]] = []
-    curr_start, curr_end = spans[0]
-    for start, end in spans[1:]:
-        if _is_whitespace_or_comments(content[curr_end:start]):
-            curr_end = end
-        else:
-            blocks.append((curr_start, curr_end))
-            curr_start, curr_end = start, end
-    blocks.append((curr_start, curr_end))
-
-    mappings: list[tuple[int, str]] = []
-    for b_start, b_end in blocks:
-        block_text = content[b_start:b_end]
-        route_match = _ROUTE_PREFIX_RE.search(block_text)
-        if not route_match:
-            continue
-        rest = content[b_end:]
-        p = 0
-        n = len(rest)
-        while p < n:
-            if rest[p] in " \t\r\n":
-                p += 1
-            elif rest.startswith("//", p):
-                nl = rest.find("\n", p)
-                p = n if nl == -1 else nl + 1
-            elif rest.startswith("/*", p):
-                end_c = rest.find("*/", p + 2)
-                p = n if end_c == -1 else end_c + 2
+    depth = start = 0
+    for i, ch in enumerate(code):
+        if ch == "[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "]" and depth:
+            depth -= 1
+            if depth:
+                continue
+            if blocks and not code[blocks[-1][1] : start].strip():
+                blocks[-1] = (blocks[-1][0], i + 1)
             else:
-                break
-        after_block = rest[p:]
-        m_cls = _CLASS_DECL_RE.match(after_block)
-        if m_cls:
-            cls_pos = b_end + p + m_cls.start()
-            mappings.append((cls_pos, route_match.group(1).rstrip("/")))
+                blocks.append((start, i + 1))
+    return blocks
+
+
+def _class_mappings(
+    content: str, code: str, blocks: list[tuple[int, int]]
+) -> list[tuple[int, str]]:
+    """``(offset, prefix)`` for each class whose attribute block holds a
+    ``[RoutePrefix]`` or ``[Route]``."""
+    mappings: list[tuple[int, str]] = []
+    for start, end in blocks:
+        route = _ROUTE_PREFIX_RE.search(content, start, end)
+        if route and _CLASS_DECL_RE.match(code, end):
+            mappings.append((end, route.group(1).rstrip("/")))
     return mappings
 
 
-def _find_attribute_block(
-    content: str, pos: int, spans: list[tuple[int, int]] | None = None
-) -> str | None:
-    """Find the full text of contiguous attribute lists `[...]` enclosing `pos`."""
-    if spans is None:
-        spans = _scan_attribute_spans(content)
-    target_idx = None
-    for idx, (s, e) in enumerate(spans):
-        if s <= pos < e:
-            target_idx = idx
-            break
-    if target_idx is None:
-        return None
-    start_idx = target_idx
-    while start_idx > 0 and _is_whitespace_or_comments(
-        content[spans[start_idx - 1][1] : spans[start_idx][0]]
-    ):
-        start_idx -= 1
-    end_idx = target_idx
-    while end_idx + 1 < len(spans) and _is_whitespace_or_comments(
-        content[spans[end_idx][1] : spans[end_idx + 1][0]]
-    ):
-        end_idx += 1
-    return content[spans[start_idx][0] : spans[end_idx][1]]
+def _block_at(content: str, blocks: list[tuple[int, int]], pos: int) -> str | None:
+    """The text of the attribute block holding *pos*, None outside every block."""
+    idx = bisect_right(blocks, (pos, len(content))) - 1
+    if idx >= 0 and blocks[idx][0] <= pos < blocks[idx][1]:
+        return content[blocks[idx][0] : blocks[idx][1]]
+    return None
 
 
 def _compose_aspnet_path(prefix: str, action_path: str) -> str:
@@ -290,14 +122,17 @@ class AspNetDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-        spans = _scan_attribute_spans(content)
-        class_mappings = _find_class_mappings(content, spans)
+        code = mask_comments_and_strings(
+            content, strings=True, hash_comments=False, **mask_dialect(ctx.suffix)
+        )
+        blocks = _attribute_blocks(code)
+        class_mappings = _class_mappings(content, code, blocks)
 
         out: list[Contract] = []
 
         # Action method attribute routing
         for m in code_matches(ctx, _ASPNET_VERB_ATTR_RE):
-            block = _find_attribute_block(content, m.start(), spans)
+            block = _block_at(content, blocks, m.start())
             if block is None:
                 continue
             method = m.group(1).upper()
@@ -339,4 +174,3 @@ class AspNetDialect:
                 out.append(c)
 
         return out
-
