@@ -131,6 +131,19 @@ def test_array_negation_options_and_braces(tmp_path: Path) -> None:
             },
             id="configured-root",
         ),
+        pytest.param(
+            "apps/web/site/",
+            {"apps/web/vite.config.ts": "export default defineConfig(() => ({ root: './site' }));\n"},
+            id="arrow-configured-root",
+        ),
+        pytest.param(
+            "apps/web/",
+            {
+                "apps/web/vite.config.ts": "export default defineConfig(() => ({ plugins: [] }));\n",
+                "apps/web/src/package.json": "{}",
+            },
+            id="arrow-config-directory",
+        ),
     ],
 )
 def test_root_relative_glob(tmp_path: Path, root_prefix: str, markers: dict[str, str]) -> None:
@@ -155,15 +168,33 @@ def test_root_relative_glob(tmp_path: Path, root_prefix: str, markers: dict[str,
     }
 
 
-def test_root_relative_glob_under_computed_root_gets_no_edges(tmp_path: Path) -> None:
-    # The root is computed, so it is unknown: the config directory is no stand-in.
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(
+            "import { resolve } from 'node:path';\n"
+            "export default defineConfig({ root: resolve(__dirname, 'site') });\n",
+            id="computed",
+        ),
+        pytest.param(
+            "const root = './site';\nexport default defineConfig({ root });\n", id="shorthand"
+        ),
+        pytest.param(
+            "export default defineConfig(() => {\n  return { root: './site' };\n});\n",
+            id="block-body-function",
+        ),
+        pytest.param(
+            "const config = { root: './site' };\nexport default config;\n",
+            id="exported-identifier",
+        ),
+    ],
+)
+def test_root_relative_glob_under_unknown_root_gets_no_edges(tmp_path: Path, config: str) -> None:
+    # The root cannot be read, so the config directory is no stand-in for it.
     graph, _ = _build(
         tmp_path,
         {
-            "apps/web/vite.config.ts": (
-                "import { resolve } from 'node:path';\n"
-                "export default defineConfig({ root: resolve(__dirname, 'site') });\n"
-            ),
+            "apps/web/vite.config.ts": config,
             "apps/web/src/main.ts": "export const pages = import.meta.glob('/src/pages/*.ts');\n",
             "apps/web/src/pages/home.ts": "export const title = 'home';\n",
         },

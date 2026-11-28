@@ -309,7 +309,8 @@ def _vite_config_in(directory: Path) -> Path | None:
 def _configured_vite_root(config: Path, config_dir: Path, repo_path: Path) -> str | None:
     """The repo-relative root *config* sets; its own directory when it sets none.
 
-    A computed ``root`` (not a plain string) is unknown, so it gives None.
+    A ``root`` that is not a plain string, or a config whose shape is not read,
+    is unknown, so it gives None.
     """
     found, root = _literal_vite_root(config)
     if not found:
@@ -339,21 +340,37 @@ def _literal_vite_root(config: Path) -> tuple[bool, str | None]:
     if language is None:
         return False, None
     for statement in Parser(language).parse(source).root_node.named_children:
-        config_object = _exported_config_object(statement)
-        if config_object is None:
+        value = _exported_value(statement)
+        if value is None:
             continue
+        config_object = _config_object(value)
+        if config_object is None:
+            # An exported identifier, a block-bodied function or another call.
+            return True, None
         found, root = _root_property(config_object)
         if found:
             return True, root
     return False, None
 
 
-def _exported_config_object(statement: Node) -> Node | None:
-    """The object literal a top-level statement exports, also through ``defineConfig(...)``."""
-    value = _exported_value(statement)
-    if value is not None and value.type == "call_expression":
+def _config_object(value: Node) -> Node | None:
+    """The object literal an exported config is, or None when its shape is not read.
+
+    Reads through ``defineConfig(...)`` and an arrow function's expression body.
+    """
+    if value.type == "call_expression":
         value = _define_config_argument(value)
+    if value is not None and value.type == "arrow_function":
+        value = _arrow_expression_body(value)
     return value if value is not None and value.type == "object" else None
+
+
+def _arrow_expression_body(function: Node) -> Node | None:
+    """The body of an arrow function without its parentheses; a block body as is."""
+    body = function.child_by_field_name("body")
+    while body is not None and body.type == "parenthesized_expression":
+        body = body.named_child(0)
+    return body
 
 
 def _exported_value(statement: Node) -> Node | None:
@@ -381,11 +398,16 @@ def _define_config_argument(call: Node) -> Node | None:
 
 
 def _root_property(config_object: Node) -> tuple[bool, str | None]:
-    """Whether *config_object* sets ``root``, and its value when it is a plain string."""
-    for pair in reversed(config_object.named_children):
-        key = pair.child_by_field_name("key")
+    """Whether *config_object* sets ``root``, and its value when it is a plain string.
+
+    A shorthand ``{ root }`` takes its value from a variable, so the value is unknown.
+    """
+    for child in reversed(config_object.named_children):
+        if child.type == "shorthand_property_identifier" and child.text == b"root":
+            return True, None
+        key = child.child_by_field_name("key")
         if key is not None and (key.text or b"").strip(b"\"'") == b"root":
-            return True, _plain_string(pair.child_by_field_name("value"))
+            return True, _plain_string(child.child_by_field_name("value"))
     return False, None
 
 
