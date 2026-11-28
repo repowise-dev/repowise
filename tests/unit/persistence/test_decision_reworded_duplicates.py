@@ -178,6 +178,39 @@ def test_two_titles_from_one_commit_stay_apart(a, b):
     assert not same_decision_title(b, a)
 
 
+_NOT_CONTRACTIONS = [
+    "don't",
+    "doesn't",
+    "didn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+    "can't",
+    "cannot",
+    "couldn't",
+    "won't",
+    "wouldn't",
+    "shan't",
+    "shouldn't",
+    "mustn't",
+    "hasn't",
+    "haven't",
+    "hadn't",
+]
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "’"])
+@pytest.mark.parametrize("negated", _NOT_CONTRACTIONS)
+def test_a_contracted_negation_never_folds_with_the_affirmed_title(negated, apostrophe):
+    """The ruling and its negation share every other word; they are two choices."""
+    title = f"Cache auth tokens in Redis and {negated.replace(chr(39), apostrophe)} retry"
+    affirmed = "Cache auth tokens in Redis and retry"
+    assert not same_decision_title(title, affirmed)
+    assert not same_decision_title(affirmed, title)
+    assert not same_decision_text(title, affirmed)
+
+
 # ---------------------------------------------------------------------------
 # Ingest: a re-mined PR folds into the record already stored
 # ---------------------------------------------------------------------------

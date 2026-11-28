@@ -182,25 +182,24 @@ _MIN_CONTENT_WORDS = 3
 
 _WORD = re.compile(r"[a-z0-9_]+")
 
-#: ``_WORD`` splits "don't" into "don" and "t", so a contraction counts by its stem.
-_NEGATIONS = frozenset(
-    {
-        "never",
-        "no",
-        "not",
-        "without",
-        "cannot",
-        "don",
-        "doesn",
-        "didn",
-        "isn",
-        "aren",
-        "wasn",
-        "won",
-        "shouldn",
-        "mustn",
-    }
-)
+_NEGATIONS = frozenset({"never", "no", "not", "without"})
+
+#: Stems whose ``n't`` does not leave the verb: "won't", "shan't", "can't".
+_IRREGULAR_NOT = {"wo": "will", "sha": "shall", "ca": "can"}
+
+#: "can't", "won't", "isn't" (straight or curly apostrophe) and "cannot".
+_CONTRACTED_NOT = re.compile(r"\b([a-z]+?)n['\u2019]t\b|\b(can)not\b")
+
+
+def _expand_not(text: str) -> str:
+    """*text* with every ``n't`` contraction and "cannot" spelled as "<verb> not"."""
+
+    def spell(m: re.Match[str]) -> str:
+        stem = m.group(1) or m.group(2)
+        return f"{_IRREGULAR_NOT.get(stem, stem)} not"
+
+    return _CONTRACTED_NOT.sub(spell, text)
+
 
 #: Negation, contrast and quantity words are deliberately absent: "use A, not B"
 #: and "use B, not A", or "one worker" and "two workers", must not reduce to one
@@ -274,7 +273,7 @@ def commit_keys(commits: Iterable[str] | None) -> frozenset[str]:
 
 
 def _words(text: str) -> list[str]:
-    words = _WORD.findall((text or "").lower())
+    words = _WORD.findall(_expand_not((text or "").lower()))
     while words and words[0] in _LEADING_CONNECTIVES:
         words = words[1:]
     return words
