@@ -146,6 +146,12 @@ def test_the_fixture_converts_with_almost_all_repo_time_joined() -> None:
         ("Calc!Shop.Billing.Cart+<>c.<.cctor>b__5_0()", ("Shop.Billing", ("Cart",), "<.cctor>b__5_0", (), ".cctor")),
         ("Calc!App.Jobs+<RunAsync>d__3.MoveNext()", ("App", ("Jobs",), "MoveNext", (), "RunAsync")),
         ("Calc!App.Jobs+<>c__DisplayClass2_0.<Go>b__0(class System.Object)", ("App", ("Jobs",), "<Go>b__0", ("object",), "Go")),
+        # A lambda inside a lambda, and an async lambda's state machine, belong to the
+        # method the outermost lambda was written in.
+        ("Calc!App.Jobs+<>c.<<Main>b__0_0>b__0_1()", ("App", ("Jobs",), "<<Main>b__0_0>b__0_1", (), "Main")),
+        ("Calc!App.Jobs+<>c+<<Main>b__0_0>d.MoveNext()", ("App", ("Jobs",), "MoveNext", (), "Main")),
+        ("Calc!App.Jobs+<<Main>b__0_0>d__1.MoveNext()", ("App", ("Jobs",), "MoveNext", (), "Main")),
+        ("Calc!App.Jobs.<<Main>g__Local|0_0>b__1()", ("App", ("Jobs",), "<<Main>g__Local|0_0>b__1", (), "Main")),
         ("Calc!Free.Run(class System.String[],int32&,valuetype System.Nullable`1<int64>)",
          ("", ("Free",), "Run", ("string[]", "int", "long?"), None)),
         ("Calc!A.B`2[System.__Canon,System.Int32].Map(class System.Func`2<!0,!1>,unsigned int8[0...,0...])",

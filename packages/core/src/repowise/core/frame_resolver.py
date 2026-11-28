@@ -899,9 +899,20 @@ _CLR_ARITY_RE = re.compile(r"`\d+")
 _CLR_INSTANTIATION_RE = re.compile(r"\[[^\[\]]*\]")
 # Compiler-made members: a lambda ``<Sum>b__2_0``, a local function ``<Fill>g__Weigh|1_0``.
 _CLR_NESTED_METHOD_RE = re.compile(r"<(?P<enclosing>.+)>[a-z]__.*")
-# A compiler-made type: an iterator or async state machine ``<Run>d__3``, a closure
-# class ``<>c`` or ``<>c__DisplayClass2_0``.
-_CLR_STATE_MACHINE_RE = re.compile(r"<(?P<enclosing>.+)>d__\d+")
+# A compiler-made type: an iterator or async state machine ``<Run>d__3`` (an async
+# lambda's is ``<<Main>b__0_0>d``), a closure class ``<>c`` or ``<>c__DisplayClass2_0``.
+_CLR_STATE_MACHINE_RE = re.compile(r"<(?P<enclosing>.+)>d(?:__\d+)?")
+# The innermost ``<name>`` is the source method: a lambda inside a lambda is
+# ``<<Main>b__0_0>b__0_1``, and both were written in ``Main``.
+_CLR_INNERMOST_RE = re.compile(r"<(?P<enclosing>[^<>]+)>[a-z]__")
+
+
+def _clr_enclosing(name: str, fallback: str) -> str:
+    """The source method a compiler-made *name* was written in, else *fallback*."""
+    inner = _CLR_INNERMOST_RE.search(name)
+    return inner["enclosing"] if inner else fallback
+
+
 _CLR_PRIMITIVES = {
     "void": "void", "bool": "bool", "char": "char", "string": "string", "object": "object",
     "int8": "sbyte", "uint8": "byte", "unsigned int8": "byte",
@@ -987,12 +998,12 @@ def parse_clr_frame(text: str) -> ClrFrameName | None:
     for segment in (outer, *segments[1:]):
         if segment.startswith("<"):
             machine = _CLR_STATE_MACHINE_RE.fullmatch(segment)
-            enclosing = machine["enclosing"] if machine else enclosing
+            enclosing = _clr_enclosing(segment, machine["enclosing"]) if machine else enclosing
         else:
             types.append(_CLR_ARITY_RE.sub("", segment))
     nested = _CLR_NESTED_METHOD_RE.fullmatch(method)
     if nested is not None:
-        enclosing = nested["enclosing"]
+        enclosing = _clr_enclosing(method, nested["enclosing"])
     if not types or not method:
         return None
     params = tuple(_clr_param(p) for p in _clr_split_params(m["params"]))
