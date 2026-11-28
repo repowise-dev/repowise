@@ -1598,12 +1598,18 @@ async def _function_context(
     from ..git import function_owner_history
     from ..graph import get_node_degree_counts_bulk
     from .function_facts import tests_for_functions
+    from .health import health_exclude_spec
 
     if not symbol_ids:
         return _FunctionContext({}, {}, {}, {}, {})
     # Which functions the graph knows: an unknown one has no caller count at all.
+    exclude_spec = await health_exclude_spec(session, repository_id)
     degrees = await get_node_degree_counts_bulk(
-        session, repository_id, symbol_ids, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
+        session,
+        repository_id,
+        symbol_ids,
+        edge_types=sorted(SYMBOL_USE_EDGE_TYPES),
+        exclude_spec=exclude_spec,
     )
     sources = await _callers_of(session, repository_id, symbol_ids)
     origins = await load_origins(

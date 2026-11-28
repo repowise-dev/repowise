@@ -6,6 +6,8 @@ delegates to :mod:`crud`. Split out to keep store files under 400 lines.
 
 from __future__ import annotations
 
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import crud
@@ -96,10 +98,35 @@ class _SqlGraphRecordsMixin(GraphRecordsIndexStore):
         )
 
     async def get_node_degree_counts(
-        self, repository_id: str, node_id: str
+        self,
+        repository_id: str,
+        node_id: str,
+        *,
+        edge_types: list[str] | None = None,
+        exclude_spec: Any = None,
     ) -> dict[str, int]:
         return await crud.get_node_degree_counts(
-            self._session, repository_id, node_id
+            self._session,
+            repository_id,
+            node_id,
+            edge_types=edge_types,
+            exclude_spec=exclude_spec,
+        )
+
+    async def get_node_degree_counts_bulk(
+        self,
+        repository_id: str,
+        node_ids: list[str],
+        *,
+        edge_types: list[str] | None = None,
+        exclude_spec: Any = None,
+    ) -> dict[str, dict[str, int]]:
+        return await crud.get_node_degree_counts_bulk(
+            self._session,
+            repository_id,
+            node_ids,
+            edge_types=edge_types,
+            exclude_spec=exclude_spec,
         )
 
     async def bulk_upsert_external_systems(

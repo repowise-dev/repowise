@@ -250,12 +250,18 @@ async def read_index_facts(
     """
     from repowise.core.ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
     from repowise.core.persistence.crud import get_git_metadata_bulk, get_node_degree_counts_bulk
+    from repowise.core.persistence.crud.analysis.health import health_exclude_spec
 
     meta = await get_git_metadata_bulk(session, repository_id, sorted(set(paths)))
     if not meta:
         return {}
+    exclude_spec = await health_exclude_spec(session, repository_id)
     degrees = await get_node_degree_counts_bulk(
-        session, repository_id, list(meta), edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES)
+        session,
+        repository_id,
+        list(meta),
+        edge_types=sorted(FILE_DEPENDENCY_EDGE_TYPES),
+        exclude_spec=exclude_spec,
     )
     return {
         path: IndexFacts(
