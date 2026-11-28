@@ -1706,12 +1706,12 @@ repowise changes list --needs-attention
 repowise changes show pr-123 --format in-toto
 ```
 
-A change is one first-parent commit, identified by its message's PR or MR number, then Gerrit `Change-Id`, then merge or
-commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
+A change is one first-parent commit, identified by the Perforce changelist a git-p4 or p4-fusion mirror wrote into its
+message, then its PR or MR number, then Gerrit `Change-Id`, then merge or commit sha. A merge lands its branch's commits; rebase merges give one change per commit.
 
 | Flag | Subcommand | What it does | Default |
 |------|-----|--------------|---------|
-| `REF` | `show` | Id (`pr-123`) or any sha the change landed. | |
+| `REF` | `show` | Id (`pr-123`), a changelist number (`12345`) or any sha the change landed. | |
 | `--path` | all | Repo path. | cwd |
 | `--category` | `list` | Category (feature, fix, ...). | |
 | `--shape` | `list` | `merge`, `squash` or `commit`. | |

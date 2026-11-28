@@ -91,9 +91,19 @@ def ci_revspec(root: str, revspec: str | None) -> str:
     from repowise.core.ci.base import BaseNotFoundError, default_revspec
 
     try:
-        return revspec or default_revspec(root)
+        return named_revspec(root, revspec) if revspec else default_revspec(root)
     except BaseNotFoundError as exc:
         raise CannotEvaluateError("base_not_found", str(exc)) from exc
+
+
+def named_revspec(root: str, revspec: str) -> str:
+    """*revspec* with a Perforce changelist read as its commit (``changelist.resolve_revspec``)."""
+    from repowise.core.changelist import RevisionError, resolve_revspec
+
+    try:
+        return resolve_revspec(root, revspec)
+    except RevisionError as exc:
+        raise CannotEvaluateError("change_unreadable", str(exc)) from exc
 
 
 def change_lines(
@@ -113,6 +123,9 @@ def change_lines(
 def change_set(root: str, revspec: str | None, *, staged: bool = False) -> Any:
     """Every path *revspec* touches, else the staged changes (a ``ChangeSet``)."""
     from repowise.core.analysis.changed_lines import change_set as read_change_set
+
+    if revspec and not staged:
+        revspec = named_revspec(root, revspec)
 
     with _reading_change(revspec or "the staged changes", shallow_hint=not staged):
         return read_change_set(root, revspec, staged=staged)

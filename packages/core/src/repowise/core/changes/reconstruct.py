@@ -12,9 +12,10 @@ and PR merges made on the other side. Those come out as their own changes, and
 the merge keeps only the commits nothing else claims; a merge left with none
 is bookkeeping and is dropped.
 
-Identity, first that applies: the PR or MR number the message names
-(:func:`~repowise.core.forges.changes.change_number`), a Gerrit ``Change-Id``
-trailer, the merge commit, the commit.
+Identity, first that applies: the Perforce changelist a git-p4 or p4-fusion
+mirror wrote into the message (:mod:`repowise.core.changelist`), the PR or MR
+number the message names (:func:`~repowise.core.forges.changes.change_number`),
+a Gerrit ``Change-Id`` trailer, the merge commit, the commit.
 
 Git calls per run: the first-parent walk with ``--numstat``; when it met a
 merge, one metadata walk over the commits merges brought in; and when a merge
@@ -29,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from repowise.core.changelist import changelist_number, without_changelist_number
 from repowise.core.forges import ForgeKind, change_number, get_forge
 
 from .category import classify_change
@@ -39,11 +41,18 @@ SHAPE_COMMIT = "commit"
 
 KIND_PR = "pr"
 KIND_CHANGE_ID = "change_id"
+KIND_CHANGELIST = "changelist"
 KIND_MERGE = "merge"
 KIND_COMMIT = "commit"
 
-_ID_PREFIX = {KIND_PR: "pr", KIND_CHANGE_ID: "change", KIND_MERGE: "merge", KIND_COMMIT: "commit"}
-_NAMED = (KIND_PR, KIND_CHANGE_ID)
+_ID_PREFIX = {
+    KIND_PR: "pr",
+    KIND_CHANGE_ID: "change",
+    KIND_CHANGELIST: "cl",
+    KIND_MERGE: "merge",
+    KIND_COMMIT: "commit",
+}
+_NAMED = (KIND_PR, KIND_CHANGE_ID, KIND_CHANGELIST)
 
 _CHANGE_ID_RE = re.compile(r"^Change-Id:\s*(I[0-9a-f]{40})\s*$", re.MULTILINE)
 #: Merge subjects that are boilerplate; the change's title is the body's first line.
@@ -159,7 +168,9 @@ def without_own_ref(title: str, number: str) -> str:
 def change_identity(
     subject: str, body: str, sha: str, is_merge: bool, forge: ForgeKind | str
 ) -> tuple[str, str, str | None]:
-    """``(kind, value, forge_ref)`` in the order PR number, Change-Id, merge, commit."""
+    """``(kind, value, forge_ref)`` in the order changelist, PR number, Change-Id, merge, commit."""
+    if changelist := changelist_number(f"{subject}\n{body}"):
+        return KIND_CHANGELIST, changelist, f"CL {changelist}"
     number = change_number(subject, body, forge)
     if number is not None:
         return KIND_PR, str(number), get_forge(forge).format_change_ref(number)
@@ -429,6 +440,8 @@ class _Builder:
         title = change_title(head.subject, head.body, head.is_merge)
         if kind == KIND_PR:
             title = without_own_ref(title, value)
+        elif kind == KIND_CHANGELIST:
+            title = without_changelist_number(title, value) or title
         self.out.append(
             ReconstructedChange(
                 change_id=change_id,
@@ -451,6 +464,7 @@ class _Builder:
 
 
 __all__ = [
+    "KIND_CHANGELIST",
     "KIND_CHANGE_ID",
     "KIND_COMMIT",
     "KIND_MERGE",

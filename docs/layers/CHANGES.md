@@ -55,10 +55,11 @@ The first that applies:
 
 | Order | Source | Id |
 |---|---|---|
-| 1 | A PR or MR number the message names, read per forge (GitHub, GitLab, Bitbucket, Azure DevOps) | `pr-123` |
-| 2 | A Gerrit `Change-Id:` trailer | `change-I<40 hex>` |
-| 3 | The merge commit | `merge-<sha>` |
-| 4 | The commit | `commit-<sha>` |
+| 1 | The Perforce changelist a git-p4 or p4-fusion mirror writes into the message (`[git-p4: ... change = 12345]`); the ref reads `CL 12345` | `cl-12345` |
+| 2 | A PR or MR number the message names, read per forge (GitHub, GitLab, Bitbucket, Azure DevOps) | `pr-123` |
+| 3 | A Gerrit `Change-Id:` trailer | `change-I<40 hex>` |
+| 4 | The merge commit | `merge-<sha>` |
+| 5 | The commit | `commit-<sha>` |
 
 A number that appears twice (a PR cherry-picked onto the main line) gets a suffixed id,
 and the change that holds the plain id keeps it across runs.

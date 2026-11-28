@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from repowise.core.changelist import changelist_number, without_changelist_number
 from repowise.core.changes.reconstruct import _is_trailer
 from repowise.core.git_sha import is_sha_prefix
 from repowise.core.ingestion.git_indexer._constants import _MAX_COMMIT_BODY_BYTES
@@ -150,6 +151,9 @@ async def attach_body_excerpts(
 
 def _annotate(row: dict, found: tuple[str, int | None] | None, query: str) -> None:
     body, pr = found or ("", None)
+    if changelist := changelist_number(body):
+        row["changelist"] = changelist
+        body = without_changelist_number(body)
     excerpt = body_excerpt(body, str(row.get("message") or ""), query) if body else None
     if excerpt:
         row["body_excerpt"] = excerpt

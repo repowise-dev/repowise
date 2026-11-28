@@ -364,6 +364,21 @@ def _needs_branch_rescan(stored: _cache.Stored, branches: str | None) -> bool:
 _CARRIED_META = frozenset({"omitted", "recovery_unavailable", "replaced_tokens"})
 
 
+async def _named_revspec(ctx: Any, revspec: str) -> tuple[str | None, dict[str, Any] | None]:
+    """*revspec* with a Perforce changelist read as its commit, or a refusal."""
+    from repowise.core.changelist import RevisionError, resolve_revspec
+
+    try:
+        return await asyncio.to_thread(resolve_revspec, str(ctx.path), revspec), None
+    except RevisionError as exc:
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return None, error_reply(
+            "invalid_args",
+            {"error": str(exc), "remedy": "Pass a commit sha, a ref, or a base..head range."},
+        )
+
+
 @mcp.tool(
     surface_order=60,
     artifact_type="change_risk",
@@ -411,6 +426,8 @@ async def get_change_risk(
 
         return error_reply("git_unavailable", {"error": NO_GIT_REASON})
     revspec, refused = caller_revspec(revspec)
+    if refused is None and revspec:
+        revspec, refused = await _named_revspec(ctx, revspec)
     if refused is not None:
         return refused
     started = time.perf_counter()
