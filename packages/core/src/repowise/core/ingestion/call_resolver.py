@@ -466,6 +466,8 @@ class CallResolver(
         # Build variants (``f#cfg(unix)``, ``f#cfg(not(unix))``) are not chosen by
         # arguments: a call means every one, so an edge fans out to each.
         self._variant_siblings: dict[str, tuple[str, ...]] = {}
+        # C++ const and non-const twins, each id mapped to the other.
+        self._const_twins: dict[str, str] = {}
         self._symbols_by_id = symbols_by_id(
             symbol for parsed in parsed_files.values() for symbol in parsed.symbols
         )

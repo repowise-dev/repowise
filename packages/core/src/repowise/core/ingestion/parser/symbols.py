@@ -39,6 +39,7 @@ from ..languages.perl_packages import (
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
     _build_qualified_name,
+    _cpp_member_qualifiers,
     _cpp_template_parameters,
     _csharp_type_parameter_count,
     _dedupe_objc_interface_symbols,
@@ -489,7 +490,10 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
         ),
         template_parameters=_cpp_template_parameters(def_node, src, language),
         **_kotlin_receiver_fields(def_node, params_nodes, language, name),
-        modifiers=_declared_modifiers(def_node, config.modifier_node_types, src),
+        modifiers=(
+            _declared_modifiers(def_node, config.modifier_node_types, src)
+            + _cpp_member_qualifiers(def_node, language)
+        ),
     )
     return symbol, def_node
 

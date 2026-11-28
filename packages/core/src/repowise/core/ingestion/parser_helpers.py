@@ -552,6 +552,34 @@ def _cpp_template_parameters(def_node: Node, src: str, language: str) -> str | N
     return node_text(parameters, src) if parameters is not None else None
 
 
+def _cpp_function_declarator(def_node: Node) -> Node | None:
+    """The ``function_declarator`` a C++ *def_node* holds, sits under or is."""
+    if def_node.parent is not None and def_node.parent.type == "function_declarator":
+        return def_node.parent
+    node: Node | None = def_node
+    while node is not None and node.type != "function_declarator":
+        node = node.child_by_field_name("declarator") or next(
+            (c for c in node.named_children if c.type.endswith("declarator")), None
+        )
+    return node
+
+
+def _cpp_member_qualifiers(def_node: Node, language: str) -> tuple[str, ...]:
+    """``("const",)`` for a C++ member function written ``f(..) const``; ``()`` otherwise.
+
+    Only the qualifier after the parameter list counts, never a ``const`` return type.
+    """
+    if language != "cpp":
+        return ()
+    declarator = _cpp_function_declarator(def_node)
+    if declarator is None:
+        return ()
+    for child in declarator.children:
+        if child.type == "type_qualifier" and child.text == b"const":
+            return ("const",)
+    return ()
+
+
 def _kotlin_receiver_fields(def_node: Node, params: list[Node], language: str, name: str) -> dict:
     """``Symbol`` fields for the receiver a Kotlin extension function declares; {} otherwise.
 

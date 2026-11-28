@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **C++ template overloads that share a signature get their own symbol ids.** SFINAE overloads such as two `write(OutputIt, T)` templates that differ only in their `enable_if` constraint used to share one id, so the graph kept one node and charged the second body's calls to the first. Each now appends its compacted template parameters, as in `format.h::write#2(OutputIt,T)<Char,OutputIt,T,FMT_ENABLE_IF(is_integral<T>)>`; template definitions equal even there append `~2`, `~3`. This changes C++ template-overload symbol ids on the next index, so saved references to them (decisions, notes, bookmarks) need the new id.
+- **C++ const twins and `#if` arm twins no longer share one symbol.** A `const` member function beside a non-const one of the same parameters (`getTile(int) const` and `getTile(int)`) used to share one id, so the graph kept one node and every call landed on it. The const twin now appends `@const`, as in `mesh.cpp::Mesh::getTile#1@const`, and the non-const twin keeps its id; a call on a const object, or through `this` in a const member, binds the const twin. A function defined once per `#ifdef`/`#else` arm keeps the definition in the first live arm, and the other arms' copies leave the graph with their calls. Ids that did not collide are unchanged. This changes the ids of those const members on the next index, so saved references to them (decisions, notes, bookmarks) need the new id.
 
 ---
 

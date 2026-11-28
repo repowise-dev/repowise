@@ -19,7 +19,9 @@ gains a discriminator:
   differ only in their constraints) append their template parameters,
   compacted: ``write#2(OutputIt,T)<Char,T,FMT_ENABLE_IF(is_integral<T>)>``.
   Ones equal even there take ``~<n>``, their place among the equal ones,
-  the first keeping none.
+  the first keeping none. A C++ ``const`` member function still sharing its
+  key with a non-const twin appends ``@const``, ``getTile#1@const`` beside
+  ``getTile``: only the const twin is suffixed, so the other keeps its id.
 - ``#<tag>(<predicate>)`` on the last segment: one build variant of a symbol
   declared once per configuration, ``lib.rs::f#cfg(not(unix))``. A call may
   mean any variant.
@@ -50,7 +52,9 @@ from .type_names import strip_type_arguments, type_argument_count
 
 # The payload after ``#``: a parameter count with optional parameter types, or
 # a build-variant predicate.
-_PAYLOAD = re.compile(r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?|[A-Za-z_]\w*\(.*\)")
+_PAYLOAD = re.compile(
+    r"\d+(?:\([^()]*\))?(?:<.*>)?(?:~\d+)?(?:`\d+)?(?:@\w+(?:`\d+)?)?|[A-Za-z_]\w*\(.*\)"
+)
 _COUNT = re.compile(r"\d+")
 _GENERIC_ARITY = re.compile(r"`\d+$")
 
@@ -483,10 +487,11 @@ def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
             keyed = _split_same_counts(keyed)
         if language == "cpp":
             keyed = _split_template_overloads(keyed)
-        if len({key for _, key in keyed if key is not None}) < 2:
-            continue
+        split = len({key for _, key in keyed if key is not None}) > 1
+        if language == "cpp":
+            keyed = _split_const_twins(keyed)
         for symbol, key in keyed:
-            if key is not None:
+            if key is not None and (split or key.endswith(_CONST_SUFFIX)):
                 symbol.id = f"{base}#{key}"
 
 
@@ -519,6 +524,39 @@ def _split_same_counts(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Sym
         if len(set(by_index.values())) > 1:
             for index, key in by_index.items():
                 out[index] = (keyed[index][0], key)
+    return out
+
+
+_CONST_SUFFIX = "@const"
+
+
+def _is_const_member(symbol: Symbol) -> bool:
+    return "const" in symbol.modifiers
+
+
+def non_const_twin_ids(symbol_id: str) -> tuple[str, str] | None:
+    """Where the non-const twin of a ``@const`` id may sit: ``(f#1(int), f)``; None for another id.
+
+    The twin keeps its typed id inside a split set, else the plain one.
+    """
+    base, payload = split_symbol_id(symbol_id)
+    if payload is None or not payload.endswith(_CONST_SUFFIX):
+        return None
+    return f"{base}#{payload[: -len(_CONST_SUFFIX)]}", base
+
+
+def _split_const_twins(keyed: list[tuple[Symbol, str | None]]) -> list[tuple[Symbol, str | None]]:
+    """Append ``@const`` to each C++ const member that shares its key with a non-const one."""
+    by_key: dict[str, list[int]] = defaultdict(list)
+    for index, (_symbol, key) in enumerate(keyed):
+        if key is not None:
+            by_key[key].append(index)
+    out = list(keyed)
+    for key, indices in by_key.items():
+        const = [i for i in indices if _is_const_member(keyed[i][0])]
+        if const and len(const) < len(indices):
+            for i in const:
+                out[i] = (keyed[i][0], key + _CONST_SUFFIX)
     return out
 
 
@@ -647,13 +685,18 @@ def parameter_type_arity(parameter: str) -> int:
 
 
 def same_parameters(declared: Symbol, defined: Symbol) -> bool:
-    """Do both declare one parameter list, by count and erased types?"""
+    """Do both declare one parameter list, by count, erased types and C++ constness?"""
     count = _parameter_count(declared)
     return (
         count is not None
         and count == _parameter_count(defined)
-        and _parameter_types(declared) == _parameter_types(defined)
+        and _pairing_types(declared) == _pairing_types(defined)
     )
+
+
+def _pairing_types(symbol: Symbol) -> str:
+    """The erased types, marked when the member is ``const``, as a declaration pairs."""
+    return _parameter_types(symbol) + (_CONST_SUFFIX if _is_const_member(symbol) else "")
 
 
 def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, str]:
@@ -664,11 +707,11 @@ def pair_overloads(declared: list[Symbol], defined: list[Symbol]) -> dict[str, s
     """
     by_key: dict[str | None, dict[str, str]] = defaultdict(dict)
     for symbol in defined:
-        by_key[_parameter_count(symbol)].setdefault(_parameter_types(symbol), symbol.id)
+        by_key[_parameter_count(symbol)].setdefault(_pairing_types(symbol), symbol.id)
     pairs: dict[str, str] = {}
     left: dict[str | None, list[Symbol]] = defaultdict(list)
     for symbol in declared:
-        target = by_key[_parameter_count(symbol)].get(_parameter_types(symbol))
+        target = by_key[_parameter_count(symbol)].get(_pairing_types(symbol))
         if target is None:
             left[_parameter_count(symbol)].append(symbol)
         else:
@@ -739,6 +782,7 @@ __all__ = [
     "local_symbol_id",
     "make_symbol_id",
     "module_symbol_id",
+    "non_const_twin_ids",
     "outer_scope",
     "overload_sets",
     "overload_signature",

@@ -15,7 +15,7 @@ from types import MappingProxyType
 
 from .call_receiver_typing import _FUNCTION_KINDS, _TYPE_KINDS
 from .language_data import get_builtin_types
-from .languages.receiver_types import external_type_name
+from .languages.receiver_types import _CPP_TYPE, external_type_name
 from .models import CPP_NOT_VA_LIST, CSHARP_INTEGER_CONSTANT, CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
 from .return_types import signature_parameter_range, signature_parameters
@@ -24,6 +24,7 @@ from .symbol_identity import (
     erased_parameter_types,
     erased_type,
     file_of_symbol,
+    non_const_twin_ids,
     pair_overloads,
     parameter_type_arity,
     split_symbol_id,
@@ -697,6 +698,15 @@ def _csharp_parameter_named(signature: str, name: str) -> str | None:
     return None
 
 
+@cache
+def _cpp_declarations_of(name: str) -> re.Pattern[str]:
+    """``const T& name``, ``T const* name``, ``T name``: a C++ declaration of *name*, its const marked."""
+    return re.compile(
+        rf"(?<![\w.>:])(?:(?P<const>const)\s+)?{_CPP_TYPE}(?:\s+(?P<const_after>const))?"
+        rf"\s*[*&]{{0,2}}\s*{re.escape(name)}\s*[=;,){{\[]"
+    )
+
+
 class OverloadSelectionMixin:
     """Overload-set indexing and member selection."""
 
@@ -704,11 +714,16 @@ class OverloadSelectionMixin:
         """Record overload sets and Rust build variants for one parsed file."""
         members: dict[tuple[str, str | None], list[Symbol]] = defaultdict(list)
         variants: dict[str, list[Symbol]] = defaultdict(list)
+        plain = {sym.id: sym for sym in parsed.symbols if split_symbol_id(sym.id)[1] is None}
 
         for sym in parsed.symbols:
             base, payload = split_symbol_id(sym.id)
             if payload is None:
                 continue
+            twin = self._record_const_twin(sym.id, plain)
+            if twin is not None:
+                # A plain-id twin joins the set, so a call chooses between the two.
+                members[(base, sym.extension_receiver)].append(twin)
             if payload[0].isdigit():
                 members[(base, sym.extension_receiver)].append(sym)
             else:
@@ -743,6 +758,47 @@ class OverloadSelectionMixin:
                 self._variant_siblings[sym_id] = ids
 
         return representatives
+
+    def _record_const_twin(self, symbol_id: str, plain: Mapping[str, Symbol]) -> Symbol | None:
+        """Link a C++ ``@const`` member and its non-const twin; the twin when it holds a plain id."""
+        candidates = non_const_twin_ids(symbol_id)
+        if candidates is None:
+            return None
+        typed, base = candidates
+        twin = typed if typed in self._symbols_by_id else base
+        if twin not in self._symbols_by_id:
+            return None
+        self._const_twins[symbol_id] = twin
+        self._const_twins[twin] = symbol_id
+        held = plain.get(base) if twin == base else None
+        if held is not None and held.id in self._overload_rep:
+            return None
+        return held
+
+    def _const_twin_target(self, target: str, caller_id: str, call: CallSite) -> str:
+        """*target*, or its const twin when the object the call runs on is const."""
+        twin = self._const_twins.get(target)
+        if twin is None:
+            return target
+        const_id, other = (target, twin) if non_const_twin_ids(target) else (twin, target)
+        return const_id if self._runs_on_const(caller_id, call) else other
+
+    def _runs_on_const(self, caller_id: str, call: CallSite) -> bool:
+        """Is the call's object const: ``this`` in a const member, or a receiver declared const?
+
+        A receiver is read off its last declaration between the caller's first
+        line and the call; a field or a global declared elsewhere reads as non-const.
+        """
+        caller = self._symbols_by_id.get(caller_id)
+        if caller is None:
+            return False
+        name = call.receiver_name
+        if name in (None, "this"):
+            return "const" in caller.modifiers
+        text = self._text_of(file_of_symbol(caller_id))
+        span = "\n".join(text.splitlines()[caller.start_line - 1 : call.line])
+        declared = list(_cpp_declarations_of(name).finditer(span))
+        return bool(declared) and bool(declared[-1]["const"] or declared[-1]["const_after"])
 
     def _pair_overload_members(self) -> None:
         """Pair each member of a declared overload set with its definition.
@@ -868,6 +924,7 @@ class OverloadSelectionMixin:
         if rep is None:
             return self._inherited_overload(resolved, call)
         target = self._overload_target(rep, call.argument_count, call.argument_types)
+        target = self._const_twin_target(target, resolved.caller_id, call)
         if target == resolved.caller_id and not self._picks_itself(rep, target, call):
             return None
         return resolved if target == resolved.callee_id else replace(resolved, callee_id=target)
