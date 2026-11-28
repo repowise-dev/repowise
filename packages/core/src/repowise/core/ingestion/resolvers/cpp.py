@@ -155,6 +155,23 @@ def _dir_distance(a: str, b: str) -> int:
     return len(pa) + len(pb) - 2 * common
 
 
+def _nearest_suffix_match(written: str, importer_dir: str, ctx: ResolverContext) -> str | None:
+    """The repo file whose path ends with *written*, nearest the importer."""
+    # Leading ``../`` segments already failed the importer-relative join.
+    parts = [p for p in written.split("/") if p not in ("", ".", "..")]
+    if not parts:
+        return None
+    candidates = ctx.stem_map.get(Path(parts[-1]).stem) or ()
+    suffix = "/" + "/".join(parts)
+    matches = [c for c in candidates if ("/" + c.lower()).endswith(suffix)]
+    # ``min`` keeps the stem map's order among equally near files.
+    return min(
+        matches,
+        key=lambda c: _dir_distance(posixpath.dirname(c), importer_dir),
+        default=None,
+    )
+
+
 def _stem_fallback(module_path: str, importer_dir: str, ctx: ResolverContext) -> str | None:
     """The repo file *module_path* most plausibly names, by file stem alone.
 
@@ -173,19 +190,10 @@ def _stem_fallback(module_path: str, importer_dir: str, ctx: ResolverContext) ->
     """
     # An angle include can still arrive wrapped (``<core/Logger.hpp>``).
     written = posixpath.normpath(module_path.strip("<>").replace("\\", "/").lower())
-    # Leading ``../`` segments already failed the importer-relative join.
-    parts = [p for p in written.split("/") if p not in ("", ".", "..")]
-    name = parts[-1] if parts else ""
-    candidates = ctx.stem_map.get(Path(name).stem) or ()
     if "/" in written:
-        suffix = "/" + "/".join(parts)
-        matches = [c for c in candidates if ("/" + c.lower()).endswith(suffix)]
-        # ``min`` keeps the stem map's order among equally near files.
-        return min(
-            matches,
-            key=lambda c: _dir_distance(posixpath.dirname(c), importer_dir),
-            default=None,
-        )
+        return _nearest_suffix_match(written, importer_dir, ctx)
+    name = written
+    candidates = ctx.stem_map.get(Path(name).stem) or ()
     for candidate in candidates:
         if posixpath.basename(candidate).lower() == name:
             return candidate
