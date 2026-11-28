@@ -50,7 +50,13 @@ def resolve_rust_import(
     # Literal include paths are relative to the source file, including
     # inside inline modules. They may refer to a file in any language.
     if module_path.startswith("./"):
-        target = posixpath.normpath(posixpath.join(posixpath.dirname(importer_path), module_path))
+        importer_dir = posixpath.dirname(importer_path)
+        target = posixpath.normpath(posixpath.join(importer_dir, module_path))
+        # A backslash can be part of a POSIX filename or a Windows separator.
+        if "\\" in module_path and target not in ctx.path_set:
+            target = posixpath.normpath(
+                posixpath.join(importer_dir, module_path.replace("\\", "/"))
+            )
         return target if target in ctx.path_set else None
 
     # Strip `as <alias>` suffix from aliased imports (e.g. "typst_syntax as syntax")
