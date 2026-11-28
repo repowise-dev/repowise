@@ -218,7 +218,18 @@ async def persist_partial_health(
         upsert_refactoring_suggestions,
         write_function_facts,
     )
-    from repowise.core.pipeline.persist import _analyzed_commit, path_liveness
+    from repowise.core.pipeline.persist import (
+        _analyzed_commit,
+        path_liveness,
+        persist_skipped_generated_placeholders,
+    )
+
+    await persist_skipped_generated_placeholders(
+        session,
+        repo_id,
+        repo_path=repo_path,
+        analyzed_commit=await _analyzed_commit(session, repo_id),
+    )
 
     changed_paths = sorted(
         set(getattr(report, "authoritative_paths", None) or ())

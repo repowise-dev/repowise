@@ -44,6 +44,7 @@ async def _prune_stale_file_rows(
     current_graph_file_paths: set[str],
     current_git_file_paths: set[str],
     *,
+    current_health_file_paths: set[str] | None = None,
     authoritative_empty: bool = False,
 ) -> None:
     """Delete file-scoped rows for files absent from the latest full pipeline run.
@@ -148,9 +149,12 @@ async def _prune_stale_file_rows(
     await _delete_stale_by_paths(
         DeadCodeFinding, DeadCodeFinding.file_path, current_graph_file_paths
     )
-    await _delete_stale_by_paths(
-        HealthFileMetric, HealthFileMetric.file_path, current_graph_file_paths
+    health_file_paths = (
+        current_health_file_paths
+        if current_health_file_paths is not None
+        else current_graph_file_paths
     )
+    await _delete_stale_by_paths(HealthFileMetric, HealthFileMetric.file_path, health_file_paths)
     await _delete_stale_by_paths(HealthFinding, HealthFinding.file_path, current_graph_file_paths)
     await _delete_stale_by_paths(CoverageFile, CoverageFile.file_path, current_graph_file_paths)
     await _delete_stale_by_paths(

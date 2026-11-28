@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 
 from repowise.core.analysis.finding_registry import stored_origin
+from repowise.core.analysis.health.models import HealthFileMetricData, HealthReport
+from repowise.core.ingestion.traverser import TraversalStats
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import HealthFileMetric
+from repowise.core.pipeline.persist.health import save_full_health_report
 from repowise.server.services.hotspots import (
     accelerating_clause,
+    count_hotspots,
     is_accelerating,
     origin_clause,
 )
@@ -139,9 +144,7 @@ async def test_facets_sum_and_match_each_filters_total(client: AsyncClient, app)
 
 
 @pytest.mark.asyncio
-async def test_search_matches_path_or_owner_and_keeps_global_rank(
-    client: AsyncClient, app
-) -> None:
+async def test_search_matches_path_or_owner_and_keeps_global_rank(client: AsyncClient, app) -> None:
     repo = await create_test_repo(client)
     await _seed(app.state.session_factory, repo["id"])
 
@@ -181,8 +184,13 @@ async def test_facets_follow_a_git_only_remine(client: AsyncClient, app) -> None
 
     async with get_session(app.state.session_factory) as session:
         await crud.upsert_git_metadata(
-            session, repository_id=repo["id"], file_path="src/late.py", is_hotspot=True,
-            commit_count_90d=1, commit_count_30d=0, churn_percentile=0.1,
+            session,
+            repository_id=repo["id"],
+            file_path="src/late.py",
+            is_hotspot=True,
+            commit_count_90d=1,
+            commit_count_30d=0,
+            churn_percentile=0.1,
         )
     page = await _list(client, repo["id"])
     assert page["facets"]["total"] == page["total"] == 7
@@ -218,9 +226,7 @@ async def test_origin_clause_matches_stored_origin(app, code_origin, is_test) ->
         )
         session.add(row)
         await session.flush()
-        got = await session.scalar(
-            select(origin_clause()).where(HealthFileMetric.id == row.id)
-        )
+        got = await session.scalar(select(origin_clause()).where(HealthFileMetric.id == row.id))
         await session.rollback()
     assert got == stored_origin(code_origin, is_test)
 
@@ -254,3 +260,350 @@ async def test_every_hotspot_count_is_the_lists_count(client: AsyncClient, app) 
     # The overview's top rows are the list's first rows.
     first = _paths(await _list(client, repo_id, hold="map", limit=8))
     assert [h["file_path"] for h in overview["top_hotspots"]] == first
+
+
+@pytest.mark.asyncio
+async def test_banner_generated_hotspot_is_held_out(
+    client: AsyncClient, app, tmp_path: Path
+) -> None:
+    repo = await create_test_repo(client, tmp_path)
+    repo_id = repo["id"]
+    repo_dir = tmp_path / "test-repo"
+
+    schema_file = repo_dir / "db" / "schema.rb"
+    schema_file.parent.mkdir(parents=True, exist_ok=True)
+    schema_file.write_text(
+        "# This file is auto-generated from the current state of the database.\n"
+        "ActiveRecord::Schema.define(version: 2026_01_01) do\nend\n"
+    )
+    prod_file = repo_dir / "app" / "models" / "order.rb"
+    prod_file.parent.mkdir(parents=True, exist_ok=True)
+    prod_file.write_text("class Order\nend\n")
+
+    async with get_session(app.state.session_factory) as session:
+        for path in ("db/schema.rb", "app/models/order.rb"):
+            await crud.upsert_git_metadata(
+                session,
+                repository_id=repo_id,
+                file_path=path,
+                commit_count_total=20,
+                commit_count_90d=10,
+                commit_count_30d=5,
+                age_days=100,
+                bus_factor=1,
+                primary_owner_name="Ada",
+                is_hotspot=True,
+                is_stable=False,
+                churn_percentile=0.9,
+                temporal_hotspot_score=9.0,
+            )
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[
+                HealthFileMetricData(
+                    file_path="app/models/order.rb",
+                    score=9.0,
+                    max_ccn=1,
+                    max_nesting=0,
+                    nloc=10,
+                    has_test_file=True,
+                    code_origin="production",
+                )
+            ],
+        )
+        await save_full_health_report(
+            session,
+            repo_id,
+            hr,
+            analyzed_commit="abc",
+            repo_path=repo_dir,
+            traversal_stats=TraversalStats(generated_files=["db/schema.rb"]),
+        )
+
+    # In count_hotspots: banner-generated file is absent, production file is present
+    async with get_session(app.state.session_factory) as session:
+        assert await count_hotspots(session, repo_id) == 1
+
+    # In list_hotspots with hold=map: banner-generated file is absent, production file is present
+    page = await _list(client, repo_id, hold="map")
+    assert _paths(page) == ["app/models/order.rb"]
+    assert "db/schema.rb" not in _paths(page)
+
+
+@pytest.mark.asyncio
+async def test_empty_health_report_does_not_wipe_metrics_with_placeholders(
+    app, tmp_path: Path
+) -> None:
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    schema = repo_dir / "db" / "schema.rb"
+    schema.parent.mkdir()
+    schema.write_text("# This file is auto-generated from the current state of the database.\n")
+
+    repo_id = "test-empty-hr"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_repository(
+            session, repo_id=repo_id, name="repo", local_path=str(repo_dir)
+        )
+        await crud.save_health_metrics(
+            session,
+            repo_id,
+            [
+                HealthFileMetricData(
+                    file_path="app/models/user.rb",
+                    score=8.0,
+                    max_ccn=2,
+                    max_nesting=1,
+                    nloc=20,
+                    has_test_file=True,
+                    is_test=False,
+                    code_origin="production",
+                )
+            ],
+        )
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[],
+            findings=[],
+        )
+        await save_full_health_report(
+            session,
+            repo_id,
+            hr,
+            analyzed_commit="abc",
+            repo_path=repo_dir,
+            traversal_stats=TraversalStats(generated_files=["db/schema.rb"]),
+        )
+        from sqlalchemy import select
+
+        from repowise.core.persistence.models import HealthFileMetric
+
+        rows = {
+            r.file_path: r
+            for r in (
+                await session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert len(rows) == 2
+        assert rows["app/models/user.rb"].score == 8.0
+        assert rows["db/schema.rb"].code_origin == "generated"
+        assert rows["db/schema.rb"].score is None
+
+
+@pytest.mark.asyncio
+async def test_persist_partial_health_with_new_generated_file(
+    app, tmp_path: Path
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric
+    from repowise.core.pipeline.incremental.health import persist_partial_health
+
+    repo_dir = tmp_path / "repo_partial"
+    repo_dir.mkdir()
+    dot_rw = repo_dir / ".repowise"
+    dot_rw.mkdir()
+    (dot_rw / "skipped_files.txt").write_text("proto/messages_pb2.py\t0\tgenerated\n")
+
+    repo_id = "test-partial-new-gen"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_repository(
+            session, repo_id=repo_id, name="repo_partial", local_path=str(repo_dir)
+        )
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[],
+            findings=[],
+        )
+        await persist_partial_health(session, repo_id, hr, repo_path=repo_dir)
+
+        rows = (
+            await session.execute(
+                select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].file_path == "proto/messages_pb2.py"
+        assert rows[0].code_origin == "generated"
+        assert rows[0].score is None
+
+
+@pytest.mark.asyncio
+async def test_persist_partial_health_clears_findings_and_score_when_file_becomes_generated(
+    app, tmp_path: Path
+) -> None:
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric, HealthFinding
+    from repowise.core.pipeline.incremental.health import persist_partial_health
+
+    repo_dir = tmp_path / "repo_gains_banner"
+    repo_dir.mkdir()
+    dot_rw = repo_dir / ".repowise"
+    dot_rw.mkdir()
+    (dot_rw / "skipped_files.txt").write_text("app/models/dynamic.rb\t0\tgenerated\n")
+    dyn_file = repo_dir / "app" / "models" / "dynamic.rb"
+    dyn_file.parent.mkdir(parents=True)
+    dyn_file.write_text("# This file is auto-generated by the compiler.\n")
+
+    repo_id = "test-gains-banner"
+    async with get_session(app.state.session_factory) as session:
+        await crud.upsert_repository(
+            session, repo_id=repo_id, name="repo_gains_banner", local_path=str(repo_dir)
+        )
+        await crud.save_health_metrics(
+            session,
+            repo_id,
+            [
+                HealthFileMetricData(
+                    file_path="app/models/dynamic.rb",
+                    score=6.5,
+                    max_ccn=15,
+                    max_nesting=4,
+                    nloc=120,
+                    has_test_file=True,
+                    is_test=False,
+                    code_origin="production",
+                )
+            ],
+        )
+        await crud.save_health_findings(
+            session,
+            repo_id,
+            [
+                {
+                    "file_path": "app/models/dynamic.rb",
+                    "biomarker_type": "high_ccn",
+                    "category": "complexity",
+                    "severity": "warning",
+                    "line_number": 10,
+                    "message": "High cyclomatic complexity",
+                }
+            ],
+        )
+        findings_before = (
+            await session.execute(
+                select(HealthFinding).where(
+                    HealthFinding.repository_id == repo_id,
+                    HealthFinding.file_path == "app/models/dynamic.rb",
+                )
+            )
+        ).scalars().all()
+        assert len(findings_before) == 1
+
+        hr = HealthReport(
+            repo_id=repo_id,
+            analyzed_at=datetime.now(UTC),
+            metrics=[],
+            findings=[],
+        )
+        await persist_partial_health(session, repo_id, hr, repo_path=repo_dir)
+
+        findings_after = (
+            await session.execute(
+                select(HealthFinding).where(
+                    HealthFinding.repository_id == repo_id,
+                    HealthFinding.file_path == "app/models/dynamic.rb",
+                )
+            )
+        ).scalars().all()
+        assert len(findings_after) == 0
+
+        row = (
+            await session.execute(
+                select(HealthFileMetric).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.file_path == "app/models/dynamic.rb",
+                )
+            )
+        ).scalar_one()
+        assert row.code_origin == "generated"
+        assert row.score is None
+        assert row.nloc == 0
+
+
+@pytest.mark.asyncio
+async def test_persist_health_recompute_preserves_generated_rows(
+    app, tmp_path: Path, monkeypatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from sqlalchemy import select
+
+    from repowise.cli.commands.health_cmd.persist import _persist_health
+    from repowise.core.persistence.models import HealthFileMetric
+
+    repo_dir = tmp_path / "repo_recompute"
+    repo_dir.mkdir()
+    dot_rw = repo_dir / ".repowise"
+    dot_rw.mkdir()
+    (dot_rw / "skipped_files.txt").write_text("db/schema.rb\t0\tgenerated\n")
+    schema = repo_dir / "db" / "schema.rb"
+    schema.parent.mkdir()
+    schema.write_text("# This file is auto-generated\n")
+
+    repo_id = "test-recompute-preserve"
+    from repowise.core.persistence import create_engine, create_session_factory, init_db
+
+    db_path = tmp_path / "wiki.db"
+    db_url = f"sqlite+aiosqlite:///{db_path.as_posix()}"
+    test_engine = create_engine(db_url)
+    await init_db(test_engine)
+    test_sf = create_session_factory(test_engine)
+
+    async with get_session(test_sf) as session:
+        await crud.upsert_repository(
+            session, repo_id=repo_id, name="repo_recompute", local_path=str(repo_dir)
+        )
+
+    monkeypatch.setattr("repowise.cli.helpers.get_db_url_for_repo", lambda p: db_url)
+    monkeypatch.setattr("repowise.cli.helpers.reconcile_schema_best_effort", AsyncMock())
+    monkeypatch.setattr(
+        "repowise.core.workspace.update.get_head_commit", lambda p: "headsha"
+    )
+
+    hr = HealthReport(
+        repo_id=repo_id,
+        analyzed_at=datetime.now(UTC),
+        metrics=[
+            HealthFileMetricData(
+                file_path="app/models/user.rb",
+                score=8.0,
+                max_ccn=2,
+                max_nesting=1,
+                nloc=20,
+                has_test_file=True,
+                is_test=False,
+                code_origin="production",
+            )
+        ],
+        findings=[],
+    )
+
+    import asyncio
+
+    await asyncio.to_thread(_persist_health, repo_dir, report=hr)
+
+    async with get_session(test_sf) as session:
+        rows = {
+            r.file_path: r
+            for r in (
+                await session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        }
+        assert "app/models/user.rb" in rows
+        assert "db/schema.rb" in rows
+        assert rows["db/schema.rb"].code_origin == "generated"
+        assert rows["db/schema.rb"].score is None
+    await test_engine.dispose()
