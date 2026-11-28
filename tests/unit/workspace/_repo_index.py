@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from repowise.core.analysis.health.coverage.model import TestCoverage
 from repowise.core.persistence.crud.analysis.coverage_map import save_test_coverage
+from repowise.core.persistence.crud.external_call_sites import replace_external_call_sites
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.workspace.registry import open_repo_db
 from repowise.core.workspace.repo_index import RepoIndex, open_repo_index
@@ -20,6 +21,8 @@ from repowise.core.workspace.repo_index import RepoIndex, open_repo_index
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from pathlib import Path
+
+    from repowise.core.ingestion.external_calls import ExternalCallSite
 
 _REPO_ID = "testrepo"
 
@@ -33,6 +36,7 @@ async def make_repo_index(
     graph_nodes: Sequence[tuple[str, bool]] = (),
     graph_edges: Sequence[tuple[str, str, str]] = (),
     coverage: Sequence[tuple[str, str, str]] = (),
+    call_sites: Sequence[ExternalCallSite] | None = None,
 ) -> RepoIndex:
     """Persist *symbols_by_file* to ``repo``'s wiki.db and open it.
 
@@ -46,6 +50,9 @@ async def make_repo_index(
     ``(source, target, edge_type)`` rows, and *coverage* are
     ``(test_id, test_file, source_file)`` triples written through
     :func:`save_test_coverage` so a measured row exists.
+
+    *call_sites* are the repo's calls into packages, stored as complete; None
+    leaves the store with no complete call record.
     """
     (repo / ".repowise").mkdir(parents=True, exist_ok=True)
     engine, session_factory = await open_repo_db(repo)
@@ -101,6 +108,8 @@ async def make_repo_index(
                     edge_type=edge_type,
                 )
             )
+        if call_sites is not None:
+            await _store_call_sites(session, call_sites)
         if coverage:
             await save_test_coverage(
                 session,
@@ -122,3 +131,13 @@ async def make_repo_index(
     index = await open_repo_index(alias, repo)
     assert index is not None
     return index
+
+
+async def _store_call_sites(session: Any, call_sites: Sequence[ExternalCallSite]) -> None:
+    """Store *call_sites* as the repo's complete record of its calls into packages."""
+    by_file: dict[str, list[ExternalCallSite]] = {}
+    for site in call_sites:
+        by_file.setdefault(site.file_path, []).append(site)
+    await replace_external_call_sites(
+        session, _REPO_ID, by_file, scope=None, live_paths=list(by_file)
+    )

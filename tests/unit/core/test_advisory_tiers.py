@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -181,6 +182,27 @@ async def test_called_in_files_only_names_files_whose_call_is_reached(session, t
     assert list(found) == ["src/app/util.py"]
     assert [r.advisory.id for r in found["src/app/util.py"]] == ["GHSA-9wx4-h78v-vm56"]
     assert found["src/app/util.py"][0].sites() == ["src/app/util.py:5"]
+
+
+async def test_unclaimed_calls_read_no_advisory(session, tmp_path, monkeypatch):  # noqa: F811
+    """A Java call is never claimed, so its file costs the one read of its calls."""
+    from repowise.core.inventory import advisory_tiers
+
+    call = replace(
+        _call("src/App.java", 4, "src/App.java::App::run", "com.acme.Client", "Client.get"),
+        ecosystem="maven",
+        package="",
+    )
+    await replace_external_call_sites(
+        session, REPO, {call.file_path: [call]}, scope=None, live_paths=[call.file_path]
+    )
+    await session.commit()
+
+    async def unread(*args, **kwargs):
+        raise AssertionError("advisories read")
+
+    monkeypatch.setattr(advisory_tiers, "load_advisories", unread)
+    assert await called_advisories_in_files(session, REPO, tmp_path, ["src/App.java"]) == {}
 
 
 async def test_check_package(session, tmp_path):  # noqa: F811

@@ -345,7 +345,11 @@ async def attach_reached_files(
             alias: _Provider(
                 repo_paths[alias],
                 await _provider_graph(indexes[alias]),
-                {p.manifest: p for p in find_published_packages(alias, repo_paths[alias])[0]},
+                # Reach places npm and pypi imports only, so no JVM module is read.
+                {
+                    p.manifest: p
+                    for p in find_published_packages(alias, repo_paths[alias], jvm=False)[0]
+                },
             )
             for alias in sorted(providers_named & indexes.keys())
         }

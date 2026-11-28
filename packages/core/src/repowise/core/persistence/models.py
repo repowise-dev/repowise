@@ -3698,6 +3698,9 @@ class ExternalCallSiteRow(Base):
     package: Mapped[str] = mapped_column(Text, nullable=False)
     external_node: Mapped[str] = mapped_column(Text, nullable=False)
     binding: Mapped[str] = mapped_column(String(16), nullable=False)
+    argument_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name_column: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_external_call_sites_repo_package", "repository_id", "package"),

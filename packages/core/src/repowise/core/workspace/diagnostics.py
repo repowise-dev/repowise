@@ -712,7 +712,15 @@ def build_diagnostics(
     code_api = CodeApiCoverage(
         manifests=published
         + unsupported
-        + sum(s.get("code_unpublished_manifest", 0) for s in stats_by_repo.values()),
+        + sum(
+            s.get(key, 0)
+            for s in stats_by_repo.values()
+            for key in (
+                "code_unpublished_manifest",
+                "code_unnamed_module",
+                "code_module_without_sources",
+            )
+        ),
         published=published,
         unsupported_ecosystem=unsupported,
         providers=len(code_providers),

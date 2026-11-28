@@ -396,7 +396,8 @@ async def called_advisories_in_files(
     Only calls in the file count as call evidence, so each row's sites are
     calls in it. A file with no stored call into a package that has an
     advisory is absent, and that common case costs one indexed read: the
-    stored calls of *files*.
+    stored calls of *files*, of which only those of :data:`CALL_SITE_ECOSYSTEMS`
+    can make an advisory called.
     """
     from repowise.core.persistence.crud.external_call_sites import (
         external_call_sites_complete,
@@ -406,7 +407,7 @@ async def called_advisories_in_files(
     wanted = sorted(set(files))
     if not wanted:
         return {}
-    if not await list_external_call_sites(session, repository_id, file_paths=wanted):
+    if not _claimable(await list_external_call_sites(session, repository_id, file_paths=wanted)):
         return {}
     # An incomplete table proves no call, so nothing here could be "called".
     if not await external_call_sites_complete(session, repository_id):
@@ -422,6 +423,11 @@ async def called_advisories_in_files(
         if called:
             out[path] = called
     return out
+
+
+def _claimable(calls: Iterable[Any]) -> bool:
+    """Whether one of *calls* is of an ecosystem whose calls are claimed."""
+    return any(c.ecosystem in CALL_SITE_ECOSYSTEMS for c in calls)
 
 
 @dataclass(frozen=True)

@@ -134,6 +134,10 @@
         "argument_count": null,
         "receiver_call": null,
         "start_byte": 303,
+        "name_at": [
+          21,
+          22
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

@@ -1,0 +1,6 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.shop.orders</groupId>
+  <artifactId>orders-service</artifactId>
+  <version>1.0.0</version>
+</project>

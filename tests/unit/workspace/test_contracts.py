@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.contracts import (
     CONTRACTS_FILENAME,
     Contract,
@@ -1173,6 +1175,29 @@ class TestMatchContracts:
         assert len(links) == 1
         assert links[0].provider_repo == "backend"
         assert links[0].consumer_repo == "frontend"
+
+    @pytest.mark.parametrize(
+        ("contract_type", "contract_id", "expected"),
+        [
+            ("code", "code::lib::Api.run", 2),
+            # A guard: a consumer of another type keeps one link for each file.
+            ("http", "http::GET::/api", 1),
+        ],
+    )
+    def test_two_functions_of_a_file_make_two_links_only_for_code(
+        self, contract_type: str, contract_id: str, expected: int
+    ) -> None:
+        contracts = [
+            self._contract(repo="lib", contract_type=contract_type, contract_id=contract_id),
+            *(
+                self._contract(
+                    repo="app", role="consumer", contract_type=contract_type,
+                    contract_id=contract_id, file_path="c.py", symbol_id=f"c.py::{name}",
+                )
+                for name in ("f", "g")
+            ),
+        ]  # fmt: skip
+        assert len(match_contracts(contracts)) == expected
 
     def test_same_repo_same_service_filtered(self) -> None:
         contracts = [

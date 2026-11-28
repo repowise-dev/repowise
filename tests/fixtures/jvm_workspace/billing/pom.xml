@@ -1,0 +1,17 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme.billing</groupId>
+  <artifactId>billing-parent</artifactId>
+  <version>1.0.0</version>
+  <packaging>pom</packaging>
+  <modules>
+    <module>billing-service</module>
+    <module>billing-client</module>
+  </modules>
+  <distributionManagement>
+    <repository>
+      <id>releases</id>
+      <url>https://repo.example.com/releases</url>
+    </repository>
+  </distributionManagement>
+</project>

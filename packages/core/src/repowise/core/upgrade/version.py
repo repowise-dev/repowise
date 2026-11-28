@@ -37,6 +37,8 @@ STORE_FORMAT_VERSION: int = 3
 #: Current parser/extractor schema, folded into the parse-cache fingerprint in
 #: place of the package version (see :mod:`repowise.core.ingestion.parse_cache`).
 #: What each bump changed is in this file's git history and the release notes.
+#: Version 15 also binds no name for a Java ``import a.b.*``, which bound ``b``.
+#: It also keeps where the called name of each call sits (``CallSite.name_at``).
 PARSER_SCHEMA_VERSION: int = 15
 
 #: state.json key holding the store format version that wrote the store.

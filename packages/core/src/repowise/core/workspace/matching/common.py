@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
     Contract,
     ContractLink,
@@ -113,6 +114,9 @@ class MatchState:
             normalize_contract_id(consumer.contract_id),
             consumer.repo,
             consumer.file_path,
+            # A ``code`` consumer at a call names its calling symbol: two
+            # functions of a file that call one export are two links.
+            (consumer.symbol_id or "") if consumer.contract_type == CODE_CONTRACT_TYPE else "",
             provider.repo,
             provider.file_path,
             normalize_contract_id(provider.contract_id) if via_alias else "",

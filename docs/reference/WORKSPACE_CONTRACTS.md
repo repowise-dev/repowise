@@ -240,9 +240,140 @@ eligible; unrelated nested example or fixture POMs are not treated as producers.
 
 This does **not** execute Maven, read user settings, download artifacts, resolve
 plugins/transitive dependencies/imported BOMs, or infer generated sources. A Maven
-package edge is also not a published symbol-level code API or a runnable Maven
-target recommendation; those capabilities are reported separately and remain
+package edge is also not a runnable Maven target recommendation, which remains
 unsupported.
+
+A Maven or Gradle module that deploys also publishes its public Java and Kotlin
+types as `code` contracts. A Maven module deploys when its pom, or a pom in a
+directory above it, declares `distributionManagement`, a release plugin or a
+release parent. Of the `<parent>` element only the parent's `artifactId` is
+read, for a release parent, so a parent pom that comes from an artifact
+repository, or one in a sibling directory, is not seen. A Gradle module deploys
+when `maven-publish` is named in its own build script or in the build script of
+a directory above it, in any block of that script, so a root that applies it
+only in `subprojects {}` counts as deploying too. A plugin applied through a
+convention plugin is not read. A war, a Spring Boot or an `application` module
+is an application and gives no contract, and neither does a module that does not
+deploy, nor a test file.
+
+The files of a module are the files its build unit owns, not every file under
+its directory: the directory of a Gradle root holds its subprojects, and a
+Maven parent's holds its modules, whose files are theirs. A file under a
+directory that holds a `pom.xml` or a Gradle build script of its own, which the
+build of the module does not list, is a file of no module (an example or sample
+project beside a library), and where a `module-info.java` exports packages only
+the files of those packages are; an export qualified with `to` is read as an
+export to every module. Only a repository with a JVM build file within
+three directories of its root is read.
+
+A Maven module is named by its `groupId:artifactId`, a parent's `groupId`
+inherited, the coordinate the package edges above use. Gradle has no name of
+that kind, since it names a publication by group and artifact: a Gradle module
+is named by its project path after the `rootProject.name` of the settings
+(`shop:client`, or `shop` for the root project), and the build declares the
+published group elsewhere. A module gets no name, gives no contract and is
+counted in `code_unnamed_module` where no build the code reads lists it: a
+repository with no `pom.xml` at its root, a Gradle build whose settings are not
+at the root of the repository, an included build (`includeBuild`), a pom the
+root pom does not list; and where the settings declare no root name, since
+Gradle then names the root after its directory. A module that deploys but owns
+no Java or Kotlin file of the kinds above is counted in
+`code_module_without_sources`, and one that does not deploy in
+`code_unpublished_manifest`.
+
+A symbol is exported by its full Java name: the package of its file, every
+type that encloses it, and its name (`com.acme.lib.Order.Builder.build`), so one
+simple name in two packages of a module gives two contracts. A symbol is
+published only when types alone enclose it and all of them are public: a public
+method of a package-private Java class or of a Kotlin `internal` class is not,
+nor a member of an anonymous class wherever it is written (a method, a field, an
+initializer, the body of an enum constant) or of a local class. Overloads of a
+method share its contract, so removing one overload of several is not reported.
+A field, a constant, an enum constant, a Kotlin property and a type alias are no
+provider, as for every ecosystem: only functions, methods and types are. A
+protected member, which a subclass in another package can use, is no provider
+either: as for every ecosystem, the surface is the public symbols of the index.
+
+An import names a Java package, never the artifact. An import joins a module
+that has the package and exports the first name after it, so a package split
+across modules joins the module that declares the name, and an import of a
+sub-package no module has joins nothing. Where several modules declare the
+name, as two modules of one repository that hold one class, the import joins
+those that the module of the importing file depends on, and all of them where
+it depends on none. A Maven module depends on each module of the workspace its
+pom names, of any scope but `system`, and on what that module hands on, its
+compile and runtime dependencies that are not optional, in any repository, and
+theirs in turn. This is a walk over the poms of the workspace, named as the
+package edges above name a module, and no resolution by Maven. A dependency of
+type `war`, `ear`, `rar` or `fatjar` hands nothing on, as in Maven; nor, here,
+does a type that no artifact handler of Maven gives (`bundle` and the types
+plugins add), so a module may lack one it depends on. The module of a file is
+the Maven module that owns it, or every Maven module of its repository where
+none does. A Gradle build gives
+no module, so its import joins every module that declares the name. An import consumes each export its
+target passes through and every export under the target: `import a.b.Api;`
+consumes `Api` and its members, `import a.b.Order.Builder;` consumes `Order`,
+`Order.Builder` and the members of `Order.Builder`, and a static import (`import
+static a.b.Money.of;`) or a Kotlin import of a member (`import a.b.Money.of`)
+consumes `Money` and `Money.of`. A static wildcard (`import static
+a.b.Money.*;`) consumes `Money` and all its members, since the index does not
+record which are static. `import a.b.A.Companion.make;` consumes `A` and
+`A.make`, where `A.make` is an export, as does `import a.b.A.Factory.make;` for
+a companion object named `Factory`, and a Java import of `UtilsKt`, the class of
+the Kotlin file `Utils.kt`, consumes its top-level functions, and `import static
+a.b.UtilsKt.util;` consumes `util`. A wildcard (`import a.b.*;`) names a package
+and no type, and the index holds no use of a type that no repository of the
+graph defines, so it consumes nothing; each one is counted in
+`code_wildcard_imports`. An import whose target is no export is counted in
+`code_unresolved_imports` and consumes the type it passes through, if that is an
+export: a field, a constant, an enum constant, a Kotlin property, and the class
+of a file that `@file:JvmName` names. An import of a module of the same
+repository is counted in neither.
+
+A call into a published package is a consumer too, beside the consumer of its
+import, which still holds an export imported and never called. Ingestion records
+each call an import binds to a package (`external_call_sites`), with the line the
+call starts on and the line and column of its called name, which may sit on a
+later line (`client` on one line, `.charge(id)` on the next). The call
+consumes the export it names, with its line and calling symbol, so its link
+names the function that calls. A Java or Kotlin call is read by its full name,
+as an import's target is, and consumes the called member only: `billing.charge()`
+on a field `BillingClient billing` consumes `BillingClient.charge`. A method the
+called type inherits is the export of the supertype that declares it, looked up
+as Java looks up a method over the supertypes ingestion resolved inside the
+library's repository: `mail.push()` on a type `Mail extends Sender` consumes
+`Sender.push`; the call's record keeps the type it is made on (`Mail.push`). Where
+the nearest declaring type is not exported, or is not in the workspace, the call
+consumes nothing. Where several
+modules declare the member, the call joins those an import joins: the modules
+the calling module depends on, or all of them where it depends on none. In another
+ecosystem a call consumes the export its path names as written
+(`Client.charge`). A call into a submodule or a subpath (`lib.sub.get()`,
+`import { get } from "lib/sub"`) or on a default export names no export, since
+the surface does not say which module of the package declares a name. A call
+that reaches a package and no export of it, such as these or a method that
+`Object` declares, is counted in `code_unresolved_calls`. Calls are recorded in Python, JavaScript, TypeScript,
+Java and Kotlin files. A repository whose recorded calls are not complete, or
+with a file of another language that imports a published package (C#, Rust, a
+Vue component), is counted in `code_call_sites_unknown`: unknown, never "not
+called". Two functions of a file that call one export make two links.
+Overloads of one name share one export contract, whose provider row holds the
+first of them; the consumer of a call names the overload it reaches in
+`meta.overload`, by the number of arguments the call passes, as Java chooses: an
+overload of exactly that number of parameters before one whose varargs expand to
+it. Where that number is not known or one kind holds several, the consumer names
+none. The types of the arguments are not read, so a fixed-arity overload they do
+not fit is named where Java takes the varargs one.
+
+The `public_api` flag of the code graph, which the dead-code pass reads for each
+symbol, keeps its own publish rule in `ingestion/graph_warmups.py`, apart from
+the rule above.
+
+Only the removal of a Java or Kotlin symbol is reported. A changed parameter of a
+method is not: the parameter rules read a stored signature only in the
+languages whose parameter grammar they hold, and they hold none for Java or
+Kotlin, although the stored signature has the parameters
+(`charge(String accountId, long cents) -> Invoice`).
 
 ## OpenAPI comparison boundary
 

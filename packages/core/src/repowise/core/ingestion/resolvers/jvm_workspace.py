@@ -158,6 +158,39 @@ _JAVA_LANG_TYPES = frozenset({
 })
 
 
+#: Every public type of ``java.lang``, as JDK 25 declares it, with ``Compiler``
+#: and ``StringTemplate`` of earlier releases: the names Java's implicit
+#: ``import java.lang.*`` may bind. A name a later release adds is missing.
+#: ``_JAVA_LANG_TYPES`` above is the part an edge filter skips.
+JAVA_LANG_TYPES = frozenset({
+    "AbstractMethodError", "Appendable", "ArithmeticException",
+    "ArrayIndexOutOfBoundsException", "ArrayStoreException", "AssertionError", "AutoCloseable",
+    "Boolean", "BootstrapMethodError", "Byte", "CharSequence", "Character", "Class",
+    "ClassCastException", "ClassCircularityError", "ClassFormatError", "ClassLoader",
+    "ClassNotFoundException", "ClassValue", "CloneNotSupportedException", "Cloneable",
+    "Comparable", "Compiler", "Deprecated", "Double", "Enum",
+    "EnumConstantNotPresentException", "Error", "Exception", "ExceptionInInitializerError",
+    "Float", "FunctionalInterface", "IO", "IllegalAccessError", "IllegalAccessException",
+    "IllegalArgumentException", "IllegalCallerException", "IllegalMonitorStateException",
+    "IllegalStateException", "IllegalThreadStateException", "IncompatibleClassChangeError",
+    "IndexOutOfBoundsException", "InheritableThreadLocal", "InstantiationError",
+    "InstantiationException", "Integer", "InternalError", "InterruptedException", "Iterable",
+    "LayerInstantiationException", "LinkageError", "Long", "MatchException", "Math", "Module",
+    "ModuleLayer", "NegativeArraySizeException", "NoClassDefFoundError", "NoSuchFieldError",
+    "NoSuchFieldException", "NoSuchMethodError", "NoSuchMethodException",
+    "NullPointerException", "Number", "NumberFormatException", "Object", "OutOfMemoryError",
+    "Override", "Package", "Process", "ProcessBuilder", "ProcessHandle", "Readable", "Record",
+    "ReflectiveOperationException", "Runnable", "Runtime", "RuntimeException",
+    "RuntimePermission", "SafeVarargs", "ScopedValue", "SecurityException", "SecurityManager",
+    "Short", "StableValue", "StackOverflowError", "StackTraceElement", "StackWalker",
+    "StrictMath", "String", "StringBuffer", "StringBuilder", "StringIndexOutOfBoundsException",
+    "StringTemplate", "SuppressWarnings", "System", "Thread", "ThreadDeath", "ThreadGroup",
+    "ThreadLocal", "Throwable", "TypeNotPresentException", "UnknownError",
+    "UnsatisfiedLinkError", "UnsupportedClassVersionError", "UnsupportedOperationException",
+    "VerifyError", "VirtualMachineError", "Void", "WrongThreadException",
+})
+
+
 @dataclass(frozen=True)
 class JvmPackage:
     """A single JVM package — a directory of ``.java`` + ``.kt`` sibling files."""
@@ -390,8 +423,8 @@ def _scan_jpms_exports(
     """Scan ``module-info.java`` files for ``exports <pkg>;`` directives.
 
     Keyed by module directory (relative to repo_root). For paths containing
-    ``/src/``, the module directory is the path before ``/src/``; for root
-    or top-level module files, it is the enclosing directory (or ``""`` for root).
+    ``/src/``, the module directory is the path before ``/src/`` (``""`` for a
+    ``src/`` at the root); for any other, it is the enclosing directory.
     Ignores test ``module-info.java`` files and comments/strings.
     """
     out: dict[str, set[str]] = {}
@@ -406,8 +439,8 @@ def _scan_jpms_exports(
             continue
         if "/src/test/" in rel or rel.startswith("src/test/") or "/test/" in rel:
             continue
-        if "/src/" in rel:
-            mod_dir = rel.split("/src/", 1)[0]
+        if "/src/" in f"/{rel}":
+            mod_dir = f"/{rel}".split("/src/", 1)[0].lstrip("/")
         else:
             mod_dir = rel.rsplit("/", 1)[0] if "/" in rel else ""
         try:

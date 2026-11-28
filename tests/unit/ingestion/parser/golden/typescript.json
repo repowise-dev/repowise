@@ -77,6 +77,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 117,
+        "name_at": [
+          5,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -99,6 +103,10 @@
           "argument_count": 1
         },
         "start_byte": 127,
+        "name_at": [
+          5,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -117,6 +125,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 138,
+        "name_at": [
+          6,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -139,6 +151,10 @@
           "argument_count": 1
         },
         "start_byte": 148,
+        "name_at": [
+          6,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -157,6 +173,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 159,
+        "name_at": [
+          7,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -179,6 +199,10 @@
           "argument_count": 1
         },
         "start_byte": 169,
+        "name_at": [
+          7,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -197,6 +221,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 180,
+        "name_at": [
+          8,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -219,6 +247,10 @@
           "argument_count": 1
         },
         "start_byte": 190,
+        "name_at": [
+          8,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -237,6 +269,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 201,
+        "name_at": [
+          9,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -259,6 +295,10 @@
           "argument_count": 1
         },
         "start_byte": 211,
+        "name_at": [
+          9,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -277,6 +317,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 222,
+        "name_at": [
+          10,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -299,6 +343,10 @@
           "argument_count": 1
         },
         "start_byte": 232,
+        "name_at": [
+          10,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -317,6 +365,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 243,
+        "name_at": [
+          11,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -339,6 +391,10 @@
           "argument_count": 1
         },
         "start_byte": 253,
+        "name_at": [
+          11,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -357,6 +413,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 264,
+        "name_at": [
+          12,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -379,6 +439,10 @@
           "argument_count": 1
         },
         "start_byte": 274,
+        "name_at": [
+          12,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -397,6 +461,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 285,
+        "name_at": [
+          13,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -419,6 +487,10 @@
           "argument_count": 1
         },
         "start_byte": 295,
+        "name_at": [
+          13,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -437,6 +509,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 306,
+        "name_at": [
+          14,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -459,6 +535,10 @@
           "argument_count": 1
         },
         "start_byte": 316,
+        "name_at": [
+          14,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -477,6 +557,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 327,
+        "name_at": [
+          15,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -499,6 +583,10 @@
           "argument_count": 1
         },
         "start_byte": 337,
+        "name_at": [
+          15,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -517,6 +605,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 348,
+        "name_at": [
+          16,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -539,6 +631,10 @@
           "argument_count": 1
         },
         "start_byte": 358,
+        "name_at": [
+          16,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -557,6 +653,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 369,
+        "name_at": [
+          17,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -579,6 +679,10 @@
           "argument_count": 1
         },
         "start_byte": 379,
+        "name_at": [
+          17,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -597,6 +701,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 390,
+        "name_at": [
+          18,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -619,6 +727,10 @@
           "argument_count": 1
         },
         "start_byte": 400,
+        "name_at": [
+          18,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -637,6 +749,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 411,
+        "name_at": [
+          19,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -659,6 +775,10 @@
           "argument_count": 1
         },
         "start_byte": 421,
+        "name_at": [
+          19,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -677,6 +797,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 432,
+        "name_at": [
+          20,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -699,6 +823,10 @@
           "argument_count": 1
         },
         "start_byte": 442,
+        "name_at": [
+          20,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -717,6 +845,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 490,
+        "name_at": [
+          24,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -739,6 +871,10 @@
           "argument_count": 1
         },
         "start_byte": 500,
+        "name_at": [
+          24,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -757,6 +893,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 526,
+        "name_at": [
+          26,
+          2
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -779,6 +919,10 @@
           "argument_count": 1
         },
         "start_byte": 536,
+        "name_at": [
+          26,
+          12
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1095,6 +1239,10 @@
         "argument_count": 0,
         "receiver_call": null,
         "start_byte": 377,
+        "name_at": [
+          22,
+          44
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1490,6 +1638,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 394,
+        "name_at": [
+          15,
+          16
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1508,6 +1660,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 540,
+        "name_at": [
+          21,
+          22
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1526,6 +1682,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 822,
+        "name_at": [
+          32,
+          6
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1559,6 +1719,7 @@
         "argument_count": null,
         "receiver_call": null,
         "start_byte": 388,
+        "name_at": null,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1968,6 +2129,10 @@
         "argument_count": 0,
         "receiver_call": null,
         "start_byte": 283,
+        "name_at": [
+          13,
+          15
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1986,6 +2151,10 @@
         "argument_count": 0,
         "receiver_call": null,
         "start_byte": 463,
+        "name_at": [
+          21,
+          11
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2192,6 +2361,10 @@
         "argument_count": 1,
         "receiver_call": null,
         "start_byte": 303,
+        "name_at": [
+          10,
+          15
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2538,6 +2711,10 @@
         "argument_count": 0,
         "receiver_call": null,
         "start_byte": 317,
+        "name_at": [
+          11,
+          9
+        ],
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

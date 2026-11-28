@@ -8,13 +8,16 @@ from pathlib import Path
 import pytest
 
 from repowise.core.ingestion.external_systems.maven_model import load_maven_reactor
+from repowise.core.workspace.code_api_jvm import ModuleNeeds
 from repowise.core.workspace.cross_repo import CrossRepoOverlay, load_overlay, save_overlay
 from repowise.core.workspace.manifests import (
     CrossRepoPackageDep,
     CrossRepoPackageDiagnostic,
     detect_package_dependencies,
     detect_package_dependencies_with_diagnostics,
+    find_poms,
 )
+from repowise.core.workspace.maven_dependencies import module_dependencies
 
 
 def _write(repo: Path, relative: str, body: str) -> Path:
@@ -45,12 +48,14 @@ def _dependency(
     version: str = "1.0.0",
     scope: str = "",
     optional: bool = False,
+    type_: str = "",
 ) -> str:
     scope_xml = f"<scope>{scope}</scope>" if scope else ""
     optional_xml = "<optional>true</optional>" if optional else ""
+    type_xml = f"<type>{type_}</type>" if type_ else ""
     return f"""<dependency>
       <groupId>{group}</groupId><artifactId>{artifact}</artifactId>
-      <version>{version}</version>{scope_xml}{optional_xml}
+      <version>{version}</version>{scope_xml}{optional_xml}{type_xml}
     </dependency>"""
 
 
@@ -742,3 +747,127 @@ def test_path_dependency_uses_separator_aware_repo_containment(tmp_path: Path) -
 
     assert len(deps) == 1
     assert deps[0].target_repo == "lib-old"
+
+
+def _reactor(repo: Path, group: str, modules: dict[str, str]) -> None:
+    """A root pom of *group* listing *modules*, and a pom for each with its dependencies."""
+    listed = "".join(f"<module>{name}</module>" for name in modules)
+    _write(repo, "pom.xml", _project(group, "root", dependencies=f"<modules>{listed}</modules>"))
+    for name, dependencies in modules.items():
+        body = f"<dependencies>{dependencies}</dependencies>" if dependencies else ""
+        _write(repo, f"{name}/pom.xml", _project(group, name, dependencies=body))
+        _write(repo, f"{name}/src/main/java/{name.capitalize()}.java", "class X {}\n")
+
+
+@pytest.fixture(scope="module")
+def needs_workspace(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Path]:
+    """`app`, whose module `web` depends on modules of `lib`, of `other`, of its own reactor
+    and of `a` and `b`, which both produce `com.acme:twin`; and `loose`, with no root pom."""
+    root = tmp_path_factory.mktemp("needs")
+    repos = {name: root / name for name in ("app", "lib", "other", "loose", "a", "b")}
+    _reactor(
+        repos["app"],
+        "com.app",
+        {
+            "web": "".join(
+                (
+                    _dependency("com.lib", "client"),
+                    _dependency("com.lib", "fixtures", scope="test"),
+                    _dependency("com.lib", "native", scope="system"),
+                    _dependency("com.lib", "site", type_="war"),
+                    _dependency("com.app", "shared"),
+                    _dependency("com.acme", "twin"),
+                )
+            ),
+            "shared": _dependency("com.app", "tool"),
+            "tool": "",
+        },
+    )
+    _reactor(
+        repos["lib"],
+        "com.lib",
+        {
+            "client": "".join(
+                (
+                    _dependency("com.lib", "core"),
+                    _dependency("com.lib", "mock", scope="test"),
+                    _dependency("com.lib", "opt", optional=True),
+                    _dependency("com.other", "base", scope="runtime"),
+                )
+            ),
+            "site": _dependency("com.lib", "inner"),
+            **dict.fromkeys(("fixtures", "native", "core", "mock", "opt", "inner", "shared"), ""),
+        },
+    )
+    # A second com.app:shared: `web` names the one of its own reactor, which hands on `tool`.
+    _write(repos["lib"], "shared/pom.xml", _project("com.app", "shared"))
+    # `deep` depends back on `base`: the walk ends at a module it has walked.
+    _reactor(
+        repos["other"],
+        "com.other",
+        {"base": _dependency("com.other", "deep"), "deep": _dependency("com.other", "base")},
+    )
+    # No root pom: each module stands apart, and a file at the root is of none.
+    for name, dependencies in (("one", _dependency("com.lib", "client")), ("two", "")):
+        body = f"<dependencies>{dependencies}</dependencies>" if dependencies else ""
+        _write(repos["loose"], f"{name}/pom.xml", _project("com.loose", name, dependencies=body))
+        _write(repos["loose"], f"{name}/src/main/java/X.java", "class X {}\n")
+    _write(repos["a"], "pom.xml", _project("com.acme", "twin"))
+    _write(repos["b"], "pom.xml", _project("com.acme", "twin"))
+    return repos
+
+
+@pytest.mark.parametrize(
+    ("coordinate", "reached"),
+    [
+        ("com.lib:fixtures", True),
+        ("com.lib:native", False),
+        ("com.lib:site", True),
+        ("com.lib:inner", False),
+        ("com.lib:core", True),
+        ("com.lib:mock", False),
+        ("com.lib:opt", False),
+        ("com.other:base", True),
+        ("com.other:deep", True),
+        ("com.app:tool", True),
+        ("com.acme:twin", False),
+    ],
+    ids=[
+        "first-hop-any-scope",
+        "first-hop-not-system",
+        "first-hop-any-type",
+        "a-war-hands-nothing-on",
+        "hands-on-compile",
+        "hands-on-not-test",
+        "hands-on-not-optional",
+        "hands-on-runtime-in-another-repo",
+        "in-turn-through-a-cycle",
+        "own-reactor-first",
+        "two-producers-name-none",
+    ],
+)
+@pytest.mark.timeout(30)
+def test_module_dependencies_follow_what_maven_hands_on(
+    needs_workspace: dict[str, Path], coordinate: str, reached: bool
+) -> None:
+    poms = {alias: find_poms(path) for alias, path in needs_workspace.items()}
+    needs = module_dependencies(needs_workspace, poms, ["app"])
+
+    assert (coordinate in needs["app"]["web/pom.xml"]) is reached
+
+
+@pytest.mark.parametrize(
+    ("repo", "path", "needs_client"),
+    [
+        ("app", "web/src/main/java/Web.java", True),
+        ("app", "tool/src/main/java/Tool.java", False),
+        ("loose", "Root.java", True),
+    ],
+    ids=["owned-by-web", "owned-by-tool", "owned-by-none-takes-every-module"],
+)
+def test_the_needs_of_a_file_are_those_of_the_module_that_owns_it(
+    needs_workspace: dict[str, Path], repo: str, path: str, needs_client: bool
+) -> None:
+    needs = ModuleNeeds(needs_workspace, ["app", "loose"])
+
+    assert ("com.lib:client" in needs.of(repo, path)) is needs_client
