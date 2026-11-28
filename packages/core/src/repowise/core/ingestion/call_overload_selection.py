@@ -28,7 +28,7 @@ from .symbol_identity import (
     parameter_type_arity,
     split_symbol_id,
 )
-from .type_names import bare_type_name
+from .type_names import bare_type_name, csharp_extension_receiver
 
 # Languages whose prototypes and bodies pair member by member, and whose
 # ``static`` (or anonymous-namespace) symbols no other translation unit sees.
@@ -640,7 +640,9 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     head = erased.rstrip("?")
     framework = shape_of(head) is None
     if argument.startswith("async "):
-        if framework and head in _CSHARP_DELEGATES and not _csharp_returns_task(parameter, head):
+        # ``async void`` converts to an ``Action``; no other value-returning delegate.
+        refused = head in _CSHARP_DELEGATES and head != "Action"
+        if framework and refused and not _csharp_may_return_task(parameter, head):
             return False
         argument = argument.removeprefix("async ")
     if argument.startswith("=>") or "`" in argument:
@@ -654,8 +656,12 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
 
 
-def _csharp_returns_task(parameter: str, head: str) -> bool:
-    """Is *parameter* a ``Func`` whose result, its last type argument, is a task?"""
+def _csharp_may_return_task(parameter: str, head: str) -> bool:
+    """Could *parameter*, a framework delegate, return a task, as an ``async`` lambda does?
+
+    Only a ``Func`` can, and only when its result, the last type argument, is
+    not a closed type: a type parameter (``Func<T>``) may be inferred as one.
+    """
     if head != "Func":
         return False
     written = parameter.partition("=")[0]
@@ -665,15 +671,14 @@ def _csharp_returns_task(parameter: str, head: str) -> bool:
         depth += (char == "<") - (char == ">")
         if char == "," and depth == 0:
             last = index + 1
-    return bare_type_name(inner[last:]) in ("Task", "ValueTask")
+    return bare_type_name(inner[last:]) not in _CSHARP_CLOSED_TYPES
 
 
 def _csharp_exact(parameter: str, argument: str) -> bool:
     """Does *argument* reach C# *parameter* by identity, the best conversion there is?
 
     A named value, construction or literal of the parameter's own type, or a
-    delegate value of its own delegate type and arity. A lambda or method group
-    is never judged exact here: which conversion is better depends on its body.
+    delegate value of its own delegate type and arity.
     """
     head = erased_type(parameter)
     kind, tick, arity = argument.partition("`")
@@ -682,21 +687,45 @@ def _csharp_exact(parameter: str, argument: str) -> bool:
             kind,
             int(arity),
         )
-    if argument.startswith(("=>", "async ")):
-        return False
     written = argument.removeprefix("new ")
     return written == head or (written == CSHARP_INTEGER_CONSTANT and head == "int")
 
 
-def _csharp_better(exact: tuple[bool, ...], other: tuple[bool, ...]) -> bool:
-    """Is a member reached by identity at *exact* better than one reached at *other*?
+_Conversion = tuple[str, bool | None]
+
+
+def _csharp_conversion(parameter: str, argument: str | None) -> _Conversion:
+    """*parameter*'s type, and whether *argument* reaches it best; None when unjudged.
+
+    An ``async`` lambda converts better to a ``Func`` that may return its task
+    than to an ``Action``. Any other lambda, and a method group, is unjudged:
+    which conversion is better depends on its body. Ceiling: an ``async`` lambda
+    returning a value (``Func<Task<int>>``) is not told from one that returns none.
+    """
+    written = clr_parameter_type(parameter)
+    if argument is not None and argument.startswith("async "):
+        head = erased_type(parameter)
+        if head in ("Func", "Action"):
+            return written, _csharp_may_return_task(parameter, head)
+        return written, None
+    if argument is None or argument.startswith(("=>", "group`")):
+        return written, None
+    return written, _csharp_exact(parameter, argument)
+
+
+def _csharp_better(mine: list[_Conversion], theirs: list[_Conversion]) -> bool:
+    """Is a member converting its arguments as *mine* better than one converting them as *theirs*?
 
     Better when no argument converts worse and at least one converts better.
+    Where an argument is unjudged the two must take it as one type, since it
+    may fit only one of them.
     """
-    pairs = list(zip(exact, other, strict=False))
-    return all(mine or not theirs for mine, theirs in pairs) and any(
-        mine and not theirs for mine, theirs in pairs
-    )
+    if len(mine) != len(theirs):
+        return False
+    pairs = list(zip(mine, theirs, strict=True))
+    if any((a is None or b is None) and ta != tb for (ta, a), (tb, b) in pairs):
+        return False
+    return all(a or not b for (_, a), (_, b) in pairs) and any(a and not b for (_, a), (_, b) in pairs)
 
 
 def _csharp_framework_reach(
@@ -962,8 +991,13 @@ class OverloadSelectionMixin:
         receiver = call.receiver_name or ("" if call.receiver_call is not None else None)
         if receiver is None or receiver == symbol.parent_name:
             return call
-        parameters = signature_parameters(symbol.signature or "") or []
-        if parameters[:1] and parameters[0].split()[:1] == ["this"]:
+        # Counted only when every member extends one type: a static sibling, or
+        # one extending another arity of the type, never takes the receiver.
+        extended = {
+            csharp_extension_receiver(self._symbols_by_id[member].signature or "")
+            for member, _ in self._overload_members.get(rep, ())
+        }
+        if len(extended) == 1 and None not in extended:
             return replace(call, argument_count=call.argument_count + 1)
         return call
 
@@ -1197,18 +1231,14 @@ class OverloadSelectionMixin:
                 for parameter, argument in pairs
             )
         ]
-        exact = {
-            member: tuple(
-                argument is not None and _csharp_exact(parameter, argument)
-                for parameter, argument in filled[member] or ()
-            )
-            for member in takers
+        conversions = {
+            member: [_csharp_conversion(p, a) for p, a in filled[member] or ()] for member in takers
         }
         # A member another one beats is out; what remains may still tie.
         best = [
             member
             for member in takers
-            if not any(_csharp_better(exact[other], exact[member]) for other in takers)
+            if not any(_csharp_better(conversions[other], conversions[member]) for other in takers)
         ]
         return self._csharp_exact_this(best, receiver_type) or found
 

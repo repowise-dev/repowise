@@ -60,7 +60,8 @@ def _typed_declaration(name: str) -> re.Pattern[str]:
 _TYPED_DECLARATION = _typed_declaration(r"[a-z_]\w*")
 
 _INFERRED_FROM_NEW = re.compile(
-    r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+(?P<type>[A-Z]\w*(?:\.\w+)*)"
+    r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)\s*=\s*new\s+"
+    r"(?P<type>[A-Z]\w*(?:\.\w+)*(?:<(?:[^<>]|<[^<>]*>)*>)?)"
 )
 
 # A C# property (``Foo Name { get; }``, ``Foo Name => _foo;``) or PascalCase

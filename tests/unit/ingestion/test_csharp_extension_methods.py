@@ -348,7 +348,8 @@ class TestRefusals:
             "src/Consumer.cs": (
                 "namespace Acme;\npublic class Consumer {\n"
                 "  public void Run(Builder b) { var z = b.Retry(); }\n"
-                "  public void RunTyped(Builder<int> b) { var z = b.Retry(); }\n}\n"
+                "  public void RunTyped(Builder<int> b) { var z = b.Retry(); }\n"
+                "  public void RunNew() { var b = new Builder<int>(); var z = b.Retry(); }\n}\n"
             ),
         }
         parser = ASTParser()
@@ -374,6 +375,8 @@ class TestRefusals:
         assert edges == {
             ("Run", "src/Plain.cs::Plain::Retry"),
             ("RunTyped", "src/Typed.cs::Typed::Retry"),
+            ("RunNew", "src/Builder.cs::Builder`1"),
+            ("RunNew", "src/Typed.cs::Typed::Retry"),
         }
 
     def test_an_overload_set_is_not_ambiguous(self, tmp_path: Path) -> None:

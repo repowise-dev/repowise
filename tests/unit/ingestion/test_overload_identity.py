@@ -1311,6 +1311,55 @@ class TestCSharpBetterConversion:
             ("Bag", "Run#2(IBag,int)"),
         }
 
+    def test_an_unread_argument_the_members_type_differently_ranks_neither(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic static class H {\n"
+            "  public static void M(int a, string s) { }\n"
+            "  public static void M(long a, object o) { }\n"
+            "  public static object Get() => null;\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { H.M(1, H.Get()); }\n}\n"
+        # ``int`` matches exactly, but the second argument may fit only ``object``:
+        # neither member is ranked, so the tie keeps its first member either way.
+        edges = _edges(tmp_path, {"H.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "H.cs::H::M#2(int,string)") in edges
+        swapped = holder.replace("int a, string s", "@").replace("long a, object o", "int a, string s")
+        swapped = swapped.replace("@", "long a, object o")
+        edges = _edges(tmp_path, {"H.cs": ("csharp", swapped), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "H.cs::H::M#2(long,object)") in edges
+
+    def test_an_async_lambda_may_take_a_func_of_a_type_parameter(self, tmp_path: Path) -> None:
+        holder = (
+            "using System;\nnamespace App;\npublic static class G {\n"
+            "  public static void Go(Action a) { }\n"
+            "  public static void Go<T>(Func<T> f) { }\n"
+            "}\n"
+        )
+        caller = "namespace App;\npublic class C {\n  public void Run() { G.Go(async () => { }); }\n}\n"
+        edges = _edges(tmp_path, {"G.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "G.cs::G::Go#1(Func)") in edges
+
+    def test_the_receiver_counts_only_when_every_member_extends_one_type(self, tmp_path: Path) -> None:
+        holder = (
+            "namespace App;\npublic class Box { }\npublic class Box<T> { }\n"
+            "public static class Exts {\n"
+            "  public static void Ext(this Box x, int n = 0) { }\n"
+            "  public static void Ext(int n, int m) { }\n"
+            "  public static void Gen(this Box x, int n) { }\n"
+            "  public static void Gen<T>(this Box<T> x) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Static(Box x) { x.Ext(1); }\n"
+            "  public void Generic(Box<int> x) { x.Gen(); }\n"
+            "}\n"
+        )
+        edges = _edges(tmp_path, {"E.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Static", "E.cs::Exts::Ext#2(Box,int)") in edges
+        assert ("C.cs::C::Generic", "E.cs::Exts::Gen#1") in edges
+
     def test_an_async_lambda_takes_only_the_task_returning_delegate(self, tmp_path: Path) -> None:
         members = (
             "  public void Async() { R.On(1, async (e, i) => { await Task.Yield(); }); }\n"
