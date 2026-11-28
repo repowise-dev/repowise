@@ -21,17 +21,27 @@ Ceilings: Python reaching a submodule as an attribute of a package some other
 module imported (``import a`` then ``a.b.f()``) moves no import, and a data
 file a framework reads as wiring (a class named in YAML) is not compared.
 Storing each file's fingerprint at index time would save the old-side work.
+
+For a file whose edges may have moved, :func:`rewiring` says what its new
+version may reach that the indexed one did not: the files the imports it
+gained resolve to, through the indexer's own resolvers, and the words of the
+strings it gained. Selection keeps the file's tests only when one of those
+leads to the change.
 """
 
 from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Callable, Collection, Iterable
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 from ..ingestion.dynamic_hints import django as django_hints
 from ..ingestion.dynamic_hints.python_imports import string_inputs
+from ..ingestion.dynamic_hints.python_package_listing import listing_inputs
 from ..ingestion.framework_edges.test_path_strings import path_literals
 from ..ingestion.models import EXTENSION_TO_LANGUAGE, FileInfo
 
@@ -130,13 +140,220 @@ def _import_line_changed(language: str, lines: list[bytes], changed: set[bytes])
 
 def _imports(path: str, language: str, source: bytes) -> list[tuple] | None:
     """The imports the parser reads in one version, or ``None`` if it will not parse."""
+    imports = _parsed_imports(path, language, source)
+    return None if imports is None else sorted(_import_key(i) for i in imports)
+
+
+def _parsed_imports(path: str, language: str, source: bytes) -> list[Any] | None:
     from ..ingestion.parser import ASTParser
 
     try:
-        imports = ASTParser().parse_imports(_file_info(path, language, source), source)
+        return ASTParser().parse_imports(_file_info(path, language, source), source)
     except Exception:
         return None
-    return sorted((i.module_path, tuple(sorted(i.imported_names)), i.is_reexport) for i in imports)
+
+
+def _import_key(imp: Any) -> tuple:
+    # A glob import's later patterns change what it reaches too.
+    globs = getattr(imp, "glob_patterns", ())
+    return imp.module_path, tuple(sorted(imp.imported_names)), imp.is_reexport, globs
+
+
+@dataclass(frozen=True)
+class Rewiring:
+    """What a file's new version may reach that its indexed version did not.
+
+    *imports* are the repository files the imports it gained resolve to;
+    *names* the words of the strings it gained, any of which may name a module
+    or file; *dirs* those of the strings that may name a directory (a path, a
+    templated load, a Django app or URLconf); *held* and *held_dirs* the same
+    for every string it holds, gained or not, read only against files added
+    since the index.
+    """
+
+    imports: frozenset[str] = frozenset()
+    names: frozenset[str] = frozenset()
+    dirs: frozenset[str] = frozenset()
+    held: frozenset[str] = frozenset()
+    held_dirs: frozenset[str] = frozenset()
+
+
+#: Resolves one parsed import of a file, ``(import, path, language)``, to its targets.
+Resolve = Callable[[Any, str, str], Iterable[str]]
+
+# What separates the words of a module name, a path or a templated load.
+_WORD_SPLIT = re.compile(r"""[./\\:{}()\[\]'"`\s,=]+""")
+
+
+def rewiring(
+    path: str,
+    before: bytes | None,
+    after: bytes | None,
+    resolve: Resolve,
+    added_files: Collection[str] = frozenset(),
+) -> Rewiring | None:
+    """What *after* may reach that *before* did not, or ``None`` when that cannot be told.
+
+    It cannot outside Python and JavaScript / TypeScript (other languages reach
+    code without naming it), when *after* does not parse, when an import will
+    not resolve, or when *after* gained a dynamic-load marker or a
+    package-listing loop, which make strings already there resolve. Imports are
+    compared whole: one that gained a name resolves again in full. A file
+    added since the index (*added_files*) can make an import or string that did
+    not change resolve, so then every import resolves again (those landing on
+    an added file count as gained) and every string's words are kept (*held*).
+    A file added since is read with ``b""`` as *before*.
+    Ceiling: a string's words are matched to file names, so a string reaching
+    a file through an alias the words do not spell is not seen.
+    """
+    language = _language(path)
+    if before is None or after is None or language not in _IMPORT_WORD:
+        return None
+    held: set[tuple[str, bool]] = set()
+    try:
+        added = _added_strings(path, language, before, after)
+        targets = _gained_targets(path, language, before, after, resolve)
+        if added_files and targets is not None:
+            every = _gained_targets(path, language, b"", after, resolve) or set()
+            targets |= every & set(added_files)
+            held = _held_strings(path, language, after)
+    except Exception:  # a reader that fails tells nothing: unknown, so the file stays
+        return None
+    if added is None or targets is None:
+        return None
+    return Rewiring(frozenset(targets), *_name_words(added), *_name_words(held))
+
+
+def _name_words(strings: set[tuple[str, bool]]) -> tuple[frozenset[str], frozenset[str]]:
+    """The words of *strings*, and those of the ones that may name a directory."""
+    names: set[str] = set()
+    dirs: set[str] = set()
+    for text, may_name_dir in strings:
+        words = {w for w in _WORD_SPLIT.split(text) if w}
+        names |= words
+        if may_name_dir or "/" in text or "{" in text:
+            dirs |= words
+    return frozenset(names), frozenset(dirs)
+
+
+def _gained_targets(
+    path: str, language: str, before: bytes, after: bytes, resolve: Resolve
+) -> set[str] | None:
+    """The repository files the imports *after* has and *before* lacks resolve to."""
+    new = _parsed_imports(path, language, after)
+    if new is None:
+        return None
+    seen = {_import_key(i) for i in _parsed_imports(path, language, before) or ()}
+    targets = {t for imp in new if _import_key(imp) not in seen for t in resolve(imp, path, language)}
+    return {t for t in targets if not t.startswith("external:")}
+
+
+def _added_strings(
+    path: str, language: str, before: bytes, after: bytes
+) -> set[tuple[str, bool]] | None:
+    """The strings *after* holds that *before* did not, each with whether it may
+    name a directory; ``None`` when strings already there may start resolving."""
+
+    added: set[tuple[bytes | str, bool]] = {
+        (s, False) for s in _literals(after) - _literals(before)
+    }
+    if language != "python":
+        return None if _gained(_JS_DYNAMIC_LOADS, before, after) else _decoded(added)
+    old_gates, old_found, old_live, _ = string_inputs(path, before)
+    gates, found, live, _ = string_inputs(path, after)
+    if set(gates) - set(old_gates) or set(listing_inputs(after)) - set(listing_inputs(before)):
+        return None
+    added |= {(s, False) for s, _ in set(found) - set(old_found)}
+    added |= {(s, False) for s in set(live) - set(old_live)}
+    django = django_hints.edge_strings(path, after)
+    if django is None:
+        return None
+    old_django = _leaves(django_hints.edge_strings(path, before) or ())
+    added |= {(s, True) for s in _leaves(django) - old_django}
+    return _decoded(added)
+
+
+def _literals(source: bytes) -> set[bytes]:
+    found = {m.group(2) for m in _NAME_LITERAL.finditer(source)}
+    return {n for n in found if b"." in n or b"/" in n} | set(path_literals(source))
+
+
+def _held_strings(path: str, language: str, source: bytes) -> set[tuple[str, bool]]:
+    """Every string of *source* the edge producers :func:`_added_strings` compares
+    read, each with whether it may name a directory."""
+    held: set[tuple[bytes | str, bool]] = {(s, False) for s in _literals(source)}
+    if language == "python":
+        _, found, live, _ = string_inputs(path, source)
+        held |= {(s, False) for s, _ in found} | {(s, False) for s in live}
+        held |= {(s, True) for s in _leaves(django_hints.edge_strings(path, source) or ())}
+    return _decoded(held)
+
+
+# Loads whose target a literal does not spell: a glob, a directory listing,
+# a webpack context, a templated dynamic import.
+_JS_DYNAMIC_LOADS = (b"import.meta.glob", b"require.context", b"readdirSync", b"readdir(", b"import(`")
+
+
+def _gained(markers: tuple[bytes, ...], before: bytes, after: bytes) -> bool:
+    return any(m in after and m not in before for m in markers)
+
+
+def _decoded(added: set[tuple[bytes | str, bool]]) -> set[tuple[str, bool]]:
+    return {
+        (s.decode("utf-8", "replace") if isinstance(s, bytes) else s, may_name_dir)
+        for s, may_name_dir in added
+    }
+
+
+def _leaves(value: Any) -> set[str]:
+    """Every string in a nest of lists and tuples."""
+    if isinstance(value, str):
+        return {value}
+    if isinstance(value, (list, tuple)):
+        return {leaf for item in value for leaf in _leaves(item)}
+    return set()
+
+
+class _Externals:
+    """Where the resolvers register the ``external:`` nodes they create. Only
+    their answers are kept, and a networkx graph would cost its import."""
+
+    def __init__(self) -> None:
+        self.nodes: set[str] = set()
+
+    def add_node(self, key: str, **_: Any) -> None:
+        self.nodes.add(key)
+
+
+def import_resolver(repo_path: str | Path, files: Collection[str]) -> Resolve:
+    """Resolve an import the way the indexer does, against *files* (the paths the
+    change's base holds). TypeScript path aliases are read on first use."""
+    from ..ingestion.graph._import_targets import resolve_import_targets
+    from ..ingestion.graph._stem import build_stem_map
+    from ..ingestion.resolvers import ResolverContext
+    from ..ingestion.resolvers.typescript import detect_platform_files
+
+    path_set = set(files)
+    ctx = ResolverContext(
+        path_set=path_set,
+        stem_map=build_stem_map(path_set),
+        graph=_Externals(),  # type: ignore[arg-type]
+        repo_path=Path(repo_path),
+        has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+        has_platform_files=detect_platform_files(path_set),
+    )
+    aliases_read = False
+
+    def resolve(imp: Any, path: str, language: str) -> tuple[str, ...]:
+        nonlocal aliases_read
+        if language in ("typescript", "javascript") and not aliases_read:
+            from ..ingestion.tsconfig_resolver import TsconfigResolver
+
+            aliases_read = True
+            ctx.tsconfig_resolver = TsconfigResolver(repo_path=Path(repo_path), path_set=path_set)
+        return resolve_import_targets(imp, path, language, ctx)
+
+    return resolve
 
 
 def _file_info(path: str, language: str, source: bytes) -> FileInfo:

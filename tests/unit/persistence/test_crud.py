@@ -512,6 +512,68 @@ async def test_batch_upsert_symbols_stores_the_implementation_of_an_overload_set
     assert [(s.start_line, s.end_line) for s in saved] == [(10, 14)]
 
 
+# Symbols that share one id: the method beside the field Lombok adds after it, two
+# functions of one erasure, and a C++ definition before its declaration.
+_SHARED_IDS = {
+    "L.java": ("java", "@lombok.extern.slf4j.Slf4j\nclass L {\n  void log(String m) { }\n}\n"),
+    "F.kt": ("kotlin", 'fun f(xs: List<String>) { }\n@JvmName("g")\nfun f(xs: List<Int>) { }\n'),
+    "c.hpp": ("cpp", "void g() { }\nvoid g();\n"),
+}
+
+
+@pytest.mark.parametrize("writer", ["batch_upsert_symbols", "reconcile_symbols_for_files"])
+async def test_a_shared_id_stores_the_symbol_its_graph_node_holds(async_session, writer):
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from repowise.core.ingestion.graph import GraphBuilder
+    from repowise.core.ingestion.models import FileInfo
+    from repowise.core.ingestion.parser import parse_file
+    from repowise.core.persistence import crud
+    from repowise.core.persistence.models import WikiSymbol
+
+    builder, symbols = GraphBuilder(), []
+    for path, (language, text) in _SHARED_IDS.items():
+        info = FileInfo(
+            path=path,
+            abs_path=path,
+            language=language,
+            size_bytes=len(text),
+            git_hash="",
+            last_modified=datetime.now(),
+            is_test=False,
+            is_config=False,
+            is_api_contract=False,
+            is_entry_point=False,
+        )
+        parsed = parse_file(info, text.encode("utf-8"))
+        for sym in parsed.symbols:
+            sym.file_path = path
+        symbols += parsed.symbols
+        builder.add_file(parsed)
+    graph = builder.build()
+
+    repo = await insert_repo(async_session)
+    if writer == "batch_upsert_symbols":
+        await crud.batch_upsert_symbols(async_session, repo.id, symbols)
+    else:
+        await crud.reconcile_symbols_for_files(async_session, repo.id, list(_SHARED_IDS), symbols)
+    await async_session.commit()
+
+    rows = await async_session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.kind, WikiSymbol.start_line).where(
+            WikiSymbol.repository_id == repo.id
+        )
+    )
+    stored = {symbol_id: (kind, line) for symbol_id, kind, line in rows}
+    assert stored == {
+        node: (data["kind"], data["start_line"])
+        for node, data in graph.nodes(data=True)
+        if data.get("node_type") == "symbol" and data["kind"] != "module"
+    }
+
+
 # ---------------------------------------------------------------------------
 # WebhookEvent CRUD
 # ---------------------------------------------------------------------------

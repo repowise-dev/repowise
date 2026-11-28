@@ -35,6 +35,7 @@ import re
 from typing import TYPE_CHECKING
 
 from .http.dialect import build_provider_contract
+from .http.fastapi import mount_prefix
 from .http.flask import flask_file
 from .http.mounts import compose_prefix, router_prefixes
 from .langs import JS_TS, PYTHON
@@ -159,7 +160,14 @@ def _decorators_above(lines: list[str], start_line: int) -> list[str]:
     while i >= floor:
         line = lines[i]
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        # A comment may sit between two decorators or inside one's argument
+        # list, a blank line only inside the list. Neither ends the run (the
+        # next code line above decides), and neither joins the decorator text,
+        # so a commented ``methods=[...]`` is not read as one.
+        if stripped.startswith("#") or (not stripped and depth > 0):
+            i -= 1
+            continue
+        if not stripped:
             break
         # A line belongs to the stack only as a decorator head or as the
         # argument list of one still open below it. Anything else is ordinary
@@ -272,7 +280,7 @@ def extract_http_providers(
         if var not in known:
             continue
         path = compose_prefix(prefixes.get(var, ""), raw_path)
-        path = compose_prefix(ctx.mounts.get(var, ""), path)
+        path = compose_prefix(mount_prefix(ctx, var), path)
         key = (method, path)
         if key in seen:
             continue

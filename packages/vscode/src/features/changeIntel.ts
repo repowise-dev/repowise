@@ -137,7 +137,7 @@ export function registerChangeIntel(ctx: RepowiseContext): vscode.Disposable {
     }));
     const actions: Item[] = [
       {
-        label: "$(pulse) Open Change Risk",
+        label: "$(pulse) Open Review",
         detail: "See the full impact of this change set",
         action: "panel",
       },

@@ -74,14 +74,16 @@ class _ScriptedStore:
         ]
         self.limits: list[int] = []
 
-    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    async def embed_texts(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        del kind
         return [[0.1, 0.2, 0.3] for _ in texts]
 
     async def search_by_vector(self, vector, limit: int = 10) -> list[SearchResult]:
         self.limits.append(limit)
         return self._rows[:limit]
 
-    async def search(self, query: str, limit: int = 10) -> list[SearchResult]:
+    async def search(self, query: str, limit: int = 10, *, kind: str = "query") -> list[SearchResult]:
+        del kind
         self.limits.append(limit)
         return self._rows[:limit]
 

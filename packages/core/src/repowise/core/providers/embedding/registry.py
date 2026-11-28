@@ -9,6 +9,7 @@ Built-in embedders:
     ollama      -> OllamaEmbedder      (embeddinggemma default, local, no key)
     openrouter  -> OpenRouterEmbedder  (google/gemini-embedding-001 default)
     edenai      -> EdenAIEmbedder      (openai/text-embedding-3-small via Eden AI's EU gateway)
+    fastembed   -> FastEmbedEmbedder   (BAAI/bge-small-en-v1.5, in-process ONNX, no key; extra local-embed)
     mock        -> KeylessEmbedder     (keyless runs and tests; no semantic signal)
 
 Custom embedder registration:
@@ -21,6 +22,7 @@ Custom embedder registration:
 from __future__ import annotations
 
 import importlib
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +34,7 @@ _BUILTIN_EMBEDDERS: dict[str, tuple[str, str]] = {
     "ollama": ("repowise.core.providers.embedding.ollama", "OllamaEmbedder"),
     "openrouter": ("repowise.core.providers.embedding.openrouter", "OpenRouterEmbedder"),
     "edenai": ("repowise.core.providers.embedding.edenai", "EdenAIEmbedder"),
+    "fastembed": ("repowise.core.providers.embedding.fastembed", "FastEmbedEmbedder"),
     "mock": ("repowise.core.providers.embedding.base", "KeylessEmbedder"),
 }
 
@@ -60,13 +63,16 @@ def register_embedder(name: str, factory: Callable[..., Embedder]) -> None:
     if name in _BUILTIN_EMBEDDERS:
         raise ValueError(f"Cannot register {name!r}: conflicts with a built-in embedder.")
     _custom_embedders[name] = factory
+    from repowise.core.registry.plugins import note_registration
+
+    note_registration("embedder", name)
 
 
 def get_embedder(name: str, **kwargs: Any) -> Embedder:
     """Instantiate an embedder by name.
 
     Args:
-        name:     Embedder identifier ('openai', 'gemini', 'mock').
+        name:     Embedder identifier ('openai', 'gemini', 'fastembed', 'mock').
         **kwargs: Constructor arguments (e.g., api_key, model).
 
     Returns:
@@ -80,6 +86,11 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         embedder = get_embedder("openai", api_key="sk-...", model="text-embedding-3-large")
         vectors = await embedder.embed(["Hello world"])
     """
+    if name not in _custom_embedders and name not in _BUILTIN_EMBEDDERS:
+        # Deferred: a built-in name never pays plugin discovery.
+        from repowise.core.registry.plugins import load_plugins
+
+        load_plugins()  # a plugin package may register it
     if name in _custom_embedders:
         return _custom_embedders[name](**kwargs)
 
@@ -87,27 +98,51 @@ def get_embedder(name: str, **kwargs: Any) -> Embedder:
         available = sorted(set(_BUILTIN_EMBEDDERS) | set(_custom_embedders))
         raise ValueError(f"Unknown embedder: {name!r}. Available embedders: {available}")
 
-    module_path, class_name = _BUILTIN_EMBEDDERS[name]
-    _missing = {
-        "openai": "openai",
-        "gemini": "google-genai",
-        "ollama": "httpx",
-        "openrouter": "openai",  # openrouter uses the openai package
-        "edenai": "openai",  # edenai uses the openai package
-    }
-    try:
-        module = importlib.import_module(module_path)
-    except ImportError as exc:
-        package = _missing.get(name, name)
-        raise ImportError(
-            f"Embedder {name!r} requires the '{package}' package. "
-            f"Install it with: pip install {package}"
-        ) from exc
-
-    cls = getattr(module, class_name)
+    module = import_builtin_embedder(name)
+    cls = getattr(module, _BUILTIN_EMBEDDERS[name][1])
     return cls(**kwargs)
 
 
+#: The package a built-in embedder's module needs, when it is not the name.
+_MISSING_PACKAGE = {
+    "openai": "openai",
+    "gemini": "google-genai",
+    "ollama": "httpx",
+    "openrouter": "openai",  # openrouter uses the openai package
+    "edenai": "openai",  # edenai uses the openai package
+    # The extra stops at Python 3.12: graph-extra pins numpy below 2, which
+    # fastembed cannot use on 3.13+, and one lock holds both extras. There
+    # fastembed installs on its own.
+    "fastembed": "repowise[local-embed]" if sys.version_info < (3, 13) else "fastembed",
+}
+
+
+def import_builtin_embedder(name: str) -> Any:
+    """Import built-in embedder *name*'s module, or raise ImportError naming the install.
+
+    Shared by :func:`get_embedder` and ``repowise doctor``, so both print the
+    same install line.
+    """
+    try:
+        return importlib.import_module(_BUILTIN_EMBEDDERS[name][0])
+    except ImportError as exc:
+        package = _MISSING_PACKAGE.get(name, name)
+        raise ImportError(
+            f"Embedder {name!r} requires the '{package}' package. "
+            f"Install it with: pip install {install_spec(name)}"
+        ) from exc
+
+
+def install_spec(name: str) -> str:
+    """What follows ``pip install`` for built-in embedder *name*'s package."""
+    package = _MISSING_PACKAGE.get(name, name)
+    # An extra needs quotes, or zsh reads the brackets as a glob.
+    return f'"{package}"' if "[" in package else package
+
+
 def list_embedders() -> list[str]:
-    """Return a sorted list of all available embedder names."""
+    """Return a sorted list of all available embedder names, plugins' included."""
+    from repowise.core.registry.plugins import load_plugins
+
+    load_plugins()
     return sorted(set(_BUILTIN_EMBEDDERS) | set(_custom_embedders))

@@ -92,8 +92,8 @@ RISK = {
         "src/b.py": {"dependents_count": 6, "hotspot_score": 0.6087, "primary_owner": "Someone"},
     },
     "global_hotspots": [
-        {"file_path": "analyzer.py", "hotspot_score": 0.9998, "fix_count": 56, "primary_owner": "S"},
-        {"file_path": "parser.py", "hotspot_score": 0.9992, "fix_count": 48, "primary_owner": "S"},
+        {"file_path": "analyzer.py", "hotspot_score": 0.9998, "fix_count": 56, "primary_owner": "S", "window": "6 months"},
+        {"file_path": "parser.py", "hotspot_score": 0.9992, "fix_count": 48, "primary_owner": "S", "window": "6 months"},
     ],
     "global_hotspots_total": 1037,
     "_meta": _META,
@@ -198,6 +198,8 @@ def test_risk_hotspots_plot_fix_counts_not_scores():
     assert _series(part, "fix_count") == [56]
     assert part["data"]["total_rows"] == 1037
     assert part["data"]["truncated"] is True
+    # The counts' window is named, so they never read as 90-day churn.
+    assert "in the last 6 months" in str(part)
 
 
 def test_generic_table_over_a_list_keeps_values_and_the_total():

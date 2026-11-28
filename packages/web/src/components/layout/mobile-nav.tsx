@@ -11,6 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Circle,
+  ListChecks,
 } from "lucide-react";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@repowise-dev/ui/ui/sheet";
@@ -22,10 +23,11 @@ import { NewMark } from "./new-mark";
 import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
+import { SetupProgressMark, useSetupEntry } from "@/components/setup/setup-entry";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
-import { GLOBAL_NAV, WORKSPACE_NAV, repoNavGroups } from "./nav-items";
-import { NavGroupList } from "./nav-group-list";
+import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
+import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface MobileNavProps {
@@ -66,6 +68,8 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
       return next;
     });
   };
+
+  const setup = useSetupEntry(repos, activeRepoId);
 
   // Close sheet on navigation
   React.useEffect(() => {
@@ -110,39 +114,47 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
 
           <ScrollArea className="flex-1">
             <div className="px-3 py-3">
-              <nav className="space-y-1">
+              {/* At the size of a repo's own rows, as on desktop. */}
+              <nav className="space-y-0.5">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
-                  const isActive = pathname === item.href;
+                  const isActive = isNavItemActive(item, pathname);
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
                       className={cn(
-                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors",
-                        isActive
-                          ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                        "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
+                        isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                       )}
                     >
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                        <Icon
-                          className={cn(
-                            "h-4 w-4",
-                            isActive && "text-[var(--color-accent-primary)]",
-                          )}
-                        />
+                        <Icon className="h-4 w-4" />
                       </span>
                       <span className="truncate">{t(item.labelKey)}</span>
-                      {isNew(item.href) && <NewMark />}
+                      {isNew(item.href, item.exact) && <NewMark />}
                     </Link>
                   );
                 })}
+                {/* Always there, so setup can be reopened once it is done. */}
+                <Link
+                  href={setup.href}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
+                    pathname === setup.href ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
+                  )}
+                >
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    <ListChecks className="h-4 w-4" />
+                  </span>
+                  <span className="truncate">{t("setup")}</span>
+                  <SetupProgressMark progress={setup.progress} />
+                </Link>
               </nav>
 
               {isWorkspace && (
                 <>
-                  <p className="mb-1 mt-4 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <p className="mb-1 mt-4 px-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     {ts("workspace")}
                   </p>
                   {/* Children of the Workspace group, same as on desktop:
@@ -159,18 +171,11 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           href={item.href}
                           className={cn(
                             "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                            isActive
-                              ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                              : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                            isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                           )}
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                            <Icon
-                              className={cn(
-                                "h-4 w-4",
-                                isActive && "text-[var(--color-accent-primary)]",
-                              )}
-                            />
+                            <Icon className="h-4 w-4" />
                           </span>
                           <span className="truncate">{t(item.labelKey)}</span>
                         </Link>
@@ -183,7 +188,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               {repos.length > 0 && (
                 <>
                   <Separator className="my-4" />
-                  <p className="mb-2 px-2 text-xs font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
+                  <p className="mb-1 px-2 text-[10px] font-medium uppercase tracking-wider text-[var(--color-text-tertiary)]">
                     {ts("repositories")}
                   </p>
                   <div className="space-y-0.5">
@@ -196,7 +201,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                             onClick={() => toggleRepo(repo.id)}
                             aria-expanded={isExpanded}
                             title={repo.name}
-                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors hover:bg-[var(--color-bg-elevated)] text-[var(--color-text-secondary)]"
                           >
                             <span className="flex h-4 w-4 shrink-0 items-center justify-center">
                               <Circle className="h-2 w-2 fill-[var(--color-text-tertiary)] text-[var(--color-text-tertiary)]" />
@@ -223,21 +228,14 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                                         href={item.href}
                                         className={cn(
                                           "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                                          isActive
-                                            ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                                            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                                          isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                                         )}
                                       >
                                         <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                          <Icon
-                                            className={cn(
-                                              "h-4 w-4",
-                                              isActive && "text-[var(--color-accent-primary)]",
-                                            )}
-                                          />
+                                          <Icon className="h-4 w-4" />
                                         </span>
                                         <span className="truncate">{t(item.labelKey)}</span>
-                                        {isNew(item.href) && <NewMark />}
+                                        {isNew(item.href, item.exact) && <NewMark />}
                                       </Link>
                                     );
                                 }}

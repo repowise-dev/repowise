@@ -29,6 +29,8 @@ import { MapFieldList } from "./map/inspector";
 import { AreaRail } from "./area-rail/area-rail";
 import { DEFAULT_AREA_RAIL_LABELS, type AreaRailLabels } from "./area-rail/labels";
 import type { CodeHealthAdapter } from "./code-health-adapter";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 /** Map height. The rail is height-matched so it never outgrows the field beside it. */
 const MAP_HEIGHT = 720;
@@ -119,7 +121,7 @@ function SearchBox({ value, onChange, label }: { value: string; onChange: (v: st
         onChange={(e) => onChange(e.target.value)}
         placeholder={label}
         aria-label={label}
-        className="w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] hover:border-[var(--color-border-hover)] focus-visible:border-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className={cn(FIELD_CLASS, "w-full py-1.5 pl-7 pr-2 text-xs")}
       />
     </div>
   );

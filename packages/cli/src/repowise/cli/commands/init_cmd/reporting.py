@@ -9,27 +9,33 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
+
+import structlog
 
 from repowise.cli.helpers import console, load_config, load_state
+from repowise.cli.hints import pr_bot_link_once
 from repowise.cli.ui import (
     build_contextual_next_steps,
     format_elapsed,
     mascot,
 )
-from repowise.cli.ui.finish_panel import FinishFacts, print_finish_panel
+from repowise.cli.ui.finish_panel import (
+    FinishFacts,
+    FirstLook,
+    StoodOut,
+    print_finish_panel,
+)
 from repowise.cli.ui.mode_names import pages, provider_model
 from repowise.cli.ui.workspace_finish import (
     RepoOutcome,
     WorkspaceFacts,
     print_workspace_finish_panel,
+    workspace_first_prompt,
+    workspace_steps,
 )
 
-
-def _dead_counts(result: Any) -> tuple[int, int]:
-    findings = result.dead_code_report.findings if result.dead_code_report else []
-    kinds = [f.kind.value for f in findings]
-    return kinds.count("unreachable_file"), kinds.count("unused_export")
+logger = structlog.get_logger(__name__)
 
 
 def _lang_summary(result: Any) -> str:
@@ -93,9 +99,24 @@ def _render_defect_accuracy(result: Any) -> None:
 _LARGE_REPO_FILES = 1000
 
 
-def completion_hint(run_mode: str, file_count: int) -> str:
-    """Which hint a finished init earns: big repos hear about freshness."""
-    return "large_repo" if run_mode == "fast" or file_count >= _LARGE_REPO_FILES else "init_success"
+def completion_hint(run_mode: str, file_count: int, first_index: bool = False) -> str | None:
+    """Which hint a finished init earns: big repos hear about freshness.
+
+    A first index ends on its own findings and tour, so it earns no
+    ``init_success`` hint.
+    """
+    if run_mode == "fast" or file_count >= _LARGE_REPO_FILES:
+        return "large_repo"
+    return None if first_index else "init_success"
+
+
+class Completion(NamedTuple):
+    """What the finish panel showed, for the ``--progress json`` summary."""
+
+    steps: list[tuple[str, str]]
+    #: None for a workspace, whose panel has no findings block.
+    stood_out: StoodOut | None
+    first_prompt: str
 
 
 def show_completion(
@@ -110,23 +131,26 @@ def show_completion(
     files_written: list[Path] | None = None,
     verbose: bool = False,
     owl: str = mascot.DONE,
-) -> list[tuple[str, str]]:
-    """Render the one finish panel and return its next steps; generation checks only under ``-v``.
+    first_look: FirstLook | None = None,
+) -> Completion:
+    """Render the one finish panel and return what it showed; generation checks only under ``-v``.
 
     *owl* is the mini owl state on the panel title: how the run finished.
 
     *setup* is the :class:`~repowise.cli.editor_setup.EditorSetupOutcome`
     snapshot and *files_written* what editor setup put in the working tree,
-    so the panel reports what setup actually did.
+    so the panel reports what setup actually did. Its ``first_index`` also
+    keeps the ``init_success`` hint off a first index. *first_look* is the
+    first-look report this run wrote.
     """
+    from repowise.core.agent_prompts import first_prompt
     from repowise.core.index_scope import resolve_index_scope
 
-    scope = resolve_index_scope(load_state(Path(repo_path)), load_config(Path(repo_path)))
-    graph = result.graph_builder.graph()
-    dead_unreachable, dead_unused = _dead_counts(result)
-    decisions = sum(result.decision_report.by_source.values()) if result.decision_report else 0
+    repo_path = Path(repo_path)
+    scope = resolve_index_scope(load_state(repo_path), load_config(repo_path))
     # A most-committed file is only worth naming when git analysis calls it a hotspot.
-    top_hotspot = _top_hotspot(result) if _hotspots(result) else ""
+    hotspot = _top_hotspot(result) if _hotspots(result) else None
+    stood_out = _stood_out(result, repo_path, hotspot)
     documentation, spend = (
         _template_pages(result) if effective_index_only else _model_pages(result)
     )
@@ -135,36 +159,23 @@ def show_completion(
         files=result.file_count,
         symbols=result.symbol_count,
         languages=_lang_summary(result) or str(len(getattr(result, "languages", []))),
-        graph_nodes=graph.number_of_nodes(),
-        graph_edges=graph.number_of_edges(),
         elapsed=format_elapsed(time.monotonic() - start),
-        dead_unreachable=dead_unreachable,
-        dead_unused=dead_unused,
-        decisions=decisions,
-        git_files=result.git_summary.files_indexed if result.git_summary else None,
-        hotspots=_hotspots(result),
-        top_hotspot=top_hotspot,
+        first_prompt=first_prompt(repo_path.name, hotspot=hotspot[0] if hotspot else None),
         pages=documentation,
         spend=spend,
         embed_failed=getattr(result, "embed_failed_pages", 0),
+        stood_out=stood_out,
+        pr_bot_url=pr_bot_link_once(),
+        first_look=first_look,
     )
-    steps = build_contextual_next_steps(
-        index_only=effective_index_only,
-        fast_mode=(run_mode == "fast"),
-        dead_unreachable=dead_unreachable,
-        dead_unused=dead_unused,
-        hotspot_count=facts.hotspots,
-        decision_count=decisions,
-        top_hotspot=top_hotspot,
-        setup=setup,
-    )
+    steps = build_contextual_next_steps(fast_mode=(run_mode == "fast"), setup=setup)
     console.print()
     print_finish_panel(
         console,
         facts,
         steps=steps,
         setup=setup,
-        repo_path=Path(repo_path),
+        repo_path=repo_path,
         files_written=files_written,
         owl=owl,
     )
@@ -175,19 +186,124 @@ def show_completion(
     # shown); a big repo hears about staying fresh instead.
     from repowise.cli.hints import maybe_hint
 
-    maybe_hint(completion_hint(run_mode, result.file_count))
+    hint = completion_hint(run_mode, result.file_count, bool(getattr(setup, "first_index", False)))
+    if hint:
+        maybe_hint(hint)
 
     if verbose:
         _show_generation_checks(result)
-    return steps
+    return Completion(steps, stood_out, facts.first_prompt)
 
 
-def _top_hotspot(result: Any) -> str:
-    """Basename of the most-committed file, for the risk step and the agent question."""
+def _top_hotspot(result: Any) -> tuple[str, int] | None:
+    """The most-committed file and its commit count, for the findings and the first question."""
     if not result.git_meta_map:
-        return ""
-    path = max(result.git_meta_map.items(), key=lambda x: x[1].get("commit_count", 0))[0]
-    return path.rsplit("/", 1)[-1]
+        return None
+    path, meta = max(result.git_meta_map.items(), key=lambda x: x[1].get("commit_count", 0))
+    return path, int(meta.get("commit_count", 0) or 0)
+
+
+def _stood_out(result: Any, repo_path: Path, hotspot: tuple[str, int] | None) -> StoodOut:
+    """The finish panel's findings, each from data this run already has."""
+    path, commits = hotspot or (None, None)
+    return StoodOut(
+        **_health_finding(result),
+        **_dead_finding(result),
+        hotspot_file=path,
+        hotspot_commits=commits,
+        **_decision_counts(repo_path),
+    )
+
+
+def _health_finding(result: Any) -> dict[str, Any]:
+    """Repo score, its band (withheld when too little was analysed), and the lowest file."""
+    report = getattr(result, "health_report", None)
+    kpis = getattr(report, "kpis", None) or {}
+    score = kpis.get("average_health")
+    if not isinstance(score, (int, float)):
+        return {}
+    from repowise.core.analysis.health.grading import headline_band
+
+    band = headline_band(float(score), kpis.get("analysed_share"))
+    return {
+        "health_score": float(score),
+        "health_band": band,
+        "lowest_file": kpis.get("worst_performer_path"),
+        "lowest_score": kpis.get("worst_performer_score"),
+    }
+
+
+def _dead_finding(result: Any) -> dict[str, Any]:
+    """Unreachable files outside docs and examples, and the findings that pass
+    the deletion gate.
+
+    A whole unreachable file is review-only and never passes the gate, so the
+    safe count is over every finding, not over those files.
+    """
+    report = getattr(result, "dead_code_report", None)
+    if report is None:
+        return {}
+    from repowise.core.analysis.dead_code.serving import headline_unreachable, is_safe
+
+    metrics = getattr(getattr(result, "health_report", None), "metrics", None) or []
+    origins = {m.file_path: m.code_origin for m in metrics}
+    findings = report.findings
+    return {
+        "dead_unreachable": headline_unreachable(findings, origins),
+        "dead_safe": sum(1 for f in findings if is_safe(f)),
+    }
+
+
+def _decision_counts(repo_path: Path) -> dict[str, int]:
+    """The background record count.
+
+    Empty when the store cannot be read: the finding is left out, never shown
+    as 0. Empty too with ``decisions.mode: off``.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.cli.helpers import run_async
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    mode = layer_mode(repo_path)
+    if mode == "off":
+        return {}
+    try:
+        return run_async(_count_decisions(repo_path))
+    except (SQLAlchemyError, OSError):
+        return {}
+    except Exception:
+        # Anything else is a bug in the count. Logged, and the row is still
+        # left out so the finish panel never fails on it.
+        logger.exception("decision_candidate_count_failed", repo=str(repo_path))
+        return {}
+
+
+async def _count_decisions(repo_path: Path) -> dict[str, int]:
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud.authority import count_decisions_by_lane
+    from repowise.core.persistence.models import Repository
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo_id = (
+                await session.execute(
+                    select(Repository.id).where(Repository.local_path == str(repo_path))
+                )
+            ).scalar_one_or_none()
+            if repo_id is None:
+                return {}
+            return {
+                "decision_candidates": (await count_decisions_by_lane(session, repo_id))[
+                    "candidates"
+                ],
+            }
+    finally:
+        await engine.dispose()
 
 
 def _template_pages(result: Any) -> tuple[str | None, None]:
@@ -239,8 +355,12 @@ def show_workspace_completion(
     docs_outcomes: dict[str, tuple[int, str | None]],
     dry_run: bool = False,
     setup: Any = None,
-) -> None:
-    """Render the workspace finish panel, the per-repo documentation inside it."""
+    cross_repo: str | None = None,
+) -> Completion:
+    """Render the workspace finish panel, the per-repo documentation inside it.
+
+    *cross_repo* is the one cross-repo finding, already worded.
+    """
     from repowise.core.index_scope import resolve_index_scope
 
     failed = dict(errors)
@@ -262,9 +382,11 @@ def show_workspace_completion(
         provider=None
         if index_only or provider is None
         else provider_model(provider.provider_name, provider.model_name),
+        cross_repo=cross_repo,
     )
     console.print()
     print_workspace_finish_panel(
         console, facts, setup=setup, owl=mascot.WARNED if errors else mascot.DONE
     )
     console.print()
+    return Completion(workspace_steps(facts, setup), None, workspace_first_prompt(facts))

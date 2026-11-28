@@ -113,3 +113,91 @@ def test_prose_changes_are_not_spliced_and_dead_code_can_be_skipped(monkeypatch)
     assert seen["duplication_files"] == {"a.py"}
     assert health is not None
     assert dead is None
+
+
+def test_the_walk_reaches_the_sinks_of_every_rescored_loop_owner(monkeypatch) -> None:
+    """A rescored loop owner keeps a cross-function finding whose sink is off the closure.
+
+    django: an edit pulled ``BaseDatabaseIntrospection.sequence_list`` into the
+    closure through one callee, while the sink its loop reaches sat behind
+    another (``get_sequences`` dispatching to the Oracle backend). The pass did
+    not walk the sink file, so the owner's stored finding was replaced by none
+    and the update kept 37 performance plans where a full index keeps 38.
+    """
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from repowise.core.analysis.health import engine as engine_mod
+    from repowise.core.analysis.health.models import HealthFindingData, Severity
+    from repowise.core.pipeline.incremental import analysis
+
+    graph = nx.DiGraph()
+    for path, name in (
+        ("changed.py", "helper"),
+        ("owner.py", "loop"),
+        ("mid.py", "fetch"),
+        ("sink.py", "query"),
+    ):
+        sid = f"{path}::{name}"
+        graph.add_node(
+            sid, node_type="symbol", file_path=path, name=name, start_line=1, end_line=10
+        )
+        graph.add_edge(path, sid, edge_type="defines")
+    # The owner reaches the edit through one call and its sink through another.
+    graph.add_edge("owner.py::loop", "changed.py::helper", edge_type="calls", confidence=0.9)
+    graph.add_edge("owner.py::loop", "mid.py::fetch", edge_type="calls", confidence=0.9)
+    graph.add_edge("mid.py::fetch", "sink.py::query", edge_type="calls", confidence=0.9)
+
+    def finding(path: str) -> HealthFindingData:
+        return HealthFindingData(
+            biomarker_type="io_in_loop",
+            severity=Severity.MEDIUM,
+            file_path=path,
+            function_name="f",
+            line_start=1,
+            line_end=1,
+            details={},
+            health_impact=0.0,
+            dimension="performance",
+        )
+
+    seen: dict = {}
+
+    class FakeAnalyzer:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def analyze(self, config=None, **kwargs):
+            seen["walked"] = set(kwargs["changed_files"])
+            seen["config"] = config
+            return engine_mod.HealthReport(
+                repo_id="",
+                analyzed_at=None,
+                findings=[finding("owner.py"), finding("sink.py")],
+                function_facts=[{"symbol_id": f"{p}::f"} for p in paths],
+            )
+
+    monkeypatch.setattr("repowise.core.analysis.health.HealthAnalyzer", FakeAnalyzer)
+    monkeypatch.setattr("repowise.core.analysis.communities.file_community_labels", lambda _b: {})
+    paths = ("changed.py", "owner.py", "mid.py", "sink.py")
+    parsed = [SimpleNamespace(file_info=SimpleNamespace(path=p, language="python")) for p in paths]
+    builder = SimpleNamespace(graph=lambda: graph, community_detection=lambda: {})
+
+    health, _dead = analysis.run_partial_analysis(
+        ".",
+        builder,
+        {},
+        parsed,
+        [SimpleNamespace(path="changed.py", status="modified")],
+        dead_code=False,
+    )
+
+    assert seen["walked"] == set(paths)
+    # Owner and sink files run only the performance detectors.
+    assert {"owner.py", "mid.py", "sink.py"} <= set(seen["config"]["per_file_disabled"])
+    # Only the closure is re-scored: the sink file is read, its rows are kept.
+    assert health.performance_authoritative_paths == {"changed.py", "owner.py"}
+    assert [f.file_path for f in health.findings] == ["owner.py"]
+    # Facts only for the re-scored files: the writer replaces no others.
+    assert [r["symbol_id"] for r in health.function_facts] == ["changed.py::f", "owner.py::f"]

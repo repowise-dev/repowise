@@ -1,4 +1,5 @@
 import { ArrowRight } from "lucide-react";
+import { formatNumber } from "../lib/format";
 
 export interface ProvenancePath {
   nodes: string[];
@@ -93,7 +94,7 @@ export function ProvenancePathList({
       </div>
       {total > paths.length ? (
         <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-          {paths.length.toLocaleString()} paths shown of {total.toLocaleString()} recorded
+          {formatNumber(paths.length)} paths shown of {formatNumber(total)} recorded
           observations.
         </p>
       ) : null}

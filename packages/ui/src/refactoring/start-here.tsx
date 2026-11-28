@@ -154,7 +154,7 @@ export function StartHere({
                   {addressesPrimaryShort(item.addresses_primary_problem).toLowerCase()}
                 </span>
               </span>
-              <span className="mt-2 block text-xs text-[var(--color-text-tertiary)] md:mt-0 md:text-right">
+              <span className="col-start-2 mt-2 block text-xs text-[var(--color-text-tertiary)] md:col-start-auto md:mt-0 md:text-right">
                 {effort} effort
                 <br />
                 {item.confidence === "high"

@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from sqlalchemy import delete, inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import CoverageFile, CoverageIngest, _new_uuid, _now_utc
+from ...models import CoverageFile, CoverageIngest, HealthFileMetric, _new_uuid, _now_utc
 
 if TYPE_CHECKING:
     from repowise.core.analysis.health.coverage.discovery import CoverageProvenance
     from repowise.core.analysis.health.coverage.freshness import FreshnessStatus
     from repowise.core.analysis.health.coverage.model import FileCoverage
 from .._shared import _BATCH_SIZE
+from .health.exclude import _filter_excluded_paths, health_exclude_spec
 
 #: Ingest rows kept per repo for the coverage trend; older ones are pruned on write.
 #: One row per measured commit, so identical figures can repeat; the trend read
@@ -53,11 +55,7 @@ async def save_coverage_files(
 
     p = provenance or CoverageProvenance()
     at = ingested_at or _now_utc()
-    existing = await session.execute(
-        select(CoverageFile).where(CoverageFile.repository_id == repository_id)
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
+    await session.execute(delete(CoverageFile).where(CoverageFile.repository_id == repository_id))
     if await _ingest_is_single_row(session):
         await session.execute(
             delete(CoverageIngest).where(CoverageIngest.repository_id == repository_id)
@@ -457,10 +455,13 @@ async def load_coverage_map(session: AsyncSession, repository_id: str) -> dict[s
     """Stored coverage in the shape ``HealthAnalyzer`` takes as ``coverage_map``."""
     from repowise.core.analysis.health.coverage.model import coverage_map_entry
 
-    # Health scoring never reads the executable-line set, so its blob is not
-    # loaded (it is at least as large as the covered set).
+    # Both line sets: per-function coverage divides covered by executable lines.
     result = await session.execute(
-        select(*_COVERAGE_SCALAR_COLUMNS, CoverageFile.covered_lines_json).where(
+        select(
+            *_COVERAGE_SCALAR_COLUMNS,
+            CoverageFile.covered_lines_json,
+            CoverageFile.coverable_lines_json,
+        ).where(
             CoverageFile.repository_id == repository_id
         )
     )
@@ -485,6 +486,8 @@ def empty_coverage_summary() -> dict[str, Any]:
         "ingested_commit_sha": None,
         "report_paths": None,
         "freshness": None,
+        "unreported_file_count": 0,
+        "unreported_files": [],
     }
 
 
@@ -624,6 +627,7 @@ async def get_coverage_summary(
     # default), which is correct for complete legacy ingests.
     mapping_partial = bool(getattr(latest, "mapping_partial", False))
     status: FreshnessStatus = coverage_freshness(latest.ingested_commit_sha, reference_commit)
+    unreported = await _unreported_production_files(session, repository_id, rows, ingest)
     return {
         "file_count": len(rows),
         "covered_lines": covered,
@@ -637,4 +641,83 @@ async def get_coverage_summary(
         "ingested_commit_sha": latest.ingested_commit_sha,
         "report_paths": _report_paths(ingest),
         "freshness": {"status": status, "indexed_commit": reference_commit},
+        "unreported_file_count": len(unreported),
+        "unreported_files": unreported[:_UNREPORTED_SAMPLE],
     }
+
+
+#: How many unreported files the summary names; the count says how many there are.
+_UNREPORTED_SAMPLE = 5
+
+
+async def _unreported_production_files(
+    session: AsyncSession, repository_id: str, rows: list[Any], ingest: CoverageIngest | None
+) -> list[str]:
+    """Indexed production files the stored report has no row for, sorted (#5873).
+
+    A report names only the files its run loaded, so a Go profile without
+    ``-coverpkg`` or a JS run without an all-files option leaves out the
+    least-tested ones and its percentage reads as complete. Production is the
+    stored ``code_origin``; a file with no code lines (``nloc`` 0, an empty
+    ``__init__.py``) has nothing to cover; and only a type the report measured
+    counts, as patch coverage's ``not_in_report`` does. A file the ingest's
+    ``coverage.ignore`` left out was dropped on purpose, so it is not listed,
+    nor is one the repository's ``exclude_patterns`` keep out of health.
+    A file of declarations only (Go types, a TS interface file) has ``nloc``
+    but nothing a report measures, and is still listed.
+    """
+    from repowise.core.analysis.patch_coverage.stored import ingest_scope
+
+    scope = ingest_scope(ingest) if ingest is not None else None
+    result = await session.execute(
+        select(
+            HealthFileMetric.file_path, HealthFileMetric.code_origin, HealthFileMetric.nloc
+        ).where(
+            HealthFileMetric.repository_id == repository_id,
+            HealthFileMetric.code_origin == "production",
+            HealthFileMetric.nloc > 0,
+        )
+    )
+    indexed = _filter_excluded_paths(
+        result.all(), await health_exclude_spec(session, repository_id)
+    )
+    return unreported_production_files(
+        ({"file_path": r.file_path, "code_origin": r.code_origin, "nloc": r.nloc} for r in indexed),
+        (r.file_path for r in rows),
+        ignore=scope.ignore if scope else (),
+    )
+
+
+def unreported_production_files(
+    metrics: Iterable[Mapping[str, Any]],
+    reported: Iterable[str],
+    *,
+    ignore: Iterable[str] = (),
+) -> list[str]:
+    """The coverage summary's unreported files, over plain rows (#5873).
+
+    *metrics* are per-file health rows with ``file_path``, ``code_origin`` and
+    ``nloc``; *reported* are the paths the coverage report has rows for;
+    *ignore* is the ingest's ``coverage.ignore`` patterns. A row with no stored
+    ``code_origin`` (written before it was stored) is judged by
+    :func:`~repowise.core.code_origin.path_origin`. The caller leaves out the
+    rows the repository's ``exclude_patterns`` keep out of health, as the
+    stored health rows already do. Sorted.
+    """
+    import pathspec
+
+    from repowise.core.code_origin import path_origin
+
+    ignored = pathspec.PathSpec.from_lines("gitwildmatch", ignore)
+    reported = set(reported)
+    measured = {PurePosixPath(p).suffix for p in reported}
+    return sorted(
+        path
+        for row in metrics
+        if (path := row.get("file_path"))
+        and (row.get("code_origin") or path_origin(path)) == "production"
+        and (row.get("nloc") or 0) > 0
+        and path not in reported
+        and PurePosixPath(path).suffix in measured
+        and not ignored.match_file(path)
+    )

@@ -17,6 +17,8 @@ from typing import Any, NoReturn
 
 import click
 
+from repowise.core.ci.github import append_step_summary as append_step_summary
+
 #: The gate ran and the change failed it.
 EXIT_GATE_FAILED = 1
 #: The gate could not run: no report, unknown revision, bad config, ...
@@ -206,14 +208,28 @@ def _reading_change(what: str, *, shallow_hint: bool = True) -> Iterator[None]:
         raise CannotEvaluateError("git_failed", f"Could not run git: {exc}") from exc
 
 
-def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) -> bool:
-    """Add *markdown* to the GitHub Actions job summary; ``False`` when not in Actions."""
-    target = (os.environ if env is None else env).get("GITHUB_STEP_SUMMARY")
+#: Set by the GitHub Action and the GitLab template: a directory where each gate
+#: run in ``github`` or ``markdown`` format leaves its row of the combined
+#: summary (``repowise ci-summary``).
+GATE_SUMMARY_DIR_ENV = "REPOWISE_GATE_SUMMARY_DIR"
+
+
+def write_gate_summary(summary: Any, *, env: Mapping[str, str] | None = None) -> bool:
+    """Write *summary* (a ``GateSummary``) to ``$REPOWISE_GATE_SUMMARY_DIR/<gate>.json``.
+
+    ``False`` when the variable is unset or the file cannot be written; the
+    combined summary then reads the gate as not evaluated, never as passed.
+    """
+    import json
+
+    target = (os.environ if env is None else env).get(GATE_SUMMARY_DIR_ENV)
     if not target:
         return False
     try:
-        with open(target, "a", encoding="utf-8") as fh:
-            fh.write(markdown.rstrip("\n") + "\n")
+        Path(target).mkdir(parents=True, exist_ok=True)
+        Path(target, f"{summary.gate}.json").write_text(
+            json.dumps(summary.to_dict(), ensure_ascii=False), encoding="utf-8"
+        )
     except OSError:
         return False
     return True

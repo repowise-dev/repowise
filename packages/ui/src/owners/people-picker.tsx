@@ -174,7 +174,7 @@ function SelectedPeople({
               type="button"
               onClick={() => onRemove(key)}
               aria-label={removeLabel(p.name)}
-              className="rounded-full p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="rounded-full p-0.5 text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               <X className="h-3 w-3" />
             </button>

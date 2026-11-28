@@ -23,26 +23,57 @@ repowise serve                     # browse it at localhost:3000
 repowise export --format markdown  # write it out as files
 ```
 
-## What gets generated
+### Adding prose later
+
+Upgrading is in place and incremental. Neither command re-indexes: the graph and
+git metadata are rehydrated from SQL, and only the per-file parse and the
+generation you asked for run.
+
+```bash
+repowise generate                        # every subsystem page still unwritten
+repowise generate --path src/api         # under a path prefix or glob
+repowise generate --stale                # pages whose code changed since writing
+repowise generate --all                  # rewrite the prose everywhere
+repowise update --full                   # every stale page, or the whole wiki on a fast index
+```
+
+`generate` writes the model-written pages and only those. Naming a structural
+page with `--page` is an actionable error instead of a silent LLM re-render,
+because those pages refresh on `repowise update` for free. Run it bare on a
+terminal and it prints the wiki's state, defaults to the unwritten pages, and
+ends at the normal cost confirmation.
+
+## Reading the results
+
+### What gets generated
 
 Pages are produced in ordered levels, most local first, so a page that quotes
 another is generated after it.
 
 | Level | Page type | One per | Written by |
 |-------|-----------|---------|------------|
-| 0 | `api_contract` | file classified as an API surface | structure |
+| 0 | `api_contract` | API spec (OpenAPI, proto, GraphQL) or FastAPI / ASP.NET route module | structure |
 | 1 | `symbol_spotlight` | selected public symbol | structure |
 | 2 | `file_page` | eligible source file | structure |
 | 3 | `scc_page` | dependency cycle | structure |
 | 4 | `module_page` | subsystem in the concept tree | model, structure when keyless |
+| 5 | `flow_page` | operation walked end to end (3 to 6 per repo) | model, structure when keyless |
 | 6 | `repo_overview` | repository | model, structure when keyless |
-| 7 | `infra_page` | infrastructure file (Dockerfile, CI, IaC) | structure |
+| 7 | `infra_page` | Dockerfile, Makefile, Terraform file or container entrypoint script | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
 
-The onboarding slots are Project Overview, Getting Started, Key Concepts, How It
-Works, Active Landscape and Glossary. Project Overview is not generated
-separately, the repository overview is tagged into that slot, and Glossary is
-rendered from mined terms with no model in every run, keyed or not.
+The onboarding reading order is Project Overview, Getting Started and How It
+Works. Project Overview is not generated separately: the repository overview is
+tagged into that slot. Active Landscape sits outside the reading order, in the
+project activity section, and is rendered from git history with no model in
+every run, keyed or not.
+
+A flow page follows one operation, such as a CLI command, a route handler or
+an MCP tool, from the function that starts it through the calls that carry it.
+The operations and their steps are traced from the call graph, so a keyed and a
+keyless index pick the same ones; a model explains each step, and a keyless run
+lists the steps with their line spans. Every step is cited as `path:start-end`,
+and an edit to any step's file marks the page stale.
 
 Layers are grouping rows in the docs tree, built from provenance stamped on
 their members, not pages of their own. The repository overview carries the
@@ -50,7 +81,7 @@ system map, a tiered diagram of who uses the system, the ways in, the server,
 the engine and the data store. Structure picks its boxes and arrows; a
 configured model only names them.
 
-## Which pages exist
+### Which pages exist
 
 By default there is no page budget. Every page type below the concept tree is
 rendered from structure and costs no tokens, and the concept partition covers
@@ -67,10 +98,10 @@ are rendered from structure either way.
 Selection does not depend on whether a key is present: a keyed and a keyless
 index of the same commit agree about which files have pages.
 
-## What a model writes
+### What a model writes
 
-Three page types are model-written when a provider is configured: `module_page`,
-`repo_overview` and `onboarding`. These pages explain how the codebase fits
+Four page types are model-written when a provider is configured: `module_page`,
+`flow_page`, `repo_overview` and `onboarding`. These pages explain how the codebase fits
 together above the file level. Everything else is rendered from the parse, the
 import graph and git history, and no model ever sees it.
 
@@ -81,57 +112,23 @@ its history with merges, dependency bumps and lint-only commits filtered out,
 and cross-references to the pages it should link to. The result explains *why*
 instead of restating *what*.
 
-### Keyless runs
+#### Keyless runs
 
 `repowise init` never requires a key. Without one it renders the whole wiki from
 structure and exits 0. Ask for it explicitly with `--no-prose`, which is what
-free-tier, CI and air-gapped runs want.
+free-tier, CI and [air-gapped runs](../start/OFFLINE.md) want.
 
-What you give up is the subsystem prose, and semantic search until an embedder is
-configured. Full-text and symbol search work either way. File pages, symbol
-pages, hotspots, ownership, dead code, the dependency graph, code health and
-decision archaeology are identical.
+A keyless run builds every page from structure. A model adds the subsystem
+prose, written answers from `get_answer` (keyless, it returns ranked, cited
+evidence), and decisions read from pull requests, history and comments.
+Decisions from inline markers and ADR files are mined either way. Semantic
+search comes from an embedder, which is separate from the model and runs
+locally with Ollama (`ollama pull embeddinggemma`, then
+`repowise reindex --embedder ollama`). Full-text and symbol search, file and
+symbol pages, hotspots, ownership, dead code, the dependency graph and code
+health are identical.
 
-### Two facts on every page
-
-Each page records two separate facts:
-
-- **`provider_name`** answers *has a model written this page yet*. It is what
-  the docs tree's "not written yet" marker and the reader's upgrade affordance
-  read.
-- **`confidence`** answers *how far should a reader trust the statements*. A
-  structure-rendered page is `1.0`, because everything on it is extracted from
-  the code. A model-written page is `0.8`: grounded in the assembled material
-  and checked against it, but a summary of the code instead of an extraction.
-  Nothing gates on the difference; it is reported.
-
-The axis is trust, not completeness. A page can be thin and still be entirely
-true. A `0.3` marks a page that was meant to carry prose and lost it to a
-provider outage, the one state a reader cannot infer from the page itself. A
-keyless run produces `1.0` pages throughout, because an index built
-without a key is that shape by design.
-
-## Adding prose later
-
-Upgrading is in place and incremental. Neither command re-indexes: the graph and
-git metadata are rehydrated from SQL, and only the per-file parse and the
-generation you asked for run.
-
-```bash
-repowise generate                        # every subsystem page still unwritten
-repowise generate --path src/api         # under a path prefix or glob
-repowise generate --stale                # pages whose code changed since writing
-repowise generate --all                  # rewrite the prose everywhere
-repowise update --full                   # the whole wiki at once
-```
-
-`generate` writes the model-written pages and only those. Naming a structural
-page with `--page` is an actionable error instead of a silent LLM re-render,
-because those pages refresh on `repowise update` for free. Run it bare on a
-terminal and it prints the wiki's state, defaults to the unwritten pages, and
-ends at the normal cost confirmation.
-
-## What `update` re-renders
+### What `update` re-renders
 
 `repowise update` does not rebuild the wiki. It finds the files changed since
 the last sync, walks the dependency graph for the pages those changes affect,
@@ -150,14 +147,22 @@ Two mechanisms decide what is stale:
 So a new Repowise release that edits a template re-renders every page of that
 type once. That is intended, not drift.
 
+Cycle, API-contract and infra pages follow the rebuilt graph on every update: a
+new cycle or newly selected file gets its page, a changed infra file is
+re-rendered, and a page selection drops is removed. A deleted file's
+page stays as a tombstone for 30 days, a renamed file's as a redirect.
+
 `--cascade-budget N` caps how many pages a single update may regenerate from
 cascading changes. It is adaptive when unset, which is what you want except on a
-very large refactor commit.
+very large refactor commit. The pages it leaves stale are listed in the warning;
+`repowise update --full` refreshes all of them.
 
 Pages also carry a freshness status of `fresh`, `stale`, `expired` or `unknown`.
 Expiry by age takes priority, then a source-hash mismatch marks a page stale.
 
-## Styles
+## Tuning
+
+### Styles
 
 A **style** controls the voice and density of the prose without changing the
 structural markdown. Headings and sections stay the same, so search, the table
@@ -176,7 +181,7 @@ List the available styles and the repo's current one:
 repowise wiki-styles
 ```
 
-### Choosing and switching
+#### Choosing and switching
 
 At init (full mode), pick a style with a flag or the interactive prompt:
 
@@ -202,7 +207,7 @@ control.
 > will **not** regenerate existing pages, that path only re-scores health. Use
 > `repowise restyle` to apply a style change.
 
-### Custom styles
+#### Custom styles
 
 Define your own under `.repowise/styles/<name>/style.yaml`:
 
@@ -236,7 +241,7 @@ text are length-bounded, and a style with neither a directive nor a note is
 ignored. Built-in style names always take precedence over a custom directory of
 the same name.
 
-## Output language
+### Output language
 
 `language` in `.repowise/config.yaml`, or `init --language <code>`, sets the
 natural language of the wiki. It reaches both the model-written prose and the
@@ -250,7 +255,26 @@ Code, file paths and symbol names are never translated, in any language.
 Changing the language later does not retranslate existing pages. Re-run
 `init --force --language <code>` to rebuild the wiki in the new language.
 
-## Where the wiki shows up
+## Accuracy and limits
+
+Each page records two separate facts:
+
+- **`provider_name`** answers *has a model written this page yet*. It is what
+  the docs tree's "not written yet" marker and the reader's upgrade affordance
+  read. A page rendered from structure carries no `model_name`.
+- **`confidence`** answers *how far should a reader trust the statements*. A
+  structure-rendered page is `1.0`, because everything on it is extracted from
+  the code. A model-written page is `0.8`: grounded in the assembled material
+  and checked against it, but a summary of the code instead of an extraction.
+  Nothing gates on the difference; it is reported.
+
+The axis is trust, not completeness. A page can be thin and still be entirely
+true. A `0.3` marks a page that was meant to carry prose and lost it to a
+provider outage, the one state a reader cannot infer from the page itself. A
+keyless run produces `1.0` pages throughout, because an index built
+without a key is that shape by design.
+
+## Where it shows up
 
 - **Agents**: `get_answer` retrieves and quotes from it, `search_codebase` ranks
   it, `get_context` pulls the page for a file or symbol. Hybrid retrieval merges
@@ -266,7 +290,7 @@ Changing the language later does not retranslate existing pages. Re-run
 - **Files**: `repowise export --format markdown|html|json`, written to
   `.repowise/export` by default.
 
-## Related
+## See also
 
 - [`INTELLIGENCE_LAYERS.md`](INTELLIGENCE_LAYERS.md) for how this layer sits
   next to graph, git, decisions and code health.

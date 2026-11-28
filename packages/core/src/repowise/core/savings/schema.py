@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+
+logger = logging.getLogger(__name__)
 
 #: Version of the *store*, recorded in ``PRAGMA user_version``. Distinct from
 #: the per-event ``schema_version`` column, which versions an event payload and
-#: is still 1: v2 changed only how the store validates an agent id.
+#: is still 1: v2 changed only how the store validates an agent id. The
+#: files-not-opened tables were added without a bump: they are additive, a v2
+#: store missing them is repaired by the required-tables check, and a bump would
+#: make every older build refuse the sidecar and drop its events.
 SAVINGS_SCHEMA_VERSION = 2
 
 _PRESERVED_TABLES = (
@@ -33,7 +39,7 @@ _PRESERVED_TABLES = (
 )
 
 _LEGACY_SAVINGS_TABLE = """
-CREATE TABLE savings (
+CREATE TABLE IF NOT EXISTS savings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at REAL NOT NULL,
     filter TEXT NOT NULL,
@@ -44,9 +50,29 @@ CREATE TABLE savings (
 )
 """
 
+_OPPORTUNITIES_TABLE = """
+CREATE TABLE IF NOT EXISTS savings_opportunities (
+    observation_id TEXT PRIMARY KEY,
+    occurred_at TEXT NOT NULL,
+    repository_id TEXT NOT NULL,
+    integration TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    estimated_potential_input_tokens INTEGER NOT NULL,
+    CHECK(length(integration) BETWEEN 1 AND 32
+        AND integration NOT GLOB '*[^a-z0-9_]*'
+        AND length(CAST(integration AS BLOB)) = length(integration)),
+    CHECK(estimated_potential_input_tokens >= 0)
+)
+"""
+
+_OPPORTUNITY_COLUMNS = (
+    "observation_id, occurred_at, repository_id, integration, kind, "
+    "estimated_potential_input_tokens"
+)
+
 _SCHEMA_TABLES = (
     """
-    CREATE TABLE savings_events (
+    CREATE TABLE IF NOT EXISTS savings_events (
         event_id TEXT PRIMARY KEY,
         schema_version INTEGER NOT NULL,
         idempotency_key TEXT NOT NULL,
@@ -81,6 +107,7 @@ _SCHEMA_TABLES = (
         input_rate_usd_per_million REAL,
         output_rate_usd_per_million REAL,
         metadata_json TEXT NOT NULL,
+        outcome_json TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256),
         UNIQUE(repository_id, idempotency_key),
         CHECK(schema_version = 1),
         CHECK(surface IN ('distill','hook','mcp','vscode_lm')),
@@ -111,14 +138,14 @@ _SCHEMA_TABLES = (
     )
     """,
     """
-    CREATE TABLE savings_event_omissions (
+    CREATE TABLE IF NOT EXISTS savings_event_omissions (
         event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
         omission_ref TEXT NOT NULL,
         PRIMARY KEY(event_id, omission_ref)
     )
     """,
     """
-    CREATE TABLE savings_event_correlations (
+    CREATE TABLE IF NOT EXISTS savings_event_correlations (
         event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
         kind TEXT NOT NULL,
         value_hash TEXT NOT NULL,
@@ -126,31 +153,46 @@ _SCHEMA_TABLES = (
         CHECK(length(value_hash) = 71)
     )
     """,
+    _OPPORTUNITIES_TABLE,
+    # Files an event served in place of a Read: paths and one Read's tokens,
+    # never contents. ``session_key`` is the cross-surface host session.
     """
-    CREATE TABLE savings_opportunities (
-        observation_id TEXT PRIMARY KEY,
-        occurred_at TEXT NOT NULL,
-        repository_id TEXT NOT NULL,
-        integration TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        estimated_potential_input_tokens INTEGER NOT NULL,
-        CHECK(length(integration) BETWEEN 1 AND 32
-            AND integration NOT GLOB '*[^a-z0-9_]*'
-            AND length(CAST(integration AS BLOB)) = length(integration)),
-        CHECK(estimated_potential_input_tokens >= 0)
+    CREATE TABLE IF NOT EXISTS savings_event_files (
+        event_id TEXT NOT NULL REFERENCES savings_events(event_id) ON DELETE CASCADE,
+        path TEXT NOT NULL,
+        read_tokens INTEGER,
+        session_key TEXT,
+        PRIMARY KEY(event_id, path),
+        CHECK(read_tokens IS NULL OR read_tokens >= 0),
+        CHECK(session_key IS NULL OR length(session_key) = 71)
+    )
+    """,
+    # The latest Read the agent made of a credited path, per session: a Read
+    # after the crediting event cancels that file's credit.
+    """
+    CREATE TABLE IF NOT EXISTS savings_file_reads (
+        session_key TEXT NOT NULL,
+        path TEXT NOT NULL,
+        read_at TEXT NOT NULL,
+        PRIMARY KEY(session_key, path),
+        CHECK(length(session_key) = 71)
     )
     """,
 )
 
-_SCHEMA_INDEXES = (
-    "CREATE INDEX idx_savings_events_repo_time ON savings_events(repository_id, occurred_at)",
-    "CREATE INDEX idx_savings_events_surface_time ON savings_events(surface, occurred_at)",
-    "CREATE INDEX idx_savings_events_operation_time ON savings_events(operation, occurred_at)",
-    "CREATE INDEX idx_savings_events_agent_time ON savings_events(agent, occurred_at)",
-    "CREATE INDEX idx_savings_event_omissions_ref ON savings_event_omissions(omission_ref)",
-    "CREATE INDEX idx_savings_correlations_hash ON savings_event_correlations(kind, value_hash)",
-    "CREATE INDEX idx_savings_opportunities_repo_time ON savings_opportunities(repository_id, occurred_at)",
-    "CREATE INDEX idx_savings_created ON savings(created_at)",
+_SCHEMA_INDEXES = tuple(
+    f"CREATE INDEX IF NOT EXISTS {name} ON {target}"
+    for name, target in (
+        ("idx_savings_events_repo_time", "savings_events(repository_id, occurred_at)"),
+        ("idx_savings_events_surface_time", "savings_events(surface, occurred_at)"),
+        ("idx_savings_events_operation_time", "savings_events(operation, occurred_at)"),
+        ("idx_savings_events_agent_time", "savings_events(agent, occurred_at)"),
+        ("idx_savings_event_omissions_ref", "savings_event_omissions(omission_ref)"),
+        ("idx_savings_correlations_hash", "savings_event_correlations(kind, value_hash)"),
+        ("idx_savings_opportunities_repo_time", "savings_opportunities(repository_id, occurred_at)"),
+        ("idx_savings_created", "savings(created_at)"),
+        ("idx_savings_event_files_session", "savings_event_files(session_key, path)"),
+    )
 )
 
 _REQUIRED_TABLES = frozenset(
@@ -162,63 +204,122 @@ _REQUIRED_TABLES = frozenset(
         "savings_event_omissions",
         "savings_event_correlations",
         "savings_opportunities",
+        "savings_event_files",
+        "savings_file_reads",
     }
 )
 
 
+#: Columns added to an existing table after it shipped, as ``(table, column,
+#: definition)``. Added in place by ``ALTER TABLE ... ADD COLUMN``, which keeps
+#: every row and needs no version bump: an older build names its columns on
+#: insert and never sees the new one.
+_ADDED_COLUMNS = (
+    # What a check tool returned, in a few counts (see ``contracts.normalize_outcome``).
+    (
+        "savings_events",
+        "outcome_json",
+        "TEXT CHECK(outcome_json IS NULL OR length(outcome_json) <= 256)",
+    ),
+)
+
+
+def _missing_columns(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    missing = []
+    for table, column, definition in _ADDED_COLUMNS:
+        names = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in names:
+            missing.append((table, column, definition))
+    return missing
+
+
 def _has_current_schema(conn: sqlite3.Connection) -> bool:
     tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    return tables >= _REQUIRED_TABLES
+    return tables >= _REQUIRED_TABLES and not _missing_columns(conn)
 
 
-def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Reset obsolete telemetry and install the current schema.
+def _apply_schema(conn: sqlite3.Connection, version: int) -> None:
+    """Create whatever tables and indexes are missing. Never drops a row.
 
-    Caller owns the transaction. There is no row translation here by design:
-    the savings tables carry no data worth migrating, because no producer has
-    ever written one outside a test. The clean-reset policy is the plan's, not
-    an oversight -- see docs/architecture/savings-accounting.md.
+    Caller owns the transaction. A table that already exists keeps its rows, so
+    a sidecar missing one table gains it without losing the others.
     """
     for statement in _PRESERVED_TABLES:
         conn.execute(statement)
-    for table in (
-        "savings_event_omissions",
-        "savings_event_correlations",
-        "savings_opportunities",
-        "savings_events",
-        "savings",
-    ):
-        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    if version == 1 and _has_table(conn, "savings_opportunities"):
+        _rebuild_v1_opportunities(conn)
     conn.execute(_LEGACY_SAVINGS_TABLE)
     for statement in _SCHEMA_TABLES:
         conn.execute(statement)
+    for table, column, definition in _missing_columns(conn):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
     for statement in _SCHEMA_INDEXES:
         conn.execute(statement)
 
 
-def initialize_savings_schema(conn: sqlite3.Connection) -> None:
-    """Upgrade once under a write lock, recording version only after success."""
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+    ).fetchone()
+    return row is not None
+
+
+def _rebuild_v1_opportunities(conn: sqlite3.Connection) -> None:
+    """Copy v1 opportunities into a table with the v2 agent check.
+
+    v1 listed the agent ids in a CHECK, which rejects every agent added since.
+    SQLite cannot alter a CHECK, so the rows move to a new table. Every id the
+    v1 list allowed passes the v2 check, so the copy keeps every row. v1 events
+    keep their table: it had no agent check, and the writer validates ids.
+    """
+    conn.execute("ALTER TABLE savings_opportunities RENAME TO savings_opportunities_v1")
+    conn.execute(_OPPORTUNITIES_TABLE)
+    conn.execute(
+        f"INSERT OR IGNORE INTO savings_opportunities ({_OPPORTUNITY_COLUMNS}) "
+        f"SELECT {_OPPORTUNITY_COLUMNS} FROM savings_opportunities_v1"
+    )
+    conn.execute("DROP TABLE savings_opportunities_v1")
+
+
+def is_newer_store(conn: sqlite3.Connection) -> bool:
+    """Whether a newer Repowise stamped this store than this build supports.
+
+    Such a store is read as far as this build understands it and never written
+    to the ledger, migrated or restamped: a downgrade, or two versions side by
+    side, must not cost the user a tool reply or the newer build its file.
+    """
+    return int(conn.execute("PRAGMA user_version").fetchone()[0]) > SAVINGS_SCHEMA_VERSION
+
+
+def initialize_savings_schema(conn: sqlite3.Connection) -> bool:
+    """Upgrade once under a write lock, recording version only after success.
+
+    Returns False, having changed nothing, when a newer Repowise owns the
+    store; the ledger writers then drop their rows (``is_newer_store``).
+    """
     conn.execute("PRAGMA foreign_keys=ON")
     version = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if version > SAVINGS_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"savings sidecar schema {version} is newer than supported "
-            f"version {SAVINGS_SCHEMA_VERSION}"
+        logger.debug(
+            "savings sidecar schema %d is newer than %d; left as is",
+            version,
+            SAVINGS_SCHEMA_VERSION,
         )
+        return False
     if version == SAVINGS_SCHEMA_VERSION and _has_current_schema(conn):
-        return
+        return True
     conn.execute("BEGIN IMMEDIATE")
     try:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         if version > SAVINGS_SCHEMA_VERSION:
-            raise RuntimeError(
-                f"savings sidecar schema {version} is newer than supported "
-                f"version {SAVINGS_SCHEMA_VERSION}"
-            )
+            # A newer build stamped it while this one waited for the lock.
+            conn.rollback()
+            return False
         if version < SAVINGS_SCHEMA_VERSION or not _has_current_schema(conn):
-            _apply_schema(conn)
+            _apply_schema(conn, version)
             conn.execute(f"PRAGMA user_version={SAVINGS_SCHEMA_VERSION}")
         conn.commit()
     except BaseException:
         conn.rollback()
         raise
+    return True

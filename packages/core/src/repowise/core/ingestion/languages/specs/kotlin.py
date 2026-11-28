@@ -32,8 +32,6 @@ SPEC = LanguageSpec(
             "mutableMapOf",
             "hashMapOf",
             "lazy",
-            "require",
-            "check",
             "error",
             "TODO",
             "run",
@@ -88,5 +86,6 @@ SPEC = LanguageSpec(
             "Object", "Function", "Runnable", "Class", "Void",
         }
     ),
+    builtin_methods=frozenset({"require", "check"}),
     color_hex="#A97BFF",
 )

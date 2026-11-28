@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "repowise-hello"
+version = "0.1.0"
+description = "A minimal repowise plugin: one CLI command, one MCP tool, one event sink, one report section."
+requires-python = ">=3.11"
+dependencies = ["repowise>=0.59"]
+
+# repowise imports repowise_hello and calls register() once per process.
+[project.entry-points."repowise.plugins"]
+hello = "repowise_hello:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/repowise_hello"]

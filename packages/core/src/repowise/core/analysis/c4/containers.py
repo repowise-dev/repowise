@@ -1,6 +1,9 @@
 """Assign files to C4 containers.
 
-A directory holding a package manifest is a container root. Manifests under
+A directory holding a package manifest (the language registry's
+``is_package_manifest``) is a container root, even when the manifest declares
+no external dependencies, so a package like ``packages/core`` is its own
+container instead of dissolving into the repo-root catch-all. Manifests under
 test or example trees are fixtures and samples, not the system's containers, so
 they are dropped and their files fold into the nearest remaining ancestor
 container (or into none, when no ancestor exists). With no manifest at all, the
@@ -13,33 +16,9 @@ from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.workspace_members import manifest_package_name
 from repowise.core.support_paths import is_test_or_example_path
-
-# Package-manifest basenames. A directory holding one of these is a container
-# root even when the manifest declares no external dependencies (so a package
-# like ``packages/core`` is its own container instead of dissolving into the
-# repo-root catch-all).
-_MANIFEST_BASENAMES = frozenset(
-    {
-        "pyproject.toml",
-        "setup.py",
-        "setup.cfg",
-        "package.json",
-        "cargo.toml",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-        "composer.json",
-        "gemfile",
-    }
-)
-_MANIFEST_SUFFIXES = (".csproj",)
-
-
-def is_manifest(path: str) -> bool:
-    base = path.rsplit("/", 1)[-1].lower()
-    return base in _MANIFEST_BASENAMES or base.endswith(_MANIFEST_SUFFIXES)
 
 
 def manifest_roots(manifests: Iterable[str]) -> dict[str, list[str]]:
@@ -61,7 +40,12 @@ def assign_containers(
     out of the map. The root ``""`` is the repository root.
     """
     paths = list(file_paths)
-    roots = manifest_roots({*manifests, *(p for p in paths if is_manifest(p))})
+    present = set(paths)
+    roots = manifest_roots(
+        m
+        for m in {*manifests, *filter(_LANG_REGISTRY.is_package_manifest, paths)}
+        if not _is_package_module(m, present)
+    )
     candidates = set(roots) or _top_level_dirs(p for p in paths if not is_test_or_example_path(p))
     # Longest first so nested manifests win over their parents.
     ordered = sorted(candidates, key=len, reverse=True)
@@ -83,6 +67,15 @@ def container_name(repo_root: Path | None, manifests: Iterable[str]) -> str | No
         if name:
             return name
     return None
+
+
+def _is_package_module(path: str, present: set[str]) -> bool:
+    """A ``setup.py`` beside an ``__init__.py`` is a module named setup (a
+    ``routers/setup.py`` route file, say), not a manifest: a project root that
+    holds a setup.py is not itself an importable package. The repository root
+    is exempt, since an old flat layout keeps both there."""
+    directory, _, base = path.rpartition("/")
+    return bool(directory) and base.lower() == "setup.py" and f"{directory}/__init__.py" in present
 
 
 def _top_level_dirs(paths: Iterable[str]) -> set[str]:

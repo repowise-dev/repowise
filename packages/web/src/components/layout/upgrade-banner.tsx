@@ -105,7 +105,12 @@ export function UpgradeBanner() {
           </button>
         </Callout>
       </div>
-      <WhatsNewModal open={showWhatsNew} onOpenChange={setShowWhatsNew} />
+      <WhatsNewModal
+        open={showWhatsNew}
+        onOpenChange={setShowWhatsNew}
+        version={meta?.latest_version}
+        includeNewer
+      />
     </>
   );
 }

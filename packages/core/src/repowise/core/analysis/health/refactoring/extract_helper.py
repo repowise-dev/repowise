@@ -28,8 +28,9 @@ Precision-first, the gate demands a block genuinely worth a helper:
   vendored bundles) the block still duplicates across ``>= 2`` sites — test
   fixtures and migration boilerplate duplicate constantly but a shared
   helper is the wrong fix for them;
-- the recovered impact is the block's share of the file's ``dry_violation``
-  finding when it overlaps the block, else ``0``: the finding grades the
+- the recovered impact is the file rescored without the block's share of the
+  file's ``dry_violation`` finding when it overlaps the block, else ``0``
+  (``health.gain``): the finding grades the
   file's cross-file duplication, so one block is credited the lines of it it
   removes here, not the whole finding (:func:`clone_share`). A block inside
   one file recovers ``0``: that finding does not grade it, so it stays
@@ -52,9 +53,10 @@ from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
 from ..effort import effort_bucket
+from ..gain import removal_gain
 from .graph_signals import defined_symbols
 from .language_family import same_language_family
-from .models import RefactoringContext, RefactoringSuggestion
+from .models import RECOVERED_SHARE, RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
 from .reuse import find_reuse
 
@@ -435,12 +437,12 @@ class ExtractHelperDetector(RefactoringDetector):
         if not blocks:
             return []
 
-        impact_lookup = self._impact_for_dry_violation(ctx)
+        dry = self._dry_violations(ctx)
         spans_cache: dict[str, list[tuple[int, int]]] = {}
         read = _cached_reader(ctx)
         out: list[RefactoringSuggestion] = []
         for block in blocks:
-            suggestion = self._build_suggestion(ctx, block, impact_lookup, spans_cache)
+            suggestion = self._build_suggestion(ctx, block, dry, spans_cache)
             if suggestion is not None:
                 suggestion.plan.update(_reuse_fields(ctx, suggestion.plan["occurrences"], read))
                 out.append(suggestion)
@@ -492,7 +494,7 @@ class ExtractHelperDetector(RefactoringDetector):
         self,
         ctx: RefactoringContext,
         block: _Block,
-        impact_lookup: list[tuple[int, int, float]],
+        dry: list[tuple[int, int, Any]],
         spans_cache: dict[str, list[tuple[int, int]]],
     ) -> RefactoringSuggestion | None:
         # Drop test-file occurrences — duplication among fixtures is noise —
@@ -545,12 +547,8 @@ class ExtractHelperDetector(RefactoringDetector):
             return None
 
         is_intra = len(occ_files) == 1
-        impact = (
-            0.0
-            if is_intra
-            else self._impact_for_block(anchor_region, impact_lookup)
-            * clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
-        )
+        share = 0.0 if is_intra else clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
+        impact = self._gain_for_block(ctx, anchor_region, dry, share) if share else 0.0
 
         suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
@@ -569,6 +567,7 @@ class ExtractHelperDetector(RefactoringDetector):
             "token_count": block.token_count,
             "co_change_count": block.co_change,
             "is_intra_file": is_intra,
+            RECOVERED_SHARE: round(share, 3),
         }
         other_files = [f for f in occ_files if f != ctx.file_path]
         blast_radius = {
@@ -585,7 +584,7 @@ class ExtractHelperDetector(RefactoringDetector):
             line_end=anchor_region[1],
             plan=plan,
             evidence=evidence,
-            impact_delta=round(float(impact), 3),
+            impact_delta=impact,
             effort_bucket=effort_bucket(duplicated_lines),
             blast_radius=blast_radius,
             confidence="high" if block.co_change >= ACTIVE_CO_CHANGE else "medium",
@@ -666,35 +665,40 @@ class ExtractHelperDetector(RefactoringDetector):
         return "\n".join(block), lo, truncated
 
     @staticmethod
-    def _impact_for_dry_violation(ctx: RefactoringContext) -> list[tuple[int, int, float]]:
+    def _dry_violations(ctx: RefactoringContext) -> list[tuple[int, int, Any]]:
         """The file's ``dry_violation`` findings as (line_start, line_end,
-        impact) so a block can claim the impact of the clone it overlaps."""
-        out: list[tuple[int, int, float]] = []
+        finding) so a block can claim the clone finding it overlaps."""
+        out: list[tuple[int, int, Any]] = []
         for f in ctx.findings:
             if getattr(f, "biomarker_type", "") != _SOURCE_BIOMARKER:
                 continue
             start = getattr(f, "line_start", None)
             end = getattr(f, "line_end", None)
-            impact = float(getattr(f, "health_impact", 0.0) or 0.0)
             if start is None or end is None:
                 # No region — attribute to the whole file (matches any block).
-                out.append((0, 1_000_000_000, impact))
+                out.append((0, 1_000_000_000, f))
             else:
-                out.append((int(start), int(end), impact))
+                out.append((int(start), int(end), f))
         return out
 
     @staticmethod
-    def _impact_for_block(
-        region: tuple[int, int], impact_lookup: list[tuple[int, int, float]]
+    def _gain_for_block(
+        ctx: RefactoringContext,
+        region: tuple[int, int],
+        dry: list[tuple[int, int, Any]],
+        share: float,
     ) -> float:
-        """Recovered impact for the block whose anchor region overlaps a
-        ``dry_violation`` finding; 0 when none does (precision-first)."""
+        """Gain from removing *share* of the ``dry_violation`` finding the
+        block's anchor region overlaps; 0 when none does (precision-first)."""
         start, end = region
-        best = 0.0
-        for f_start, f_end, impact in impact_lookup:
-            if start <= f_end and end >= f_start and impact > best:
-                best = impact
-        return best
+        return max(
+            (
+                removal_gain(ctx.findings, [(f, share)])
+                for f_start, f_end, f in dry
+                if start <= f_end and end >= f_start
+            ),
+            default=0.0,
+        )
 
 
 def _cached_reader(ctx: RefactoringContext) -> Callable[[str], list[str] | None] | None:

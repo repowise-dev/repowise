@@ -30,11 +30,11 @@ and its score reads the ``is_entry_point`` flag itself, which this key never
 sees. Sharing the key there would decide page selection on filename, depth and
 centrality with the one direct piece of evidence dropped.
 
-**Ranking cannot rescue bad candidacy, and the corpus still shows it.** On
-``spring-petclinic`` the Spring stamper flags 24 entity and controller classes
-and never flags ``PetClinicApplication.java``, so no ordering over that set can
-name the front door: the best this key can do is pick a different wrong file.
-That is a candidacy gap, tracked separately.
+**Ranking cannot rescue bad candidacy.** ``spring-petclinic``'s
+``PetClinicApplication.java`` carries no entry-style name, so no ordering over
+the filename guesses could name it. Ingestion now flags a file that boots a
+framework application (``entry_candidacy.boots_application``) and
+``RepoStructure.application_mains`` carries it into the declared tier.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from repowise.core.entry_candidacy import (
     conventional_entry_stems,
     entry_point_depth,
 )
+from repowise.core.support_paths import is_example_path
 
 
 def _name_bucket(path: str, conventional_stems: frozenset[str]) -> int:
@@ -73,8 +74,11 @@ def entry_point_rank_key(
     Most significant component first:
 
       0. **tier** — a file a package manifest names (``bin``, ``main``,
-         ``exports["."]``, a console script) is declared, not guessed, so it
-         outranks every filename guess.
+         ``exports["."]``, a console script) or that boots a framework
+         application is declared, not guessed, so it outranks every filename
+         guess. Example, demo and benchmark code (``is_example_path``) ranks
+         after the system's own entries in either case: a sample's
+         ``Main.java`` demonstrates the system rather than starting it.
       1. **name bucket** — a conventional entry name (``main``/``app``/``cli``/
          ``manage``/…) never loses to a generic glue stem (``index``/``mod``),
          and glue never outranks a real entry.
@@ -85,7 +89,7 @@ def entry_point_rank_key(
       4. **path** — deterministic final tiebreak.
     """
     return (
-        0 if path in manifest_entries else 1,
+        (0 if path in manifest_entries else 1) + (2 if is_example_path(path) else 0),
         _name_bucket(path, conventional_stems),
         entry_point_depth(path),
         -(pagerank + betweenness),
@@ -93,7 +97,9 @@ def entry_point_rank_key(
     )
 
 
-def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
+def rank_entry_point_paths(
+    paths: Iterable[str], declared: frozenset[str] = frozenset()
+) -> list[str]:
     """Rank bare paths, best entry first, with no centrality to break ties.
 
     The sibling for callers that hold a set or a query result rather than a
@@ -101,9 +107,13 @@ def rank_entry_point_paths(paths: Iterable[str]) -> list[str]:
     agree on name and depth, and the path component keeps the order total, so
     omitting it costs nothing but determinism-preserving arbitrariness.
     Callers that do hold centrality should use :func:`rank_entry_points`.
+    *declared* is the tier-0 set :func:`entry_point_rank_key` reads.
     """
     stems = conventional_entry_stems()
-    return sorted(paths, key=lambda p: entry_point_rank_key(p, conventional_stems=stems))
+    return sorted(
+        paths,
+        key=lambda p: entry_point_rank_key(p, conventional_stems=stems, manifest_entries=declared),
+    )
 
 
 def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -> list[str]:
@@ -165,7 +175,10 @@ def orientation_entry_points(repo_structure: Any, *, limit: int | None = None) -
     so a React ``src/components/App.tsx`` is published as an execution entry
     point, as is any ``run.py`` / ``server.ts`` at any depth.
     """
-    ranked = rank_entry_point_paths(getattr(repo_structure, "entry_points", None) or [])
+    ranked = rank_entry_point_paths(
+        getattr(repo_structure, "entry_points", None) or [],
+        frozenset(getattr(repo_structure, "application_mains", None) or ()),
+    )
     return ranked if limit is None else ranked[:limit]
 
 

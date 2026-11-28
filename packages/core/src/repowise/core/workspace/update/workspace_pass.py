@@ -9,7 +9,6 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -31,22 +30,25 @@ from repowise.core.update_lock import (
     update_workspace_lock as _try_acquire_workspace_lock,
 )
 
+from ...analysis.health import health_analyzer_changed
+from ...analysis.security.patterns import security_scanner_changed
 from ...docs_mode import docs_mode_state_fields
 from ...ingestion.change_detector import has_working_tree_changes
 from ...ingestion.git_indexer import (
     GIT_HISTORY_VERSION,
     GIT_HISTORY_VERSION_KEY,
-    git_history_stale,
 )
 from ...ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from ..config import RepoEntry, WorkspaceConfig
-from .phases import run_cross_repo_hooks
+from .phases import analysis_config_changed, run_cross_repo_hooks
 from .repo import RepoUpdateResult, _has_persisted_repo_index, update_single_repo_index
 from .state import (
     check_repo_staleness,
     clear_stale_update_pending,
     read_repo_state,
     reconcile_repo_head_commit,
+    stamp_workspace_entry,
+    stored_index_counts,
     sync_workspace_state_from_disk,
 )
 
@@ -89,6 +91,7 @@ async def update_workspace(
     commit_depth: int = _DEFAULT_COMMIT_LIMIT,
     exclude_patterns: list[str] | None = None,
     include_working_tree: bool = False,
+    restamp_up_to_date: bool = True,
     on_repo_start: Callable[[str], None] | None = None,
     on_repo_done: Callable[[RepoUpdateResult], None] | None = None,
 ) -> list[RepoUpdateResult]:
@@ -113,6 +116,10 @@ async def update_workspace(
             it. Off for every commit-anchored caller (hooks, webhooks, a
             manual sync); ``repowise watch --workspace`` sets it, because a
             repo it is watching normally has no new commits at all.
+        restamp_up_to_date: Advance each up-to-date member's DB freshness
+            stamp. The CLI turns it off: it has already restamped the members
+            whose fingerprint moved, and a restamp here would rewrite every
+            member's DB, and so its editor files, on every change.
         on_repo_start: Called with alias when a repo update begins.
         on_repo_done: Called with result when a repo update finishes.
 
@@ -125,8 +132,13 @@ async def update_workspace(
     # A child repo may have been updated on its own; read its state.json first.
     sync_workspace_state_from_disk(workspace_root, ws_config)
 
-    stale_repos = await _select_stale_repos(workspace_root, entries, include_working_tree, results)
-    if dry_run or not stale_repos:
+    stale_repos = await _select_stale_repos(
+        workspace_root, entries, include_working_tree, results, restamp_up_to_date
+    )
+    # An edited contracts: or conformance: block is work too, with no repo stale.
+    if dry_run or not (
+        stale_repos or (run_hooks and analysis_config_changed(ws_config, workspace_root))
+    ):
         return results
 
     # Workspace single-flight: concurrent hook-triggered passes defer to the
@@ -134,6 +146,8 @@ async def update_workspace(
     # running pass rolls forward instead of a second full pass starting.
     workspace_owner = _try_acquire_workspace_lock(workspace_root)
     if workspace_owner is not None:
+        if not stale_repos:
+            return results
         return _defer_to_running_workspace_update(workspace_owner, stale_repos)
 
     # The workspace lock is held until every member has been attempted.
@@ -182,6 +196,7 @@ async def _select_stale_repos(
     entries: list[RepoEntry],
     include_working_tree: bool,
     results: list[RepoUpdateResult],
+    restamp_up_to_date: bool = True,
 ) -> list[_StaleRepo]:
     """Return the stale entries; append a skipped result for every other one."""
     stale_repos: list[_StaleRepo] = []
@@ -201,7 +216,8 @@ async def _select_stale_repos(
         if not is_stale:
             # Nothing to regenerate, but the DB freshness stamp can still be
             # behind; reconcile it so the server stops reporting "index behind checkout".
-            await reconcile_repo_head_commit(abs_path, current_head)
+            if restamp_up_to_date:
+                await reconcile_repo_head_commit(abs_path, current_head)
             results.append(
                 RepoUpdateResult(
                     alias=entry.alias,
@@ -239,15 +255,14 @@ async def _repo_is_stale(abs_path: Path, include_working_tree: bool) -> tuple[bo
     ):
         is_stale = True
 
+    # A failed persist left a range to re-cover, even with HEAD unmoved.
+    if not is_stale and state.get("pending_repair") and stored_commit:
+        is_stale = True
+
     # A watched repo's changes are uncommitted by definition, so the
     # commit-to-commit staleness check above says "up to date" for exactly
     # the work the watcher woke up for.
     if not is_stale and include_working_tree and has_working_tree_changes(abs_path):
-        is_stale = True
-
-    # Rows written under older git history rules: one full walk refreshes
-    # them, as the single-repo update does, even with HEAD unmoved.
-    if not is_stale and git_history_stale(state) and await _has_persisted_repo_index(abs_path):
         is_stale = True
     return is_stale, current_head
 
@@ -306,11 +321,16 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
 
             try:
                 update_started = time.monotonic()
+                repo_state = read_repo_state(path)
                 result = await update_single_repo_index(
                     path,
                     commit_depth=update_pass.commit_depth,
                     exclude_patterns=update_pass.exclude_patterns,
                     include_working_tree=update_pass.include_working_tree,
+                    # Rows an older analyzer or scanner wrote are redone whole,
+                    # as the single-repo update does, even with no file changed.
+                    rescore_health=health_analyzer_changed(repo_state),
+                    rescan_security=security_scanner_changed(repo_state),
                 )
                 if result.updated and result.phase_timings is None:
                     result.phase_timings = {"run": time.monotonic() - update_started}
@@ -332,10 +352,14 @@ async def _update_stale_repo(update_pass: _RepoUpdatePass, repo: _StaleRepo) -> 
 
             # Update workspace config entry
             if result.updated:
+                # Report what the store holds, as `workspace list` does; the
+                # run's own parse figures are 0/0 when nothing needed re-parsing.
+                counts = await stored_index_counts(path)
+                if counts is not None:
+                    result.file_count, result.symbol_count = counts
                 entry = update_pass.ws_config.get_repo(alias)
                 if entry is not None:
-                    entry.indexed_at = datetime.now(UTC).isoformat()
-                    entry.last_commit_at_index = new_head
+                    stamp_workspace_entry(entry, path, new_head)
         except Exception as exc:
             result = RepoUpdateResult(
                 alias=alias,
@@ -394,6 +418,10 @@ def _write_repo_state(
         state["last_docs_commit"] = state["last_sync_commit"]
 
     state["last_sync_commit"] = new_head
+    if result.pending_repair is None:
+        state.pop("pending_repair", None)
+    else:
+        state["pending_repair"] = result.pending_repair
     if result.kg_state:
         state["knowledge_graph"] = result.kg_state
     if result.working_tree_paths is not None:
@@ -402,6 +430,18 @@ def _write_repo_state(
         state["phase_timings"] = result.phase_timings
     if result.git_history_refreshed:
         state[GIT_HISTORY_VERSION_KEY] = GIT_HISTORY_VERSION
+    if result.health_rescored:
+        from ...analysis.health import HEALTH_ANALYZER_VERSION
+
+        state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+    if result.security_rescanned:
+        from ...analysis.security.patterns import SECURITY_SCANNER_VERSION
+
+        state["security_scanner_version"] = SECURITY_SCANNER_VERSION
+    if result.graph_update is not None:
+        from ...pipeline.incremental.feature import stamp_graph_update
+
+        stamp_graph_update(state, result.graph_update)
     # Stamp the config fingerprint so the drift check in
     # update_single_repo_index stays calibrated (and legacy repos
     # without one stop re-triggering the full re-index).
@@ -465,11 +505,14 @@ async def _finish_workspace_pass(
     changed_aliases: list[str],
     run_hooks: bool,
 ) -> None:
-    """Save the updated workspace config, then run the cross-repo hooks."""
+    """Save the updated workspace config, then run the cross-repo hooks.
+
+    The hooks run when a repo changed or the cross-repo settings did.
+    """
     if changed_aliases:
         ws_config.save(workspace_root)
 
     # ``run_hooks`` lets the CLI defer these so they run once over the union
     # of index-only and docs repos, rather than on this partial set.
-    if changed_aliases and run_hooks:
+    if run_hooks and (changed_aliases or analysis_config_changed(ws_config, workspace_root)):
         await run_cross_repo_hooks(ws_config, workspace_root, changed_aliases)

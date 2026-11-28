@@ -47,6 +47,7 @@ STABLE_TAGS = frozenset(
         "repos",
         "search",
         "security",
+        "settings",
         "symbols",
         "webhooks",
         "workspace",
@@ -71,7 +72,11 @@ INTERNAL_TAGS = frozenset(
         "owners",
         "platform",
         "providers",
+        "reports",
+        "runtime-evidence",
+        "setup",
         "stats",
+        "telemetry",
     }
 )
 

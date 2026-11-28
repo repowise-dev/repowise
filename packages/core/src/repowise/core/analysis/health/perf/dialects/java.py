@@ -395,6 +395,13 @@ class JavaPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _JAVA_FN_KINDS
+    # What :meth:`runs_once_in_loop` reads to tell a statement the loop ends after.
+    scope_kinds = _JAVA_FN_KINDS
+    statement_block_kinds = frozenset({"block", "switch_block_statement_group"})
+    exit_kinds = frozenset(
+        {"break_statement", "continue_statement", "return_statement", "throw_statement"}
+    )
+    switch_kinds = frozenset({"switch_expression", "switch_statement"})
     change_kinds = frozenset({"assignment_expression", "update_expression"})
     grow_methods = frozenset({"add", "addAll", "put", "putAll", "push", "offer", "addFirst", "addLast"})
     conditional_kinds = frozenset(

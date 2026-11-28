@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .fix_and_verify import measure_lines
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, join_sections, repo_suffix
 
@@ -35,8 +36,15 @@ def _where(target: Mapping[str, Any]) -> str:
 
 
 def render_verify_lines(item: Mapping[str, Any]) -> str:
-    """The Verify block, worded the way the card words it."""
+    """The Verify block, worded the way the card words it, then the timing a
+    performance item carries."""
     verify = item["verify"]
+    measure = verify.get("measure")
+    tests = _test_lines(verify)
+    return "\n".join([tests, "", *measure_lines(measure)]) if measure else tests
+
+
+def _test_lines(verify: Mapping[str, Any]) -> str:
     tests = verify["tests"]
     if not tests:
         # The fallback covers items stored before Verify named its prerequisite.
@@ -61,11 +69,22 @@ def _step(s: Mapping[str, Any]) -> str:
     loc = f"{s['file_path']}{f':{line}' if line else ''}"
     tag = " [mechanical]" if s.get("mechanical") else " [judgment]"
     extra = [
-        f"   {label}: `{s[key]}`"
+        _code_line(label, s[key])
         for key, label in (("signature", "Helper"), ("call", "Call"), ("command", "Check"))
         if s.get(key)
     ]
-    return "\n".join([f"{s['order']}. {s['text']} (`{loc}`){tag}", *extra])
+    notes = [f"   Note: {' '.join(n.split())}" for n in s.get("notes") or ()]
+    return "\n".join([f"{s['order']}. {s['text']} (`{loc}`){tag}", *extra, *notes])
+
+
+def _code_line(label: str, code: str) -> str:
+    """One labelled piece of a step's code: inline, or fenced when it spans
+    lines (a parameter object's declaration above its helper)."""
+    if "\n" not in code:
+        return f"   {label}: `{code}`"
+    body = "\n".join(f"   {line}" if line else "" for line in code.splitlines())
+    fence = "````" if "```" in code else "```"
+    return f"   {label}:\n   {fence}\n{body}\n   {fence}"
 
 
 def render_fix_item(item: Mapping[str, Any], flavor: str = "generic", repo_name: str | None = None) -> str:

@@ -18,6 +18,7 @@ from repowise.cli.agent_targets import formats  # noqa: F401  (package import sm
 from repowise.cli.agent_targets.formats import json_merge, marker_block
 from repowise.cli.agent_targets.registry import (
     detect_all,
+    diagnose,
     get_target,
     list_target_ids,
     resolve_target_flag,
@@ -57,6 +58,7 @@ def test_registry_exposes_the_shipped_targets() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "windsurf",
     ]
 
 
@@ -138,6 +140,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("hermes") is Tier.GOOD
     assert tier_of("copilot") is Tier.GOOD
     assert tier_of("kiro") is Tier.GOOD
+    assert tier_of("windsurf") is Tier.BASIC
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:
@@ -778,6 +781,36 @@ def test_the_shared_instruction_body_has_one_home() -> None:
     assert codex_config._DISTILL_MARKER_START is instructions.DISTILL_MARKER_START
 
 
+def test_every_written_instruction_block_leads_with_the_call_first_line() -> None:
+    """Cursor, Copilot, Kiro, opencode and Hermes get no generated agent block.
+
+    This body is the only thing they read, so it carries the same call-first
+    line ``CLAUDE.md`` and ``AGENTS.md`` lead with.
+    """
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.agent_steer import AGENT_STEER
+
+    assert instructions.DISTILL_SECTION.startswith(AGENT_STEER + "\n")
+    assert instructions.DISTILL_SECTION_HEADING in instructions.DISTILL_SECTION
+
+
+def test_the_shared_instruction_block_names_only_core_tools() -> None:
+    """Every host that reads this block loads tool schemas up front.
+
+    Those clients are listed the core tools by default, so a line naming any
+    other tool would send the agent to a tool its client was never shown.
+    """
+    import re
+
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    tool_name = r"\b(?:get_[a-z_]+|search_codebase|list_repos)\b"
+    named = set(re.findall(tool_name, instructions.DISTILL_SECTION))
+    assert named
+    assert named <= CORE_TOOLS
+
+
 def test_claude_code_reports_plugin_and_direct_separately(tmp_path: Path, monkeypatch) -> None:
     """The duplicate-registration case the method axis exists for.
 
@@ -826,6 +859,129 @@ def test_plugin_detection_degrades_to_absent_on_a_broken_manifest(
     monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
 
     assert target_mod._plugin_installs() == []
+
+
+def test_claude_code_plugin_plus_desktop_is_not_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a Claude Desktop config entry are not a duplicate.
+
+    Claude Code never reads Claude Desktop's config file; the two apps are
+    independent. Counting the Desktop entry as a second registration produces
+    a false warning and a fix command that touches neither file.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    desktop = tmp_path / "claude_desktop_config.json"
+    desktop.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "no_settings.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: desktop)
+
+    report = diagnose(target_mod.TARGET)
+    assert report.status is DoctorStatus.OK
+
+
+def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A plugin install and a ~/.claude.json direct entry is a real duplicate.
+
+    Claude Code loads both, so MCP tools and hooks run twice. The doctor must
+    still surface this even after the desktop-entry exclusion is added.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    user_config = tmp_path / ".claude.json"
+    user_config.write_text(json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}))
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: user_config)
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    report = diagnose(target_mod.TARGET)
+    assert report.status is not DoctorStatus.OK
+    assert any("registered twice" in issue for issue in report.issues)
+    assert not any("—" in issue for issue in report.issues)
+    # The plugin stays; the user entry repowise wrote is the copy to drop.
+    assert report.fix_command == "repowise agents remove --target=claude-code --scope=user"
+
+
+def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The plugin plus the project ``.mcp.json`` that `repowise init` writes.
+
+    The most common double registration: Claude Code loads both servers, so
+    the instructions and tool names are paid twice on every turn.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: tmp_path / "none.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    assert diagnose(target_mod.TARGET).status is DoctorStatus.OK
+    report = diagnose(target_mod.TARGET, repo_path=repo)
+    assert report.status is not DoctorStatus.OK
+    issue = next(i for i in report.issues if "registered twice" in i)
+    assert str(repo / ".mcp.json") in issue
+    # The project file is often the team's; the plugin is the copy to drop.
+    assert report.fix_command == target_mod.PLUGIN_UNINSTALL_COMMAND
 
 
 # ---------------------------------------------------------------------------
@@ -1909,7 +2065,7 @@ def test_codex_keeps_user_keys_added_to_its_server_table(tmp_path: Path) -> None
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20", 'startup_timeout_sec = 20\nenv_key = "mine"'
+            "startup_timeout_sec = 60", 'startup_timeout_sec = 60\nenv_key = "mine"'
         ),
         encoding="utf-8",
     )
@@ -1940,8 +2096,8 @@ def test_codex_preserves_an_env_table_rather_than_choking_on_it(tmp_path: Path) 
     config_path = repo / ".codex" / "config.toml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            "startup_timeout_sec = 20",
-            'startup_timeout_sec = 20\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
+            "startup_timeout_sec = 60",
+            'startup_timeout_sec = 60\nenv = { RUST_LOG = "debug" }\ntimeout = 1.5',
         ),
         encoding="utf-8",
     )
@@ -1970,7 +2126,7 @@ def test_codex_refuses_a_value_it_cannot_rewrite_without_a_traceback(tmp_path: P
     config_path = repo / ".codex" / "config.toml"
     before = config_path.read_text(encoding="utf-8")
     config_path.write_text(
-        before.replace("startup_timeout_sec = 20", "startup_timeout_sec = 20\nports = [1, 2]"),
+        before.replace("startup_timeout_sec = 60", "startup_timeout_sec = 60\nports = [1, 2]"),
         encoding="utf-8",
     )
     poisoned = config_path.read_text(encoding="utf-8")

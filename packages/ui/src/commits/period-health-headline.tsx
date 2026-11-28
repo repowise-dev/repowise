@@ -2,6 +2,7 @@ import * as React from "react";
 import type { PeriodHealthSummaryResponse } from "@repowise-dev/types/history";
 import { PageLede } from "../shared/page-lede";
 import { readPeriodHealth, type PeriodHealthRead } from "./period-health";
+import { formatNumber } from "../lib/format";
 
 /** Every sentence the headline can say. packages/ui has no i18n, so hosts
  *  pass their own; the defaults name commits in English. */
@@ -29,16 +30,16 @@ const s = (n: number) => (n === 1 ? "" : "s");
 const DEFAULT_COPY: PeriodHealthCopy = {
   unit: (r) => `commit${s(r.better)} made health better`,
   good: (r) =>
-    `Nothing made health worse. ${r.better.toLocaleString()} commit${s(r.better)} made it better, resolving ${r.findingsBetter.toLocaleString()} finding${s(r.findingsBetter)}.`,
+    `Nothing made health worse. ${formatNumber(r.better)} commit${s(r.better)} made it better, resolving ${formatNumber(r.findingsBetter)} finding${s(r.findingsBetter)}.`,
   mixed: (r) =>
-    `${r.worse.toLocaleString()} made it worse, ${r.both.toLocaleString()} of them while also making something better. ${r.neutral.toLocaleString()} had no health impact.`,
+    `${formatNumber(r.worse)} made it worse, ${formatNumber(r.both)} of them while also making something better. ${formatNumber(r.neutral)} had no health impact.`,
   quiet: (r) =>
-    `None of the ${r.analysed.toLocaleString()} analysed commit${s(r.analysed)} changed a health finding.`,
-  catchingUpUnit: (r) => `of ${r.total.toLocaleString()} commit${s(r.total)} analysed so far`,
+    `None of the ${formatNumber(r.analysed)} analysed commit${s(r.analysed)} changed a health finding.`,
+  catchingUpUnit: (r) => `of ${formatNumber(r.total)} commit${s(r.total)} analysed so far`,
   catchingUp: () =>
     "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis.",
   empty: () => "No commits in this window.",
-  unscanned: (r) => `${r.unscanned.toLocaleString()} not yet analysed.`,
+  unscanned: (r) => `${formatNumber(r.unscanned)} not yet analysed.`,
 };
 
 export interface PeriodHealthHeadlineProps {
@@ -62,7 +63,7 @@ export function PeriodHealthHeadline({ summary, period, copy, action }: PeriodHe
   if (r.tone === "catchingUp" || r.tone === "empty") {
     // No alarm and no green: progress, stated plainly.
     return (
-      <PageLede label={period} value={r.analysed.toLocaleString()} unit={c.catchingUpUnit(r)} action={action}>
+      <PageLede label={period} value={formatNumber(r.analysed)} unit={c.catchingUpUnit(r)} action={action}>
         <p>{c[r.tone](r)}</p>
       </PageLede>
     );
@@ -70,7 +71,7 @@ export function PeriodHealthHeadline({ summary, period, copy, action }: PeriodHe
   return (
     <PageLede
       label={period}
-      value={r.better.toLocaleString()}
+      value={formatNumber(r.better)}
       valueColor={r.better > 0 ? "var(--color-success)" : undefined}
       unit={c.unit(r)}
       action={action}

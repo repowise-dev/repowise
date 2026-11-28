@@ -511,18 +511,19 @@ async def test_a_hop_with_no_indexed_rows_does_not_renumber_the_hops_behind_it(
 ) -> None:
     """`depth` is graph distance, not a position in the list of surviving hops.
 
-    An excluded or unindexed middle hop produces no rows. Skipping it when the
-    hops are collected, then numbering them by position, serves a grandchild
-    claiming to be a direct callee — and an agent that believes the label reads
-    the wrong call site.
+    An unindexed middle hop produces no rows. Skipping it when the hops are
+    collected, then numbering them by position, serves a grandchild claiming
+    to be a direct callee — and an agent that believes the label reads the
+    wrong call site. (An excluded middle hop ends the walk instead: see
+    test_edge_exclusion_context.py.)
     """
-    import pathspec
+    from sqlalchemy import delete, select
 
     await _build_graph(
         session, repository.id, tmp_path, {"g0": ["g1"], "g1": ["g2"]}, 40
     )
-    spec = pathspec.PathSpec.from_lines("gitwildmatch", ["src/g1.py"])
-    from sqlalchemy import select
+    await session.execute(delete(WikiSymbol).where(WikiSymbol.symbol_id == "src/g1.py::g1"))
+    await session.flush()
 
     res = await session.execute(
         select(WikiSymbol).where(
@@ -530,7 +531,7 @@ async def test_a_hop_with_no_indexed_rows_does_not_renumber_the_hops_behind_it(
             WikiSymbol.symbol_id == "src/g0.py::g0",
         )
     )
-    block = await _expand_callees(session, repository.id, res.scalar_one(), tmp_path, 3, spec)
+    block = await _expand_callees(session, repository.id, res.scalar_one(), tmp_path, 3, None)
 
     assert [c["symbol_id"] for c in block["callees"]] == ["src/g2.py::g2"]
     assert block["callees"][0]["depth"] == 2, "a grandchild was served as a direct callee"

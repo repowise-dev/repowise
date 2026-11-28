@@ -52,14 +52,37 @@ def _save_state(repo_path: Path, state: dict) -> None:
     restamp_changed_sync_commit(repo_path, previous, state.get("last_sync_commit"))
 
 
-def _stamp_last_sync_commit(repo_path: Path) -> None:
+def _stamp_last_sync_commit(repo_path: Path, *, health_rescored: bool = False) -> None:
     """Record the synced HEAD so CLI incremental updates know the baseline."""
     head = _read_head_sha(repo_path)
     if not head:
         return
     state = _load_state(repo_path)
     state["last_sync_commit"] = head
+    if health_rescored:
+        _stamp_health_analyzer(state)
     _save_state(repo_path, state)
+
+
+def _stamp_health_analyzer(state: dict) -> None:
+    """Label the health rows a full index just wrote with this process's analyzer."""
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    state["health_analyzer_version"] = HEALTH_ANALYZER_VERSION
+
+
+def newer_health_analyzer(repo_path: Path) -> int | None:
+    """The stored ``health_analyzer_version`` when it is newer than this process's.
+
+    A server started before an upgrade still runs the old analyzer; its rows
+    must not replace the ones a newer CLI already wrote.
+    """
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
+    stored = _load_state(repo_path).get("health_analyzer_version")
+    if isinstance(stored, int) and stored > HEALTH_ANALYZER_VERSION:
+        return stored
+    return None
 
 
 def _persist_initial_index_state(
@@ -71,16 +94,19 @@ def _persist_initial_index_state(
     total_pages: int,
     wiki_style: str,
     exclude_patterns: list[str],
+    health_rescored: bool = False,
 ) -> None:
     """Write the ``repowise init`` baseline after a first API-driven index.
 
     Mirrors what the CLI persists at the end of ``init``: a complete
     ``state.json`` (sync baseline, docs flags, run mode, store-format stamp,
-    config fingerprint) and a ``config.yaml`` recording the provider/model
-    and style the run used, so later CLI ``update`` runs and server jobs
-    resolve the same configuration.
+    config fingerprint) and a ``config.yaml`` recording the style the run
+    used, and its provider/model when they are the repo's own rather than
+    the shared default, so later CLI ``update`` runs and server jobs resolve
+    the same configuration.
     """
     from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+    from repowise.core.providers.llm.inherited_pin import PIN_REVIEWED_KEY
     from repowise.core.repo_config import config_fingerprint
 
     # config.yaml is written first: the fingerprint below covers it.
@@ -108,7 +134,11 @@ def _persist_initial_index_state(
     if llm_client is not None:
         state["provider"] = getattr(llm_client, "provider_name", "")
         state["model"] = getattr(llm_client, "model_name", "")
+    # Written by an index that records only a provider the repo chose.
+    state[PIN_REVIEWED_KEY] = True
     _stamp_store_format(state, repo_path)
+    if health_rescored:
+        _stamp_health_analyzer(state)
     state["config_fingerprint"] = config_fingerprint(repo_path)
     _save_state(repo_path, state)
 
@@ -116,18 +146,23 @@ def _persist_initial_index_state(
 def _write_initial_repo_config(
     repo_path: Path, *, llm_client: Any, wiki_style: str, exclude_patterns: list[str]
 ) -> None:
-    """Record the provider/model, style and excludes the first index used.
+    """Record the style and excludes the first index used, and its own provider.
 
-    Values the repo's config.yaml already sets are kept; a write failure is
-    logged, not fatal.
+    The provider/model are recorded only when they are not the shared default
+    (the Settings default or ``REPOWISE_PROVIDER``): a repo that inherited
+    that default keeps following it when it changes. Values the repo's
+    config.yaml already sets are kept; a write failure is logged, not fatal.
     """
     from repowise.core.generation.styles import DEFAULT_STYLE
+    from repowise.core.providers.llm.resolve import record_index_selection
     from repowise.core.repo_config import load_repo_config, save_repo_config
 
     config = load_repo_config(repo_path)
-    if llm_client is not None:
-        config["provider"] = getattr(llm_client, "provider_name", "") or config.get("provider")
-        config["model"] = getattr(llm_client, "model_name", "") or config.get("model")
+    provider = getattr(llm_client, "provider_name", "") if llm_client is not None else ""
+    if provider:
+        record_index_selection(
+            config, repo_path, provider, getattr(llm_client, "model_name", "") or None
+        )
     if wiki_style and wiki_style != DEFAULT_STYLE and not config.get("wiki_style"):
         config["wiki_style"] = wiki_style
     if exclude_patterns and not config.get("exclude_patterns"):

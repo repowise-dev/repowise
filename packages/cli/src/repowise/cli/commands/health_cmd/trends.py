@@ -47,7 +47,12 @@ def _render_trend(repo_path: object, *, fmt: str) -> None:
             if repo is None:
                 return [], None
             snaps = await list_health_snapshots(session, repo.id)
-            return recent_kpis(snaps, limit=10, doc_drift=True), diff_snapshots(snaps)
+            # A table of runs: two on one day are two rows, each with its
+            # analyzer version, so a score jump between them stays explained.
+            rows = recent_kpis(
+                snaps, limit=10, doc_drift=True, analyzer_version=True, per_day=False
+            )
+            return rows, diff_snapshots(snaps)
 
     rows, summary = run_async(_fetch())
     if not rows:

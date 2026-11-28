@@ -17,7 +17,6 @@ from __future__ import annotations
 from typing import Any
 
 from rich.console import Console, Group
-from rich.markup import escape
 from rich.panel import Panel
 from rich.text import Text
 
@@ -108,21 +107,29 @@ def print_completion_panel(
         console.print(line)
 
 
-def serve_step(target: str = "dashboard") -> tuple[str, str]:
+def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str, str]:
     """The ``repowise serve`` row every completion panel leads with.
 
     The port is the one serve tries first; serve moves to the next free port
-    when it is taken, so the row says so rather than promising an exact URL.
+    when it is taken, so the row says so instead of promising an exact URL.
+    *gloss* is a first line saying what serve is for, above the address.
     """
     from repowise.cli.commands.serve_cmd._ports import DEFAULT_UI_PORT
     from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 
+    where = f"http://localhost:{DEFAULT_UI_PORT} or the next free port"
+    where = f"{gloss}\n{where}" if gloss else f"{target} at {where}"
     return (
         "repowise serve",
-        f"{target} at http://localhost:{DEFAULT_UI_PORT} or the next free port\n"
-        f"(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
+        f"{where}\n(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
     )
 
+
+#: What ``repowise serve`` is for at the end of ``init``, and that it does not return.
+SERVE_GLOSS = "open the dashboard (keeps running; Ctrl+C stops it)"
+
+#: Lists the settings that fit this repository. Doctor and status name it too.
+SUGGESTED_STEP = "repowise config list --suggested"
 
 #: Rows after ``repowise serve``.
 _MAX_FOLLOW_UPS = 2
@@ -130,61 +137,36 @@ _MAX_FOLLOW_UPS = 2
 
 def build_contextual_next_steps(
     *,
-    index_only: bool,
     fast_mode: bool = False,
-    dead_unreachable: int = 0,
-    dead_unused: int = 0,
-    hotspot_count: int = 0,
-    decision_count: int = 0,
-    top_hotspot: str = "",
     setup: Any = None,
 ) -> list[tuple[str, str]]:
-    """The dashboard, then the two moves that most need making.
+    """The dashboard, then only what stops this index from being used.
 
     ``repowise serve`` is the headline in every mode: the dashboard is the one
     place the graph, hotspots, dead code, decisions and documentation are all
     browsable, and it is useful before any upgrade.
 
-    The follow-ups are the first two of these that apply, in this order, which
-    is "what is stopping this index from being used at all" before "what is
-    stopping it from being finished" before "what did it find":
+    The follow-ups, in this order, are the ones that block use:
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast, or index-only);
-    3. the largest concrete finding, or a search row when there is none.
+    2. the index is deliberately partial (fast).
+
+    Findings, decisions, settings and sync are not steps here: they wait as
+    rows in ``repowise next`` and the dashboard, ranked by the actions engine.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
-
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     if fast_mode:
+        from repowise.core.index_scope import FAST_TO_FULL_COMMAND
+
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
-    elif index_only:
-        # `generate` is the scoped, cost-gated upgrade: a coverage, a directory
-        # or one page at a time, each behind an estimate.
-        candidates.append(
-            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
-        )
-    dead = dead_unreachable + dead_unused
-    if dead > 0:
-        noun = "finding" if dead == 1 else "findings"
-        candidates.append(("repowise dead-code", f"explore {dead} dead code {noun}"))
-    elif hotspot_count > 0 and top_hotspot:
-        candidates.append(
-            (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
-        )
-    elif decision_count > 0:
-        candidates.append(
-            ("repowise decision list", f"browse {decision_count} architectural decisions")
-        )
-    elif not fast_mode:
-        candidates.append(('repowise search "<query>"', "search the documentation"))
-
-    return [serve_step(), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=SERVE_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
 def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:

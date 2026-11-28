@@ -195,22 +195,10 @@ async def _reset_member_stale_jobs(app_state) -> None:
 
 
 def _publish_cross_repo_enricher(app_state, ws_config, ws_root: Path) -> None:
-    from repowise.core.workspace.breaking_change import BREAKING_CHANGES_FILENAME
-    from repowise.core.workspace.config import WORKSPACE_DATA_DIR
-    from repowise.core.workspace.conformance import CONFORMANCE_FILENAME
-    from repowise.core.workspace.contracts import CONTRACTS_FILENAME
-    from repowise.core.workspace.system_graph import SYSTEM_GRAPH_FILENAME
     from repowise.server.chat_tools import set_tool_workspace
     from repowise.server.mcp_server._enrichment import CrossRepoEnricher
 
-    data_dir = ws_root / WORKSPACE_DATA_DIR
-    enricher = CrossRepoEnricher(
-        data_dir / "cross_repo_edges.json",
-        contracts_path=data_dir / CONTRACTS_FILENAME,
-        system_graph_path=data_dir / SYSTEM_GRAPH_FILENAME,
-        breaking_changes_path=data_dir / BREAKING_CHANGES_FILENAME,
-        conformance_path=data_dir / CONFORMANCE_FILENAME,
-    )
+    enricher = CrossRepoEnricher.for_workspace(ws_root)
     if enricher.has_data or enricher.has_contract_data or enricher.has_system_graph:
         app_state.cross_repo_enricher = enricher
         set_tool_workspace(cross_repo_enricher=enricher)

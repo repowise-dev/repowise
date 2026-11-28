@@ -34,6 +34,7 @@ from repowise.core.analysis.areas import (
 )
 from repowise.core.analysis.areas.trend import DELTA_WINDOW_DAYS
 from repowise.core.analysis.finding_registry import MAP_HELD_ORIGINS, map_held, stored_origin
+from repowise.core.analysis.health.trends import latest_per_day
 from repowise.core.persistence import crud
 from repowise.core.persistence.crud import code_file_rows
 from repowise.core.persistence.database import get_session
@@ -63,7 +64,7 @@ logger = structlog.get_logger(__name__)
 #: Levels one tree request may unfold below its root. Deeper is a second request.
 MAX_TREE_DEPTH = 4
 
-#: Snapshots an area trend reads, newest last; the repo trend's default window.
+#: Days an area trend draws, newest last; the repo trend's default window.
 TREND_POINTS = 20
 
 #: Folded indexes per repository and held-origin set (older index states are
@@ -190,6 +191,7 @@ async def _build(session: AsyncSession, repo_id: str, held: frozenset[str]) -> A
         owners=file_owners(git_rows, await _commit_rows(session, repo_id)),
         findings=findings,
         deductions=await crud.get_deduction_by_path(session, repo_id),
+        held_origins=held,
     )
     weights = nloc_weights(metrics)
     counts = _held_counts(every)
@@ -287,7 +289,7 @@ def _held_block(model: AreaReadModel) -> dict[str, Any]:
 async def area_detail_payload(
     session: AsyncSession, repo_id: str, model: AreaReadModel, area: str
 ) -> dict[str, Any] | None:
-    """The area card, its trend read from the newest :data:`TREND_POINTS` snapshots."""
+    """The area card, its trend over the newest :data:`TREND_POINTS` days."""
     if area not in model.index.nodes:
         return None
     key = await _details.key(
@@ -297,8 +299,21 @@ async def area_detail_payload(
         return _details.get(key)
     trend = []
     kept = set(model.weights) if model.held else None
-    for snap in await crud.list_health_snapshots(session, repo_id, limit=TREND_POINTS):
-        score = area_score(_keep(_score_map(snap.per_file_scores_json), kept), area, model.weights)
+    # One point per day, as on the repository trend. Days are picked from every
+    # retained row's scalars; the kept rows' per-file maps load in one query.
+    history = await crud.list_health_snapshots(session, repo_id, file_maps=False)
+    days = latest_per_day(history)[-TREND_POINTS:]
+    maps = dict(
+        (
+            await session.execute(
+                select(HealthSnapshot.id, HealthSnapshot.per_file_scores_json).where(
+                    HealthSnapshot.id.in_([s.id for s in days])
+                )
+            )
+        ).all()
+    )
+    for snap in days:
+        score = area_score(_keep(_score_map(maps.get(snap.id)), kept), area, model.weights)
         if score is not None:
             trend.append({"taken_at": _iso(snap.taken_at), "health": score})
     coupled = await coupling_answer(

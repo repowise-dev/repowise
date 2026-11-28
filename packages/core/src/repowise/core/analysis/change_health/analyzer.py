@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from ...code_origin import code_origin
 from ...ingestion import compute_content_hash
 from ...ingestion.graph.builder import GraphBuilder
 from ...ingestion.models import (
@@ -26,8 +27,8 @@ from ...ingestion.package_roots import package_roots_above
 from ...ingestion.parse_cache import ParseCache
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
+from .. import MAX_CHANGE_ANALYSIS_FILE_BYTES as MAX_FILE_BYTES
 from ..health import (
-    HEALTH_ANALYZER_VERSION,
     HealthAnalyzer,
     HealthFileMetricData,
     HealthFindingData,
@@ -38,11 +39,6 @@ from ..health.walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
     from .index_inputs import IndexInputs
-
-#: Files above this size are skipped rather than parsed on both sides.
-MAX_FILE_BYTES = 1_500_000
-
-_GENERATED_MARKERS = (b"GENERATED CODE", b"AUTO-GENERATED", b"@generated", b"DO NOT EDIT")
 
 
 def language_of(path: str) -> str | None:
@@ -62,12 +58,6 @@ def language_for(path: str) -> str | None:
     """
     language = language_of(path)
     return language if has_health_dialect(language) else None
-
-
-def is_generated(source: bytes) -> bool:
-    """True when the file announces itself as generated in its header."""
-    header = source[:512].upper()
-    return any(marker.upper() in header for marker in _GENERATED_MARKERS)
 
 
 def is_binary(source: bytes) -> bool:
@@ -96,9 +86,7 @@ class AnalysisCaches:
     @classmethod
     def open(cls, cache_dir: str | Path) -> AnalysisCaches:
         directory = Path(cache_dir)
-        caches = cls(
-            directory, ParseCache(directory), HealthWalkCache(directory, HEALTH_ANALYZER_VERSION)
-        )
+        caches = cls(directory, ParseCache(directory), HealthWalkCache(directory))
         caches.parse.load()
         caches.walk.load()
         return caches
@@ -127,6 +115,9 @@ class RevisionAnalysis:
     symbols: dict[str, list[Symbol]] = field(default_factory=dict)
     #: Per-file scores and deductions, by path.
     metrics: dict[str, HealthFileMetricData] = field(default_factory=dict)
+    #: Where clones came from: "index" (partners outside *sources* counted),
+    #: "analyzed_files" (only among *sources*), None when duplication was off.
+    clone_source: str | None = None
 
     def findings_for(self, paths: set[str]) -> list[HealthFindingData]:
         return [f for f in self.findings if f.file_path in paths]
@@ -161,7 +152,8 @@ class RevisionHealthAnalyzer:
         a file across a centrality gate without any change to its code.
 
         *index* adds what the index knows (history, coverage, test pairing,
-        blame findings); without it a score is the code-shape reading.
+        blame findings, clone partners); without it a score is the code-shape
+        reading.
 
         *caches* serves parses and walks seen before; the result is the same
         with or without it.
@@ -180,12 +172,17 @@ class RevisionHealthAnalyzer:
             package_roots=_package_roots(self.repo_root, usable),
             **(_index_kwargs(index) if index is not None else {}),
         )
-        report = analyzer.analyze(config=self.config, changed_files=set(usable))
+        # Only findings and metrics are read, so skip building suggestions.
+        report = analyzer.analyze(
+            config={**(self.config or {}), "refactoring_enabled": False},
+            changed_files=set(usable),
+        )
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
         result.symbols = {pf.file_info.path: pf.symbols for pf in parsed}
         result.metrics = {m.file_path: m for m in report.metrics}
+        result.clone_source = analyzer.clone_source
         return result
 
     # -- internals ----------------------------------------------------------
@@ -218,7 +215,9 @@ class RevisionHealthAnalyzer:
             return "too_large"
         if is_binary(raw):
             return "binary"
-        if is_generated(raw):
+        # The classifier the index stores ``code_origin`` from, read from this
+        # revision's bytes: the stored row describes the indexed revision.
+        if code_origin(path, raw) == "generated":
             return "generated"
         return None
 
@@ -263,6 +262,7 @@ def _index_kwargs(index: IndexInputs) -> dict[str, Any]:
         "coverage_map": index.coverage,
         "tested_files": index.tested_files,
         "stored_blame_findings": index.blame_findings,
+        "clone_index_dir": index.clone_index_dir,
     }
 
 

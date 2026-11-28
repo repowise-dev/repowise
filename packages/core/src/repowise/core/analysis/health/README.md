@@ -175,7 +175,9 @@ extension points.
 - **New marker.** Drop a file under `biomarkers/`, implement
   `Biomarker.detect(ctx) -> list[BiomarkerResult]`, register in
   `biomarkers/registry.py`, add a suggestion in `suggestions.py`, add the
-  category mapping in `scoring._BIOMARKER_CATEGORY`.
+  category mapping in `scoring._BIOMARKER_CATEGORY`. Add its label in
+  `biomarker_labels.py` (then run `scripts/generate_biomarker_labels.py`) and
+  its entry in the web glossary `packages/ui/src/health/biomarker-glossary.ts`.
 - **New complexity language.** Add a `LanguageNodeMap` entry to
   `complexity/languages.py`. No new `.scm` files needed.
 - **New coverage format.** Drop a parser under `coverage/` and register it

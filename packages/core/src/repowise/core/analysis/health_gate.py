@@ -15,12 +15,14 @@ how it is judged or rendered.
 from __future__ import annotations
 
 import hashlib
+import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from repowise.core.ci import github, gitlab, sarif
-from repowise.core.ci.markdown import ROW_LIMIT, cell, details, more_line, plural
+from repowise.core.ci.markdown import ROW_LIMIT, cell, code, details, more_line, plural
+from repowise.core.ci.summary import GateSummary, SummaryFinding
 
 from ..test_paths import is_test_related_path
 from .change_health.identity import severity_rank
@@ -28,6 +30,7 @@ from .change_health.models import INCIDENTAL_BASES, ChangeFinding, ChangeHealthD
 from .diff_risk import DiffRiskFinding
 from .health.biomarker_labels import biomarker_label
 from .health.scoring import is_code_shape
+from .health.suggestions import hint_for
 
 #: ``--fail-on`` values, least to most severe: a level fails it and every level above.
 FAIL_ON = ("worsened", "introduced")
@@ -227,15 +230,20 @@ def _level(f: ChangeFinding, fail_on: str, fail_at: str) -> str:
     """Error when the change wrote a code-shape finding at or above *fail_on* and *fail_at*.
 
     A finding the change only carried (moved) or sits away from its lines
-    (incidental) is a note, as is anything that is not code shape. Below
+    (incidental) is a note, as is anything that is not code shape save measured
+    CRAP, which warns. Below
     *fail_at* a finding warns at most (by default medium: CCN 9 to 14, nesting
     depth 4, just past a detector's threshold), and so does one in a test
     file: long test functions are the change's own scaffolding more often than
     a defect.
     """
     authored = f.attribution_basis != "moved" and f.attribution_basis not in INCIDENTAL_BASES
-    if not authored or not is_code_shape(f.biomarker_type) or f.change_kind not in _KIND_RANK:
+    if not authored or f.change_kind not in _KIND_RANK:
         return NOTE
+    if not is_code_shape(f.biomarker_type):
+        # CRAP on measured coverage, the one coverage reading a comparison keeps
+        # (estimates never reach it): worth a warning, never a failure.
+        return WARNING if f.biomarker_type == "untested_complexity" else NOTE
     if (
         _KIND_RANK[f.change_kind] >= _KIND_RANK[fail_on]
         and severity_rank(f.severity) >= severity_rank(fail_at)
@@ -322,8 +330,23 @@ _HEADLINE = {
 }
 
 
-def render_markdown(result: GateResult, *, label: str, scope: str) -> str:
-    """Step-summary / PR-comment markdown: verdict first, then a capped table."""
+def reproduce_command(label: str, result: GateResult, diff_risk: Iterable[str] = ()) -> str:
+    """The ``repowise health check`` command that reaches *result* again locally."""
+    args = ["repowise", "health", "check", label, "--fail-on", result.fail_on]
+    args += ["--fail-at", result.fail_at]
+    for value in diff_risk:
+        args += ["--diff-risk", value]
+    return shlex.join(args)
+
+
+def render_markdown(
+    result: GateResult, *, label: str, scope: str, reproduce: str | None = None
+) -> str:
+    """Step-summary / PR-comment markdown: verdict first, then a capped table.
+
+    A failing verdict with *reproduce* (:func:`reproduce_command`) says how to
+    run the same check locally.
+    """
     errors, warnings = result.at(ERROR), result.at(WARNING)
     lines = [
         _HEADLINE[result.verdict].format(
@@ -349,23 +372,66 @@ def render_markdown(result: GateResult, *, label: str, scope: str) -> str:
     context = [f"{cell(location(f))}: {cell(f.message)}" for f in result.at(NOTE)]
     if context:
         lines += ["", *details("Context (moved, incidental or not code shape; never fails)", context)]
+    if reproduce and not result.passed:
+        lines += ["", f"Reproduce locally: {code(_INSTALL)}, then {code(reproduce)}"]
     lines += ["", f"_{FINDINGS_BASIS}_"]
     return "\n".join(lines) + "\n"
 
 
-def github_annotations(result: GateResult) -> list[str]:
-    """``::error`` for failing findings and ``::warning`` for warnings, capped."""
+def github_annotations(result: GateResult, *, reproduce: str | None = None) -> list[str]:
+    """``::error`` for failing findings and ``::warning`` for warnings, capped.
+
+    A failing health finding carries its fix hint; a failing verdict with
+    *reproduce* ends in one ``::notice`` naming the local command.
+    """
     out = [
         github.annotation(
             f.level,
-            f.message,
+            _with_hint(f),
             file=f.path,
             line=f.line,
             title=f"Health: {biomarker_label(f.rule)}",
         )
         for f in [*result.at(ERROR), *result.at(WARNING)]
     ]
-    return github.cap_annotations(out, noun="health findings")
+    out = github.cap_annotations(out, noun="health findings")
+    if reproduce and not result.passed:
+        out.append(github.notice(_reproduce_line(reproduce)))
+    return out
+
+
+#: How the gate is installed outside the Action, as docs/start/CI.md has it.
+_INSTALL = "pip install repowise"
+
+
+def _reproduce_line(reproduce: str) -> str:
+    return f"Reproduce locally: {_INSTALL}, then {reproduce}"
+
+
+def _with_hint(f: GateFinding) -> str:
+    """*f*'s message, plus the first sentence of its fix when it fails the gate."""
+    hint = hint_for(f.rule) if f.level == ERROR and f.source == _SOURCE else None
+    return f"{f.message}. {hint}" if hint else f.message
+
+
+def gate_summary(result: GateResult, *, reproduce: str | None = None) -> GateSummary:
+    """The gate's row in the combined CI summary: errors and warnings, notes left out.
+
+    A failing row with *reproduce* names the local command in its headline.
+    """
+    errors, warnings = result.at(ERROR), result.at(WARNING)
+    headline = {
+        PASS: "Nothing this change wrote fails the gate.",
+        WARN: f"Passed with {plural(len(warnings), 'warning')}.",
+        FAIL: f"Fails on {plural(len(errors), 'finding')} the change wrote.",
+    }[result.verdict]
+    if reproduce and not result.passed:
+        headline = f"{headline} {_reproduce_line(reproduce)}"
+    findings = tuple(
+        SummaryFinding(f.level, f.path, f.line, f.message, f.fingerprint)
+        for f in [*errors, *warnings]
+    )
+    return GateSummary(_SOURCE, result.verdict, headline, findings)
 
 
 def render_sarif(result: GateResult, *, tool_version: str) -> dict:
@@ -417,8 +483,11 @@ def render_gitlab(result: GateResult) -> list[dict]:
 
 def as_json(result: GateResult, delta: ChangeHealthDelta, *, label: str) -> dict[str, Any]:
     """The JSON document: the comparison's scope, every finding, the gate."""
+    from .health import HEALTH_ANALYZER_VERSION
+
     return {
         "revspec": label,
+        "analyzer_version": HEALTH_ANALYZER_VERSION,
         "status": delta.status,
         "explanation": delta.explanation,
         "scope": delta.scope.as_dict(),

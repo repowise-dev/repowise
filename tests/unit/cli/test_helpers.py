@@ -18,6 +18,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     get_repowise_dir,
     load_state,
+    read_state,
     resolve_provider,
     resolve_reasoning,
     resolve_repo_path,
@@ -237,6 +238,55 @@ class TestStateFile:
     def test_save_creates_repowise_dir(self, tmp_path):
         save_state(tmp_path, {"key": "value"})
         assert (tmp_path / ".repowise" / "state.json").exists()
+
+    def test_read_missing_state_reports_missing(self, tmp_path):
+        result = read_state(tmp_path)
+        assert result.status == "missing"
+        assert result.state == {}
+        assert result.error is None
+
+    def test_read_valid_and_empty_objects(self, tmp_path):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_text('{"last_sync_commit": "abc123"}', encoding="utf-8")
+        result = read_state(tmp_path)
+        assert (result.status, result.state) == ("ok", {"last_sync_commit": "abc123"})
+
+        state_path.write_text("{}", encoding="utf-8")
+        result = read_state(tmp_path)
+        assert (result.status, result.state) == ("empty", {})
+
+    @pytest.mark.parametrize(
+        "content",
+        ["{invalid", "", "[]", "null", '"text"', "42"],
+    )
+    def test_read_corrupt_or_non_object_state_reports_unreadable(self, tmp_path, content):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_text(content, encoding="utf-8")
+        result = read_state(tmp_path)
+        assert result.status == "unreadable"
+        assert result.state == {}
+        assert result.error
+        assert load_state(tmp_path) == {}
+
+    def test_read_invalid_utf8_state_reports_unreadable(self, tmp_path):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_bytes(b"\xff\xfe")
+        result = read_state(tmp_path)
+        assert result.status == "unreadable"
+        assert result.state == {}
+        assert result.error
+
+    def test_read_state_does_not_swallow_os_errors(self, tmp_path, monkeypatch):
+        ensure_repowise_dir(tmp_path)
+
+        def _boom(self, *args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+        with pytest.raises(PermissionError):
+            read_state(tmp_path)
+        with pytest.raises(PermissionError):
+            load_state(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +616,15 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "ANTHROPIC_API_KEY" in warnings[0]
 
+    def test_key_in_the_repo_env_file_counts(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        assert validate_provider_config(repo_path=tmp_path) == []
+        assert validate_provider_config() != []
+
     def test_openai_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
@@ -574,6 +633,25 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "openai" in warnings[0]
         assert "OPENAI_API_KEY" in warnings[0]
+
+    def test_ollama_on_its_default_endpoint_needs_no_base_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: True
+        )
+
+        assert validate_provider_config("ollama") == []
+
+    def test_ollama_not_answering_says_so_instead_of_asking_for_a_url(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
+        )
+
+        warnings = validate_provider_config("ollama")
+        assert len(warnings) == 1
+        assert "not answering at http://localhost:11434" in warnings[0]
+        assert "requires" not in warnings[0]
 
     def test_kimi_missing_key(self, monkeypatch):
         monkeypatch.delenv("KIMI_API_KEY", raising=False)
@@ -589,6 +667,14 @@ class TestValidateProviderConfig:
         monkeypatch.setenv("REPOWISE_PROVIDER", "kimi")
 
         assert validate_provider_config() == []
+
+    def test_mock_provider_needs_no_key_and_is_not_unknown(self):
+        assert validate_provider_config("mock") == []
+
+    def test_unregistered_provider_still_warns_unknown(self):
+        warnings = validate_provider_config("nope")
+        assert len(warnings) == 1
+        assert "Unknown provider 'nope'" in warnings[0]
 
     def test_gemini_with_gemini_key(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -611,13 +697,16 @@ class TestValidateProviderConfig:
         assert len(warnings) == 1
         assert "gemini" in warnings[0]
 
-    def test_ollama_missing_url(self, monkeypatch):
+    def test_ollama_configured_but_not_running(self, monkeypatch):
         monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
         monkeypatch.setenv("REPOWISE_PROVIDER", "ollama")
+        monkeypatch.setattr(
+            "repowise.cli.ui.provider_selection.endpoint_answers", lambda _url: False
+        )
 
         warnings = validate_provider_config()
         assert len(warnings) == 1
-        assert "ollama" in warnings[0]
+        assert "not answering" in warnings[0]
         assert "OLLAMA_BASE_URL" in warnings[0]
 
     def test_unknown_provider(self, monkeypatch):
@@ -1154,3 +1243,76 @@ class TestResolveProviderOrPrompt:
         cfg = load_config(tmp_path)
         assert cfg.get("provider") == "mock"
         assert cfg.get("model") == "mock-model-1"
+
+
+# ---------------------------------------------------------------------------
+# save_config records a provider only when the repo chose it (#5709)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveConfigRecordsOnlyAChosenProvider:
+    @staticmethod
+    def _set_default(provider: str, model: str) -> None:
+        from repowise.core.providers.llm.resolve import update_global_config
+
+        update_global_config(
+            lambda config: config.update(active_provider=provider, active_model=model)
+        )
+
+    @pytest.fixture(autouse=True)
+    def _no_env_default(self, monkeypatch):
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+        monkeypatch.delenv("REPOWISE_MODEL", raising=False)
+
+    def test_a_run_on_the_default_writes_no_provider(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+
+        save_config(tmp_path, "openrouter", "or-model", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert "provider" not in cfg and "model" not in cfg
+        assert cfg["embedder"] == "mock"
+
+    def test_the_repo_then_follows_a_new_default(self, tmp_path):
+        """The reported bug: the default changes after the repo was indexed."""
+        from repowise.core.providers.llm.resolve import resolve_llm
+
+        self._set_default("openrouter", "or-model")
+        save_config(tmp_path, "openrouter", "or-model", "mock", save_key=False)
+
+        self._set_default("ollama", "qwen")
+
+        selection = resolve_llm(tmp_path)
+        assert (selection.provider, selection.model) == ("ollama", "qwen")
+        assert selection.provider_source == "global"
+
+    def test_a_run_on_another_provider_writes_it(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")
+
+    def test_a_run_with_no_default_writes_the_provider(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")
+
+    def test_a_re_init_keeps_the_provider_the_repo_already_names(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")

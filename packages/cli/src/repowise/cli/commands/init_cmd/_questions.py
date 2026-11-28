@@ -15,6 +15,8 @@ from ._options import InitRun
 
 def _apply_advanced_answers(run: InitRun, adv: dict[str, Any]) -> None:
     """Fold the advanced-config answers into the run."""
+    from repowise.cli.ui.mode_selection import chosen_embedder
+
     opts = run.opts
     # Indexing knobs (always present).
     changes: dict[str, Any] = {
@@ -29,7 +31,7 @@ def _apply_advanced_answers(run: InitRun, adv: dict[str, Any]) -> None:
         "run_mode": adv.get("run_mode", opts.run_mode),
         # Asked in both branches: an index-only run renders a wiki too, and
         # those pages embed like any other, so the answer applies either way.
-        "embedder_name": adv.get("embedder") or opts.embedder_name,
+        "embedder_name": chosen_embedder(adv) or opts.embedder_name,
     }
     # Asked in both branches for the same reason: an index-only run renders
     # file pages too.

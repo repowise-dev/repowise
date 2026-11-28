@@ -205,6 +205,37 @@ async def test_include_brings_one_held_origin_back(app, client):
     assert detail["area"]["file_count"] == 1
 
 
+async def test_area_hotspot_count_follows_the_readers_held_scope(app, client):
+    repo_id = await _seed_origins(app, client)
+    paths = ("src/a.py", "tests/test_a.py", "src/gen_pb2.py")
+    async with app.state.session_factory() as session:
+        for path in paths:
+            await crud.upsert_git_metadata(
+                session,
+                repository_id=repo_id,
+                file_path=path,
+                primary_owner_name="Alice",
+                primary_owner_email="alice@example.com",
+                is_hotspot=True,
+                bus_factor=1,
+            )
+        await session.commit()
+
+    whole = (await client.get(f"/api/repos/{repo_id}/areas/tree")).json()
+    assert whole["root"]["hotspot_count"] == 3
+    held = (
+        await client.get(
+            f"/api/repos/{repo_id}/areas/tree", params={"hold": "map", "depth": 2}
+        )
+    ).json()
+    assert held["root"]["hotspot_count"] == 1
+    params = {"hold": "map", "include": "test", "depth": 2}
+    included = (await client.get(f"/api/repos/{repo_id}/areas/tree", params=params)).json()
+    assert included["root"]["hotspot_count"] == 2
+    detail = (await client.get(f"/api/repos/{repo_id}/areas/tests", params=params)).json()
+    assert detail["area"]["hotspot_count"] == detail["hotspots"]["total"] == 1
+
+
 async def test_without_hold_the_root_equals_the_page_headline(app, client):
     # The page's "All code" scope and the map's everything-included view are
     # the same files, so the root and the headline are one number.
@@ -234,3 +265,30 @@ async def test_every_group_back_draws_generated_files_too(app, client):
     feed = (await client.get(f"/api/repos/{repo_id}/health/map", params=params)).json()
     assert "src/gen_pb2.py" in {f["file_path"] for f in feed["files"]}
     assert feed["omitted"]["held"] == 0
+
+
+async def test_area_trend_draws_one_point_per_day_over_its_full_window(app, client):
+    """Many runs on the newest day are one point, and they do not push the
+    older days out of the window."""
+    from repowise.server.services.areas import TREND_POINTS
+
+    repo_id = await _seed(app, client)
+    newest = datetime.now(UTC)  # after the seeded runs, on the seeded "today"
+    async with app.state.session_factory() as session:
+        for second in range(1, TREND_POINTS + 1):
+            await crud.save_health_snapshot(
+                session,
+                repo_id,
+                hotspot_health=None,
+                average_health=7.0,
+                worst_performer_path=None,
+                worst_performer_score=None,
+                per_file_scores={"src/core/a.py": 5.0, "src/core/b.py": 9.0},
+                taken_at=newest + timedelta(seconds=second),
+            )
+        await session.commit()
+
+    detail = (await client.get(f"/api/repos/{repo_id}/areas/src/core")).json()
+
+    # The seeded day 31 back, then today: its last run, not twenty of them.
+    assert [p["health"] for p in detail["trend"]] == [5.5, 7.0]

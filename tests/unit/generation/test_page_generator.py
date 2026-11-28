@@ -18,6 +18,7 @@ from repowise.core.generation.page_generator import SYSTEM_PROMPTS, PageGenerato
 from repowise.core.generation.page_generator.core import PriorPage
 from repowise.core.generation.page_generator.validation import InvalidGeneratedContentError
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
+from repowise.core.pipeline.phase_timing import PhaseTimings
 from repowise.core.providers.llm.base import GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
@@ -259,6 +260,9 @@ async def test_corrective_retry_names_the_broken_rule_and_keeps_the_request(samp
     # The offending words must not be handed back: quoting them re-plants the
     # vocabulary the retry exists to remove.
     assert "supplied material" not in retry_prompt
+    # Naming the rule alone let the model rephrase the same sentence into it
+    # again; the re-ask also says what to write instead.
+    assert "say it about the code" in retry_prompt
     # A byte-identical system prompt is what keeps the retry eligible for the
     # provider's prefix cache.
     assert provider.calls[1]["system_prompt"] == provider.calls[0]["system_prompt"]
@@ -686,6 +690,128 @@ async def test_generate_all_level_values_in_range():
     )
     for page in pages:
         assert 0 <= page.generation_level <= 8
+
+
+async def _setup_timings(
+    *,
+    file_pages_only: bool = False,
+    only_page_ids: set[str] | None = None,
+    timings: PhaseTimings | None = None,
+) -> dict[str, float]:
+    """The timings table of a one-file generation run."""
+    config = GenerationConfig(
+        max_tokens=256, token_budget=500, max_concurrency=2, file_pages_only=file_pages_only
+    )
+    gen = PageGenerator(MockProvider(), ContextAssembler(config), config)
+    fi = _make_file_info("pkg/main.py", language="python")
+    p = ParsedFile(
+        file_info=fi,
+        symbols=[_make_symbol(file_path="pkg/main.py")],
+        imports=[],
+        exports=[],
+        docstring=None,
+        parse_errors=[],
+    )
+    repo = RepoStructure(
+        is_monorepo=False,
+        packages=[],
+        root_language_distribution={"python": 1.0},
+        total_files=1,
+        total_loc=10,
+        entry_points=[],
+    )
+    timings = timings if timings is not None else PhaseTimings()
+    await gen.generate_all(
+        [p],
+        {"pkg/main.py": b"def main(): pass"},
+        _make_builder_with([p]),
+        repo,
+        "test-repo",
+        only_page_ids=only_page_ids,
+        timings=timings,
+        # As the pipeline's recorder does: a sub-phase opens in the same table
+        # and stays open until generation returns.
+        on_subphase=lambda name, _total: timings.start(name),
+    )
+    timings.stop("generation.llm")
+    timings.stop("onboarding")
+    return timings.totals
+
+
+async def test_generation_setup_steps_are_timed_inside_setup():
+    totals = await _setup_timings()
+
+    steps = {k: v for k, v in totals.items() if k.startswith("generation.setup.")}
+    assert set(steps) == {
+        "generation.setup.resume",
+        "generation.setup.near_clones",
+        "generation.setup.selection",
+        "generation.setup.naming",
+        "generation.setup.flow_plans",
+        "generation.setup.ia",
+    }
+    # The steps are disjoint parts of setup, so together they fit inside it
+    # (each total is rounded to 0.01 s, hence the slack).
+    assert sum(steps.values()) <= totals["generation.setup"] + 0.01 * len(steps)
+
+
+async def test_level_builds_are_timed_inside_generation_llm(monkeypatch):
+    import time
+
+    from repowise.core.generation.page_generator import levels as _levels
+
+    # A slow level-2 build, so a span that overlapped its neighbours, or missed
+    # the build, would show in the totals instead of rounding to zero.
+    real_build = _levels.build_level2_coros
+
+    async def slow_build(run):
+        time.sleep(0.2)
+        return await real_build(run)
+
+    monkeypatch.setattr(_levels, "build_level2_coros", slow_build)
+    totals = await _setup_timings()
+
+    builds = {k: v for k, v in totals.items() if k.startswith("generation.llm.")}
+    assert set(builds) == {f"generation.llm.build.level{n}" for n in (1, 2, 3, 4, 5, 6, 7, 8)}
+    assert builds["generation.llm.build.level2"] >= 0.19
+    # The builds, the levels they feed and the finalize pass are disjoint parts
+    # of generation.llm, so together they fit inside it (each total is rounded
+    # to 0.01 s, hence the slack). Were the slow build counted twice, the sum
+    # would overshoot by its 0.2 s, well past the slack.
+    levels = {k: v for k, v in totals.items() if k.startswith("generation.level")}
+    parts = {**builds, **levels, "generation.finalize": totals["generation.finalize"]}
+    assert sum(parts.values()) <= totals["generation.llm"] + 0.01 * len(parts)
+
+
+async def test_level_build_span_closes_when_the_build_raises(monkeypatch):
+    from repowise.core.generation.page_generator import levels as _levels
+
+    def boom(run):
+        raise RuntimeError("build failed")
+
+    monkeypatch.setattr(_levels, "build_level3_coros", boom)
+    timings = PhaseTimings()
+    with pytest.raises(RuntimeError, match="build failed"):
+        await _setup_timings(timings=timings)
+
+    assert "generation.llm.build.level3" in timings.totals
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        {"file_pages_only": True},
+        {"only_page_ids": {compute_page_id("file_page", "pkg/main.py")}},
+    ],
+    ids=["file_pages_only", "only_page_ids"],
+)
+async def test_partial_runs_do_not_select_flows_in_setup(run):
+    # Neither run counts flow pages into its total, so setup must not compute
+    # the flow plans either: a span here would be work the run never did.
+    totals = await _setup_timings(**run)
+
+    assert "generation.setup" in totals
+    assert "generation.setup.flow_plans" not in totals
 
 
 # ---------------------------------------------------------------------------

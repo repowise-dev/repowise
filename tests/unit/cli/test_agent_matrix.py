@@ -33,6 +33,7 @@ condemn those, and a test that cries wolf gets its assertion deleted.
 
 from __future__ import annotations
 
+import functools
 import importlib.util
 import re
 import sys
@@ -264,7 +265,6 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
     ("docs/agent/MCP_TOOLS.md", "single_repo", "**Default (single-repo):** {n} tools"),
     ("docs/agent/MCP_TOOLS.md", "single_repo", "those {n} plus"),
     ("docs/architecture/ARCHITECTURE.md", "single_repo", "advertises **{n}** tools by default"),
-    ("docs/reference/CLI_REFERENCE.md", "lean", "the {w}-tool agent-lean profile"),
     ("packages/server/README.md", "total", "{n} registered MCP tools"),
     ("packages/server/README.md", "single_repo", "({n} advertised by default"),
     # The CLI help text is the copy every user reads, and it was the only place
@@ -280,14 +280,8 @@ COUNT_CLAIMS: tuple[tuple[str, str, str], ...] = (
         "plus {w} more by default",
     ),
     ("packages/cli/src/repowise/cli/commands/mcp_cmd.py", "opt_in", "{W} more are opt-in"),
-    # The lean count is written twice in this file, in the --tools help and in
-    # the worked example. One row matching either would let the other go stale,
-    # so each occurrence is pinned by the text around it.
-    (
-        "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
-        "lean",
-        "{w}-tool agent-lean profile. Overrides",
-    ),
+    # The lean count is written in the worked example; the --tools help names
+    # the profiles as peers, with no counts.
     (
         "packages/cli/src/repowise/cli/commands/mcp_cmd.py",
         "lean",
@@ -413,3 +407,96 @@ def test_no_artifact_still_carries_a_superseded_tool_count(
         if other != COUNTS[key] and _appears(_phrase(template, other), text)
     ]
     assert not stale, f"{relpath} still carries a superseded count: {stale}"
+
+
+# ---------------------------------------------------------------------------
+# Published product counts beyond the MCP surface
+# ---------------------------------------------------------------------------
+
+
+@functools.cache
+def _fact_counts() -> dict[str, int]:
+    """Counts the docs publish, each read from the code that owns it.
+
+    Cached and called from the test, not at import, so a renamed table fails
+    these cases instead of the whole module's collection.
+    """
+    from repowise.cli.agent_targets import registry as agent_registry
+    from repowise.core.analysis.health import scoring
+    from repowise.core.analysis.health.biomarkers.registry import registered_biomarkers
+    from repowise.core.analysis.security import patterns
+    from repowise.core.ingestion.languages.registry import REGISTRY
+    from repowise.core.ingestion.models import RESOLUTION_ORIGIN_VALUES
+
+    names = [b.name for b in registered_biomarkers()]
+    security_kinds = {
+        kind
+        for table in (patterns._CALL_PATTERNS, patterns._PATTERNS, patterns._SPANNING_PATTERNS)
+        for _, kind, _ in table
+    }
+    # Shell has a grammar but sits outside the support ladder
+    # (docs/layers/LANGUAGE_SUPPORT.md), so it is not one of the parsed tiers.
+    parsed = {s.tag for s in REGISTRY.all_specs() if s.scm_file} - {"shell"}
+    return {
+        "detectors": len(names),
+        "score_movers": sum(1 for n in names if "defect" in scoring.dimensions_for(n)),
+        "origins": len(RESOLUTION_ORIGIN_VALUES),
+        "security_kinds": len(security_kinds),
+        "parsed_languages": len(parsed),
+        "agent_targets": len(list(agent_registry.all_targets())),
+    }
+
+
+#: Pages that publish one of :func:`_fact_counts`, and the exact phrase. Same
+#: placeholders as ``COUNT_CLAIMS``. Each of these drifted once while the code
+#: moved on, so a stale copy fails here and names the file.
+FACT_CLAIMS: tuple[tuple[str, str, str], ...] = (
+    ("README.md", "detectors", "from {n} deterministic detectors"),
+    ("README.md", "detectors", "**{n} deterministic detectors**"),
+    ("README.md", "detectors", "{n} detectors, "),
+    ("README.md", "score_movers", "{n} move the health score"),
+    ("README.md", "parsed_languages", "{n} languages parsed to an AST"),
+    ("docs/business/COMMERCIAL.md", "detectors", "({n} deterministic detectors"),
+    ("docs/business/COMMERCIAL.md", "parsed_languages", "parses **{n} languages to a full AST**"),
+    ("docs/LINEAGE.md", "detectors", "of the {n} detectors do"),
+    ("docs/BENCHMARKS.md", "detectors", "Of the {n} detectors"),
+    ("docs/BENCHMARKS.md", "score_movers", "detectors, {n} move the defect score"),
+    ("docs/LINEAGE.md", "score_movers", "the defect score; {n} of the"),
+    ("docs/layers/CODE_HEALTH.md", "detectors", "Repowise registers {n} detectors."),
+    ("docs/layers/INTELLIGENCE_LAYERS.md", "detectors", "{n} deterministic detectors"),
+    ("docs/layers/INTELLIGENCE_LAYERS.md", "parsed_languages", "to an AST in {n} languages"),
+    ("docs/layers/INTELLIGENCE_LAYERS.md", "origins", "(one of {n} resolution origins)"),
+    ("docs/architecture/README.md", "detectors", "the {n} registered detectors"),
+    ("docs/architecture/code-health.md", "detectors", "registers **{n} detectors**"),
+    ("docs/reference/CLI_REFERENCE.md", "detectors", "Per-file scores from {n} deterministic"),
+    ("docs/layers/GRAPH.md", "parsed_languages", "badge/{n}-full--AST_languages-"),
+    ("docs/layers/LANGUAGE_SUPPORT.md", "parsed_languages", "**{n} languages parsed to a full AST"),
+    ("docs/README.md", "parsed_languages", "{n} parsed to a full AST"),
+    ("docs/README.md", "security_kinds", "{n} pattern kinds plus a symbol-name scan"),
+    ("docs/README.md", "agent_targets", "The {w} supported agent hosts"),
+    ("docs/layers/SECURITY.md", "security_kinds", "{n} pattern kinds plus the symbol-name scan"),
+    ("docs/start/QUICKSTART.md", "agent_targets", "{w} supported hosts"),
+)
+
+
+def _slot_pattern(template: str) -> re.Pattern[str]:
+    """*template* as a regex whose one group captures the count, digits or word."""
+    head, slot, tail = re.split(r"(\{[nwW]\})", template, maxsplit=1)
+    group = r"(\d+)" if slot == "{n}" else r"([A-Za-z]+)"
+    return re.compile(r"(?<![0-9A-Za-z])" + re.escape(head) + group + re.escape(tail))
+
+
+@pytest.mark.parametrize(
+    ("relpath", "key", "template"),
+    FACT_CLAIMS,
+    ids=[f"{rel}:{tmpl}" for rel, _, tmpl in FACT_CLAIMS],
+)
+def test_a_published_product_count_matches_the_code(relpath: str, key: str, template: str) -> None:
+    """Every copy of the phrase carries the live count, and at least one exists."""
+    text = _on_disk(ROOT / relpath)
+    found = _slot_pattern(template).findall(text)
+    assert found, f"{relpath} no longer says {template!r}; update FACT_CLAIMS or the page."
+    count = _fact_counts()[key]
+    want = str(count) if "{n}" in template else GEN.spell(count)
+    stale = [v for v in found if v.lower() != want.lower()]
+    assert not stale, f"{relpath}: {template!r} says {stale}, the code says {want}."

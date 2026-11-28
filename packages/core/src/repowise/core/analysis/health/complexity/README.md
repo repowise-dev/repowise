@@ -18,6 +18,7 @@ Tree-sitter AST walker. Single AST pass per file computes:
 > | `perf_walk.py` | Performance-risk pass (`_collect_perf_hits`) |
 > | `class_analysis.py` | Class-level LCOM4 / god-class metrics (`_compute_lcom4`) |
 > | `languages.py` | Per-language tree-sitter `LanguageNodeMap` registry (extension point) |
+> | `cobol.py` | COBOL paragraphs and sections, whose bodies are the siblings after their header |
 >
 > The package `__init__` re-exports the dataclasses plus `walk_file` /
 > `walk_file_complexity`, so importers use
@@ -26,12 +27,18 @@ Tree-sitter AST walker. Single AST pass per file computes:
 
 - **CCN** — McCabe cyclomatic complexity. Counts branching constructs
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
-  (`&&`, `||`).
+  (`&&`, `||`). In C / C++ the arms of a `#if` / `#ifdef` block with
+  `#elif` / `#else` alternatives are alternative builds, so CCN and
+  cognitive take the **largest arm** (not the sum); an `#if` with no
+  alternative is unchanged. Nested blocks and `#elif` chains follow the
+  same rule. NLOC still counts every arm, because those lines exist in the
+  file, and complex conditions are still reported from every arm.
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
   JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
   (`1 if a else 2 if b else 3`), add CCN and a flat +1 cognitive but no
-  level.
+  level. A `switch` / `match` / `when` opens one level for its body; its
+  case arms add CCN only, no level and no cognitive.
 - **cognitive complexity** — SonarSource-style weighted nesting cost
   (each level adds an incrementing penalty, plus +1 for each break in
   control flow).
@@ -138,8 +145,12 @@ Consumed by `low_cohesion` and `god_class`.
 One `FunctionComplexity` per function/method symbol detected. Caller maps
 back to ingestion `Symbol` objects by overlapping line ranges. A function or
 method defined inside another function has its own entry, listed before the
-entries of the file's own level; a lambda has none and counts toward the
-function that holds it.
+entries of the file's own level. So does a JS/TS arrow function bound to a
+name: a variable or an assignment with either body, an object property with
+a block body (`ast_utils.is_named_lambda`); any other lambda has none and counts
+toward the function that holds it. A function's `nloc` leaves out the rows
+only its nested entries cover (`CodeLineIndex.unit_rows`); a row it shares
+with one of them stays its own.
 
 ## Extension points
 

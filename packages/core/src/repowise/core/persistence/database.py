@@ -11,10 +11,12 @@ Call init_db() once at startup to create all tables and the FTS index.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import os
 import sqlite3
 import warnings
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -160,6 +162,8 @@ def _make_pragma_listener(busy_timeout_ms: int):
 __all__ = [
     "AsyncEngine",
     "AsyncSession",
+    "ReadOnlyStoreError",
+    "SchemaBehindError",
     "async_sessionmaker",
     "create_engine",
     "create_session_factory",
@@ -168,6 +172,8 @@ __all__ = [
     "get_repo_db_path",
     "get_session",
     "init_db",
+    "is_read_only",
+    "read_only_url",
     "refresh_planner_stats",
     "resolve_db_url",
     "schema_behind",
@@ -175,6 +181,12 @@ __all__ = [
 
 DB_FILENAME = "wiki.db"
 REPOWISE_DIRNAME = ".repowise"
+#: Index summary beside the DB: last synced commit, config fingerprint, versions.
+STATE_FILENAME = "state.json"
+#: Repo-local vector store directory.
+LANCEDB_DIRNAME = "lancedb"
+#: Sealed copies of the MCP server's per-index caches, one file per repo and cache.
+MCP_CACHE_DIRNAME = "mcp_cache"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 
@@ -260,6 +272,77 @@ def has_db_store(repo_path: str | Path | None = None) -> bool:
     return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
 
 
+class SchemaBehindError(RuntimeError):
+    """A store an older repowise wrote, opened where it cannot be reconciled.
+
+    :func:`init_db` back-fills such a store in place; a read-only open cannot,
+    and every answer read from it would be missing what it lacks.
+    """
+
+    code = "schema_behind"
+
+
+class ReadOnlyStoreError(RuntimeError):
+    """``FullTextSearch.ensure_index`` was called on a store opened read-only.
+
+    ``init_db`` keeps its own contract there: a store already on the current
+    schema opens without a write, anything else fails on the write itself.
+    """
+
+    code = "read_only_store"
+
+
+def read_only_url(db_path: str | Path) -> str:
+    """The URL that opens the SQLite store at *db_path* read-only and immutable.
+
+    ``mode=ro`` makes every write raise "attempt to write a readonly
+    database". ``immutable=1`` tells SQLite the file cannot change while it is
+    open, so it takes no locks and never reads a ``-wal`` file: a store in WAL
+    mode must be checkpointed before it is served this way (see
+    :func:`repowise.core.workspace.registry.publishable`).
+    """
+    return f"sqlite+aiosqlite:///{Path(db_path).resolve().as_uri()}?mode=ro&immutable=1&uri=true"
+
+
+def is_read_only(engine: AsyncEngine) -> bool:
+    """Whether *engine* was opened read-only (``mode=ro``), as by :func:`read_only_url`."""
+    return engine.dialect.name == "sqlite" and engine.url.query.get("mode") == "ro"
+
+
+def _postgres_positive_int(env_name: str, default: int) -> int:
+    """Reject invalid opt-in settings before opening a database connection."""
+    raw = os.environ.get(env_name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{env_name} must be a positive integer") from None
+    if value <= 0:
+        raise ValueError(f"{env_name} must be a positive integer")
+    return value
+
+
+def _postgres_connect_args() -> dict[str, Any]:
+    """Opt in to asyncpg timeouts and server-side TCP keepalive probes.
+
+    Poolers may reject these startup parameters, so send none by default.
+    This does not configure keepalive on the client's socket.
+    """
+    if os.environ.get("REPOWISE_POSTGRES_KEEPALIVE", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return {}
+    return {
+        "server_settings": {
+            "tcp_keepalives_idle": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_IDLE", 60)),
+            "tcp_keepalives_interval": str(
+                _postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_INTERVAL", 15)
+            ),
+            "tcp_keepalives_count": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_COUNT", 4)),
+        },
+        "command_timeout": _postgres_positive_int("REPOWISE_POSTGRES_COMMAND_TIMEOUT", 300),
+    }
+
+
 def create_engine(
     url: str | None = None,
     *,
@@ -271,6 +354,10 @@ def create_engine(
     short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
+
+    For asyncpg, ``REPOWISE_POSTGRES_KEEPALIVE=1`` enables server-side TCP
+    keepalive probes and a command timeout. See ``docs/reference/CONFIG.md``
+    for defaults, environment overrides, and pooler compatibility.
 
     Args:
         url:             Raw or async-prefixed database URL.  Defaults to SQLite.
@@ -329,6 +416,8 @@ def create_engine(
         # a short-lived engine's footprint at exactly one connection instead
         # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if db_url.startswith("postgresql+asyncpg://"):
+            kwargs["connect_args"] = _postgres_connect_args()
         if short_lived:
             kwargs["poolclass"] = NullPool
 
@@ -433,12 +522,52 @@ def _split_blame_line_shares(connection: object) -> int:
     return split_blame_line_shares(connection)  # type: ignore[arg-type]
 
 
+def _fill_static_costs(connection: object) -> int:
+    from repowise.core.persistence.crud.analysis.performance import fill_static_costs
+
+    return fill_static_costs(connection)
+
+
 #: One-time data fixes that must run when the reconciler adds a column, for
 #: rows the new column changes the meaning of. Alembic runs the same step in
 #: the column's migration for managed Postgres. Keyed ``table.column``.
 _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
     "git_metadata.primary_owner_line_pct": _split_blame_line_shares,
+    "performance_opportunities.static_cost": _fill_static_costs,
 }
+
+
+def _link_unlinked_changes(connection: Any) -> int:
+    from repowise.core.persistence.crud.changes import link_unlinked_changes
+
+    return link_unlinked_changes(connection)
+
+
+#: One-time data fills that must run when ``create_all`` creates a table on a
+#: store that already existed, for rows written before the table did. Alembic
+#: runs the same step in the table's migration. Keyed by table name.
+_DATA_STEPS_ON_CREATE: dict[str, Callable[[object], object]] = {
+    "change_commits": _link_unlinked_changes,
+}
+
+
+def _table_names(connection: object) -> set[str]:
+    return set(inspect(connection).get_table_names())
+
+
+def _fill_created_tables(connection: object, before: set[str]) -> None:
+    """Run the :data:`_DATA_STEPS_ON_CREATE` of each table missing from *before*.
+
+    A brand-new store (*before* empty) has nothing to fill. On SQLite the
+    table's DDL has already autocommitted, so a step that fails here is not
+    retried on the next open; each step's own caller has to repair that (a
+    change refresh links any change still unlinked).
+    """
+    if not before:
+        return
+    for table, step in _DATA_STEPS_ON_CREATE.items():
+        if table not in before:
+            _run_data_step(step, connection)
 
 
 def _run_data_step(step: Callable[[object], object], connection: object) -> None:
@@ -681,6 +810,74 @@ def _reconcile_schema(connection: object) -> None:
         raise failures[0][1]
 
 
+#: Bump when ``_reconcile_schema`` learns a repair the model shape alone does
+#: not reveal, so stores stamped by the old code reconcile again.
+_RECONCILE_LOGIC_VERSION = 1
+
+
+@functools.cache
+def _model_signature() -> str:
+    """What ``create_all`` and ``_reconcile_schema`` act on, as text.
+
+    Tables, column names, types, lengths and nullability, and index names.
+    """
+    parts = [f"logic={_RECONCILE_LOGIC_VERSION}"]
+    for name in sorted(Base.metadata.tables):
+        table = Base.metadata.tables[name]
+        columns = sorted(
+            (c.name, type(c.type).__name__, str(getattr(c.type, "length", None)), str(c.nullable))
+            for c in table.columns
+        )
+        indexes = sorted(str(i.name) for i in table.indexes)
+        parts.append(f"{name}|{columns}|{indexes}")
+    return "\n".join(parts)
+
+
+def schema_stamp(schema_cookie: int) -> int:
+    """The ``PRAGMA user_version`` a store reconciled by these models carries.
+
+    Folds in SQLite's ``schema_version`` cookie, which SQLite itself bumps on
+    every DDL statement, so any schema change made after the stamp (an older
+    repowise, a ``VACUUM``, a hand edit) reads as unstamped and reconciles.
+    Also folds in the registered plugin storage revisions.
+    A positive 31-bit int: 0 is what every unstamped store reads.
+    """
+    from repowise.core.registry.storage_migrations import storage_migrations
+
+    signature = f"{_model_signature()}\ncookie={schema_cookie}"
+    revisions = storage_migrations.signature()
+    if revisions:
+        signature += f"\nplugins={revisions}"
+    digest = hashlib.sha256(signature.encode()).digest()
+    return int.from_bytes(digest[:4], "big") % (2**31 - 1) + 1
+
+
+async def _sqlite_stamp_state(conn: Any) -> tuple[int, int]:
+    """``(user_version, schema_version)`` of the store behind *conn*."""
+    user_version = (await conn.execute(text("PRAGMA user_version"))).scalar()
+    cookie = (await conn.execute(text("PRAGMA schema_version"))).scalar()
+    return int(user_version or 0), int(cookie or 0)
+
+
+#: PostgreSQL advisory lock key held while a transaction creates core tables or indexes.
+_PG_SCHEMA_LOCK_KEY = 0x7277_7363_6865_6D61  # "rwschema"
+
+
+async def hold_schema_lock(conn: Any) -> None:
+    """On PostgreSQL, serialize schema DDL across processes until *conn*'s transaction ends.
+
+    ``CREATE TABLE`` checks for the table first, so two processes opening one
+    empty database at once (a server and a worker starting together) both see
+    it missing and the second fails on ``pg_type_typname_nsp_index``. Holding
+    this lock makes the second wait, then find the tables the first committed.
+    SQLite needs nothing: its writer lock already serializes DDL.
+    """
+    if conn.dialect.name == "postgresql":
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PG_SCHEMA_LOCK_KEY}
+        )
+
+
 async def init_db(engine: AsyncEngine) -> None:
     """Create all SQLAlchemy tables and the FTS index for the given engine.
 
@@ -689,11 +886,37 @@ async def init_db(engine: AsyncEngine) -> None:
     missing columns/indexes back-filled in place rather than hitting a
     cryptic ``no such column`` error from the ORM.
 
+    Then applies pending plugin storage revisions, after loading plugins so the
+    stamp covers every registered revision.
+
+    On SQLite a complete pass records :func:`schema_stamp` in
+    ``PRAGMA user_version``, and a store still carrying it skips the table
+    walk: two header reads in place of reflecting every table, which cost
+    about 150ms per open of an unchanged store. Another repowise's models, a
+    new or changed plugin revision, or any schema change since the stamp,
+    reads as unstamped and reconciles as before; a pending revision leaves it
+    unstamped. Other backends reconcile on every call.
+
     Safe to call on an already-initialised database (idempotent).
     """
+    from repowise.core.registry.plugins import load_plugins
+    from repowise.core.registry.storage_migrations import storage_migrations
+
+    load_plugins()
+    sqlite = engine.dialect.name == "sqlite"
     async with engine.begin() as conn:
+        if sqlite:
+            stamped, cookie = await _sqlite_stamp_state(conn)
+            if stamped == schema_stamp(cookie):
+                # The stamp covers every registered revision, so none is pending here.
+                storage_migrations.settled(conn)
+                return
+        await hold_schema_lock(conn)
+        before = await conn.run_sync(_table_names)
         await conn.run_sync(Base.metadata.create_all)
+        # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)
+        await conn.run_sync(_fill_created_tables, before)
 
         # SQLite-only: create FTS5 virtual table for full-text search.
         # PostgreSQL uses a GIN index added by the Alembic migration.
@@ -706,6 +929,32 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+    # After the core schema, each revision in its own transaction.
+    complete = await storage_migrations.apply_pending(engine)
+    if sqlite and complete:
+        async with engine.begin() as conn:
+            # Last, so the cookie read covers every statement above.
+            _, cookie = await _sqlite_stamp_state(conn)
+            await _write_stamp(conn, schema_stamp(cookie))
+
+
+async def _write_stamp(conn: Any, stamp: int) -> None:
+    """Record *stamp*, giving up at once on a read-only or locked store.
+
+    A store already on the current schema was opened without any write before
+    the stamp existed, so the stamp must not make such an open wait on another
+    writer's lock or fail on a read-only file. Unstamped, the next open simply
+    reconciles again.
+    """
+    timeout = (await conn.execute(text("PRAGMA busy_timeout"))).scalar()
+    await conn.execute(text("PRAGMA busy_timeout = 0"))
+    try:
+        await conn.execute(text(f"PRAGMA user_version = {stamp}"))
+    except DBAPIError as exc:
+        log.debug("schema_stamp_not_written", error=str(exc))
+    finally:
+        await conn.execute(text(f"PRAGMA busy_timeout = {int(timeout or 0)}"))
 
 
 # A table whose row count moved past this factor of the count ANALYZE recorded
@@ -746,21 +995,13 @@ def _planner_stats_stale(conn: Any) -> bool:
     return False
 
 
-async def refresh_planner_stats(engine: AsyncEngine) -> None:
-    """Refresh SQLite's planner statistics at the end of a write to the index.
+def _quote_identifier(name: str) -> str:
+    """Quote an SQL identifier for safe inclusion in statements."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
 
-    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
-    a wide covering index over the selective one (a full edge-table scan in
-    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
-    index leads with ``repository_id``, which a sample (``analysis_limit``, and
-    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
-    keeps the wrong index. It runs only when the statistics are missing or a
-    table's size has drifted, since a full pass reads the whole store. Other
-    backends keep their own statistics. A failure costs only a slower plan, so
-    it never fails the write.
-    """
-    if engine.dialect.name != "sqlite":
-        return
+
+async def _refresh_sqlite_planner_stats(engine: AsyncEngine) -> None:
     try:
         async with engine.begin() as conn:
             if await conn.run_sync(_planner_stats_stale):
@@ -769,16 +1010,100 @@ async def refresh_planner_stats(engine: AsyncEngine) -> None:
         log.warning("sqlite.analyze_failed", error=str(exc))
 
 
+# Tables whose statistics no longer describe them: never analyzed yet holding
+# data, a live row count that left the band ANALYZE recorded (the SQLite gate
+# in ``_planner_stats_stale``, read from PostgreSQL's own counters), or a data
+# file that grew past that band. The size checks matter because the live count
+# trails a commit by up to a second, and a bulk load must never be missed.
+# Ceiling: VACUUM also resets ``reltuples``; autoanalyze fires before it on
+# growth at the default thresholds, so the band rarely recentres unanalyzed.
+_PG_STALE_TABLES = f"""
+SELECT s.schemaname, s.relname
+FROM pg_stat_user_tables s
+JOIN pg_class c ON c.oid = s.relid
+WHERE s.schemaname = ANY (current_schemas(false))
+  AND CASE
+    WHEN s.last_analyze IS NULL AND s.last_autoanalyze IS NULL
+      THEN pg_relation_size(s.relid) > 0
+    ELSE s.n_live_tup NOT BETWEEN c.reltuples / {_STATS_DRIFT} AND c.reltuples * {_STATS_DRIFT}
+      OR pg_relation_size(s.relid)
+         > c.relpages::bigint * current_setting('block_size')::bigint * {_STATS_DRIFT}
+  END
+ORDER BY s.schemaname, s.relname
+"""
+
+
+async def _refresh_postgres_planner_stats(
+    engine: AsyncEngine, tables: Sequence[str] | None
+) -> None:
+    try:
+        async with engine.begin() as conn:
+            if tables is not None:
+                quoted = [_quote_identifier(t) for t in tables if t]
+            else:
+                stale = await conn.execute(text(_PG_STALE_TABLES))
+                quoted = [
+                    f"{_quote_identifier(schema)}.{_quote_identifier(name)}"
+                    for schema, name in stale
+                ]
+            if not quoted:
+                return
+            log.debug("postgresql.analyze", tables=len(quoted))
+            await conn.execute(text(f"ANALYZE {', '.join(quoted)}"))
+    except DBAPIError as exc:
+        log.warning("postgresql.analyze_failed", error=str(exc))
+
+
+async def refresh_planner_stats(
+    engine: AsyncEngine,
+    tables: Sequence[str] | None = None,
+) -> None:
+    """Refresh database planner statistics at the end of a write to the index.
+
+    Without statistics the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup).
+
+    For SQLite: a full ``ANALYZE``, not a sampled one: every index leads with
+    ``repository_id``, which a sample (``analysis_limit``, and ``PRAGMA optimize``
+    since SQLite 3.46) reads as selective, so the planner keeps the wrong index.
+    It runs only when the statistics are missing or a table's size has drifted,
+    since a full pass reads the whole store.
+
+    For PostgreSQL: autovacuum keeps statistics over time, but across a bulk load
+    (e.g. init or update) autovacuum has not yet analyzed the newly inserted rows,
+    leaving the planner with pre-load or empty statistics. ``ANALYZE`` runs on
+    the tables the same gate finds stale (never analyzed, or a row count past
+    the drift band), so a small update analyzes nothing and a first index
+    analyzes every table it filled. A whole-store ``ANALYZE`` takes about 10 s
+    on a 2 GB store. If specific tables are provided, only those are analyzed.
+
+    Other backends keep their own statistics. A failure costs only a slower
+    plan, so it never fails the write.
+    """
+    if engine.dialect.name == "sqlite":
+        await _refresh_sqlite_planner_stats(engine)
+    elif engine.dialect.name == "postgresql":
+        await _refresh_postgres_planner_stats(engine, tables)
+
+
 async def schema_behind(engine: AsyncEngine) -> bool:
     """Whether a table or column the models declare is missing from the store.
 
     One catalogue read, so a reader can skip the reconcile ``init_db`` runs and
-    pay for it only on a store an older repowise wrote. SQLite only; another
-    backend is migrated by Alembic and reads as current.
+    pay for it only on a store an older repowise wrote. The tables are checked
+    on SQLite only; another backend is migrated by Alembic. On every backend an
+    unapplied plugin storage revision counts, unless this process found it pending.
     """
-    if engine.dialect.name != "sqlite":
-        return False
+    from repowise.core.registry.plugins import load_plugins
+    from repowise.core.registry.storage_migrations import storage_migrations
+
+    load_plugins()
     async with engine.connect() as conn:
+        if await storage_migrations.behind(conn):
+            return True
+        if engine.dialect.name != "sqlite":
+            return False
         rows = await conn.execute(
             text(
                 "SELECT m.name, p.name FROM sqlite_master AS m "

@@ -14,6 +14,7 @@ self-contained README under `examples/<name>/`.
 | [distill/](distill/) | `distill` / `expand` / `saved` — compress command output (no LLM key) |
 | [health-coverage/](health-coverage/) | Code health, coverage ingest, and impacted-tests (no LLM key) |
 | [hooks-sync/](hooks-sync/) | `hook install` + `watch` — keep the index fresh (no LLM key) |
+| [plugins/hello/](plugins/hello/) | A minimal installable plugin: a CLI command, an MCP tool, an event sink and a report section |
 | [opencode/](opencode/) | OpenCode as the LLM provider for wiki generation |
 | [risk/](risk/) | `repowise risk` change / PR defect scoring (no LLM key) |
 | [search/](search/) | `repowise search` fulltext / symbol / semantic wiki lookup |

@@ -7,6 +7,7 @@ from tree_sitter import Node
 from ...models import HeritageRelation
 from ...type_names import bare_type_name
 from ..helpers import node_text
+from ..synthetic_symbols.lombok import superbuilder_parent
 
 
 def _superclass(
@@ -17,13 +18,14 @@ def _superclass(
     if not superclass:
         return
     parent = bare_type_name(node_text(superclass, src).strip().removeprefix("extends"))
-    if parent:
+    if not parent:
+        return
+    out.append(HeritageRelation(child_name=name, parent_name=parent, kind="extends", line=line))
+    builder_parent = superbuilder_parent(def_node, src, parent)
+    if builder_parent is not None:
         out.append(
             HeritageRelation(
-                child_name=name,
-                parent_name=parent,
-                kind="extends",
-                line=line,
+                child_name=f"{name}Builder", parent_name=builder_parent, kind="extends", line=line
             )
         )
 

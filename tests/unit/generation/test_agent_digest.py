@@ -134,7 +134,7 @@ async def test_git_signals_reach_the_digest_and_the_card_not_the_body(sample_con
     assert signals["bug_fixes"] == 3
     assert signals["owners"] == [{"name": "Ada", "files": 1}]
     assert "## Signals" in page.digest
-    assert "Bug-fix commits: 3, most in `pkg/parser.py`" in page.digest
+    assert "Bug fixes in the last 6 months, counted per file: 3, most in `pkg/parser.py`" in page.digest
     assert "hotspot" not in page.content.lower()
 
 

@@ -1,7 +1,6 @@
 "use client";
 
 import useSWR from "swr";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { CHAT_SHORTCUT_HINT, ChatDock, getArtifactSourceTarget } from "@repowise-dev/ui/chat";
@@ -14,35 +13,33 @@ import { useRepositoryChat } from "./repository-chat-provider";
 import { useChatDockHidden } from "./use-chat-dock-hidden";
 import { config, setChatDockHidden } from "@/lib/config";
 import { useTranslations } from "next-intl";
-
-// Sigma's worst-case bottom-right stack is ~197px tall (layout status plus
-// five controls and spacing). Keep a small measured clearance above it.
-export const REPOSITORY_GRAPH_DOCK_INSET = "12.5rem";
+import { NoProviderReason } from "./no-provider-reason";
+import { useModelUpgrade } from "@/components/model-upgrade/model-upgrade";
 
 /** Architecture `?view=` values that render a table, not the Sigma canvas.
  *  `deps` is the legacy spelling of `packages`. Absent or unrecognised means
- *  the Map tab, which is the default landing view. */
+ *  the Map tab, which is the default landing view. `tree` is the same file
+ *  graph as an outline: no canvas, so nothing in the bottom-right corner. */
 const ARCHITECTURE_VIEWS_WITHOUT_CANVAS = new Set([
   "coupling",
   "packages",
   "symbols",
   "deps",
+  "tree",
 ]);
 
 /**
- * Lift the dock only where something is actually beneath it.
+ * Hide the minimized pill on Architecture's Map canvas only.
  *
- * The clearance exists for exactly one element: Sigma's zoom/fit/layout stack,
- * anchored bottom-right on Architecture's Map tab. It used to key off the chat
- * context kind alone, which raised the pill 200px on two surfaces with nothing
- * under it — the Knowledge Graph, whose only bottom-anchored control sits
- * bottom-LEFT, and Architecture's Coupling, Third-party and Symbols tabs,
- * which render tables and mount no canvas at all.
+ * Sigma anchors its zoom/fit/layout stack bottom-right there, and its height
+ * above the viewport bottom moves with the legend footer, so no fixed lift
+ * clears it. The breadcrumb's Ask link and the chat shortcut stay as the ways
+ * in, and an opened dock still renders as usual. Every other page keeps the
+ * pill.
  */
-export function getRepositoryDockCollisionInset(kind: string, view?: string) {
-  if (kind !== "architecture") return undefined;
-  if (view && ARCHITECTURE_VIEWS_WITHOUT_CANVAS.has(view)) return undefined;
-  return REPOSITORY_GRAPH_DOCK_INSET;
+export function hidesRepositoryDockPill(kind: string, view?: string) {
+  if (kind !== "architecture") return false;
+  return !(view && ARCHITECTURE_VIEWS_WITHOUT_CANVAS.has(view));
 }
 
 export function RepositoryChatDock() {
@@ -75,14 +72,17 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
     () => getProviders(chat.repoId),
     { revalidateOnFocus: false },
   );
+  // Outside the composer's reason, which unmounts once a provider is set.
+  const upgrade = useModelUpgrade(chat.repoId);
   const anyConfigured =
     providers === undefined || providers.providers.some((provider) => provider.configured);
-  const collisionInset = getRepositoryDockCollisionInset(
+  const hidePill = hidesRepositoryDockPill(
     chat.pageContext.kind,
     searchParams.get("view") ?? undefined,
   );
 
   return (
+    <>
     <ChatDock
       storageKey={`repowise:chat-dock:${chat.repoId}:${chat.conversationId ?? "new"}`}
       repoId={chat.repoId}
@@ -118,24 +118,11 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
           ? `/repos/${chat.repoId}/chat?conversation=${encodeURIComponent(chat.conversationId)}`
           : `/repos/${chat.repoId}/chat`,
       )}
-      {...(collisionInset ? { collisionInset } : {})}
+      hidePill={hidePill}
       onDismiss={() => setChatDockHidden(true)}
       unverifiedFigureCopy={{ flag: t("unverifiedFigure"), note: t("unverifiedFiguresNote") }}
       sendDisabled={!anyConfigured}
-      sendDisabledReason={
-        <span>
-          {t.rich("noProviderShort", {
-            link: (chunks) => (
-              <Link
-                href="/settings"
-                className="text-[var(--color-accent-primary)] hover:underline"
-              >
-                {chunks}
-              </Link>
-            ),
-          })}
-        </span>
-      }
+      sendDisabledReason={<NoProviderReason message="noProviderShort" onAddModel={upgrade.openSheet} />}
       modelSelectorSlot={<ModelSelector repoId={chat.repoId} activeProvider={chat.selectedProvider} activeModel={chat.selectedModel} onSelect={chat.selectModel} />}
       historySlot={
         <ConversationHistory
@@ -146,5 +133,7 @@ function ConnectedRepositoryChatDock({ chat }: { chat: RepositoryChatValue }) {
         />
       }
     />
+    {upgrade.sheet}
+    </>
   );
 }

@@ -1,8 +1,8 @@
 """The panel a workspace ``repowise init`` ends on.
 
 Same shape as the single-repo finish panel (:mod:`finish_panel`): counts with a
-Scope row, then Connected, questions for the agent, serve first, and a short
-receipt. The per-repo documentation list sits inside it.
+Scope row, the per-repo documentation list, one cross-repo finding, Connected,
+one question for the agent, then serve.
 """
 
 from __future__ import annotations
@@ -18,11 +18,9 @@ from rich.padding import Padding
 from rich.text import Text
 
 from repowise.cli.ui import mascot
-from repowise.cli.ui.brand import ERR, OK, WARN, key_value_table
+from repowise.cli.ui.brand import ERR, INFO, OK, WARN, key_value_table
 from repowise.cli.ui.finish_panel import (
-    agent_questions,
     ask_lines,
-    autosync_lines,
     connected_lines,
     dim_line,
     line,
@@ -70,6 +68,8 @@ class WorkspaceFacts:
     provider: str | None = None
     #: Nothing was written, so there is no mode to name and nothing to rebuild.
     dry_run: bool = False
+    #: The one cross-repo finding, already worded; None when none was measured.
+    cross_repo: str | None = None
 
 
 def _n(count: int, noun: str) -> str:
@@ -164,38 +164,52 @@ def _repo_lines(facts: WorkspaceFacts) -> list[RenderableType]:
     return lines
 
 
+#: What ``repowise serve`` is for at the end of a workspace ``init``.
+_WORKSPACE_SERVE_GLOSS = "open the workspace dashboard (keeps running; Ctrl+C stops it)"
+
+
 def workspace_steps(facts: WorkspaceFacts, setup: Any = None) -> list[tuple[str, str]]:
-    """``repowise serve``, then the two moves that most need making."""
+    """``repowise serve``, then only what stops a repo from being used.
+
+    Searches, status and a repo's model upgrade wait in ``repowise next`` and
+    the dashboard, as they do after a single-repo init.
+    """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
-        candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
+        candidates.append(
+            ("repowise agents add", "connect your coding agent: a checklist shows the ones installed")
+        )
     skipped = next((r for r in facts.repos if r.skipped), None)
     if skipped and not facts.dry_run:
         candidates.append(
             (fast_to_full_command(escape(skipped.alias)), "build its documentation")
         )
-    elif not facts.provider and not facts.dry_run:
-        candidates.append(
-            ("repowise generate <repo>", "write a repo's documentation with a model")
-        )
-    candidates += [
-        ('repowise search "<query>"', "search across all indexed repos"),
-        ("repowise status --workspace", "show workspace status"),
-    ]
-    return [serve_step("workspace dashboard"), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=_WORKSPACE_SERVE_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
-def _questions() -> list[str]:
+def workspace_first_prompt(facts: WorkspaceFacts) -> str:
+    """The cross-repo question, naming the repos that indexed; empty when none did."""
+    # Lazy: the agent_prompts package pulls in the health analysis on import.
+    from repowise.core.agent_prompts import workspace_prompt
+
+    aliases = [r.alias for r in _indexed(facts)]
+    return workspace_prompt(aliases) if aliases else ""
+
+
+def _stood_out(facts: WorkspaceFacts) -> list[RenderableType]:
+    if not facts.cross_repo:
+        return []
     return [
-        "How do these repos depend on each other, and where should I start reading?",
-        agent_questions()[1],
+        Text(""),
+        line("[bold]What stood out[/bold]"),
+        key_value_table([("Across repos", escape(facts.cross_repo))], label_width=12, value_style=INFO),
     ]
 
 
 def build_workspace_finish_panel(
     facts: WorkspaceFacts, *, setup: Any = None, owl: str = mascot.DONE
 ) -> Any:
-    """The workspace completion panel: counts, repos, Connected, questions, steps.
+    """The workspace completion panel: counts, repos, finding, Connected, question, steps.
 
     *owl* is the title owl's state: how the run finished.
     """
@@ -204,7 +218,6 @@ def build_workspace_finish_panel(
         _metrics(facts),
         next_steps=workspace_steps(facts, setup),
         body=_body(facts, setup),
-        footer=autosync_lines(setup),
         owl=owl,
     )
 
@@ -219,14 +232,13 @@ def print_workspace_finish_panel(
         _metrics(facts),
         workspace_steps(facts, setup),
         body=_body(facts, setup),
-        footer=autosync_lines(setup),
         owl=owl,
     )
 
 
 def _body(facts: WorkspaceFacts, setup: Any) -> list[RenderableType]:
-    body = _repo_lines(facts)
+    body = _repo_lines(facts) + _stood_out(facts)
     connected = connected_lines(setup)
     if connected:
         body += [Text(""), *connected]
-    return body + ask_lines(_questions())
+    return body + ask_lines(workspace_first_prompt(facts))

@@ -265,6 +265,21 @@ def test_changing_an_exported_symbol_warns_about_outside_callers() -> None:
     assert not annotate_any(plan(file_path="svc/other.py", target_symbol="handle"), facts)
 
 
+def test_changing_an_exported_ruby_symbol_warns_about_outside_callers() -> None:
+    exported = {
+        "lib/mygem/client.rb": {"lib/mygem/client.rb::Client::get": "lib/mygem/client.rb"}
+    }
+    facts = AnnotationFacts(exported=exported)
+    notes = annotate(plan(file_path="lib/mygem/client.rb", target_symbol="Client.get"), facts)
+    assert notes.risks == (
+        PlanRisk(
+            "public_api",
+            "`Client.get` is exported from `lib/mygem/client.rb`; changing its signature "
+            "breaks consumers outside the repo.",
+        ),
+    )
+
+
 def test_changing_an_exported_jvm_symbol_warns_about_outside_callers() -> None:
     exported = {
         "lib/src/main/java/a/Api.java": {

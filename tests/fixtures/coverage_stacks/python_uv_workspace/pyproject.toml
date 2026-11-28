@@ -1,0 +1,9 @@
+[project]
+name = "mono"
+version = "0"
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

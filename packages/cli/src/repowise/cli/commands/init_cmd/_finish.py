@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 from typing import Any
 
-from repowise.cli.commands._index_outcome import record_index_outcome, refresh_read_snapshots
-from repowise.cli.editor_setup import register_editor_clients, write_editor_project_files
+import structlog
+
+from repowise.cli.commands._index_outcome import (
+    record_index_outcome,
+    refresh_read_snapshots,
+    refresh_repo_contracts,
+)
+from repowise.cli.editor_setup import (
+    is_editor_setup_disabled,
+    register_editor_clients,
+    snapshot_agent_configs,
+    write_editor_project_files,
+)
 from repowise.cli.helpers import (
     console,
     get_head_commit,
@@ -20,12 +32,18 @@ from repowise.cli.helpers import (
 from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
 from repowise.cli.ui import OK, mascot, print_stage, progress_steps
 from repowise.cli.ui.glyphs import glyph
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.settings.model import flag
 
 from ._ingest import decision_llm_client
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
@@ -37,6 +55,8 @@ from .persistence import (
 )
 from .reporting import show_completion
 
+logger = structlog.get_logger(__name__)
+
 
 def persist_index(run: InitRun) -> None:
     """Save to the database and build the search index, then bank agent savings."""
@@ -47,8 +67,20 @@ def persist_index(run: InitRun) -> None:
         persist_callback = recorder.rebind(steps)
         # Indeterminate, announced so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
+        from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+        cache_incremental_graph = incremental_graph_enabled()
+        if cache_incremental_graph:
+            from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
+
+            invalidate_seed_edge_cache(run.repo_path)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
+        # Seed the incremental graph update from a sealed sequential cache.
+        if cache_incremental_graph and run.result.graph_builder is not None:
+            from repowise.core.pipeline.incremental.graph_seed import save_seed_edge_cache
+
+            run_async(save_seed_edge_cache(run.repo_path, run.result.graph_builder))
         # Persistence has its own callback; fold its warnings into the run record.
         run.run_warnings.extend(persist_callback.warnings)
         # Read last: every stage writes into the one table.
@@ -89,6 +121,10 @@ def save_run_config(run: InitRun) -> None:
     if run.max_file_pages is not None and run.max_file_pages != run.config.get("max_file_pages"):
         save_config_partial(repo_path, max_file_pages=run.max_file_pages)
 
+    # Folder floors (#633): an override is recorded, the default stays unwritten.
+    if opts.folder_coverage_rules:
+        save_config_partial(repo_path, folder_coverage=list(opts.folder_coverage_rules))
+
     # Written before the config fingerprint. A template wiki has no style or
     # language, and recording one would make `restyle` skip it.
     if opts.wiki_style != DEFAULT_STYLE and not run.effective_index_only:
@@ -100,6 +136,13 @@ def save_run_config(run: InitRun) -> None:
     if opts.commit_limit is not None:
         save_config_partial(repo_path, commit_limit=run.resolved_commit_limit)
 
+    # Written only when the run's choice differs from the file's (#5367): a
+    # prompt answered with the default leaves the file alone.
+    if opts.follow_renames is not None and opts.follow_renames != flag(
+        run.config.get("follow_renames"), False
+    ):
+        save_config_partial(repo_path, follow_renames=opts.follow_renames)
+
 
 def register_clients(run: InitRun) -> None:
     """Global client registration, then the workspace's distill verdict."""
@@ -109,6 +152,10 @@ def register_clients(run: InitRun) -> None:
     )
 
     no_editor_setup = not run.opts.editor_setup
+    if not is_editor_setup_disabled(no_editor_setup):
+        # A failed snapshot only costs the restart list its non-Claude hosts.
+        with contextlib.suppress(Exception):
+            run.agent_configs_before = snapshot_agent_configs(run.repo_path)
     if run.global_mcp_consent is False:
         console.print(
             "  [dim]Global Claude config left as is (this repo only). Run "
@@ -160,7 +207,11 @@ def _search_scope(run: InitRun) -> dict[str, Any]:
     if not result.generated_pages:
         # Fast mode has no pages for reindex to embed.
         return {"full_text": "unavailable", "semantic": "unavailable", "next_command": None}
-    semantic = semantic_search_status(run.scope_embedder, getattr(result, "embed_failed_pages", 0))
+    semantic = semantic_search_status(
+        run.scope_embedder,
+        getattr(result, "embed_failed_pages", 0),
+        getattr(result, "vector_store", None),
+    )
     return {
         "full_text": "available",
         "semantic": semantic,
@@ -188,9 +239,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         base_state,
         {"commit_limit": run.resolved_commit_limit, "max_file_pages": run.max_file_pages},
         run_mode=run_mode,
-        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[
-            docs_mode
-        ],
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
@@ -249,8 +298,16 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     record_decision_lanes(
         base_state, repo_path, ran_with_model=decision_llm_client(run) is not None
     )
+    # The ledger has to read "ran" from the first status page: init's
+    # extraction is the only one this index has had (#6031).
+    mining_state.record_extraction_report(
+        base_state, getattr(result, "decision_report", None), head
+    )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
+    from repowise.core.pipeline.incremental.feature import stamp_graph_update
+
+    stamp_graph_update(base_state)
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
     # Never inherit the previous run's degradation report.
@@ -277,7 +334,9 @@ def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:
         exclude_patterns=run.exclude_patterns if run.exclude_patterns else None,
         commit_limit=run.resolved_commit_limit if run.opts.commit_limit is not None else None,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     # After the config writes, so the first update doesn't false-positive.
     stamp_fresh_index(base_state, repo_path, run.result)
@@ -375,6 +434,8 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
     # Before the editor files, which quote Fix first from these views.
     with steps.step("views"):
         refresh_read_snapshots(repo_path)
+    # Opt-in; off, it reads one setting and writes nothing.
+    refresh_repo_contracts(repo_path)
     if not editor_setup:
         return write_editor_project_files(
             console, repo_path, options=run.editor_options, no_editor_setup=True
@@ -390,6 +451,82 @@ def _write_editor_files(run: InitRun, steps: Any) -> list[Path]:
 
         sync_repo_hook(repo_path, console)
     return files_written
+
+
+def first_look_provider(run: InitRun) -> Any:
+    """The provider the repo report is written with; ``None`` on a run meant
+    to cost nothing (keyless, ``--no-prose``, a declined cost) or a dry run, even
+    when a key sits in the environment."""
+    opts = run.opts
+    if opts.dry_run or opts.index_only or run.no_provider or run.effective_index_only:
+        return None
+    return run.provider
+
+
+def _write_first_look(run: InitRun, steps: Any) -> Any:
+    """Write the repo report from the finished index; ``None`` when off or failed.
+
+    Written once: a later init keeps the stamped report (``--since-last`` shows
+    progress against it). A failure is logged and never fails init.
+    """
+    try:
+        from repowise.core.report.first_look.config import first_look_settings
+
+        settings = first_look_settings(run.repo_path)
+        if not settings.enabled:
+            return None
+        with steps.step("first_look"):
+            return run_async(_first_look(run, settings))
+    except Exception:
+        logger.warning("first_look_report_failed", repo=str(run.repo_path), exc_info=True)
+        return None
+
+
+def _for_an_agent() -> bool:
+    """The ``--progress json`` stream is open, or nobody can answer at the terminal."""
+    from repowise.cli.agent_events import active
+
+    return active() is not None or not sys.stdin.isatty()
+
+
+async def _first_look(run: InitRun, settings: Any) -> Any:
+    from repowise.cli.commands.serve_cmd._lock import live_web_url
+    from repowise.cli.helpers import repo_index_session
+    from repowise.cli.ui.finish_panel import FirstLook
+    from repowise.core.report.first_look.marks import item_statuses
+    from repowise.core.report.first_look.store import read_report_file
+    from repowise.core.report.first_look.write import rendered_path, write_files, write_first_look
+
+    root = run.repo_path
+    async with repo_index_session(root) as opened:
+        if opened is None:
+            return None
+        session, repo_id = opened
+        web = live_web_url(root)
+        report = read_report_file(root)
+        if report is not None and not rendered_path(root, ".html").exists():
+            await write_files(session, repo_id, root, report, app_url=web)
+        provider = first_look_provider(run)
+        if report is None and provider is not None and run.cost_tracker is not None:
+            provider._cost_tracker = run.cost_tracker
+        report = report or await write_first_look(
+            session, repo_id, root, provider=provider, settings=settings, app_url=web
+        )
+        statuses = await item_statuses(session, repo_id, report.items())
+    if provider is not None and run.cost_tracker is not None:
+        await run.cost_tracker.flush()
+    where = (
+        f"{web}/repos/{repo_id}/report"
+        if web
+        else rendered_path(root, ".html").relative_to(root).as_posix()
+    )
+    return FirstLook(
+        where,
+        report.stamp.generator,
+        report.stamp.cost,
+        agent=_for_an_agent(),
+        open_items=sum(s.status == "open" for s in statuses.values()),
+    )
 
 
 def _keep_out_of_git(run: InitRun) -> None:
@@ -412,6 +549,7 @@ def complete_setup(run: InitRun) -> None:
         with steps.step("state"):
             write_run_state(run)
         files_written = _write_editor_files(run, steps)
+        first_look = _write_first_look(run, steps)
     _keep_out_of_git(run)
     _record_init_outcome(run)
 
@@ -430,6 +568,7 @@ def complete_setup(run: InitRun) -> None:
         yes=opts.yes,
         no_editor_setup=not opts.editor_setup,
     )
+    warn_unresolved_hooks(console, [repo_path], no_editor_setup=not opts.editor_setup)
 
     # Last, so the panel reflects what setup did. `interactive` mirrors the
     # offers' gate: when they were skipped the panel names their hooks.
@@ -441,8 +580,10 @@ def complete_setup(run: InitRun) -> None:
         interactive=(sys.stdin.isatty() and not opts.yes),
         first_index=run.first_index,
         no_editor_setup=not opts.editor_setup,
+        configs_before=run.agent_configs_before,
+        claude_repointed=run.mcp_repointed,
     )
-    run.next_steps = show_completion(
+    completion = show_completion(
         repo_path=repo_path,
         result=run.result,
         start=run.start,
@@ -453,7 +594,12 @@ def complete_setup(run: InitRun) -> None:
         files_written=files_written,
         verbose=opts.verbose,
         owl=_finish_owl(run),
+        first_look=first_look,
     )
+    run.next_steps = completion.steps
+    run.stood_out = completion.stood_out
+    run.first_prompt = completion.first_prompt or None
+    run.first_look = first_look
 
 
 def _gaps(run: InitRun) -> list[str]:
@@ -464,7 +610,7 @@ def _gaps(run: InitRun) -> list[str]:
 
     result = run.result
     return run.gaps + run_gaps(
-        failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+        failed_page_ids=list(getattr(result, "failed_page_ids", None) or []),
         embed_error=embed_failure_message(
             run.scope_embedder, getattr(result, "embed_failed_pages", 0)
         ),

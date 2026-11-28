@@ -251,7 +251,7 @@ function ProviderRow({ provider, isActive, labels, validation, ...props }: RowPr
       className={cn(
         "rounded-md border p-3 transition-colors",
         isActive
-          ? "border-[var(--color-border-active)] bg-[var(--color-accent-muted)]"
+          ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)]"
           : "border-[var(--color-border-default)]",
       )}
     >
@@ -538,6 +538,22 @@ function KeyEditor({
       </Button>
     </div>
   );
+}
+
+/** One provider's key field on its own, for a surface that offers a key
+ *  without the full provider list. Escape and the close button clear it. */
+export function ProviderKeyEntry({
+  provider,
+  onAddKey,
+  labels: labelOverrides,
+}: {
+  provider: ProviderOption;
+  onAddKey: ProviderSettingsProps["onAddKey"];
+  labels?: Partial<ProviderSettingsLabels>;
+}) {
+  const keys = useKeyEditor(provider.id, onAddKey, () => undefined);
+  const labels = { ...DEFAULT_PROVIDER_SETTINGS_LABELS, ...labelOverrides };
+  return <KeyEditor provider={provider} keys={keys} labels={labels} />;
 }
 
 function ValidationLine({

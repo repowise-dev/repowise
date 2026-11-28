@@ -25,6 +25,7 @@ import {
   type ExcludedReview,
 } from "./performance/grouping";
 import { LegacyPerformanceFindings } from "./performance/legacy";
+import { RunSplitSentence, RuntimeEvidenceSection, runSplitFooter } from "./performance/measured";
 import { ACTIONABILITY_LABEL } from "./performance/presentation";
 import { usePerformancePrompts } from "./performance/prompts";
 import {
@@ -45,6 +46,8 @@ import {
 import { QUIET_LINK_CLS, type RowCallbacks } from "./performance/queue";
 import { ScopeControl, ScopeSentence, type ScopeCounts } from "./performance/scope";
 import {
+  ConnectEvidenceRow,
+  ConnectEvidenceState,
   FilteredEmpty,
   GoodState,
   IgnoredArgumentsNotice,
@@ -56,7 +59,10 @@ import {
 } from "./performance/states";
 import { usePerformanceFilters } from "./performance/use-filters";
 import { usePerformanceQueue } from "./performance/use-queue";
+import { useRuntimeEvidenceView } from "./performance/runtime";
+import type { LowSignalPromptBuilder } from "./performance/run-overview";
 import { PerformanceVerdict, verdictOf } from "./performance/verdict";
+import { formatNumber } from "../lib/format";
 
 /**
  * The Performance tab: how many changes are worth making now, where they sit,
@@ -86,6 +92,10 @@ export function PerformanceView({
   onFiltersChange,
   openOpportunityId,
   onOpenOpportunityChange,
+  runtimeEvidence = null,
+  connectEvidencePrompt,
+  connectEvidenceHint,
+  lowSignalPrompt,
 }: {
   adapter: PerformanceViewAdapter;
   /** The tab's URL parameters (or a pre-flat `perf` blob), so a shared link opens the same view. */
@@ -100,6 +110,30 @@ export function PerformanceView({
   openOpportunityId?: string | null;
   /** Called with the open cause's id, or null when the drawer closes. */
   onOpenOpportunityChange?: ((opportunityId: string | null) => void) | undefined;
+  /**
+   * Runtime evidence for this repository, when the host can read it. With
+   * `connected: false`, an empty queue asks for profiles and benchmark results
+   * instead of reporting a clean result; `found` names files already on disk.
+   * Omitted, the view never mentions runtime evidence.
+   */
+  runtimeEvidence?: { connected: boolean; found?: readonly string[] | null } | null;
+  /**
+   * The prompt the no-evidence states and the tests-only notice copy, for a
+   * host whose evidence arrives another way (a CI upload, say). Omitted, they
+   * copy the prompt that runs `repowise evidence setup` locally.
+   */
+  connectEvidencePrompt?: (() => string) | undefined;
+  /**
+   * The line under the empty state's prompt button. Omitted, it names
+   * `repowise evidence setup`; null drops it.
+   */
+  connectEvidenceHint?: React.ReactNode;
+  /**
+   * The prompt a low-signal run copies to collect a profile that ranks, for a
+   * host whose profiles arrive another way. Omitted, a prompt that changes the
+   * profiling step wherever it runs.
+   */
+  lowSignalPrompt?: LowSignalPromptBuilder | undefined;
 }) {
   const { filters, current, apply } = usePerformanceFilters(initialFilters, onFiltersChange);
 
@@ -141,6 +175,7 @@ export function PerformanceView({
   }, [linked]);
 
   const { openPrompt, promptModal } = useAiPromptAction();
+  const runtime = useRuntimeEvidenceView(adapter);
   const prompts = usePerformancePrompts(adapter);
   const prefetch = usePrefetchDetail(adapter);
   const detailById = capabilities.detailById;
@@ -204,7 +239,25 @@ export function PerformanceView({
   if (!data) return null;
 
   const { summary, facets } = data;
-  if (summary.status === "unavailable") return <UnavailableQueue summary={summary} />;
+  if (summary.status === "unavailable") {
+    // No performance analysis leaves the queue empty, not the runtime
+    // evidence: what the stored runs measured still shows above the notice.
+    // With no queue there is no cause to open.
+    return (
+      <div className="space-y-8">
+        <RuntimeEvidenceSection
+          view={runtime}
+          adapter={adapter}
+          canOpenCause={false}
+          onPrompt={openPrompt}
+          connectPrompt={connectEvidencePrompt}
+          lowSignalPrompt={lowSignalPrompt}
+        />
+        <UnavailableQueue summary={summary} />
+        {promptModal}
+      </div>
+    );
+  }
 
   // A server that predates context scoping sends no repository_total, and
   // one that predates scopes no scope sizes; both fall back to the summary.
@@ -270,16 +323,33 @@ export function PerformanceView({
         <PerformanceVerdict
           verdict={verdictOf(filters.scope, data.total, groups)}
           analyzedCommit={summary.analyzed_commit}
+          figureFooter={runSplitFooter(runtime.run)}
         >
           {sentence}
+          <RunSplitSentence run={runtime.run} />
         </PerformanceVerdict>
       ) : null}
+
+      <RuntimeEvidenceSection
+        view={runtime}
+        adapter={adapter}
+        onOpenCause={openById}
+        canOpenCause={detailById}
+        onPrompt={openPrompt}
+        connectPrompt={connectEvidencePrompt}
+        lowSignalPrompt={lowSignalPrompt}
+      />
 
       <section aria-label="Performance causes" className="space-y-4">
         {summary.status === "stale_model" ? <StaleModelNotice summary={summary} /> : null}
         {data.ignored_arguments ? (
           <IgnoredArgumentsNotice ignored={data.ignored_arguments} />
         ) : null}
+        <ConnectEvidenceRow
+          runtimeEvidence={runtimeEvidence}
+          hasCauses={items.length > 0}
+          prompt={connectEvidencePrompt}
+        />
 
         <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <ScopeControl value={filters.scope} counts={scopes} onChange={toScope} />
@@ -310,6 +380,12 @@ export function PerformanceView({
           // A scope with no causes is clean, not a failed filter.
           narrowingCount(filters) > 0 && repositoryTotal > 0 ? (
             <FilteredEmpty onClear={() => apply(clearNarrowing(filters))} />
+          ) : runtimeEvidence && !runtimeEvidence.connected ? (
+            <ConnectEvidenceState
+              found={runtimeEvidence.found}
+              prompt={connectEvidencePrompt}
+              hint={connectEvidenceHint}
+            />
           ) : (
             <GoodState
               scope={GOOD_STATE_SCOPE[filters.scope]}
@@ -341,7 +417,7 @@ export function PerformanceView({
             />
             {data.areas && data.areas.more > 0 ? (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                {data.areas.more.toLocaleString()} more{" "}
+                {formatNumber(data.areas.more)} more{" "}
                 {data.areas.more === 1 ? "cause sits" : "causes sit"} in smaller areas not
                 listed here.
               </p>
@@ -351,7 +427,7 @@ export function PerformanceView({
 
         {filters.scope === "now" && items.length > 0 && otherProduction > 0 ? (
           <Button variant="outline" size="sm" onClick={() => toScope("production")}>
-            Show the {otherProduction.toLocaleString()} other production{" "}
+            Show the {formatNumber(otherProduction)} other production{" "}
             {otherProduction === 1 ? "cause" : "causes"}
           </Button>
         ) : null}

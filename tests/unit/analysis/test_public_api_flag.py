@@ -529,3 +529,148 @@ def test_partial_fragments_in_a_project_that_ships_nothing_stay_unflagged(tmp_pa
         },
     )
     assert not {node for node, root in flags.items() if root}
+
+
+_GEMSPEC = "Gem::Specification.new do |spec|\n  spec.name = '{name}'\n  spec.version = '0.1'\nend\n"
+
+_RUBY_GEM = {
+    "mygem.gemspec": _GEMSPEC.format(name="mygem"),
+    "lib/mygem.rb": (
+        "require 'mygem/client'\n\n"
+        "module Mygem\n  def self.new(url)\n    Client.new(url)\n  end\nend\n"
+    ),
+    "lib/mygem/client.rb": (
+        "module Mygem\n  class Client\n    def get(path)\n    end\n\n"
+        "    private\n\n    def retry_once\n    end\n  end\nend\n"
+    ),
+    "lib/mygem/unloaded.rb": "module Mygem\n  class Unloaded\n    def run\n    end\n  end\nend\n",
+    "spec/client_spec.rb": "require 'mygem'\n\ndescribe 'client' do\nend\n",
+}
+
+
+def _stamped(flags: dict[str, str]) -> set[str]:
+    return {node for node, root in flags.items() if root}
+
+
+def test_a_gems_entry_and_what_it_requires_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(tmp_path, _RUBY_GEM)
+    assert _stamped(flags) == {
+        "lib/mygem.rb::Mygem",
+        "lib/mygem.rb::Mygem::new",
+        "lib/mygem/client.rb::Mygem",
+        "lib/mygem/client.rb::Mygem::Client",
+        "lib/mygem/client.rb::Client::get",
+    }
+    # The file that exports a symbol is the file that declares it.
+    assert flags["lib/mygem/client.rb::Client::get"] == "lib/mygem/client.rb"
+    # A method below a bare ``private``, a file nothing requires and a spec stay out.
+    for node in (
+        "lib/mygem/client.rb::Client::retry_once",
+        "lib/mygem/unloaded.rb::Mygem",
+        "lib/mygem/unloaded.rb::Mygem::Unloaded",
+        "lib/mygem/unloaded.rb::Unloaded::run",
+    ):
+        assert flags[node] == "", node
+    assert not [node for node in flags if node.startswith("spec/") and flags[node]]
+
+
+def test_a_dashed_gem_name_reads_as_path_separators(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "rack-protection.gemspec": _GEMSPEC.format(name="rack-protection"),
+            "lib/rack/protection.rb": (
+                "module Rack\n  module Protection\n    def self.new\n    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert flags["lib/rack/protection.rb::Rack"] == "lib/rack/protection.rb"
+    assert flags["lib/rack/protection.rb::Rack::Protection"] == "lib/rack/protection.rb"
+    assert flags["lib/rack/protection.rb::Protection::new"] == "lib/rack/protection.rb"
+
+
+def test_a_lib_without_a_gemspec_stamps_nothing(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _RUBY_GEM.items() if not rel.endswith(".gemspec")}
+    flags = build_files(tmp_path, files)
+    assert flags and not _stamped(flags)
+
+
+def test_a_gem_whose_entry_file_is_absent_stamps_nothing(tmp_path: Path) -> None:
+    files = {rel: body for rel, body in _RUBY_GEM.items() if rel != "lib/mygem.rb"}
+    assert not _stamped(build_files(tmp_path, files))
+
+
+def test_the_gem_name_is_read_from_specification_new_or_the_file(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "one/one.gemspec": "Gem::Specification.new 'one', '1.0' do |s|\nend\n",
+            "one/lib/one.rb": "module One\nend\n",
+            # A name that is not a literal falls back to the gemspec's file name.
+            "two/two.gemspec": "Gem::Specification.new do |s|\n  s.name = Two::NAME\nend\n",
+            "two/lib/two.rb": "module Two\nend\n",
+        },
+    )
+    assert flags["one/lib/one.rb::One"] == "one/lib/one.rb"
+    assert flags["two/lib/two.rb::Two"] == "two/lib/two.rb"
+
+
+def test_a_gems_requires_are_followed_transitively_inside_its_own_lib(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "a/a.gemspec": _GEMSPEC.format(name="a"),
+            "a/lib/a.rb": "require_relative 'a/one'\nmodule A\nend\n",
+            "a/lib/a/one.rb": "require 'a/two'\nmodule A\n  class One\n  end\nend\n",
+            "a/lib/a/two.rb": "require 'b'\nmodule A\n  class Two\n  end\nend\n",
+            # Another gem's lib, reached by a require, is not this gem's surface.
+            "b/b.gemspec": _GEMSPEC.format(name="b-extra"),
+            "b/lib/b.rb": "module B\n  class Helper\n  end\nend\n",
+        },
+    )
+    assert flags["a/lib/a/one.rb::A::One"] == "a/lib/a/one.rb"
+    assert flags["a/lib/a/two.rb::A::Two"] == "a/lib/a/two.rb"
+    assert flags["b/lib/b.rb::B::Helper"] == ""
+
+
+def test_members_of_deeply_nested_ruby_modules_are_public_api(tmp_path: Path) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "deep.gemspec": _GEMSPEC.format(name="deep"),
+            "lib/deep.rb": (
+                "module Deep\n  module Http\n    class Conn\n      def run\n      end\n\n"
+                "      class Inner\n        def go\n        end\n      end\n"
+                "    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert _stamped(flags) == {
+        "lib/deep.rb::Deep",
+        "lib/deep.rb::Deep::Http",
+        "lib/deep.rb::Http::Conn",
+        "lib/deep.rb::Conn::run",
+        "lib/deep.rb::Conn::Inner",
+        "lib/deep.rb::Inner::go",
+    }
+
+
+def test_ruby_methods_made_private_after_their_definition_are_not_public_api(
+    tmp_path: Path,
+) -> None:
+    flags = build_files(
+        tmp_path,
+        {
+            "vis.gemspec": _GEMSPEC.format(name="vis"),
+            "lib/vis.rb": (
+                "module Vis\n  class Box\n    def open\n    end\n\n    def hidden\n    end\n"
+                "    private :hidden\n\n    protected\n\n    def guarded\n    end\n"
+                "    public\n\n    def back\n    end\n\n"
+                "    private def wrapped\n    end\n  end\nend\n"
+            ),
+        },
+    )
+    assert {n for n in _stamped(flags) if "::Box::" in n} == {
+        "lib/vis.rb::Box::open",
+        "lib/vis.rb::Box::back",
+    }

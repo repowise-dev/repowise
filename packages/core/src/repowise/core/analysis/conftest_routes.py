@@ -15,17 +15,22 @@ through its imports can break a test through either:
    selected already, chosen as the first by path (an import check). Autouse
    fixtures run for that test too, so a patch an autouse fixture applies to a
    module on the route (``monkeypatch.setattr(mod, "x", ...)``) that stops
-   working fails there as well.
+   working fails there as well. So does a cache reset an autouse fixture runs
+   (below) that starts raising.
 2. **What the conftest does with the module.** A fixture, a hook or
    module-level code that names something from a module on the route, in any
-   way but as the ``setattr`` target in an autouse fixture or hook,
+   way but as the ``setattr`` target (the module or an attribute of it) or a
+   cache reset (:func:`_cache_reset`) in an autouse fixture or hook,
    can change what a test sees: calling it, reading a constant, comparing,
    iterating or formatting it all do. An autouse fixture, a ``pytest_*`` hook,
    module-level code (class bodies included) and a fixture or hook defined in
    a class keep every test. A fixture a test asks for affects the tests that
    ask for it, directly, through other fixtures, through ``usefixtures`` or by
    ``getfixturevalue``; the index records each of those requests as a fixture
-   edge, and those tests are selected.
+   edge, and those tests are selected. A test file or conftest that asks for
+   fixtures in a way the index cannot record (``pytest_edges.UNRECORDED_HINT``)
+   is selected too, standing for its own tests: a request resolves for the
+   test making it, and every other file's requests are recorded.
 
 Granularity is the module, not the function: a fixture that names anything in
 a module on the route to the change counts as reaching it, however deep the
@@ -33,17 +38,18 @@ change is. One exception: reading a literal constant of a module on the route,
 or calling a function of it that uses nothing the module imports beyond standard
 modules that cannot load code by name (:func:`local_names`), depends on that
 module's text alone, so it reaches a change only in that module, not one in a
-module it merely imports. A binding the conftest never reads (``import
+module it merely imports. The same holds for such a name a module on the route
+re-exports (``from .console import NAMES as NAMES``): it reaches a change only
+in the module that defines it (:func:`entry_names`). A binding the conftest never reads (``import
 app.models  # registers them``) is imported for its side effects, which every
 test sees, so it keeps every test.
 
 Fails closed, keeping every test under the conftest with the reason, when the
-conftest does not parse, loads plugins, star-imports a module on the route, has
-a route the analysis cannot tie to one of its imports, when a test or conftest
-asks for its fixtures in a way the index cannot record
-(``pytest_edges.UNRECORDED_HINT``), when some file imports a conftest by a
-name the index could not resolve, or when the index predates fixture-request
-edges.
+conftest does not parse, loads a plugin that may be a module of the repository
+(:mod:`.plugin_loaders`), star-imports a module on the route, has
+a route the analysis cannot tie to one of its imports, when some file imports
+a conftest by a name the index could not resolve, or when the index predates
+fixture-request edges.
 
 Ceiling: an import-time side effect of the changed module itself (it registers
 itself in a shared registry) that a test observes without any import route of
@@ -52,7 +58,8 @@ import-time side effect (plugin registration, a patch) elsewhere in the closure
 of a module whose local name the conftest reads, since that read still
 imports it. A local function that reads or runs repo files by path (``open``,
 ``Path.read_text``, ``os.system``) is judged by its imports only, as the module
-grain already was. Upgrade path: a per-test map built from a coverage run,
+grain already was. A function named as a cache reset that does more than
+empty a cache is trusted by its name (:func:`_cache_reset`). Upgrade path: a per-test map built from a coverage run,
 which records what each test executed.
 """
 
@@ -60,6 +67,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import re
 import symtable
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
@@ -71,6 +79,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.pyparse import parse_python, symtable_python
 
 from ..ingestion.framework_edges.pytest_edges import (
@@ -81,8 +90,9 @@ from ..ingestion.framework_edges.pytest_edges import (
 )
 from ..ingestion.languages.python_modules import module_parts
 from ..ingestion.languages.python_strings import PY_DYNAMIC_LOAD_MARKERS
-from .test_reachability import _in_clause
-from .test_selection import is_runnable_test, scope_kind
+from .plugin_loaders import plugin_names
+from .test_reach.db import _in_clause
+from .test_selection import BROADCAST_VIA, is_runnable_test, scope_kind
 
 # The call whose first argument is the object an attribute is patched on:
 # naming a module there in an autouse fixture is caught by the import check.
@@ -122,6 +132,8 @@ _RUNS_BY_ATTRIBUTE = frozenset(
 )  # fmt: skip
 # The ``functools`` decorators whose ``cache_clear`` empties a function's cache.
 _CACHE_DECORATORS = frozenset({"cache", "lru_cache"})
+# Callee names :func:`_cache_reset` reads as emptying a cache.
+_CACHE_RESET_RE = re.compile(r"(?:clear|reset|invalidate)_\w*cache\w*")
 
 
 @dataclass(frozen=True)
@@ -236,13 +248,42 @@ def _parents(tree: ast.AST) -> dict[int, ast.AST]:
 
 
 def _patch_target(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
-    """Whether the name is the first argument of an attribute patch or probe call."""
-    par = parents.get(id(name))
-    if not (isinstance(par, ast.Call) and par.args and par.args[0] is name):
+    """Whether the name, or an attribute chain read from it (``mod.Cls``), is the
+    first argument of an attribute patch call."""
+    node, _ = _dotted_read(name, parents)
+    par = parents.get(id(node))
+    if not (isinstance(par, ast.Call) and par.args and par.args[0] is node):
         return False
     func = par.func
     called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
     return called in _TARGET_CALLS
+
+
+def _cache_reset(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
+    """Whether the name, or an attribute chain read from it, is called as a cache reset.
+
+    The call is a statement of its own (its result unused) with no arguments,
+    and the callee is named ``clear_*cache*``, ``reset_*cache*`` or
+    ``invalidate_*cache*`` (``cache_clear`` keeps its :func:`local_names`
+    rule). Emptying a cache changes no value its owner serves, only how
+    fresh it is, so a test that can see the
+    difference reaches the owner through its own imports and is selected for
+    it; a reset that starts raising fails the import check. Ceiling: the name
+    is trusted, so a "reset" that also rebuilds or reconfigures state other
+    modules read reaches tests without an import route of their own only
+    through the import check.
+    """
+    node, attrs = _dotted_read(name, parents)
+    call = parents.get(id(node))
+    return (
+        _CACHE_RESET_RE.fullmatch(attrs[-1] if attrs else name.id) is not None
+        and not any(_runs_by_attribute(a) for a in attrs)
+        and isinstance(call, ast.Call)
+        and call.func is node
+        and not call.args
+        and not call.keywords
+        and isinstance(parents.get(id(call)), ast.Expr)
+    )
 
 
 def _is_literal(node: ast.AST, bound: Collection[str]) -> bool:
@@ -378,15 +419,21 @@ def _runs_by_attribute(attr: str) -> bool:
     )
 
 
+def _has_dynamic_load(text: str) -> bool:
+    return any(m in text for m in PY_DYNAMIC_LOAD_MARKERS)
+
+
 def _globals_used(
     node: ast.FunctionDef | ast.AsyncFunctionDef, scope: symtable.SymbolTable
 ) -> set[str] | None:
     """The module names *node* reads, or None when it imports or assigns outside itself."""
-    if any(m in ast.unparse(node) for m in PY_DYNAMIC_LOAD_MARKERS) or any(
+    # The cheap walk first, and one unparse for every marker: unparsing per
+    # marker was most of a finalize's test-route time.
+    if any(
         (isinstance(sub, (ast.Import, ast.ImportFrom)) and not _stdlib_import(sub))
         or (isinstance(sub, ast.Attribute) and _runs_by_attribute(sub.attr))
         for sub in ast.walk(node)
-    ):
+    ) or _has_dynamic_load(ast.unparse(node)):
         return None
     # Decorators and defaults run in the module's scope, the body in its own.
     defaults = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
@@ -466,7 +513,9 @@ def _module_names(tree: ast.Module, counts: Mapping[str, int]) -> _ModuleNames:
         and isinstance(value, (ast.Call, ast.Dict, ast.List, ast.Set))
         and all(s.id in outside for s in ast.walk(value) if isinstance(s, ast.Name))
     } | {n: "cache_clear" for n, node in functions.items() if _cached(node, outside, tree.body)}
-    return _ModuleNames(_parents(tree), frozenset(literals), frozenset(outside), resets, functions)
+    # Only a reset is checked against its parents; most modules have none.
+    parents = _parents(tree) if resets else {}
+    return _ModuleNames(parents, frozenset(literals), frozenset(outside), resets, functions)
 
 
 def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
@@ -523,6 +572,82 @@ def local_names(source: str) -> frozenset[str]:
     return frozenset(
         names.literals | local | {f"{n}.{method}" for n, method in names.resets.items()}
     )
+
+
+@dataclass(frozen=True)
+class EntryNames:
+    """A route entry's names whose use depends on one file's text (:func:`entry_names`)."""
+
+    own: frozenset[str] = frozenset()
+    # {the file a name is re-exported from: those names, as the entry binds them}
+    borrowed: Mapping[str, frozenset[str]] = field(default_factory=dict)
+
+    def stable(self, target: str) -> frozenset[str]:
+        """The names whose use cannot reach a change in *target*."""
+        return self.own.union(*(n for origin, n in self.borrowed.items() if origin != target))
+
+
+def _reexports(source: str, here: tuple[str, ...]) -> dict[str, tuple[tuple[str, ...], str]]:
+    """``{bound name: (module, the name imported)}`` for each name *source* binds once,
+    by a top-level ``from`` import."""
+    try:
+        tree = parse_python(source)
+    except (SyntaxError, ValueError):
+        return {}
+    counts = Counter(n for node in ast.walk(tree) for n in _bound_names(node))
+    if "*" in counts:
+        return {}
+    return {
+        alias.asname or alias.name: (_from_module(stmt, here), alias.name)
+        for stmt in tree.body
+        if isinstance(stmt, ast.ImportFrom)
+        for alias in stmt.names
+        if counts[alias.asname or alias.name] == 1
+    }
+
+
+def _module_file(
+    module: tuple[str, ...], entry: str, read: Callable[[str], str | None]
+) -> str | None:
+    """The one readable file *module* names, from the repository root or a source root
+    above *entry*; ``None`` when none is, or several are.
+
+    Ceiling: a module under another source root (a namespace package split
+    across distributions) is not found, so its names stay unresolved.
+    """
+    if not module:
+        return None
+    parts = PurePosixPath(entry).parts
+    roots = [()] + [parts[:i] for i in range(1, len(parts)) if parts[i] == module[0]]
+    found = {
+        path
+        for root in roots
+        for path in ("/".join((*root, *module)) + ".py", "/".join((*root, *module, "__init__.py")))
+        if read(path) is not None
+    }
+    return found.pop() if len(found) == 1 else None
+
+
+def entry_names(path: str, read: Callable[[str], str | None]) -> EntryNames:
+    """The :func:`local_names` of the file at *path*, and those it re-exports.
+
+    A name the module binds once by ``from X import N`` reads ``X.N``, so when
+    ``N`` is a local name of ``X`` its use depends on ``X``'s text alone. One
+    hop: a name ``X`` itself re-exports stays unresolved.
+    """
+    source = read(path) or ""
+    parts = module_parts(path)
+    here = parts if PurePosixPath(path).name == "__init__.py" else parts[:-1]
+    borrowed: dict[str, set[str]] = {}
+    for bound, (module, name) in _reexports(source, here).items():
+        origin = _module_file(module, path, read)
+        if origin is None or origin == path:
+            continue
+        names = local_names(read(origin) or "")
+        mine = {bound + n[len(name) :] for n in names if n == name or n.startswith(f"{name}.")}
+        if mine:
+            borrowed.setdefault(origin, set()).update(mine)
+    return EntryNames(local_names(source), {o: frozenset(n) for o, n in borrowed.items()})
 
 
 def _dotted_read(name: ast.Name, parents: Mapping[int, ast.AST]) -> tuple[ast.AST, list[str]]:
@@ -640,7 +765,12 @@ class ConftestFacts:
     exported: set[str] = field(default_factory=set)
 
     @classmethod
-    def parse(cls, source: str, path: str) -> ConftestFacts:
+    def parse(
+        cls, source: str, path: str, local_plugin: Callable[[str], bool] | None = None
+    ) -> ConftestFacts:
+        """*local_plugin* (:func:`~.plugin_loaders.local_module_check`) tells a plugin
+        module of the repository from an installed one; without it, any plugin
+        the conftest loads keeps every test under it."""
         try:
             tree = parse_python(source)
         except (SyntaxError, ValueError):
@@ -658,7 +788,21 @@ class ConftestFacts:
             for sub in ast.walk(node):
                 if isinstance(sub, ast.Name):
                     facts._read_module_name(sub)
+        if local_plugin is not None:
+            facts._allow_installed_plugins(tree, local_plugin)
         return facts
+
+    @property
+    def _plugins_error(self) -> str:
+        return f"{self.path} loads pytest plugins"
+
+    def _allow_installed_plugins(self, tree: ast.Module, local: Callable[[str], bool]) -> None:
+        """Drop the plugin error when every plugin named is installed: no local fixture to follow."""
+        if self.error != self._plugins_error:
+            return
+        names = plugin_names(tree)
+        if names is not None and not any(local(n) for n in names):
+            self.error = None
 
     def _read_unit_body(self, name: str, unit: _Unit) -> None:
         """Record the imports in *unit*'s body, the names it reads, and the units it names."""
@@ -675,7 +819,7 @@ class ConftestFacts:
         if isinstance(sub.ctx, ast.Load):
             self.code_loads.append(sub)
         if sub.id == "pytest_plugins":
-            self.error = f"{self.path} loads pytest plugins"
+            self.error = self._plugins_error
         if sub.id == "__all__":
             # Re-exported for the tests that import the conftest, which
             # the selection adds as its importers.
@@ -768,7 +912,7 @@ class ConftestFacts:
             path = local.get(load.id) or hot.get(load.id)
             if path is None:
                 continue
-            if _patch_target(load, self.parents):
+            if _patch_target(load, self.parents) or _cache_reset(load, self.parents):
                 r.patch = r.patch or load.id
             elif not self._reads_local(load, path, stable):
                 r.run = r.run or load.id
@@ -941,6 +1085,7 @@ async def scoped_candidates(
     read: Callable[[str], str | None],
     *,
     plugin_loader: str | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
     read_source: Callable[[str], str | None] | None = None,
 ) -> tuple[dict[str, list[tuple[str, str]]], list[str]]:
     """Each target's ``[(test file, via)]`` with conftest routes narrowed, and the notes.
@@ -949,12 +1094,14 @@ async def scoped_candidates(
     reached through; *parents* the test files importing each test file and
     *parent_entries* the files each importer reached it through; *read* returns
     a conftest's text and *read_source* any file's, for the local names a
-    conftest reads (without it, every read counts as reaching). Every conftest
+    conftest reads (without it, every read counts as reaching); *local_plugin*
+    (:meth:`ConftestFacts.parse`) lets a conftest loading only installed plugins
+    be narrowed. Every conftest
     on a route that this module cannot narrow keeps today's answer: every test
     under it.
     """
     routes = _conftest_routes(found, entries, parents, parent_entries)
-    _judge_routes(routes, read, plugin_loader, read_source)
+    _judge_routes(routes, read, plugin_loader, read_source, local_plugin)
     scope = await _load_scope(session, repo_id, routes, parents, test_files)
     out: dict[str, list[tuple[str, str]]] = {}
     notes: dict[tuple[str, str], list[str]] = {}
@@ -999,21 +1146,26 @@ def _judge_routes(
     read: Callable[[str], str | None],
     plugin_loader: str | None,
     read_source: Callable[[str], str | None] | None = None,
+    local_plugin: Callable[[str], bool] | None = None,
 ) -> None:
     """Set each route's use and reason. One parse per conftest and per entry; each distinct
     route through it is matched against it once."""
     facts: dict[str, ConftestFacts | None] = {}
-    consts: dict[str, frozenset[str]] = {}
+    consts: dict[str, EntryNames] = {}
     uses: dict[tuple, ConftestUse] = {}
+    # Entries share re-export origins, each probed by path: read every file once per call.
+    source_of = lru_cache(maxsize=None)(read_source) if read_source else None
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
-            facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
+            facts[conf] = (
+                None if source is None else ConftestFacts.parse(source, conf, local_plugin)
+            )
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
-        for e in others - set(consts) if read_source else ():
-            consts[e] = local_names(read_source(e) or "")
-        stable = {e: consts[e] for e in others if consts.get(e)}
+        for e in others - set(consts) if source_of else ():
+            consts[e] = entry_names(e, source_of)
+        stable = {e: names for e in others if e in consts and (names := consts[e].stable(target))}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 
 
@@ -1032,7 +1184,7 @@ def _judge(
     elif parsed is None:
         route.reason = f"{conf} could not be read"
     else:
-        key = (conf, route.entries, frozenset(stable))
+        key = (conf, route.entries, frozenset(stable.items()))
         if key not in uses:
             uses[key] = parsed.use(route.entries, stable)
         route.use = uses[key]
@@ -1050,7 +1202,7 @@ async def _load_scope(
     judged = [(conf, r) for by_conf in routes.values() for conf, r in by_conf.items()]
     narrowable = {conf for conf, r in judged if r.use is not None and r.reason is None}
     declared = {
-        f"{conf}::{name}"
+        make_symbol_id(conf, name)
         for conf, r in judged
         if conf in narrowable and r.use is not None
         for name in r.use.declared
@@ -1060,7 +1212,7 @@ async def _load_scope(
     unstamped = any(
         r.use is not None
         and r.use.fixtures
-        and not any(f"{conf}::{n}" in stamped for n in r.use.declared)
+        and not any(make_symbol_id(conf, n) in stamped for n in r.use.declared)
         for conf, r in judged
         if conf in narrowable
     )
@@ -1106,8 +1258,13 @@ def _narrow(
     scope: _Scope,
     notes: dict[tuple[str, str], list[str]],
 ) -> list[tuple[str, str]]:
-    """One target's picks, each narrowable conftest replaced by the tests it can break."""
+    """One target's picks, each narrowable conftest replaced by the tests it can break.
+
+    A test only a conftest keeping every test under it adds is labelled
+    :data:`BROADCAST_VIA`.
+    """
     blocked: set[str] = set()
+    spread: set[str] = set()
     added: dict[str, str] = {}
     narrowed: list[str] = []
     hidden_importer = scope.unresolved_conftest_import()
@@ -1115,6 +1272,7 @@ def _narrow(
         reason, users = _route_users(conf, route, scope, hidden_importer)
         if reason is not None:
             _add_note(notes, (f"{conf} keeps every test under it for ", f": {reason}"), target)
+            spread.add(conf)
             continue
         if route.use is None:
             # Reached only through another conftest's tests, which decide it.
@@ -1127,10 +1285,16 @@ def _narrow(
     kept = {t: v for t, v in picks.items() if t not in blocked}
     for test, via in added.items():
         kept.setdefault(test, via)
+    # Before the walk below, which adds to the dict it is given.
+    start = {t: v for t, v in kept.items() if t not in spread}
     result = dict(with_importers(kept, scope.parents, blocked))
+    if spread:
+        inner = dict(with_importers(start, scope.parents, blocked | spread))
+        for t in [t for t in result if t not in inner and t not in spread]:
+            result[t] = BROADCAST_VIA
     for conf in narrowed:
         check = _add_import_check(conf, result, scope)
-        _add_note(notes, _narrow_note(conf, routes[conf], check), target)
+        _add_note(notes, _narrow_note(conf, routes[conf], check, scope), target)
     return list(result.items())
 
 
@@ -1185,14 +1349,33 @@ def _dir_prefix(conf: str) -> str:
     return "" if d == "." else f"{d}/"
 
 
-def _narrow_note(conf: str, route: _Route, check: str | None) -> tuple[str, str]:
+def _narrow_note(conf: str, route: _Route, check: str | None, scope: _Scope) -> tuple[str, str]:
     use = route.use
     fixtures = sorted(use.fixtures) if use else []
     what = (
         f"the tests requesting {', '.join(fixtures)}" if fixtures else "no fixture-requesting test"
     )
+    hidden = sorted(_hidden_requesters(conf, scope)) if fixtures else []
+    if hidden:
+        who = hidden[0] if len(hidden) == 1 else f"{len(hidden)} files (e.g. {hidden[0]})"
+        what += f", and {who} asking for fixtures in a way the index cannot record"
     tail = f"; {check} runs as its import check" if check else ""
     return "", f" reaches {conf} only through its imports: selected {what}{tail}"
+
+
+def _hidden_requesters(conf: str, scope: _Scope) -> set[str]:
+    """Files under *conf* that may ask for its fixtures in a way no edge records.
+
+    Each is a collected test file or a conftest (:data:`UNRECORDED_HINT` is
+    stamped only on their conftest edges). A request resolves for the test
+    making it, so such a file can reach a fixture only for its own tests, or,
+    for a conftest, for the tests under it.
+    """
+    return {
+        e.source
+        for e in scope.edges
+        if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
+    }
 
 
 def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str:
@@ -1200,30 +1383,20 @@ def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str
 
     A reason string instead when the users cannot be known. A conftest whose
     fixtures no recorded request names has no users: nothing asks for them.
+    A file asking for fixtures in a way the index cannot record
+    (:func:`_hidden_requesters`) counts as a user: every other file's requests
+    are all recorded, so the hidden ones cannot reach past it.
     """
     if not use.fixtures:
         return set()
     if not scope.recorded:
         return "the index was built before fixture requests were recorded; run `repowise update`"
-    hidden = next(
-        (
-            e.source
-            for e in scope.edges
-            if e.target == conf and e.edge_type == "framework" and e.hint == UNRECORDED_HINT
-        ),
-        None,
-    )
-    if hidden:
-        return (
-            f"{hidden} asks for fixtures in a way the index cannot record, and "
-            f"{', '.join(sorted(use.fixtures))} reach the change"
-        )
-    wanted = {f"{conf}::{n}" for n in use.fixtures}
-    users: set[str] = set()
+    wanted = {make_symbol_id(conf, n) for n in use.fixtures}
+    users: set[str] = _hidden_requesters(conf, scope)
     for edge in scope.edges:
         if edge.target not in wanted or edge.edge_type == "framework":
             continue
-        source_file = edge.source.split("::", 1)[0]
+        source_file = file_of_symbol(edge.source)
         if source_file == conf:
             continue
         if is_runnable_test(source_file) or scope_kind(source_file) == "conftest":

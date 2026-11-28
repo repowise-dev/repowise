@@ -24,6 +24,7 @@ cycle definitions share. A new language pass joins by adding its hint to
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 #: Hint stamped on an edge between two files of one package / build target.
@@ -142,13 +143,27 @@ def cannot_close_cycle(data: Any) -> bool:
 
     The one predicate both cycle definitions share (``cycle_subgraph`` and
     ``refactoring.graph_signals``): cohesion edges, type-only imports, deferred
-    (function-local) imports, and ``dynamic_uses`` hints, which match a type by
-    short name rather than resolve a dependency (#2886). The edges stay in the
-    graph for reachability and centrality.
+    (function-local) imports, guarded imports (a ``try`` body with an ``except
+    ImportError`` fallback, so the module survives the import failing), and
+    ``dynamic_uses`` hints, which match a type by short name rather than resolve
+    a dependency (#2886). The edges stay in the graph for reachability and
+    centrality.
     """
     return (
         is_cohesion_edge(data)
         or bool(data.get("type_only"))
         or bool(data.get("deferred"))
+        or bool(data.get("guarded"))
         or data.get("edge_type") == "dynamic_uses"
     )
+
+
+def is_static_only_cycle(edges: Iterable[Any]) -> bool:
+    """True if every edge in *edges* (one cycle's file edges) that can close it
+    is a Python module-form import (``import b`` whose name no module-level code
+    mentions). Such a cycle is static only: unlikely to fail at import, since
+    the half-built module is bound and never read while it loads. One ``from b
+    import B``, or any other runtime edge, makes it a cycle that can fail.
+    """
+    closing = [d for d in edges if not cannot_close_cycle(d)]
+    return bool(closing) and all(d.get("module_form") for d in closing)

@@ -44,8 +44,10 @@ export interface GraphLink {
   source: string;
   target: string;
   imported_names: string[];
-  /** Edge kind from v0.4.0 framework-aware extractors (e.g. "spring.bean", "rails.route"). */
-  edge_type?: string;
+  /** Edge kind from v0.4.0 framework-aware extractors (e.g. "spring.bean", "rails.route").
+   *  `null` is a real value on the wire — the server's `GraphEdgeResponse` declares
+   *  it optional-but-nullable — so a consumer reading it has to handle both. */
+  edge_type?: string | null;
   /** Confidence score for resolved symbol-level call edges (v0.4.x). */
   confidence?: number;
 }
@@ -298,6 +300,7 @@ export type ResolutionOrigin =
   | "same_target"
   | "receiver_global"
   | "global_unique"
+  | "import_elsewhere"
   | "receiver_typed_same_file"
   | "receiver_typed_same_package"
   | "receiver_typed_import"

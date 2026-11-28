@@ -7,11 +7,15 @@ reported as such rather than quietly counted as new.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from ...ingestion.models import Symbol
+from ...symbol_spans import innermost, symbols_overlapping
+from ..changed_lines import line_ranges
 from ..health import HealthFindingData
-from .models import ATTRIBUTION_CONFIDENCE, AttributionBasis
-from .moves import SymbolKey
+from .models import ATTRIBUTION_CONFIDENCE, AttributionBasis, ChangedSymbol, SymbolChange
+from .moves import MoveMap, SymbolKey, is_body_symbol
 from .sources import FileChange
 
 
@@ -101,15 +105,147 @@ class FindingAttributor:
 
 
 def changed_symbols_for(
-    changes: dict[str, FileChange], findings_by_file: dict[str, list[HealthFindingData]]
+    changes: dict[str, FileChange],
+    findings_by_file: dict[str, list[HealthFindingData]],
+    head_symbols: Mapping[str, list[Symbol]],
+    base_symbols: Mapping[str, list[Symbol]],
 ) -> set[tuple[str, str]]:
-    """``(path, symbol)`` pairs whose body overlaps the change's added lines."""
+    """``(path, name)`` pairs for the symbols the change edits, findings or not.
+
+    Read from the symbols' own line ranges, the way :func:`changed_symbols`
+    lists them (the innermost symbol an edit touched), so an edit away from
+    every finding still names its symbol.
+    A finding whose span overlaps the added lines adds its symbol too. Pairs
+    key on the bare name a finding carries, so a name the file declares twice
+    is claimed only when every declaration is touched.
+    """
     out: set[tuple[str, str]] = set()
     for path, change in changes.items():
+        head = _held(head_symbols, path)
+        cut = _lost_lines(change, _held(base_symbols, change.base_path))
+        # Innermost only, as the list charges it: a method edit is not an edit
+        # of its class, whose class-wide findings stay away from this basis.
+        touched = {id(s) for s in innermost(_touched(change, head, cut))}
+        by_name: dict[str, list[Symbol]] = {}
+        for symbol in head:
+            by_name.setdefault(symbol.name, []).append(symbol)
+        out.update(
+            (path, name) for name, held in by_name.items() if all(id(s) in touched for s in held)
+        )
         added = change.added_lines
-        if not added:
-            continue
-        for finding in findings_by_file.get(path, ()):
+        for finding in findings_by_file.get(path, ()) if added else ():
             if finding.function_name and _overlaps(finding, added):
                 out.add((path, finding.function_name))
     return out
+
+
+def changed_symbols(
+    changes: Iterable[FileChange],
+    head_symbols: Mapping[str, list[Symbol]],
+    base_symbols: Mapping[str, list[Symbol]],
+    moves: MoveMap,
+) -> list[ChangedSymbol]:
+    """Every symbol the diff touches, findings or not, by path then line.
+
+    Head symbols are read against the new-side lines, base symbols against
+    the old-side ranges: a base symbol that lost lines and is still at head
+    is ``edited`` there, and one head lacks is ``deleted``. A head symbol
+    base lacks is ``added``, unless the move map pairs it across files, in
+    which case it is ``moved`` and reported once, at head. An edit is charged
+    to the innermost symbol it touched, not to every enclosing one.
+    """
+    origins = set(moves.by_new.values())
+    out: list[ChangedSymbol] = []
+    for change in changes:
+        base = _held(base_symbols, change.base_path)
+        head = _held(head_symbols, change.head_path)
+        cut = _lost_lines(change, base)
+        if change.head_path and head:
+            known_base = change.base_path is not None and change.base_path in base_symbols
+            out += _head_side(change, change.head_path, head, base, cut, known_base, moves)
+        head_ids = {_local_id(s) for s in head}
+        out += [
+            _row(change.base_path, s, "deleted")
+            for s in cut
+            if change.base_path
+            and _local_id(s) not in head_ids
+            and (change.base_path, s.name) not in origins
+        ]
+    out.sort(key=lambda r: (r.path, r.start_line, r.end_line, r.symbol))
+    return out
+
+
+def _head_side(
+    change: FileChange,
+    path: str,
+    head: list[Symbol],
+    base: list[Symbol],
+    cut: list[Symbol],
+    known_base: bool,
+    moves: MoveMap,
+) -> list[ChangedSymbol]:
+    touched = _touched(change, head, cut)
+    base_ids = {_local_id(s) for s in base}
+    # Without a parsed base side, nothing proves a symbol is new.
+    new = change.is_new or known_base
+    kinds = {id(s): _head_kind(path, s, base_ids if new else None, moves) for s in touched}
+    leaves = {id(s) for s in innermost(touched)}
+    return [
+        _row(path, s, *kinds[id(s)])
+        for s in touched
+        if kinds[id(s)][0] != "edited" or id(s) in leaves
+    ]
+
+
+def _touched(change: FileChange, head: list[Symbol], cut: list[Symbol]) -> list[Symbol]:
+    """Head symbols the change touches: over its added lines, or that lost lines (*cut*)."""
+    if change.is_new:
+        return head
+    hit = {id(s) for s in symbols_overlapping(head, line_ranges(change.added_lines))}
+    lost_lines = {_local_id(s) for s in cut}
+    return [s for s in head if id(s) in hit or _local_id(s) in lost_lines]
+
+
+def _lost_lines(change: FileChange, base: list[Symbol]) -> list[Symbol]:
+    """Base symbols the change removed lines from: all of them for a deleted file."""
+    if change.is_deleted:
+        return base
+    if change.is_new or not change.diff:
+        return []
+    return symbols_overlapping(base, change.diff.old_ranges)
+
+
+def _head_kind(
+    path: str, symbol: Symbol, base_ids: set[str] | None, moves: MoveMap
+) -> tuple[SymbolChange, SymbolKey | None]:
+    """``moved`` with its origin, ``added`` when *base_ids* lacks it, else ``edited``."""
+    origin = moves.origin_of(path, symbol.name)
+    if origin is not None:
+        return "moved", origin
+    if base_ids is not None and _local_id(symbol) not in base_ids:
+        return "added", None
+    return "edited", None
+
+
+def _held(symbols: Mapping[str, list[Symbol]], path: str | None) -> list[Symbol]:
+    return [s for s in symbols.get(path or "", ()) if is_body_symbol(s)]
+
+
+def _local_id(symbol: Symbol) -> str:
+    """The symbol's identity inside its file (``Class::method``), stable across a rename."""
+    _, sep, local = symbol.id.partition("::")
+    return local if sep else symbol.name
+
+
+def _row(
+    path: str, symbol: Symbol, change: SymbolChange, moved_from: SymbolKey | None = None
+) -> ChangedSymbol:
+    return ChangedSymbol(
+        path=path,
+        symbol=_local_id(symbol),
+        kind=str(symbol.kind),
+        change=change,
+        start_line=symbol.start_line,
+        end_line=symbol.end_line,
+        moved_from=moved_from,
+    )

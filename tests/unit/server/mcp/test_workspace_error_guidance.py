@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -75,16 +76,121 @@ class TestWorkspaceErrors:
         assert "Use '--'" not in result["error"]
         assert "git <command>" not in result["error"]
 
-    @pytest.mark.parametrize("finding_id", ["fix1_x", "fix_future_x", "act_x"])
-    async def test_health_fix_and_action_ids_point_to_fix_id(self, finding_id):
+    async def test_change_risk_error_leaves_no_task_to_race_the_workspace_close(
+        self, workspace_mcp
+    ):
+        """The health comparison started before the score failed has unwound when the call returns.
+
+        Left unwinding, its connection close raced the engine dispose below and
+        both waited forever.
+        """
+        before = asyncio.all_tasks()
+
+        await get_change_risk(revspec="not-a-ref", repo="backend")
+
+        assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+        await asyncio.wait_for(workspace_mcp.close(), timeout=10)
+
+    async def test_change_risk_error_waits_for_the_comparison_to_unwind(self, monkeypatch):
+        """Deterministic form of the test above: the comparison is mid-flight when the score fails."""
+        from repowise.server.mcp_server.tool_change_risk import tool
+
+        unwound: list[bool] = []
+
+        async def _in_flight(*_args):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.shield(asyncio.sleep(0.05))  # a connection close takes a moment
+                unwound.append(True)
+                raise
+
+        monkeypatch.setattr(tool, "_delta_with_index", _in_flight)
+
+        result = await get_change_risk(revspec="not-a-ref", repo="backend")
+
+        assert "error" in result
+        assert unwound == [True]
+
+    @pytest.mark.parametrize(
+        ("finding_id", "label"),
+        [
+            ("fix1_x", "fix_first ids (fix1_...)"),
+            ("fix_future_x", "fix_first ids (fix1_...)"),
+            ("act_x", "next_actions ids (act_...)"),
+        ],
+    )
+    async def test_health_fix_and_action_ids_point_to_fix_id(self, finding_id, label):
         result = await get_health(finding_id=finding_id, repo="backend")
 
         assert result["finding"] is None
         assert result["resolved"] is False
-        assert result["hint"] == (
-            "Pass fix_first ids (fix1_...) and next_actions ids (act_...) "
-            "as fix_id, not finding_id."
+        assert result["hint"] == f"Pass {label} as fix_id, not finding_id."
+
+    @pytest.mark.parametrize(
+        ("selector", "value", "hint"),
+        [
+            (
+                "plan_id",
+                "fix1_8b581db6e7f864b2979e",
+                "Pass fix_first ids (fix1_...) as fix_id, not plan_id.",
+            ),
+            (
+                "plan_id",
+                "perf3_8b581db6e7f864b2979e",
+                "Pass performance opportunity ids (perf...) as opportunity_id, not plan_id.",
+            ),
+            (
+                "fix_id",
+                "finding_8b581db6e7f864b2979e",
+                "Pass finding ids (finding_...) as finding_id, not fix_id.",
+            ),
+            (
+                "opportunity_id",
+                "refac4_8b581db6e7f864b2979e",
+                "Pass refactoring plan ids (refac...) as plan_id, not opportunity_id.",
+            ),
+            (
+                "plan_id",
+                "refop4_8b581db6e7f864b2979e",
+                "Pass refactoring opportunity ids (refop...) as opportunity_id, not plan_id.",
+            ),
+        ],
+    )
+    async def test_health_wrong_kind_id_names_its_selector(self, selector, value, hint):
+        result = await get_health(**{selector: value}, repo="backend")
+
+        assert result["hint"] == hint
+
+    @pytest.mark.parametrize(
+        ("selector", "value"),
+        [
+            ("plan_id", "refac4_8b581db6e7f864b2979e"),
+            ("fix_id", "fix1_8b581db6e7f864b2979e"),
+            ("opportunity_id", "perf3_8b581db6e7f864b2979e"),
+            ("plan_id", "not-an-id"),
+        ],
+    )
+    async def test_health_right_kind_miss_stays_hint_free(self, selector, value):
+        result = await get_health(**{selector: value}, repo="backend")
+
+        assert "hint" not in result
+
+    async def test_risk_names_pr_only_includes_without_changed_files(self):
+        result = await get_risk(
+            targets=["src/probe.py"], include=["tests", "blast", "owners"], repo="backend"
         )
+
+        assert result["ignored_arguments"] == [
+            {"argument": "include", "values": ["tests", "blast"], "requires": "changed_files"}
+        ]
+
+    async def test_risk_pr_mode_keeps_tests_include(self):
+        result = await get_risk(
+            changed_files=["src/probe.py"], include=["tests"], repo="backend"
+        )
+
+        assert "ignored_arguments" not in result
 
     async def test_health_plain_finding_miss_stays_hint_free(self):
         result = await get_health(finding_id="finding_missing", repo="backend")
@@ -168,3 +274,29 @@ def test_miss_without_workspace_registry_keeps_existing_hint(monkeypatch):
     hint_misses(response, [Route("zzz:foo.py", "zzz:foo.py", None, missed=True)])
 
     assert response["hint"] == _MISS_HINT
+
+
+def test_every_minted_id_prefix_maps_to_its_own_selector():
+    """Guards the prefix table against an id format changing where it is minted."""
+    from repowise.core.analysis.health.finding_identity import finding_public_id
+    from repowise.core.analysis.health.fix_first.model import fix_id
+    from repowise.core.analysis.health.perf.causal import stable_id as perf_id
+    from repowise.core.analysis.health.refactoring.identity import stable_id as plan_id
+    from repowise.core.analysis.health.refactoring.opportunity import opportunity_public_id
+    from repowise.server.mcp_server.tool_health.details import _wrong_selector_hint
+
+    finding = SimpleNamespace(
+        biomarker_type="complexity", function_name=None, details_json=None,
+        line_start=1, line_end=2, dimension="defect", file_path="a.py",
+    )
+    minted = {
+        "fix_id": [fix_id("finding", "x"), "act_x"],
+        "finding_id": [finding_public_id(finding)],
+        "plan_id": [plan_id(("k",))],
+        "opportunity_id": [perf_id(("k",)), opportunity_public_id(["p"], "a.py")],
+    }
+    for selector, ids in minted.items():
+        for value in ids:
+            assert _wrong_selector_hint(selector, value) is None, value
+            other = "plan_id" if selector != "plan_id" else "fix_id"
+            assert f"as {selector}, not {other}." in (_wrong_selector_hint(other, value) or "")

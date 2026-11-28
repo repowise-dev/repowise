@@ -15,6 +15,7 @@ from repowise.core.persistence.crud import get_health_finding_by_public_id, get_
 from repowise.core.persistence.crud.analysis.actions import load_action
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first
 from repowise.core.persistence.models import HealthFinding
+from repowise.server.mcp_server._helpers import _cross_repo_cut
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server.tool_health.analysis_meta import _attach_repository_analysis_meta
 from repowise.server.mcp_server.tool_health.pillars import (
@@ -31,6 +32,9 @@ from repowise.server.mcp_server.tool_health.serialize import (
 )
 from repowise.server.services.performance_health import PerformanceHealthService
 from repowise.server.services.refactoring_health import RefactoringHealthService
+
+#: Prefix of the Do next action ids ``get_overview``'s ``next_actions`` hands out.
+_ACTION_ID_PREFIX = "act_"
 
 
 async def _detail_response(
@@ -53,7 +57,7 @@ async def _detail_response(
     refuses two before any read.
     """
     if fix_id:
-        return await _fix_detail_response(session, repository, fix_id)
+        return await _fix_detail_response(session, repository, fix_id, reference_repository)
     if finding_id:
         return await _finding_detail_response(
             session, repository, reference_repository, finding_id
@@ -85,6 +89,42 @@ async def _detail_response(
     return None
 
 
+#: Id prefixes as minted (fix_first/model.py, finding_identity.py,
+#: refactoring/identity.py and opportunity.py, perf/causal.py), each with the
+#: selector that resolves it. Ordered so ``refac`` never shadows ``refop``.
+_SELECTOR_OF_PREFIX: tuple[tuple[str, str, str], ...] = (
+    ("fix", "fix_id", "fix_first ids (fix1_...)"),
+    (_ACTION_ID_PREFIX, "fix_id", f"next_actions ids ({_ACTION_ID_PREFIX}...)"),
+    ("finding_", "finding_id", "finding ids (finding_...)"),
+    (
+        _REFACTORING_OPPORTUNITY_PREFIX,
+        "opportunity_id",
+        f"refactoring opportunity ids ({_REFACTORING_OPPORTUNITY_PREFIX}...)",
+    ),
+    ("refac", "plan_id", "refactoring plan ids (refac...)"),
+    ("perf", "opportunity_id", "performance opportunity ids (perf...)"),
+)
+
+
+def _wrong_selector_hint(passed: str, value: str) -> str | None:
+    """Name the selector *value*'s prefix belongs to, when it is not *passed*."""
+    for prefix, selector, label in _SELECTOR_OF_PREFIX:
+        if value.startswith(prefix):
+            return f"Pass {label} as {selector}, not {passed}." if selector != passed else None
+    return None
+
+
+def _hint_wrong_selector(result: dict[str, Any], **selectors: str | None) -> None:
+    """On a miss, name the selector the id was minted for. Never resolved under
+    that selector instead: the caller swapped an argument, and answering anyway
+    would hide it."""
+    if result.get("found") or result.get("resolved"):
+        return
+    for name, value in selectors.items():
+        if value and (hint := _wrong_selector_hint(name, value)):
+            result["hint"] = hint
+
+
 async def _lower_priority(session: Any, repository_id: str, finding: Any) -> str | None:
     """The finding's tier reason, measured over its file's open findings as
     the list measured it: file-held rows included, as the list reads them."""
@@ -104,7 +144,10 @@ async def _finding_detail_response(
         "finding_id": finding_id,
         "finding": (
             _serialize_finding(
-                match, reference_repository, await _lower_priority(session, repository.id, match)
+                match,
+                reference_repository,
+                await _lower_priority(session, repository.id, match),
+                with_actions=True,
             )
             if match
             else None
@@ -115,17 +158,9 @@ async def _finding_detail_response(
             targets=[match.file_path] if match else None,
         ),
     }
-    if match is None and finding_id.startswith(("fix", _ACTION_ID_PREFIX)):
-        result["hint"] = (
-            "Pass fix_first ids (fix1_...) and next_actions ids (act_...) "
-            "as fix_id, not finding_id."
-        )
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
 
-
-#: Prefix of the Do next action ids ``get_overview``'s ``next_actions`` hands out.
-_ACTION_ID_PREFIX = "act_"
 
 _FIX_NOT_FOUND = (
     "get_health() lists the current fix_first ids (fix1_...); "
@@ -133,14 +168,16 @@ _FIX_NOT_FOUND = (
 )
 
 
-async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> dict[str, Any]:
+async def _fix_detail_response(
+    session: Any, repository: Any, fix_id: str, alias: str | None = None
+) -> dict[str, Any]:
     """One Fix-first item in full: action steps, verify, risk, context.
 
     An ``act_`` id is a Do next action, the same one the REST actions route
     reads: its evidence rows and commands.
     """
     if fix_id.startswith(_ACTION_ID_PREFIX):
-        return await _action_detail_response(session, repository, fix_id)
+        return await _action_detail_response(session, repository, fix_id, alias)
     item = (await load_fix_first(session, repository.id, item_id=fix_id)).find(fix_id)
     result = {
         "mode": "fix_item",
@@ -158,10 +195,18 @@ async def _fix_detail_response(session: Any, repository: Any, fix_id: str) -> di
 
 
 async def _action_detail_response(
-    session: Any, repository: Any, action_id: str
+    session: Any, repository: Any, action_id: str, alias: str | None = None
 ) -> dict[str, Any]:
     """One Do next action in full, serialized as the REST actions route does."""
-    action = await load_action(session, repository.id, action_id)
+    from repowise.server.mcp_server.tool_overview.actions import setup_facts
+
+    action = await load_action(
+        session,
+        repository.id,
+        action_id,
+        setup=await setup_facts(session, repository),
+        **_cross_repo_cut(alias),
+    )
     result = {
         "mode": "action",
         "fix_id": action_id,
@@ -320,7 +365,9 @@ async def _performance_detail_response(
             **evidence_block(rows, total, cursor),
             "_meta": _build_meta(repository=repository),
         }
-    detail = await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    detail = _without_test_evidence(
+        await service.detail(opportunity_id, evidence_limit=evidence_limit)
+    )
     file_path = detail.get("file_path")
     result = {
         "mode": "performance_opportunity",
@@ -331,6 +378,25 @@ async def _performance_detail_response(
     }
     await _attach_repository_analysis_meta(session, repository, result["_meta"])
     return result
+
+
+def _without_test_evidence(detail: dict[str, Any]) -> dict[str, Any]:
+    """*detail* without the facets a unit-test run gave.
+
+    Measured-in-tests evidence is shown to people (CLI, web) and not yet to
+    agents, until an agent benchmark shows it helps; its effect on which
+    causes are queued is not hidden.
+    """
+    facets = detail.get("facets")
+    if not facets:
+        return detail
+    kept = {
+        key: value
+        for key, value in facets.items()
+        if key != "measured_in_tests"
+        and not (key == "confirmed" and value == "measured_in_tests")
+    }
+    return detail if kept == facets else {**detail, "facets": kept}
 
 
 async def _refactoring_detail_response(

@@ -68,6 +68,7 @@
     "core_ratio": null,
     "core_size": null,
     "cycle_count": null,
+    "cycle_count_capped": null,
     "node_count": null,
     "propagation_cost_pct": null,
     "role_breakdown": {
@@ -291,6 +292,7 @@
     "rules_evaluated": null,
     "summary": null,
     "total_cycles": null,
+    "total_capped": null,
     "violation_count": null,
     "violations": [],
     "violations_truncated": null
@@ -412,23 +414,16 @@
         "description": null,
         "findings": [
           {
-            "age_days": null,
-            "commit_count_90d": null,
             "confidence": null,
-            "end_line": null,
             "file_path": null,
             "id": null,
             "kind": null,
             "last_commit_at": null,
-            "last_meaningful_change": null,
             "lines": null,
             "primary_owner": null,
             "reason": null,
-            "repository": null,
             "risk_factors": [],
             "safe_to_delete": null,
-            "start_line": null,
-            "symbol_kind": null,
             "symbol_name": null
           }
         ],
@@ -441,25 +436,18 @@
         "description": null,
         "findings": [
           {
-            "age_days": null,
-            "commit_count_90d": null,
             "confidence": null,
-            "end_line": null,
             "file_path": null,
             "id": null,
             "kind": null,
             "last_commit_at": null,
-            "last_meaningful_change": null,
             "lines": null,
             "primary_owner": null,
             "reason": null,
-            "repository": null,
             "risk_factors": [
               null
             ],
             "safe_to_delete": null,
-            "start_line": null,
-            "symbol_kind": null,
             "symbol_name": null
           }
         ],
@@ -472,25 +460,18 @@
         "description": null,
         "findings": [
           {
-            "age_days": null,
-            "commit_count_90d": null,
             "confidence": null,
-            "end_line": null,
             "file_path": null,
             "id": null,
             "kind": null,
             "last_commit_at": null,
-            "last_meaningful_change": null,
             "lines": null,
             "primary_owner": null,
             "reason": null,
-            "repository": null,
             "risk_factors": [
               null
             ],
             "safe_to_delete": null,
-            "start_line": null,
-            "symbol_kind": null,
             "symbol_name": null
           }
         ],

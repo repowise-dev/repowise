@@ -21,7 +21,7 @@ from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import PerformanceOpportunity
+from repowise.core.persistence.models import GitMetadata, PerformanceOpportunity
 from tests.unit.server.conftest import create_test_repo
 
 _FULL_ONLY = {
@@ -204,3 +204,31 @@ async def test_an_unknown_fields_value_is_rejected(client: AsyncClient) -> None:
         f"/api/repos/{repo['id']}/health/files", params={"fields": "lean"}
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_row_marks_a_file_whose_history_is_too_short(client: AsyncClient, app) -> None:
+    """A new file's high score is an absent history, not a clean one."""
+    repo = await create_test_repo(client)
+    await _seed(app, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        for i, commits in enumerate([2, 50]):
+            session.add(
+                GitMetadata(
+                    id=f"gm{i}",
+                    repository_id=repo["id"],
+                    file_path=f"src/f{i:02d}.py",
+                    commit_count_total=commits,
+                )
+            )
+
+    full = (await client.get(f"/api/repos/{repo['id']}/health/files")).json()
+    by_path = {f["file_path"]: f for f in full["files"]}
+    assert by_path["src/f00.py"]["history"] == "short"
+    assert "history" not in by_path["src/f01.py"]
+    assert "history" not in by_path["src/f02.py"]
+
+    lean = (
+        await client.get(f"/api/repos/{repo['id']}/health/files", params={"fields": "summary"})
+    ).json()
+    assert all("history" not in f for f in lean["files"])

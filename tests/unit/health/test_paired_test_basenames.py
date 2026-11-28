@@ -171,9 +171,9 @@ def test_name_match_tier_finds_tests_named_for_a_target_anywhere():
 
 
 def test_unnamed_tests_rank_by_the_directories_they_share_with_the_target():
-    from repowise.core.analysis.test_reachability import rank_tests
+    from repowise.core.analysis.test_reachability import rank_reaching
 
-    ranked = rank_tests("pkg/a/b/mod.py", ["pkg/x/test_other.py", "pkg/a/b/test_sibling.py"])
+    ranked = rank_reaching("pkg/a/b/mod.py", ["pkg/x/test_other.py", "pkg/a/b/test_sibling.py"])
     assert ranked == ["pkg/a/b/test_sibling.py", "pkg/x/test_other.py"]
 
 

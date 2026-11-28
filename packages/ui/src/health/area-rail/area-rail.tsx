@@ -68,7 +68,7 @@ export function AreaRail(props: AreaRailProps) {
         <button
           type="button"
           onClick={props.onClearFile}
-          className="self-start rounded font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="self-start rounded font-mono text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           ← {labels.backToArea(area ? props.nameOf(area) : labels.repository)}
         </button>

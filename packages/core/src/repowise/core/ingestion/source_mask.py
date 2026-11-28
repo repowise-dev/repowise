@@ -16,6 +16,10 @@ _JS_LIKE = frozenset({".ts", ".tsx", ".js", ".jsx", ".mjs"})
 # enough to stop a ``/\\)/`` corrupting a parenthesis scan.
 _REGEX_PRECEDERS = frozenset("(,=:[!&|?{};+-*%~^<>")
 
+# A ``<`` after one of these opens a JSX tag, where a tag name follows it: the characters of
+# ``_REGEX_PRECEDERS`` that no comparison follows.
+_TAG_PRECEDERS = frozenset("(,=:[!&|?{};>}")
+
 
 def _string_prefix(text: str, quote_idx: int) -> str:
     """The ``rb``/``f``/``u`` prefix letters immediately before a quote, if any."""
@@ -26,6 +30,54 @@ def _string_prefix(text: str, quote_idx: int) -> str:
     if k > 0 and (text[k - 1].isalnum() or text[k - 1] == "_"):
         return ""
     return text[k:quote_idx]
+
+
+def _closes(quote: str, ch: str) -> bool:
+    """Whether *ch* ends a JS string opened by *quote*.
+
+    A quote or apostrophe string cannot run past its line: where one seems
+    to, it is JSX text (``<p>Don't</p>``), not a string.
+    """
+    return ch == quote or (ch == "\n" and quote != "`")
+
+
+def _opens_tag(text: str, i: int, prev_sig: str) -> bool:
+    """Whether the ``<`` at *i* opens a JSX tag, not a comparison or a type argument list.
+
+    What comes before ``<`` cannot end an expression: a character that precedes a regex, or the
+    keyword ``return``, not a member of that name (``this.return``). A tag after any other keyword
+    (``default``, ``case``) is not read as a tag, and no tag is read inside the ``${}`` of a
+    template literal.
+    """
+    if prev_sig in _TAG_PRECEDERS:
+        return True
+    j = i
+    while j and text[j - 1].isspace():
+        j -= 1
+    k = j - len("return")
+    if text[max(k, 0) : j] != "return":
+        return False
+    if k and (text[k - 1].isalnum() or text[k - 1] in "_$"):
+        return False
+    # ``this.return < max`` names a member, also across spaces and a line break.
+    while k and text[k - 1].isspace():
+        k -= 1
+    return not (k and text[k - 1] == ".")
+
+
+def _opens_regex(text: str, i: int, prev_sig: str, in_tag: bool) -> bool:
+    """Whether the ``/`` at *i* opens a regex literal.
+
+    A ``/`` of a JSX tag does not: ``</`` closes a tag, and ``/>`` ends a self-closing tag after a
+    braced attribute (``<A b={x} />``). Both follow a character that precedes a regex. *in_tag* is
+    true where the scan is inside a tag, outside the braces of its attributes; without it a
+    ``}`` before ``/>`` is a block or an object that ends a line, and the ``/`` opens a regex.
+    """
+    if i and text[i - 1] == "<":
+        return False
+    if in_tag and prev_sig == "}" and text[i + 1 : i + 2] == ">":
+        return False
+    return prev_sig in _REGEX_PRECEDERS
 
 
 def can_mask(suffix: str) -> bool:
@@ -95,6 +147,9 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
     tmpl_depth: list[int] = []
     quote = ""
     prev_sig = ""
+    # Inside a JSX tag: from its ``<`` to its ``>``, with the braces of its attributes counted.
+    in_tag = False
+    tag_braces = 0
     while i < n:
         ch = text[i]
         if quote:
@@ -110,7 +165,7 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 quote = ""
                 i += 2
                 continue
-            if ch == quote:
+            if _closes(quote, ch):
                 quote = ""
             elif strings:
                 out[i] = " " if ch != "\n" else "\n"
@@ -130,7 +185,7 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 out[j] = " "
             i += 2
             continue
-        if ch == "/" and prev_sig in _REGEX_PRECEDERS:
+        if ch == "/" and _opens_regex(text, i, prev_sig, in_tag and not tag_braces):
             i += 1
             while i < n and text[i] != "\n":
                 if text[i] == "\\":
@@ -153,6 +208,15 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
             quote = "`"
         elif tmpl_depth and ch == "{":
             tmpl_depth[-1] += 1
+        elif in_tag:
+            if ch == "{":
+                tag_braces += 1
+            elif ch == "}":
+                tag_braces -= 1
+            elif ch == ">" and not tag_braces:
+                in_tag = False
+        elif ch == "<" and _opens_tag(text, i, prev_sig):
+            in_tag = True
         if not ch.isspace():
             prev_sig = ch
         i += 1

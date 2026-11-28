@@ -35,9 +35,12 @@ def workspace_list(path: str | None) -> None:
     """Show all repos in the workspace with their status."""
     from repowise.cli.helpers import get_repowise_dir
     from repowise.core.workspace import check_repo_staleness
+    from repowise.core.workspace.update import sync_workspace_state_from_disk
 
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
+    # A member updated on its own leaves the config behind its store.
+    sync_workspace_state_from_disk(ws_root, ws_config, save_if_changed=False)
 
     table = Table(title=f"Workspace: {ws_root.name}")
     table.add_column("Repo", style="cyan", min_width=16)

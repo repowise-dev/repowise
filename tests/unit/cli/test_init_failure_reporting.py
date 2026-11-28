@@ -120,6 +120,65 @@ def test_run_repo_generation_reports_failures(tmp_path, monkeypatch):
     assert "repowise init --resume" in output
 
 
+def test_run_repo_generation_does_not_fallback_after_zero_failure_callback(
+    tmp_path, monkeypatch
+):
+    """A current-run callback reporting success wins over stale checkpoints."""
+    jobs_dir = tmp_path / ".repowise" / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+
+    js = JobSystem(jobs_dir)
+    stale_job_id = js.create_job(
+        str(tmp_path), SimpleNamespace(max_concurrency=1), "mock", "mock-model"
+    )
+    js.fail_page(stale_job_id, "file_page:stale.ts", "Old failure")
+
+    def fake_generation(**kwargs):
+        kwargs["on_generation_complete"]([])
+        return [_page("file_page:lib/c.ts")]
+
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd._generation_persist.run_generation_with_persistence",
+        fake_generation,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.run_async", lambda value: value
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation._enrich_knowledge_graph",
+        lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.flush_cost_tracker",
+        lambda tracker: None,
+    )
+    monkeypatch.setattr(
+        "repowise.cli.commands.init_cmd.generation.console.print", lambda *a, **kw: None
+    )
+
+    result = SimpleNamespace(
+        repo_name="test_repo",
+        parsed_files=[],
+        source_map={},
+        graph_builder=MagicMock(),
+        repo_structure=MagicMock(),
+        git_meta_map={},
+    )
+
+    run_repo_generation(
+        repo_path=tmp_path,
+        result=result,
+        provider=SimpleNamespace(provider_name="mock", model_name="mock-model"),
+        gen_config=SimpleNamespace(max_concurrency=1, deterministic=False),
+        concurrency=1,
+        embedder_name_resolved="mock",
+        resume=False,
+        verbose=False,
+    )
+
+    assert result.failed_page_ids == []
+
+
 def test_recorded_cost_includes_the_knowledge_graph_enrichment(tmp_path, monkeypatch):
     """Layer naming and the guided tour are real model calls billed through the
     same tracker as the pages, so the figure the completion panel prints has to
@@ -550,14 +609,14 @@ def test_run_repo_generation_uses_exact_job_id_when_provided(tmp_path, monkeypat
 
 
 class TestInitClosingKeylessNote:
-    """A keyless index closes by naming its upgrade commands (#3105).
+    """A keyless index closes with its search note, never a model line.
 
-    The note must not depend on editor setup: the headless path has no
-    ``generate`` row in the next-steps panel, so this line is the only place
-    it hears about the upgrades.
+    The model offer moved to the setup steps (``repowise next`` and the
+    dashboard), so the closing panel no longer names ``repowise generate``.
+    The search note must not depend on editor setup.
     """
 
-    def _output(self, monkeypatch, *, setup, pages, state=None) -> str:
+    def _output(self, monkeypatch, *, setup, pages, state=None, terminal=False) -> str:
         import io
 
         from rich.console import Console
@@ -565,7 +624,9 @@ class TestInitClosingKeylessNote:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False, theme=THEME),
+            Console(
+                file=buf, width=200, force_terminal=terminal, color_system=None, theme=THEME
+            ),
         )
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.load_state",
@@ -600,11 +661,18 @@ class TestInitClosingKeylessNote:
         ids=["no-setup", "editor-setup-disabled", "editor-setup-done"],
     )
     def test_note_prints_with_and_without_editor_setup(self, monkeypatch, setup):
-        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
-        # Once, as a step row: the duplicate closing sentence is gone.
-        assert out.count("repowise generate") == 1
+        # At a terminal: off one, editor setup off is a server run (below).
+        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")], terminal=True)
+        assert "repowise generate" not in out
         assert "Semantic search is off: repowise reindex turns it on" in out
         assert "--embedder ..." not in out
+
+    def test_a_server_run_drops_the_reindex_hint(self, monkeypatch):
+        setup = SimpleNamespace(editor_setup_disabled=True)
+        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
+        assert "repowise generate" not in out
+        assert "Semantic search is off" not in out
+        assert "What's next" not in out
 
     def test_note_drops_the_search_half_when_semantic_search_is_available(self, monkeypatch):
         state = {
@@ -615,7 +683,6 @@ class TestInitClosingKeylessNote:
             },
         }
         out = self._output(monkeypatch, setup=None, pages=[_page("file_page:a")], state=state)
-        assert "repowise generate" in out
         assert "reindex" not in out
 
     def test_no_search_line_when_no_documentation_was_built(self, monkeypatch):
