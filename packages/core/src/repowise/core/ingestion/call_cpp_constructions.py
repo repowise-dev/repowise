@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import replace
 from itertools import accumulate
 
@@ -39,6 +41,8 @@ _TYPEDEF_CLASS_BODY = re.compile(
 )
 _INLINE_CLASS = "{"
 _TYPE_QUALIFIERS = re.compile(r"\b(?:typename|const|volatile|struct|class|union)\b")
+# ``(constructor id, admitted argument count range)`` pairs, one class's or file's.
+_Members = tuple[tuple[str, tuple[int, int | None] | None], ...]
 # An alias of an alias is followed this many hops before it counts as unresolved.
 _ALIAS_HOPS = 4
 
@@ -49,7 +53,7 @@ class CppConstructionMixin:
     def _cpp_type_name_callee(self, resolved: ResolvedCall, call: CallSite) -> ResolvedCall | None:
         """*resolved* settled for a receiver-less C++ call that names a type."""
         callee = self._symbols_by_id.get(resolved.callee_id)
-        if callee is None or callee.language != "cpp" or call.receiver_name:
+        if callee is None or callee.language != "cpp" or call.receiver_name or call.receiver_call:
             return resolved
         if callee.kind == "type_alias":
             return resolved if self._cpp_alias_names_repo_class(callee) else None
@@ -59,40 +63,69 @@ class CppConstructionMixin:
         found = self._deciding_members(members, call.argument_count, call.argument_types)
         return replace(resolved, callee_id=found[0]) if len(found) == 1 else None
 
-    def _cpp_constructor_group(
-        self, resolved: ResolvedCall, callee: Symbol
-    ) -> tuple[tuple[str, tuple[int, int | None] | None], ...]:
+    def _cpp_constructor_group(self, resolved: ResolvedCall, callee: Symbol) -> _Members:
         """The constructors a call on class or constructor *callee* may mean, with admitted counts.
 
-        A class answers with the constructors declared in its body, a
-        constructor with its own group: the class body, or the file that defines
-        it out of line. Another file's same-named class is no evidence.
+        A class answers with the constructors its body declares. A constructor
+        answers with its class's, when that body declares this very constructor
+        (an out-of-line definition in a .cc keeps its header siblings), else
+        with the group its own file declares. Another file's same-named class
+        that does not declare it is no evidence.
         """
         if callee.kind in _CONSTRUCTIBLE_KINDS:
             # A forward declaration stands for the class body that holds the constructors.
-            key = (self._redirect_to_definition(resolved) or resolved).callee_id
-            owner = self._symbols_by_id.get(key, callee)
-            path = self._symbol_paths_by_id.get(key, "")
+            return self._cpp_class_constructors(
+                (self._redirect_to_definition(resolved) or resolved).callee_id
+            )
+        class_id = self._cpp_constructed_class(callee)
+        if class_id is not None:
+            members = self._cpp_class_constructors(class_id)
+            if any(
+                member == callee.id or self._decl_to_def.get(member) == callee.id
+                for member, _ in members
+            ):
+                return members
+        scope = outer_scope(callee.id)
+        path = self._symbol_paths_by_id.get(callee.id, "")
+        # Keyed apart from a class id the same scope may spell.
+        return self._cpp_constructors_where(
+            f"{path}|{scope}", path, callee.name, lambda s: outer_scope(s.id) == scope
+        )
 
-            # Read from the body's span: a nested class's id carries its outer
-            # class, while its constructors' ids do not.
-            def in_group(s: Symbol) -> bool:
-                return s.name == owner.name and owner.start_line <= s.start_line <= owner.end_line
+    def _cpp_class_constructors(self, class_id: str) -> _Members:
+        """The constructors declared in the body of class *class_id*.
 
-        else:
-            key = outer_scope(callee.id)
-            path = self._symbol_paths_by_id.get(callee.id, "")
+        Read from the body's span: a nested class's id carries its outer class,
+        while its constructors' ids do not.
+        """
+        owner = self._symbols_by_id[class_id]
+        return self._cpp_constructors_where(
+            class_id,
+            self._symbol_paths_by_id.get(class_id, ""),
+            owner.name,
+            lambda s: owner.start_line <= s.start_line <= owner.end_line,
+        )
 
-            def in_group(s: Symbol) -> bool:
-                return outer_scope(s.id) == key
+    def _cpp_constructors_where(
+        self, key: str, path: str, name: str, in_group: Callable[[Symbol], bool]
+    ) -> _Members:
+        """The constructors of class *name* in *path* that *in_group* admits, cached under *key*.
 
+        A constructor of a class local to a function body is never a candidate.
+        """
         members = self._cpp_constructors.get(key)
         if members is None:
+            by_name = self._cpp_file_constructors.get(path)
+            if by_name is None:
+                by_name = self._cpp_file_constructors[path] = defaultdict(list)
+                for s in getattr(self._parsed_files.get(path), "symbols", ()):
+                    if self._is_cpp_constructor(s):
+                        by_name[s.name].append(s)
             # An in-class declaration and its inline definition share one id; the
             # declaration comes first and is the one that carries default arguments.
             ranges: dict[str, tuple[int, int | None] | None] = {}
-            for s in getattr(self._parsed_files.get(path), "symbols", ()):
-                if self._is_cpp_constructor(s) and in_group(s):
+            for s in by_name.get(name, ()):
+                if in_group(s) and not self._cpp_function_local(s.id):
                     ranges.setdefault(s.id, signature_parameter_range(s.signature or "", "cpp"))
             members = self._cpp_constructors[key] = tuple(ranges.items())
         return members

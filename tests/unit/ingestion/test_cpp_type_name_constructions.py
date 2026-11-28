@@ -202,3 +202,30 @@ def test_a_nested_class_construction_binds_its_constructor(tmp_path: Path) -> No
     graph = _build(tmp_path)
     assert _callee_lines(graph, "use.cc::Make") == {("method", 5)}
     assert _callee_lines(graph, "use.cc::Empty") == {("method", 4)}
+
+
+def test_a_constructor_defined_in_a_source_file_keeps_its_header_siblings(tmp_path: Path) -> None:
+    (tmp_path / "foo.h").write_text(
+        "#pragma once\nstruct Foo {\n  Foo(int a);\n  Foo(int a, int b) {}\n};\n"
+    )
+    (tmp_path / "foo.cc").write_text(
+        '#include "foo.h"\nFoo::Foo(int a) {}\n'
+        "void Pair() { Foo f = Foo(1, 2); }\n"
+        "void One() { Foo f = Foo(1); }\n"
+    )
+    graph = _build(tmp_path)
+    assert _callee_lines(graph, "foo.cc::Pair") == {("method", 4)}
+    assert _callees_of(graph, "foo.cc::One") == {"foo.cc::Foo::Foo"}
+
+
+def test_a_class_local_to_a_member_body_lends_no_constructor(tmp_path: Path) -> None:
+    (tmp_path / "t.h").write_text(
+        "#pragma once\nstruct T {\n  void m() {\n    struct T {\n      T(int) {}\n    };\n  }\n"
+        "  T() {}\n};\n"
+    )
+    (tmp_path / "use.cc").write_text(
+        '#include "t.h"\nT Copy(const T& x) { return T(x); }\nT Make() { return T(); }\n'
+    )
+    graph = _build(tmp_path)
+    assert _callees_of(graph, "use.cc::Copy") == set()
+    assert _callee_lines(graph, "use.cc::Make") == {("method", 8)}
