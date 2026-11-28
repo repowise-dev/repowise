@@ -159,6 +159,9 @@ DISTINCT_TITLES = [
     ("Keep one worker pool for indexing", "Keep two worker pool for indexing"),
     ("Don't cache auth tokens in Redis", "Cache auth tokens in Redis"),
     ("Set retry limit to 3 attempts", "Set retry limit to 5 attempts"),
+    # One word swapped in a four-word title: 3/5 = 0.6 on three shared words.
+    ("Cache parsed files in memory", "Cache parsed files on disk"),
+    ("Send audit events over HTTP", "Send audit events to the database"),
     (
         "Enable authentication for internal health endpoints",
         "Disable authentication for internal health endpoints",

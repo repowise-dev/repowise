@@ -307,6 +307,12 @@ def same_decision_text(a: str, b: str) -> bool:
 #: regeneration walks" against "... from decision centrality").
 _MIN_TITLE_OVERLAP_SAME_COMMIT = 0.6
 
+#: Four-word titles that swap one word ("Cache parsed files in memory" against
+#: "... on disk") sit at 3/5 = 0.6 on three shared words: too few to tell a
+#: reworded title from a second choice. A swap in a longer title still folds;
+#: the ceiling is word sets without parts of speech.
+_MIN_SHARED_TITLE_WORDS = 4
+
 #: Number words a title can differ by alone: "one worker" and "two workers"
 #: share every other word and are still two rulings.
 _QUANTITIES = frozenset(
@@ -350,7 +356,11 @@ def same_decision_title(a: str, b: str) -> bool:
         return False
     if _opposed(ca, cb):
         return False
-    return jaccard(ca, cb) >= _MIN_TITLE_OVERLAP_SAME_COMMIT
+    shared = len(ca & cb)
+    return (
+        shared >= _MIN_SHARED_TITLE_WORDS
+        and shared / len(ca | cb) >= _MIN_TITLE_OVERLAP_SAME_COMMIT
+    )
 
 
 class RewordingIndex:
