@@ -77,7 +77,13 @@ $ repowise distill --format json --file src/app.ts -- npx tsc --noEmit
 
 `status` is one of `clean`, `errors`, `unavailable` (the tool was not found,
 `reason` holds the shell's "not found" line, else the last output line) or
-`unparsed` (non-zero exit with nothing recognized: read the raw output instead).
+`unparsed` (non-zero exit with nothing recognized: re-run without `--format json`).
+`errors` means at least one record of any severity, linter warnings included, so
+check each record's `severity` and the `exit_code` before treating it as a failure.
+A record's `source` is the format it was read as: `concise` (ruff/flake8),
+`ruff_full`, `clippy` (clippy/rustc), `gnu` (gcc/clang/swift/javac/go), `tsc`,
+`msbuild`, `mypy`, `eslint` or `golangci`. With `--file`, a record whose path does
+not exist in the checkout (the command ran after a `cd`) is kept rather than dropped.
 Paths are relative to the git checkout the command ran in; `--file` accepts a
 path relative to either that checkout or the current directory. Linter formats
 (eslint, ruff, flake8, clippy, golangci-lint) are recognized from the first 400

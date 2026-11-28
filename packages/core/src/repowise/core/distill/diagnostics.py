@@ -10,17 +10,21 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from repowise.core.distill.filters.lint_output import _MYPY_RE, _PARSERS, _detect_format
-
-_FIELDS = ("file", "line", "col", "severity", "code", "source", "message")
+from repowise.core.distill.filters.lint_output import (
+    _CONCISE_RE,
+    _MYPY_RE,
+    _PARSERS,
+    _detect_format,
+)
 
 # MSBuild / tsc: path(line,col): error CODE: message [project]
 _MSBUILD_RE = re.compile(
     r"^(?P<file>\S.*?)\((?P<line>\d+),(?P<col>\d+)\):\s"
     r"(?P<sev>error|warning)\s(?P<code>[A-Za-z]+\d+):\s(?P<msg>.+?)"
-    r"(?:\s+\[[^\]]*proj[^\]]*\])?\s*$"
+    r"(?:\s+\[[^\]]*\.\w*proj\])?\s*$"
 )
 # gcc / clang / javac / go: [C:]path:line[:col]: [severity:] message [-Wcode]
+# shortcut: paths with spaces are not matched, widen if Swift/Windows users report misses.
 _GNU_RE = re.compile(
     r"^(?P<file>(?:[A-Za-z]:)?[^\s:]+):(?P<line>\d+)(?::(?P<col>\d+))?:\s"
     r"(?:(?P<sev>fatal error|error|warning|note):\s)?(?P<msg>.+?)"
@@ -28,7 +32,7 @@ _GNU_RE = re.compile(
 )
 # The shell's own "no such program" line, not the phrase quoted inside other output.
 _NOT_FOUND_RE = re.compile(
-    r"^(?:\S+: (?:line \d+: |\d+: )?\S+: command not found"  # bash / sh
+    r"^(?:\S+: (?:line \d+: |\d+: )?\S+: (?:command )?not found\s*$"  # bash / sh (dash omits "command")
     r"|zsh: command not found: \S+"
     r"|'\S+' is not recognized as an internal or external command"  # cmd.exe
     r"|\S+ : The term '\S+' is not recognized)"  # PowerShell
@@ -38,9 +42,11 @@ _NOT_FOUND_RE = re.compile(
 def parse_diagnostics(output: str, exit_code: int) -> dict[str, Any]:
     """Parse *output* into ``{status, source, exit_code, [reason], diagnostics}``."""
     lint = _lint_records(output)
-    seen = {(r["file"], r["line"]) for r in lint}
-    # Two tools in one run (tsc + eslint, mypy + gcc): keep both, once each.
-    records = lint + [r for r in _fallback_records(output) if (r["file"], r["line"]) not in seen]
+    # Two tools in one run (tsc + eslint, ruff + mypy): keep both. A fallback record
+    # repeats a lint one only when it is the same line read as gcc or as the same format.
+    seen = {(r["file"], r["line"], src) for r in lint for src in ("gnu", r["source"])}
+    fallback = _fallback_records(output)
+    records = lint + [r for r in fallback if (r["file"], r["line"], r["source"]) not in seen]
     not_found = next((ln.strip() for ln in output.splitlines() if _NOT_FOUND_RE.match(ln)), None)
     reason = None
     if records:
@@ -79,23 +85,19 @@ def _lint_records(output: str) -> list[dict[str, Any]]:
             and m.group("sev") != "note"
         ]
     # ruff/flake8/golangci print no severity, so their parsers report "warning".
+    # No file: a run summary (rustc "aborting due to 2 previous errors"), not a finding.
     return [
-        dict(
-            zip(
-                _FIELDS,
-                (
-                    d.file,
-                    d.line,
-                    d.col,
-                    d.severity,
-                    None if d.rule == "(uncoded)" else d.rule,
-                    fmt,
-                    d.message,
-                ),
-                strict=True,
-            )
-        )
+        {
+            "file": d.file,
+            "line": d.line,
+            "col": d.col,
+            "severity": d.severity,
+            "code": None if d.rule == "(uncoded)" else d.rule,
+            "source": fmt,
+            "message": d.message,
+        }
         for d in diags
+        if d.file
     ]
 
 
@@ -104,18 +106,16 @@ def _fallback_records(output: str) -> list[dict[str, Any]]:
     for ln in output.splitlines():
         m = _MSBUILD_RE.match(ln)
         if m:
-            code = m.group("code")
+            code = m["code"]
             source = "tsc" if code.startswith("TS") else "msbuild"
-            values: tuple[Any, ...] = (
-                m["file"],
-                int(m["line"]),
-                int(m["col"]),
-                m["sev"],
-                code,
-                source,
-                m["msg"],
+            out.append(_record(m["file"], m["line"], m["col"], m["sev"], code, source, m["msg"]))
+            continue
+        m = _CONCISE_RE.match(ln)
+        if m:
+            # ruff/flake8 beside another linter, or past the 400-line detection window.
+            out.append(
+                _record(m["file"], m["line"], m["col"], "warning", m["rule"], "concise", m["msg"])
             )
-            out.append(dict(zip(_FIELDS, values, strict=True)))
             continue
         m = _GNU_RE.match(ln)
         if not m:
@@ -128,21 +128,27 @@ def _fallback_records(output: str) -> list[dict[str, Any]]:
                 continue
             sev = "error"
         if sev == "note":
-            if out:
+            if out and out[-1]["source"] == "gnu":
                 out[-1]["message"] += "\n" + ln
             continue
-        values = (
-            m["file"],
-            int(m["line"]),
-            int(col) if col else None,
-            "error" if sev == "fatal error" else sev,
-            m["code"],
-            "gnu",
-            m["msg"],
-        )
-        out.append(dict(zip(_FIELDS, values, strict=True)))
+        sev = "error" if sev == "fatal error" else sev
+        out.append(_record(m["file"], m["line"], col, sev, m["code"], "gnu", m["msg"]))
     # dotnet prints every diagnostic twice: once in the build log, once in the summary.
     unique: dict[tuple[Any, ...], dict[str, Any]] = {}
     for rec in out:
         unique.setdefault(tuple(rec.values()), rec)
     return list(unique.values())
+
+
+def _record(
+    file: str, line: str, col: str | None, sev: str, code: str | None, source: str, msg: str
+) -> dict[str, Any]:
+    return {
+        "file": file,
+        "line": int(line),
+        "col": int(col) if col else None,
+        "severity": sev,
+        "code": code,
+        "source": source,
+        "message": msg,
+    }

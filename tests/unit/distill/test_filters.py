@@ -520,6 +520,7 @@ def test_parse_diagnostics_gnu_note_attaches_to_previous() -> None:
         ("", 0, "clean"),
         ("bash: tsc: command not found\n", 127, "unavailable"),
         ("bash: tsc: command not found\nhint: install typescript\n", 1, "unavailable"),
+        ("sh: 1: tsc: not found\n", 1, "unavailable"),
         ("something went sideways\nno idea\n", 1, "unparsed"),
         ("E   AssertionError: 'command not found' not in output\n", 1, "unparsed"),
         # severity-less path:line lines that are not diagnostics
@@ -533,7 +534,7 @@ def test_parse_diagnostics_status(output, exit_code, status) -> None:
     assert result["exit_code"] == exit_code
     assert result["diagnostics"] == []
     if status == "unavailable":
-        assert result["reason"] == "bash: tsc: command not found"
+        assert result["reason"] in ("bash: tsc: command not found", "sh: 1: tsc: not found")
 
 
 @pytest.mark.parametrize(
@@ -549,6 +550,16 @@ def test_parse_diagnostics_status(output, exit_code, status) -> None:
             "main.c:3:5: error: unknown type name 'foo'\n"
             "main.c:1:10: fatal error: missing.h: No such file or directory\n",
             [("app.py", "mypy"), ("main.c", "gnu"), ("main.c", "gnu")],
+        ),
+        (  # ruff then mypy
+            "app.py:1:8: F401 [*] `os` imported but unused\n"
+            "app.py:4: error: Name \"x\" is not defined  [name-defined]\n",
+            [("app.py", "mypy"), ("app.py", "concise")],
+        ),
+        (  # tsc and eslint on the same line
+            "/repo/src/a.ts(3,7): error TS2322: Type 'string' is not assignable.\n"
+            "/repo/src/a.ts\n  3:7  error  Bad hook  react-hooks/rules-of-hooks\n",
+            [("/repo/src/a.ts", "eslint"), ("/repo/src/a.ts", "tsc")],
         ),
     ],
 )  # fmt: skip
@@ -805,3 +816,17 @@ def test_ls_long_keeps_every_entry_when_small(load_fixture) -> None:
     assert "more entries" not in distilled
     for name in entries:
         assert name in distilled
+
+
+def test_parse_diagnostics_rustc_abort_summary_is_not_a_record() -> None:
+    out = (
+        "error[E0308]: mismatched types\n"
+        " --> src/main.rs:2:18\n"
+        "  |\n"
+        '2 |     let x: i32 = "a";\n'
+        "  |                  ^^^ expected `i32`, found `&str`\n"
+        "\n"
+        "error: aborting due to 1 previous error\n"
+    )
+    [d] = parse_diagnostics(out, 1)["diagnostics"]
+    assert (d["file"], d["line"], d["source"]) == ("src/main.rs", 2, "clippy")

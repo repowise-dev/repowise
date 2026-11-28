@@ -157,19 +157,26 @@ def _diagnostics_json(output: str, exit_code: int, files: tuple[str, ...]) -> di
     root = git_root(cwd) or cwd
 
     def rel(path: str) -> str:
-        # "" is a diagnostic with no location (clippy summary warnings).
-        return (repo_relative(path, root, resolve=True) or path) if path else path
+        # cwd-relative if it exists there, else repo-relative if it exists there.
+        if not Path(path).exists() and (root / path).exists():
+            path = str(root / path)
+        return repo_relative(path, root, resolve=True) or path
 
     result = parse_diagnostics(output, exit_code)
     for d in result["diagnostics"]:
         d["file"] = rel(d["file"])
     if files:
-        # A --file path may be cwd-relative or repo-relative; accept either.
-        wanted = {rel(f) for f in files} | {rel(str(root / f)) for f in files}
-        result["diagnostics"] = [d for d in result["diagnostics"] if d["file"] in wanted]
-        if result["status"] == "errors" and not result["diagnostics"]:
+        wanted = {rel(f) for f in files}
+        # A path we cannot place (the tool ran after `cd x`) may be a wanted file: keep it.
+        diags = [
+            d
+            for d in result["diagnostics"]
+            if d["file"] in wanted or not (root / d["file"]).exists()
+        ]
+        result["diagnostics"], result["source"] = diags, diags[0]["source"] if diags else None
+        if result["status"] == "errors" and not diags:
             # The asked-about files are clean even if others are not.
-            result["status"], result["source"] = "clean", None
+            result["status"] = "clean"
     return result
 
 
