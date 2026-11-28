@@ -1340,6 +1340,25 @@ class TestCSharpBetterConversion:
         edges = _edges(tmp_path, {"G.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
         assert ("C.cs::C::Run", "G.cs::G::Go#1(Func)") in edges
 
+    def test_an_async_lambda_never_takes_a_func_of_a_value_and_prefers_a_nullable_task_func(
+        self, tmp_path: Path
+    ) -> None:
+        holder = (
+            "using System;\nusing System.Threading.Tasks;\nnamespace App;\npublic static class G {\n"
+            "  public static void Obj(Action a) { }\n"
+            "  public static void Obj(Func<object> f) { }\n"
+            "  public static void Nul(Action a) { }\n"
+            "  public static void Nul(Func<Task>? f) { }\n"
+            "}\n"
+        )
+        caller = (
+            "namespace App;\npublic class C {\n"
+            "  public void Run() { G.Obj(async () => { }); G.Nul(async () => { }); }\n}\n"
+        )
+        edges = _edges(tmp_path, {"G.cs": ("csharp", holder), "C.cs": ("csharp", caller)})
+        assert ("C.cs::C::Run", "G.cs::G::Obj#1(Action)") in edges
+        assert ("C.cs::C::Run", "G.cs::G::Nul#1(Func?)") in edges
+
     def test_the_receiver_counts_only_when_every_member_extends_one_type(self, tmp_path: Path) -> None:
         holder = (
             "namespace App;\npublic class Box { }\npublic class Box<T> { }\n"

@@ -654,6 +654,9 @@ def _csharp_may_take(parameter: str, argument: str, shape_of: Callable[[str], st
     return not framework or (head not in _CSHARP_CLOSED_TYPES and head not in _CSHARP_DELEGATES)
 
 
+_CSHARP_TYPE_PARAMETER = re.compile(r"T(?:[A-Z]\w*)?")
+
+
 def _csharp_refuses_async(parameter: str, head: str) -> bool:
     """Does framework delegate *head* refuse an ``async`` lambda?
 
@@ -665,8 +668,9 @@ def _csharp_refuses_async(parameter: str, head: str) -> bool:
 def _csharp_may_return_task(parameter: str, head: str) -> bool:
     """Could *parameter*, a framework delegate, return a task, as an ``async`` lambda does?
 
-    Only a ``Func`` can, and only when its result, the last type argument, is
-    not a closed type: a type parameter (``Func<T>``) may be inferred as one.
+    Only a ``Func`` can, and only when its result, the last type argument, is a
+    task or a type parameter (``Func<T>``), which may be inferred as one.
+    Ceiling: a type parameter is told by its conventional name (``T``, ``TResult``).
     """
     if head != "Func":
         return False
@@ -677,7 +681,8 @@ def _csharp_may_return_task(parameter: str, head: str) -> bool:
         depth += (char == "<") - (char == ">")
         if char == "," and depth == 0:
             last = index + 1
-    return bare_type_name(inner[last:]) not in _CSHARP_CLOSED_TYPES
+    result = bare_type_name(inner[last:])
+    return result in ("Task", "ValueTask") or _CSHARP_TYPE_PARAMETER.fullmatch(result) is not None
 
 
 def _csharp_exact(parameter: str, argument: str) -> bool:
@@ -710,7 +715,7 @@ def _csharp_conversion(parameter: str, argument: str | None) -> _Conversion:
     """
     written = clr_parameter_type(parameter)
     if argument is not None and argument.startswith("async "):
-        head = erased_type(parameter)
+        head = erased_type(parameter).rstrip("?")
         if head in ("Func", "Action"):
             return written, _csharp_may_return_task(parameter, head)
         return written, None
