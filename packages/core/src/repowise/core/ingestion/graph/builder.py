@@ -662,10 +662,13 @@ class GraphBuilder(
         self._resolve_ruby_spec_mirrors(progress=progress, scope=scope_set)
 
         # --- C/C++ header ↔ implementation pairing ---
-        # foo.h -> foo.c (same stem, same dir): consumers including the
-        # header must be able to reach the implementation. Read off paths
-        # alone and cheap, so a patch re-derives the pairs its scope cleared.
-        self._resolve_cpp_header_pairs(progress=progress)
+        # foo.h -> foo.c (same stem, same dir or same build target): consumers
+        # including the header must be able to reach the implementation. Read
+        # off paths alone and cheap, so a patch re-derives the pairs its scope
+        # cleared.
+        self._resolve_cpp_header_pairs(
+            progress=progress, cpp_index=getattr(ctx, CPP_INDEX_KEY, None)
+        )
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one

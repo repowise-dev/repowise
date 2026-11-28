@@ -313,15 +313,20 @@ class ResolveMixin:
                 if callable(done):
                     done(phase)
 
-    def _resolve_cpp_header_pairs(self, progress: Any | None = None) -> None:
-        """Pair C/C++/Objective-C headers with their same-stem same-dir
-        implementations.
+    def _resolve_cpp_header_pairs(
+        self, progress: Any | None = None, cpp_index: Any | None = None
+    ) -> None:
+        """Pair C/C++/Objective-C headers with their same-stem implementations.
 
         ``foo.c`` → ``foo.h`` exists via the #include, but nothing ever
         points ``foo.h`` → ``foo.c`` — so a consumer that includes the
         header can never reach the implementation and every ``.c`` whose
         only relationship is "implements its header" reads as orphaned.
         The pairing edge makes BFS transit headers into implementations.
+
+        Same directory pairs always. Across directories (``include/x/foo.h``
+        with ``src/foo.cc``) a pair needs a build target from *cpp_index*
+        that owns both and no other file of that stem and kind.
         """
         header_exts = (".h", ".hpp", ".hxx", ".hh", ".h++")
         # An include fragment pairs as the implementation side: ``vector.inl``
@@ -371,25 +376,28 @@ class ResolveMixin:
                 key = (pp.parent.as_posix(), pp.stem.lower())
                 by_dir_stem.setdefault(key, {}).setdefault(kind, []).append(p)
 
+            pairs: set[tuple[str, str]] = set()
+            for _key, kinds in by_dir_stem.items():
+                pairs.update(
+                    (h, s) for h in kinds.get("header", []) for s in kinds.get("source", [])
+                )
+            pairs |= _target_header_pairs(cpp_index, self._parsed_files, header_exts, source_exts)
+
             added = 0
-            for _key, kinds in sorted(by_dir_stem.items()):
-                headers = sorted(kinds.get("header", []))
-                sources = sorted(kinds.get("source", []))
-                for h in headers:
-                    for s in sources:
-                        for a, b in ((h, s), (s, h)):
-                            if not self._graph.has_node(a) or not self._graph.has_node(b):
-                                continue
-                            if self._graph.has_edge(a, b):
-                                continue
-                            self._graph.add_edge(
-                                a,
-                                b,
-                                edge_type="imports",
-                                imported_names=[],
-                                hint_source="header_source_pair",
-                            )
-                            added += 1
+            for h, s in sorted(pairs):
+                for a, b in ((h, s), (s, h)):
+                    if not self._graph.has_node(a) or not self._graph.has_node(b):
+                        continue
+                    if self._graph.has_edge(a, b):
+                        continue
+                    self._graph.add_edge(
+                        a,
+                        b,
+                        edge_type="imports",
+                        imported_names=[],
+                        hint_source="header_source_pair",
+                    )
+                    added += 1
             log.info("header_pair_edges", added=added)
         except Exception as exc:
             log.warning("cpp_header_pairs_failed", error=str(exc))
@@ -934,3 +942,31 @@ def _project_usings_by_file(index: Any, paths: Iterable[str]) -> dict[str, froze
             per_project[csproj] = frozenset(index.globals_for_project(csproj))
         out[path] = per_project[csproj]
     return out
+
+
+def _target_header_pairs(
+    cpp_index: Any | None,
+    parsed_files: dict[str, ParsedFile],
+    header_exts: tuple[str, ...],
+    source_exts: tuple[str, ...],
+) -> set[tuple[str, str]]:
+    """``(header, source)`` pairs one build target owns, unambiguous by stem."""
+    from pathlib import PurePosixPath
+
+    pairs: set[tuple[str, str]] = set()
+    for target in getattr(cpp_index, "targets", {}).values():
+        by_stem: dict[str, tuple[list[str], list[str]]] = {}
+        for path in (*target.public_headers, *target.private_headers, *target.sources):
+            if path not in parsed_files:
+                continue
+            pp = PurePosixPath(path)
+            suffix = pp.suffix.lower()
+            headers, sources = by_stem.setdefault(pp.stem.lower(), ([], []))
+            if suffix in header_exts:
+                headers.append(path)
+            elif suffix in source_exts:
+                sources.append(path)
+        for headers, sources in by_stem.values():
+            if len(set(headers)) == 1 and len(set(sources)) == 1:
+                pairs.add((headers[0], sources[0]))
+    return pairs

@@ -7,11 +7,10 @@ from pathlib import Path
 import networkx as nx
 import pytest
 
+from repowise.core.ingestion.graph._import_targets import resolve_import_targets
+from repowise.core.ingestion.models import Import
 from repowise.core.ingestion.resolvers.context import ResolverContext
-from repowise.core.ingestion.resolvers.cpp import (
-    resolve_cpp_import,
-    resolve_cpp_import_all,
-)
+from repowise.core.ingestion.resolvers.cpp import resolve_cpp_import
 from repowise.core.ingestion.resolvers.cpp_workspace import (
     build_cpp_workspace_index,
     is_stdlib_include,
@@ -84,9 +83,8 @@ def test_stdlib_includes_are_dropped(tmp_path):
     assert resolve_cpp_import("stdio.h", "main.cc", ctx) is None
 
 
-def test_resolve_all_fans_out_to_target_siblings(tmp_path):
-    """A ``#include`` of a public header fans out to every TU sharing
-    the owning target so the header's defining files aren't orphaned."""
+def test_include_resolves_to_the_header_alone(tmp_path):
+    """An include of a target's header is one edge, never one per TU of the target."""
     _write(tmp_path, "CMakeLists.txt", """
         add_library(coffee STATIC src/brew.cc src/grind.cc)
         target_sources(coffee PUBLIC include/coffee/brew.h)
@@ -100,10 +98,33 @@ def test_resolve_all_fans_out_to_target_siblings(tmp_path):
     ]
     ctx = _make_ctx(tmp_path, paths)
 
-    targets = resolve_cpp_import_all("coffee/brew.h", "src/brew.cc", ctx)
-    assert targets[0] == "include/coffee/brew.h"
-    # Sibling TU should be included in the fan-out
-    assert "src/grind.cc" in targets
+    imp = Import(
+        raw_statement='#include "coffee/brew.h"',
+        module_path="coffee/brew.h",
+        imported_names=["brew"],
+        is_relative=False,
+        resolved_file=None,
+    )
+    assert resolve_import_targets(imp, "src/brew.cc", "cpp", ctx) == ("include/coffee/brew.h",)
+
+
+def test_stem_fallback_prefers_the_named_header_over_its_source(tmp_path):
+    # No build file and no include root: only the stem map can answer, and it
+    # ranks the .cpp beside the .hpp first.
+    paths = ["engine/data/Clump.cpp", "engine/data/Clump.hpp", "engine/loaders/Loader.cpp"]
+    ctx = _make_ctx(tmp_path, paths)
+    ctx.stem_map["clump"] = ["engine/data/Clump.cpp", "engine/data/Clump.hpp"]
+    resolved = resolve_cpp_import("data/Clump.hpp", "engine/loaders/Loader.cpp", ctx)
+    assert resolved == "engine/data/Clump.hpp"
+
+
+def test_stem_fallback_never_lands_a_header_include_on_a_source(tmp_path):
+    paths = ["engine/data/Clump.cpp", "engine/loaders/Loader.cpp", "tools/clump.py"]
+    ctx = _make_ctx(tmp_path, paths)
+    ctx.stem_map["clump"] = ["engine/data/Clump.cpp", "tools/clump.py"]
+    assert resolve_cpp_import("data/Clump.hpp", "engine/loaders/Loader.cpp", ctx) is None
+    # Still wrapped in angle brackets: the same file name, the same refusal.
+    assert resolve_cpp_import("<data/Clump.hpp>", "engine/loaders/Loader.cpp", ctx) is None
 
 
 def test_project_export_macro_discovery(tmp_path):
@@ -216,43 +237,3 @@ def test_siblings_in_targets(tmp_path):
     index = build_cpp_workspace_index(ctx)
     siblings = set(index.siblings_in_targets("a.cc"))
     assert siblings == {"b.cc", "c.cc"}
-
-
-def test_header_only_target_fans_out_to_other_headers(tmp_path):
-    # fmt-like header-only library: public headers, zero sources. One
-    # included header must pull the target's other headers along,
-    # otherwise the rest of the library is orphaned.
-    _write(tmp_path, "CMakeLists.txt", """
-        add_library(fmtish INTERFACE)
-        target_sources(fmtish INTERFACE include/fmtish/core.h include/fmtish/format.h include/fmtish/ranges.h)
-        target_include_directories(fmtish INTERFACE include)
-    """)
-    _write(tmp_path, "include/fmtish/core.h", "// core\n")
-    _write(tmp_path, "include/fmtish/format.h", "// format\n")
-    _write(tmp_path, "include/fmtish/ranges.h", "// ranges\n")
-    _write(tmp_path, "app/main.cc", '#include "fmtish/core.h"\n')
-    paths = [
-        "include/fmtish/core.h", "include/fmtish/format.h",
-        "include/fmtish/ranges.h", "app/main.cc", "CMakeLists.txt",
-    ]
-    ctx = _make_ctx(tmp_path, paths)
-    targets = resolve_cpp_import_all("fmtish/core.h", "app/main.cc", ctx)
-    assert targets[0] == "include/fmtish/core.h"
-    assert "include/fmtish/format.h" in targets
-    assert "include/fmtish/ranges.h" in targets
-
-
-def test_source_target_fanout_unchanged_by_header_pool(tmp_path):
-    # A target WITH sources keeps the TU fan-out (no header pool mixing).
-    _write(tmp_path, "CMakeLists.txt", """
-        add_library(coffee STATIC src/brew.cc src/grind.cc)
-        target_sources(coffee PUBLIC include/coffee/brew.h)
-        target_include_directories(coffee PUBLIC include)
-    """)
-    for rel in ("include/coffee/brew.h", "src/brew.cc", "src/grind.cc"):
-        _write(tmp_path, rel, "// x\n")
-    paths = ["include/coffee/brew.h", "src/brew.cc", "src/grind.cc", "CMakeLists.txt"]
-    ctx = _make_ctx(tmp_path, paths)
-    targets = resolve_cpp_import_all("coffee/brew.h", "src/brew.cc", ctx)
-    assert targets[0] == "include/coffee/brew.h"
-    assert "src/grind.cc" in targets
