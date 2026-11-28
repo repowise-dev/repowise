@@ -73,11 +73,17 @@ _SYNC_SINK = """
 
 
 def test_every_builtin_implementation_meets_its_contract():
-    from repowise.core.registry.plugins import seams
+    from repowise.core.registry.plugins import SeamRegistry
 
     _import_builtin_seams()
-    for seam in CONTRACTS:
-        for name, impl in seams()[seam]._impls.items():
+    for seam, contract in CONTRACTS.items():
+        # The registry from the module that defines the contract, not seams():
+        # another test module may have swapped the process-wide seam table.
+        module = importlib.import_module(contract.partition(":")[0])
+        [registry] = [
+            v for v in vars(module).values() if isinstance(v, SeamRegistry) and v.seam == seam
+        ]
+        for name, impl in registry._impls.items():
             assert check_implementation(seam, impl, name) == []
 
 

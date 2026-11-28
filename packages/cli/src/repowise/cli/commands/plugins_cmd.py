@@ -154,21 +154,8 @@ def _list_plugins(fmt: str) -> None:
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "
             f"entry point, or list modules in [bold]{ENV_VAR}[/bold]."
         )
-    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
     for r in rows:
-        color = colors.get(r["status"], "red")
-        status = f"[{color}]{r['status']}[/{color}]"
-        if r["error"]:
-            status += f": {escape(r['error'])}"
-        console.print(
-            f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}"
-        )
-        if r["seams"]:
-            console.print(f"  registered: {escape(', '.join(r['seams']))}")
-        if r["storage"]["applied"] or r["storage"]["pending"]:
-            applied = ", ".join(r["storage"]["applied"]) or "none"
-            pending = ", ".join(r["storage"]["pending"]) or "none"
-            console.print(escape(f"  storage: applied {applied}; pending {pending}"))
+        _print_plugin_row(r)
     for name, row in seam_rows.items():
         others = ", ".join(row["implementations"])
         console.print(f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})")
@@ -176,6 +163,25 @@ def _list_plugins(fmt: str) -> None:
         console.print(
             f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
         )
+
+
+def _print_plugin_row(r: dict) -> None:
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
+    color = colors.get(r["status"], "red")
+    status = f"[{color}]{r['status']}[/{color}]"
+    if r["error"]:
+        status += f": {escape(r['error'])}"
+    console.print(f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}")
+    if r["seams"]:
+        console.print(f"  registered: {escape(', '.join(r['seams']))}")
+    if r["storage"]["applied"] or r["storage"]["pending"]:
+        applied = ", ".join(r["storage"]["applied"]) or "none"
+        pending = ", ".join(r["storage"]["pending"]) or "none"
+        console.print(escape(f"  storage: applied {applied}; pending {pending}"))
 
 
 @plugins_command.command("check")
