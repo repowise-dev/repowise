@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.tsconfig_resolver import TsconfigResolver
 
 # ---------------------------------------------------------------------------
@@ -558,6 +560,55 @@ class TestMtsCtsAliasResolution:
         resolver = self._resolver(tmp_path, {"src/pkg/index.mts"})
         result = resolver.resolve("@/pkg", _importer(tmp_path, "src/app.ts"))
         assert result == "src/pkg/index.mts"
+
+
+class TestAliasWithEmittedExtension:
+    """An alias written with the emitted extension names the source: ``@/x.js`` is ``x.ts``."""
+
+    @pytest.mark.parametrize(
+        ("files", "specifier", "expected"),
+        [
+            ({"src/store.ts"}, "@/store.js", "src/store.ts"),
+            ({"src/panel.tsx"}, "@/panel.js", "src/panel.tsx"),
+            ({"src/module.mts"}, "@/module.mjs", "src/module.mts"),
+            ({"src/both.js", "src/both.ts"}, "@/both.js", "src/both.js"),
+            ({"src/util.tsx"}, "@/util.mjs", None),
+            ({"src/util.mts"}, "@/util.js", None),
+            ({"src/panel.ts"}, "@/panel.jsx", "src/panel.ts"),
+            ({"src/icons/close.tsx"}, "@/icons/close.svg", None),
+        ],
+        ids=[
+            "js-to-ts",
+            "js-to-tsx",
+            "mjs-to-mts",
+            "written-js-wins",
+            "mjs-not-tsx",
+            "js-not-mts",
+            "jsx-to-ts",
+            "svg-not-tsx",
+        ],
+    )
+    def test_resolves_source_of_emitted_extension(
+        self, tmp_path: Path, files: set[str], specifier: str, expected: str | None
+    ) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={
+                "tsconfig.json": {
+                    "compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["./src/*"]}}
+                }
+            },
+            path_set=files,
+        )
+        assert resolver.resolve(specifier, _importer(tmp_path, "src/app.ts")) == expected
+
+    def test_package_name_with_dot_is_no_source_file(self, tmp_path: Path) -> None:
+        resolver = _make_resolver(
+            tmp_path,
+            configs={"tsconfig.json": {"compilerOptions": {"baseUrl": "src"}}},
+            path_set={"src/socket.ts"},
+        )
+        assert resolver.resolve("socket.io-client", _importer(tmp_path, "src/app.ts")) is None
 
 
 # ---------------------------------------------------------------------------
