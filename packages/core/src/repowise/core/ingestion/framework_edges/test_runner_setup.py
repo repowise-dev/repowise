@@ -31,7 +31,12 @@ import posixpath
 from typing import TYPE_CHECKING, Any
 
 from ...test_paths import is_test_path
-from ..languages.js_config_values import TEST_SETUP_KEYS, string_literals, value_spans
+from ..languages.js_config_values import (
+    TEST_SETUP_KEYS,
+    root_dir_literal,
+    string_literals,
+    value_spans,
+)
 from ..resolvers import ResolverContext
 from ..source_text import source_bytes
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new
@@ -81,18 +86,34 @@ def _package_dir(config: str, path_set: set[str]) -> str:
     return ""
 
 
-def resolve_setup_spec(spec: str, config: str, ctx: ResolverContext) -> str | None:
+def _root_dir_base(config: str, root_dir: str | None, path_set: set[str]) -> str:
+    """The directory ``<rootDir>/`` stands for in *config*.
+
+    A literal ``rootDir`` in the config is resolved against the config's
+    directory; without one it is the package directory.
+    """
+    if root_dir is None:
+        return _package_dir(config, path_set)
+    base = posixpath.normpath(posixpath.join(posixpath.dirname(config), root_dir))
+    return "" if base == "." else base
+
+
+def resolve_setup_spec(
+    spec: str, config: str, ctx: ResolverContext, root_dir: str | None = None
+) -> str | None:
     """The indexed file *spec*, written in *config*, names, or ``None``.
 
     A runner resolves a relative setup path against its root, which may be the
     config's directory or any directory above it (a config under
     ``test/vitest/`` with ``root`` set to the repository), so each is tried,
-    nearest first. ``<rootDir>/`` is the package directory.
+    nearest first. ``<rootDir>/`` is the config's literal ``rootDir`` (*root_dir*,
+    see :func:`~..languages.js_config_values.root_dir_literal`) when it has one,
+    else the package directory.
     """
     from ..resolvers.typescript import resolve_ts_js_import
 
     if spec.startswith("<rootDir>/"):
-        bases = [_package_dir(config, ctx.path_set)]
+        bases = [_root_dir_base(config, root_dir, ctx.path_set)]
         spec = spec[len("<rootDir>/") :]
     else:
         bases = []
@@ -125,7 +146,10 @@ def _setups_by_scope(
         text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
         if not any(k in text for k in _SETUP_KEY_BYTES):
             continue
-        targets = {t for s in setup_specs(text) if (t := resolve_setup_spec(s, path, ctx))}
+        root_dir = root_dir_literal(text)
+        targets = {
+            t for s in setup_specs(text) if (t := resolve_setup_spec(s, path, ctx, root_dir))
+        }
         if targets:
             scope = "" if leaves_its_directory(text) else _package_dir(path, path_set)
             setups.setdefault(scope, set()).update(targets)
