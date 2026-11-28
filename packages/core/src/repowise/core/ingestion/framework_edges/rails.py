@@ -36,6 +36,8 @@ _RAILS_RESOURCES_RE = re.compile(r"^(resources?)\s*\(?\s*:(\w+)")
 _RAILS_GET_TO_RE = re.compile(
     r"\b(?:get|post|put|patch|delete|match|root)\b[^\n]*?(?:to:\s*|=>\s*)['\"]([\w/]+)#\w+['\"]"
 )
+# ``root 'home#index'``: the bare form names its target with no ``to:``.
+_RAILS_ROOT_RE = re.compile(r"^root\s*\(?\s*['\"]([\w/]+)#\w+['\"]")
 _RAILS_NAMESPACE_RE = re.compile(r"^namespace\s*\(?\s*:(\w+)")
 _RAILS_SCOPE_RE = re.compile(r"^scope\b")
 _RAILS_MODULE_OPT_RE = re.compile(r"\bmodule:\s*(?::(\w+)|['\"]([\w/]+)['\"])")
@@ -63,7 +65,9 @@ _OVERLAY_MOD_RE = re.compile(
 _SCHEDULE_CLASS_RE = re.compile(r"^\s*['\"]?class['\"]?\s*:\s*['\"]?([A-Z][\w:]*)", re.MULTILINE)
 _SCHEDULE_FILES = ("schedule.yml", "sidekiq.yml", "sidekiq_cron.yml", "sidekiq_scheduler.yml")
 # ``routing(/^reply/i => :reply)`` and ``routing(all: :default)``.
-_MAILBOX_ROUTE_RE = re.compile(r"(?:=>|\w:)\s*:(\w+)")
+# The symbol must follow ``=>`` or a ``key:`` and a space, so the ``::`` of
+# ``ReplyMailbox::Default`` is never read as one.
+_MAILBOX_ROUTE_RE = re.compile(r"(?:=>\s*|\w:\s+):(\w+)")
 _MAILBOX_ROUTER = "app/mailboxes/application_mailbox.rb"
 
 
@@ -161,7 +165,8 @@ class _RoutesReader:
         self.path_set = path_set
         self.parsed_files = parsed_files
         self.count = 0
-        self._drawn: set[str] = set()
+        self._drawn: set[tuple[str, tuple[str, ...]]] = set()
+        self._reading: set[str] = {"config/routes.rb"}
 
     def read(self, path: str, stack: list[_RouteFrame]) -> None:
         parsed = self.parsed_files.get(path)
@@ -199,14 +204,21 @@ class _RoutesReader:
                 # ``resource :profile`` (singular) is served by ProfilesController.
                 any(self._edge(path, [*modules, *added, n]) for n in _plural_forms(res.group(2)))
         elif draw := _RAILS_DRAW_RE.match(line):
+            # One drawer may be drawn under several scopes, each routing to its
+            # own modules; a file already being read is not drawn into itself.
             drawn = f"config/routes/{draw.group(1)}.rb"
-            if drawn in self.path_set and drawn not in self._drawn:
-                self._drawn.add(drawn)
+            key = (drawn, tuple(modules))
+            if drawn in self.path_set and key not in self._drawn and drawn not in self._reading:
+                self._drawn.add(key)
                 self.count += _add_edge_if_new(self.graph, path, drawn)
+                self._reading.add(drawn)
                 self.read(drawn, list(stack))
+                self._reading.discard(drawn)
 
         for m in _RAILS_GET_TO_RE.finditer(line):
             self._edge(path, [*modules, *m.group(1).split("/")])
+        if root := _RAILS_ROOT_RE.match(line):
+            self._edge(path, [*modules, *root.group(1).split("/")])
 
         if _DO_BLOCK_RE.search(line) or _OPENS_BLOCK_RE.match(line):
             stack.append(_RouteFrame(added))

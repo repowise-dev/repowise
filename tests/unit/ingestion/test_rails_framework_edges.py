@@ -384,3 +384,55 @@ class TestRailsConventionEntries:
         # The ``end`` closes ``namespace :api``, so ``health`` is top level.
         assert graph.has_edge(routes, "app/controllers/health_controller.rb")
         assert not graph.has_edge(routes, "app/controllers/api/health_controller.rb")
+
+    def test_bare_root_route(self, tmp_path: Path) -> None:
+        graph = _edges_for(
+            tmp_path,
+            {
+                "config/routes.rb": (
+                    "Rails.application.routes.draw do\n  root 'home#index'\n"
+                    "  namespace :admin do\n    root \"dashboard#show\"\n  end\nend\n"
+                ),
+                "app/controllers/home_controller.rb": "class X; end\n",
+                "app/controllers/admin/dashboard_controller.rb": "class X; end\n",
+            },
+        )
+        assert graph.has_edge("config/routes.rb", "app/controllers/home_controller.rb")
+        assert graph.has_edge("config/routes.rb", "app/controllers/admin/dashboard_controller.rb")
+
+    def test_one_drawer_under_two_namespaces(self, tmp_path: Path) -> None:
+        graph = _edges_for(
+            tmp_path,
+            {
+                "config/routes.rb": (
+                    "Rails.application.routes.draw do\n"
+                    "  namespace :v1 do\n    draw(:shared)\n  end\n"
+                    "  namespace :v2 do\n    draw(:shared)\n  end\n"
+                    "end\n"
+                ),
+                "config/routes/shared.rb": "resources :widgets\ndraw(:shared)\n",
+                "app/controllers/v1/widgets_controller.rb": "class X; end\n",
+                "app/controllers/v2/widgets_controller.rb": "class X; end\n",
+            },
+        )
+        drawn = "config/routes/shared.rb"
+        assert graph.has_edge(drawn, "app/controllers/v1/widgets_controller.rb")
+        assert graph.has_edge(drawn, "app/controllers/v2/widgets_controller.rb")
+
+
+class TestRailsMailboxRouting:
+    def test_namespaced_constant_is_no_route_symbol(self, tmp_path: Path) -> None:
+        graph = _edges_for(
+            tmp_path,
+            {
+                "app/mailboxes/application_mailbox.rb": (
+                    "class ApplicationMailbox < ActionMailbox::Base\n"
+                    "  routing(ReplyMailbox::Default => :reply)\nend\n"
+                ),
+                "app/mailboxes/reply_mailbox.rb": "class ReplyMailbox; end\n",
+                "app/mailboxes/default_mailbox.rb": "class DefaultMailbox; end\n",
+            },
+        )
+        router = "app/mailboxes/application_mailbox.rb"
+        assert graph.has_edge(router, "app/mailboxes/reply_mailbox.rb")
+        assert not graph.has_edge(router, "app/mailboxes/default_mailbox.rb")
