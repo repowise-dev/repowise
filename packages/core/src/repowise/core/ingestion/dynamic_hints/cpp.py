@@ -16,7 +16,19 @@ from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import DynamicEdge, DynamicHintExtractor
 
 # Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
-_SKIP_DIRS = {"build", "out", "cmake-build-debug", "cmake-build-release", "third_party", "_deps"}
+# Matched case-insensitively and across the vendored third-party spellings
+# code_origin already knows, so engine trees that vendor into ``ThirdParty/``
+# or ``3rdParty/`` are skipped like ``third_party``/``thirdparty``.
+_SKIP_DIRS = frozenset(
+    {
+        "build", "out", "cmake-build-debug", "cmake-build-release",
+        "third_party", "thirdparty", "3rdparty", "3rd_party", "_deps",
+    }
+)
+
+
+def _part_is_skip_dir(part: str) -> bool:
+    return part.lower() in _SKIP_DIRS
 
 # Include fragments are scanned too: a generated binding table pasted into a
 # .inl is exactly where function-pointer and designated-initialiser wiring
@@ -179,7 +191,7 @@ class CppDynamicHints(DynamicHintExtractor):
                     rel_path = src.resolve().relative_to(repo_root_resolved)
                 except ValueError:
                     continue
-                if any(part in _SKIP_DIRS for part in rel_path.parts):
+                if any(_part_is_skip_dir(part) for part in rel_path.parts):
                     continue
                 try:
                     text = src.read_text(encoding="utf-8", errors="ignore")

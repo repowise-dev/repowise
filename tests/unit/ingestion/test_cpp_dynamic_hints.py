@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.ingestion.dynamic_hints.cpp import CppDynamicHints
 
 
@@ -108,6 +110,17 @@ class TestSkipDirs:
     def test_build_dir_skipped(self, tmp_path: Path) -> None:
         (tmp_path / "build").mkdir()
         (tmp_path / "build" / "x.cpp").write_text(
+            'void load() { dlopen("ignored.so", 0); }\n'
+        )
+        edges = _extract(tmp_path)
+        assert not any("ignored.so" in e.target for e in edges)
+
+    @pytest.mark.parametrize("dirname", ["ThirdParty", "thirdparty", "3rdParty"])
+    def test_thirdparty_case_variants_skipped(self, tmp_path: Path, dirname: str) -> None:
+        # #6613: the skip test is case-sensitive and lists one spelling, so
+        # engine trees that vendor into ThirdParty/ or 3rdParty/ are read.
+        (tmp_path / dirname / "lib").mkdir(parents=True)
+        (tmp_path / dirname / "lib" / "x.cpp").write_text(
             'void load() { dlopen("ignored.so", 0); }\n'
         )
         edges = _extract(tmp_path)
