@@ -29,7 +29,7 @@ This is useful when:
 
 ## Requirements
 
-Semantic search needs a real embedder: a key for `gemini` (`GEMINI_API_KEY`/`GOOGLE_API_KEY`), `openai`, `openrouter` or `edenai`, a local Ollama with `OLLAMA_EMBEDDING_MODEL` set, or `fastembed` in process after `pip install "repowise[local-embed]"` (Python 3.11 and 3.12, no key). When none is available, `repowise reindex` exits 1 and prints the command that turns semantic search on; relay it and ask the user to set the key themselves, never in the chat. On an Index only repo there is no documentation to embed yet: `repowise update --full` builds it first.
+Semantic search needs a real embedder: a key for `gemini`, `openai`, `openrouter` or `edenai` (saved in `.repowise/.env`{{only:claude-code}}; a Gemini or OpenAI key in the plugin's settings reaches only the MCP server{{end}}), a local Ollama with `OLLAMA_EMBEDDING_MODEL` set, or `fastembed` in process after `pip install "repowise[local-embed]"` (Python 3.11 and 3.12, no key). When none is available, `repowise reindex` exits 1 and prints the command that turns semantic search on; relay it and ask the user to set the key themselves, never in the chat. On an Index only repo there is no documentation to embed yet: `repowise update --full` builds it first.
 
 ## Handling $ARGUMENTS
 

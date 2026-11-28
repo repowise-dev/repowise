@@ -24,6 +24,8 @@ repowise/                              # main repo root
     ├── .claude-plugin/
     │   └── plugin.json                # plugin identity (name, version, author)
     ├── .mcp.json                      # auto-registers the repowise MCP server (10 flagship + list_repos)
+    ├── server.py                      # starts `repowise mcp` (stdlib only), run through uv
+    ├── pyproject.toml  uv.lock        # the plugin root as a uv project that pins no packages
     ├── hooks/
     │   └── hooks.json                 # PostToolUse → repowise-augment (proactive context)
     ├── commands/                      # user-invoked slash commands (/repowise:<name>)
@@ -56,12 +58,20 @@ manifest. Defines the name (the `repowise:` slash-command namespace), version,
 and metadata. Do **not** put a `marketplace.json` next to it — the marketplace
 lives at the repo root.
 
-**`.mcp.json`** — When the plugin is enabled, Claude Code auto-starts
-`repowise mcp` as an MCP server, giving Claude the **ten flagship tools**
+**`.mcp.json`** — When the plugin is enabled, Claude Code runs
+`uv run --project ${CLAUDE_PLUGIN_ROOT} --frozen --isolated --no-dev --no-build
+--no-config --no-python-downloads ${CLAUDE_PLUGIN_ROOT}/server.py`, the shape
+Anthropic's plugin directory asks of a Python server. `server.py` starts
+`repowise mcp` from the user's install, giving Claude the **ten flagship tools**
 (`get_overview`, `get_answer`, `get_context`, `get_symbol`, `search_codebase`,
 `get_risk`, `get_change_risk`, `get_why`, `get_dead_code`, `get_health`) plus
-`list_repos` by default. Uses the `mcpServers` wrapper key.
-The `repowise` binary must be on PATH (`/repowise:init` installs it).
+`list_repos` by default, and maps the masked key options in `plugin.json`
+(`gemini_api_key`, `openai_api_key`, `anthropic_api_key`) to the variables
+repowise reads; an empty option leaves the inherited environment alone. Uses
+the `mcpServers` wrapper key. `uv` and the `repowise` binary must be on PATH
+(`/repowise:init` installs repowise). `server.py` must stay standard library
+only: a dependency would make starting the server an install. After changing
+`pyproject.toml`, run `uv lock --no-config` in this folder.
 
 **`hooks/hooks.json`** — Registers `SessionStart`
 (`startup|resume|clear` → `repowise-augment`) and `PostToolUse`

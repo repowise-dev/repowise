@@ -7,6 +7,11 @@ All notable changes to the Repowise Claude Code plugin are documented here.
 ### Removed
 - Lens is no longer part of the plugin: the `hooks/lens/` mod, its `modules` entry in `hooks.json` and its six `lens_*` settings are gone. Its source moved to [repowise-dev/claude-lens](https://github.com/repowise-dev/claude-lens), an experimental project you can build and load yourself. The commands, skills, hooks and MCP server are unchanged.
 
+### Changed
+- The MCP server starts as `uv run --project ${CLAUDE_PLUGIN_ROOT} --frozen ... server.py`: the plugin root is a uv project whose lock pins no packages, and `server.py` starts `repowise mcp` from your install. The server now needs `uv` on PATH.
+- Gemini, OpenAI and Anthropic keys for the MCP server can be saved in the plugin's settings, masked and kept in the system keychain; an empty field leaves your shell and `.repowise/.env` in charge. `/repowise:init` shows a `.repowise/.env` line with a placeholder instead of an `export`.
+- The README lists what each hook does with the calls it sees.
+
 ## 0.62.0
 
 ### Added

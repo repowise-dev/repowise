@@ -16,6 +16,26 @@
   "supportUrl": "https://github.com/repowise-dev/repowise/issues",
   "privacyPolicyUrl": "https://repowise.dev/legal/privacy",
   "termsOfServiceUrl": "https://repowise.dev/legal/terms",
+  "userConfig": {
+    "gemini_api_key": {
+      "type": "string",
+      "title": "Gemini API key",
+      "description": "Optional. Given to the plugin's repowise MCP server as GEMINI_API_KEY, for semantic search or model-written answers. Masked and kept in your system keychain. Leave empty to keep what your shell or .repowise/.env sets.",
+      "sensitive": true
+    },
+    "openai_api_key": {
+      "type": "string",
+      "title": "OpenAI API key",
+      "description": "Optional. Given to the plugin's repowise MCP server as OPENAI_API_KEY, for semantic search or model-written answers. Masked and kept in your system keychain. Leave empty to keep what your shell or .repowise/.env sets.",
+      "sensitive": true
+    },
+    "anthropic_api_key": {
+      "type": "string",
+      "title": "Anthropic API key",
+      "description": "Optional. Given to the plugin's repowise MCP server as ANTHROPIC_API_KEY, for semantic search or model-written answers. Masked and kept in your system keychain. Leave empty to keep what your shell or .repowise/.env sets.",
+      "sensitive": true
+    }
+  },
   "keywords": [
     "codebase",
     "code-intelligence",

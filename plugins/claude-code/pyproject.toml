@@ -1,0 +1,11 @@
+# The plugin root as a plain uv project, so Claude Code starts the MCP server
+# as `uv run --project ${CLAUDE_PLUGIN_ROOT} --frozen ... server.py` (.mcp.json).
+# server.py needs only the standard library, so the lock pins no packages and
+# starting it installs nothing. The version is fixed: the plugin's own version
+# is the one in .claude-plugin/plugin.json.
+[project]
+name = "repowise-claude-plugin"
+version = "1.0.0"
+description = "Starts the repowise MCP server for the Repowise Claude Code plugin."
+requires-python = ">=3.9"
+dependencies = []

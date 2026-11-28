@@ -1,7 +1,7 @@
 ---
 frontmatter: |
     description: Set up Repowise for this codebase (install, options, indexing).
-    allowed-tools: Bash(repowise --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(repowise generate:*), Bash(repowise doctor:*), Bash(repowise decision:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
+    allowed-tools: Bash(repowise --version), Bash(uv --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(repowise generate:*), Bash(repowise doctor:*), Bash(repowise decision:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
 ---
 
 # Repowise Init
@@ -34,7 +34,17 @@ After install, verify with `repowise --version`. If the shell still says
 `command not found`, the user runs `uv tool update-shell` or `pipx ensurepath`
 and opens a new shell.
 
+{{only:codex}}
 If repowise IS found, print the version and move to Step 2.
+{{end}}
+{{only:claude-code}}
+If repowise IS found, print the version.
+
+The plugin starts its MCP server through uv. Run `uv --version`; if it is not
+found, tell the user the Repowise MCP tools need uv (install guide:
+https://docs.astral.sh/uv/getting-started/installation/) and a Claude Code
+restart after installing it. Do not install it for them. Then move to Step 2.
+{{end}}
 
 ## Step 2: Check if this repo is already indexed
 
@@ -193,9 +203,8 @@ blocker: if the user has no key, do not stop and do not ask again. Tell them the
 can add a model later with `repowise generate`, and go to Step 7.
 
 Do not read, test or print the user's environment variables or key values
-yourself. `repowise init` picks up a provider key from the environment and
-`.repowise/.env` on its own, so a user who already has one set needs no
-`--provider`. Ask:
+yourself. `repowise init` picks up a provider key from `.repowise/.env` on its
+own, so a user who already saved one there needs no `--provider`. Ask:
 
 "Which LLM provider do you want to use?"
 - **Google Gemini** (good cost efficiency): needs `GEMINI_API_KEY` or `GOOGLE_API_KEY`
@@ -210,11 +219,19 @@ yourself. `repowise init` picks up a provider key from the environment and
   auth status and uses one only with `--provider`. A Codex signed in through
   ChatGPT is listed in the picker but not offered.
 
-The user sets a key in their own shell or in `.repowise/.env` (gitignored).
-Never ask for a key in the chat. Show the export line for their provider:
+The user saves the key themselves, never in the chat. Show them the line for
+their provider to put in `.repowise/.env` in the repo, with their own key in
+place of the placeholder, and tell them to keep that file out of git (add
+`.repowise/.env` to `.gitignore` if the repo does not ignore it yet):
 ```bash
-export GEMINI_API_KEY="..."
+GEMINI_API_KEY=YOUR_API_KEY
 ```
+{{only:claude-code}}
+For the plugin's MCP server (semantic search and `get_answer`), a Gemini,
+OpenAI or Anthropic key can also go in the plugin's settings: `/plugin`, then
+Repowise, then Configure. That field is masked and kept in the system keychain,
+and `repowise init` in the terminal does not see it.
+{{end}}
 
 Every provider SDK ships with `repowise` itself, so there is no per-provider
 package to install. If a provider import fails, the install is broken:
