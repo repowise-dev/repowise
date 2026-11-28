@@ -51,19 +51,45 @@ def embed_section(content: str, heading: str, body: str | None) -> str:
     the section is removed: the reused page still carries what that run
     embedded, and the current facts have nothing to say there.
     """
-    pattern = re.compile(
-        r"^##[ \t]+" + re.escape(heading) + r"[ \t]*\n(?:.*?)" + _SECTION_END,
-        re.MULTILINE | re.DOTALL,
-    )
+    m = re.search(r"^##[ \t]+" + re.escape(heading) + r"[ \t]*(?:\r?\n|\Z)", content, re.MULTILINE)
+    if not m:
+        if not body:
+            return content
+        sep = "" if content.endswith("\n") else "\n"
+        section = f"## {heading}\n\n{body}\n\n"
+        return f"{content}{sep}\n{section}" if content else section
+
+    start = m.start()
+    pos = m.end()
+
+    fence_char = None
+    fence_len = 0
+    end = len(content)
+
+    line_pattern = re.compile(r"^(.*?)(?:\r?\n|\Z)", re.MULTILINE)
+    for line_match in line_pattern.finditer(content, pos):
+        if line_match.start() == len(content):
+            break
+        line = line_match.group(1)
+        stripped = line.lstrip(" \t")
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            char = stripped[0]
+            run_len = len(stripped) - len(stripped.lstrip(char))
+            if fence_char is None:
+                fence_char = char
+                fence_len = run_len
+            elif fence_char == char and run_len >= fence_len:
+                fence_char = None
+                fence_len = 0
+        elif fence_char is None:
+            if re.match(r"^#{1,2}[ \t]|^---[ \t]*$", line):
+                end = line_match.start()
+                break
+
     if not body:
-        return pattern.sub("", content, count=1)
+        return content[:start] + content[end:]
     section = f"## {heading}\n\n{body}\n\n"
-    if pattern.search(content):
-        # Function replacement: table cells carry backslashes and backticks
-        # that re.sub would otherwise read as group references.
-        return pattern.sub(lambda _m: section, content, count=1)
-    sep = "" if content.endswith("\n") else "\n"
-    return f"{content}{sep}\n{section}"
+    return content[:start] + section + content[end:]
 
 
 def build_package_table(package_stats: list[dict]) -> str | None:

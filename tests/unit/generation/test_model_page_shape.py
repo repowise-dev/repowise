@@ -141,6 +141,15 @@ def test_the_neighbours_section_replaces_the_model_paragraph():
     assert embed_section(page, "How it connects", None).count("How it connects") == 0
 
 
+def test_embed_section_ignores_headings_inside_code_fences():
+    page = "# T\n\n## Parts\n\nold\n\n```bash\n## not a heading\nmake\n```\n\nafter fence\n\n## Next\n\nkeep\n"
+    out = embed_section(page, "Parts", "NEW")
+    assert out == "# T\n\n## Parts\n\nNEW\n\n## Next\n\nkeep\n"
+
+    out_removed = embed_section(page, "Parts", None)
+    assert out_removed == "# T\n\n## Next\n\nkeep\n"
+
+
 # ---------------------------------------------------------------------------
 # Which flow a page draws
 # ---------------------------------------------------------------------------
