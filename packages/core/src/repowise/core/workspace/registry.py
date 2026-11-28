@@ -13,6 +13,7 @@ import os
 import sqlite3
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -285,6 +286,11 @@ async def publishable(db_path: str | Path) -> Publishability:
 # ---------------------------------------------------------------------------
 
 
+#: The member the calling MCP session works in, read from its roots; None
+#: falls back to the configured default. Set per tool call by the MCP server.
+caller_alias: ContextVar[str | None] = ContextVar("caller_alias", default=None)
+
+
 class RepoRegistry:
     """Manages multiple ``RepoContext`` instances for a workspace.
 
@@ -375,7 +381,14 @@ class RepoRegistry:
         return [r.alias for r in self._ws_config.repos]
 
     def get_default_alias(self) -> str:
-        """Return the alias of the default/primary repo."""
+        """Return the alias of the calling session's repo, else the default/primary repo."""
+        caller = caller_alias.get()
+        if caller is not None and self._ws_config.get_repo(caller) is not None:
+            return caller
+        return self._configured_default()
+
+    def _configured_default(self) -> str:
+        """The configured default/primary repo, whichever session is calling."""
         primary = self._ws_config.get_primary()
         if primary:
             return primary.alias
@@ -490,7 +503,7 @@ class RepoRegistry:
             # Evict if at capacity.  The default repo is protected from eviction, so
             # only count non-default contexts against the cap — this prevents the
             # cap from being silently bypassed when the default is always loaded.
-            default_alias = self.get_default_alias()
+            default_alias = self._configured_default()
             evictable = [a for a in self._contexts if a != default_alias]
             if len(evictable) >= self.MAX_LOADED:
                 await self._evict_lru()
@@ -689,7 +702,7 @@ class RepoRegistry:
             return
         # Find the alias with the oldest access time
         # Never evict the default repo
-        default_alias = self.get_default_alias()
+        default_alias = self._configured_default()
         candidates = {a: t for a, t in self._access_order.items() if a != default_alias}
         if not candidates:
             return  # Only default loaded, can't evict

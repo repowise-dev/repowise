@@ -568,7 +568,7 @@ get_conformance(repo="frontend")
 
 ## Workspace mode
 
-A server started inside a [workspace](../scale/WORKSPACES.md) serves every repo from one process; `repowise mcp --no-workspace` forces single-repo mode for a nested repo. A `repo` parameter takes an alias, path or absolute path from `list_repos`; omitted, it targets the default repo.
+A server started inside a [workspace](../scale/WORKSPACES.md) serves every repo from one process; `repowise mcp --no-workspace` forces single-repo mode for a nested repo. A `repo` parameter takes an alias, path or absolute path from `list_repos`; omitted, it targets the repo the client works in, read from its MCP roots, and otherwise the default repo.
 
 | Tool | `repo="all"` |
 |------|--------------|

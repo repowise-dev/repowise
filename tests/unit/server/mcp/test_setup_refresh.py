@@ -377,3 +377,25 @@ async def test_an_undone_dismissal_offers_again_on_a_full_read(indexed, monkeypa
 
     state = read_setup_state(root)
     assert state["dismissed"] is False and state["offer"] == FINISH_SETUP_OFFER
+
+
+async def test_the_refresh_reads_the_served_root_not_the_callers_repo(indexed, monkeypatch) -> None:
+    from repowise.core.workspace.registry import caller_alias
+
+    root, factory = indexed
+    _serve(monkeypatch, root, factory)
+    _as_agent_call(monkeypatch)
+    seen: list[str | None] = []
+
+    async def record(_key: str) -> bool:
+        seen.append(caller_alias.get())
+        return True
+
+    monkeypatch.setattr(_setup_refresh, "_read_and_record", record)
+    token = caller_alias.set("frontend")  # a session working in another member
+    try:
+        _setup_refresh.schedule_setup_refresh({"answer": "ok"})
+    finally:
+        caller_alias.reset(token)
+    await _settle()
+    assert seen == [None]

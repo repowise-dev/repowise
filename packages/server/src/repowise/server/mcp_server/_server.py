@@ -869,9 +869,25 @@ class _RepowiseMCP(FastMCP):
         return [t for t in tools if tool_allowed(principal, t.name, authorizer)]
 
     async def call_tool(self, name: str, arguments: dict[str, Any]):  # type: ignore[override]
+        from repowise.core.workspace.registry import caller_alias
         from repowise.server.mcp_server import _warmup
 
         _warmup.call_started()
+        alias = None
+        if _state._registry is not None:
+            from repowise.server.mcp_server._caller_repo import session_alias
+
+            with contextlib.suppress(LookupError):  # no request in flight
+                request = self._mcp_server.request_context
+                alias = await session_alias(request.session, request.request_id, _state._registry)
+        # Bound before the auth check, so a repo-less call is checked against the repo it reads.
+        reset_alias = caller_alias.set(alias)
+        try:
+            return await self._authorized_call(name, arguments)
+        finally:
+            caller_alias.reset(reset_alias)
+
+    async def _authorized_call(self, name: str, arguments: dict[str, Any]):
         principal = self._request_principal()
         if principal is not None:
             from mcp.server.fastmcp.exceptions import ToolError
