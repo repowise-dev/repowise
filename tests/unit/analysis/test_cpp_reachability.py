@@ -684,6 +684,69 @@ def test_stamp_marks_headers_of_header_only_targets(tmp_path: Path) -> None:
     assert "cpp_header_only_targets" not in g.nodes["core/c.h"]
 
 
+def test_stamp_replaces_what_a_seeded_node_carried(tmp_path: Path) -> None:
+    # A patch build seeds untouched nodes from the last snapshot, stamps included.
+    from types import SimpleNamespace
+
+    from repowise.core.ingestion.graph_warmups import _stamp_cpp_build_listed
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    g = nx.DiGraph()
+    g.add_node("lib/a.h", cpp_header_only_targets=("hdr",))
+    g.add_node("lib/sub/b.h", cpp_header_only_targets=("hdr",))  # has left the target
+    g.add_node("old/gone.cc", build_listed=True)  # no longer compiled by any target
+    index = SimpleNamespace(
+        targets={"hdr": SimpleNamespace(sources=(), public_headers=("lib/a.h",), private_headers=())}
+    )
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    for _ in range(2):
+        _stamp_cpp_build_listed(ctx, g, index)
+    assert g.nodes["lib/a.h"]["cpp_header_only_targets"] == ("hdr",)
+    assert "cpp_header_only_targets" not in g.nodes["lib/sub/b.h"]
+    assert "build_listed" not in g.nodes["old/gone.cc"]
+
+
+def test_patch_build_header_stamps_match_a_full_build(tmp_path: Path) -> None:
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    def write(rel: str, text: str) -> None:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+
+    def parsed_builder() -> GraphBuilder:
+        builder = GraphBuilder(repo_path=tmp_path)
+        parser = ASTParser()
+        for fi in FileTraverser(tmp_path).traverse():
+            builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+        return builder
+
+    def stamps(graph: nx.DiGraph) -> dict:
+        return {n: d.get("cpp_header_only_targets") for n, d in graph.nodes(data=True)}
+
+    cmake = (
+        "add_library(hdr INTERFACE)\n"
+        "target_sources(hdr INTERFACE include/hdr/core.h {extra})\n"
+        "target_include_directories(hdr INTERFACE include)\n"
+    )
+    write("CMakeLists.txt", cmake.format(extra="include/hdr/detail/format.h"))
+    write("include/hdr/core.h", "int core_fn();\n")
+    write("include/hdr/detail/format.h", "int format_fn();\n")
+    write("app/main.cc", '#include "hdr/core.h"\nint main() { return core_fn(); }\n')
+    first = parsed_builder().build()
+    snapshot = {"nodes": list(first.nodes(data=True)), "edges": list(first.edges(data=True))}
+
+    # format.h leaves the library; the patch re-resolves only main.cc.
+    write("CMakeLists.txt", cmake.format(extra=""))
+    patched = parsed_builder()
+    patched.seed_graph_snapshot(snapshot, scope=["app/main.cc"])
+    patch_graph = patched.build(scope=["app/main.cc"], refresh_global=True)
+    full_graph = parsed_builder().build()
+
+    assert stamps(patch_graph) == stamps(full_graph)
+    assert len(patch_graph.nodes["include/hdr/core.h"]["cpp_header_only_targets"]) == 1
+    assert "cpp_header_only_targets" not in patch_graph.nodes["include/hdr/detail/format.h"]
+
+
 def _index_repo(repo: Path, files: dict[str, str]):
     from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 

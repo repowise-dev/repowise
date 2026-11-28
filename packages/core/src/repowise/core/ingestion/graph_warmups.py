@@ -820,8 +820,9 @@ def run_warmups(
 def _stamp_header_only_target(graph: Any, tid: str, target: Any) -> None:
     for hdr in (*target.public_headers, *target.private_headers):
         if hdr in graph.nodes:
-            node = graph.nodes[hdr]
-            node["cpp_header_only_targets"] = (*node.get("cpp_header_only_targets", ()), tid)
+            owners = graph.nodes[hdr].get("cpp_header_only_targets", ())
+            if tid not in owners:
+                graph.nodes[hdr]["cpp_header_only_targets"] = (*owners, tid)
 
 
 def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> None:
@@ -834,6 +835,13 @@ def _stamp_cpp_build_listed(ctx: ResolverContext, graph: Any, index: Any) -> Non
     import re
 
     from repowise.core.fs_walk import glob_via
+
+    # Stamped from scratch on every build: a patch build seeds untouched nodes
+    # from the last snapshot with every attribute, and a file that left a
+    # target or project must lose what it had.
+    for _node, data in graph.nodes(data=True):
+        data.pop("build_listed", None)
+        data.pop("cpp_header_only_targets", None)
 
     repo_path = ctx.repo_path
     if repo_path is None:
