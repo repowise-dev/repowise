@@ -532,7 +532,7 @@ so an issue is linked only to the oldest change in the window that closes it.
 A pull request, merge request or commit message that closes 5 issues or more
 is treated as a rollup and gives no links. Every commit of a linked pull
 request gets the link; the fix walk then drops commits whose diff is not a
-code change, such as docs or tests.
+code change, such as docs or tests, and counts the issue once per file.
 
 The project comes from the `origin` remote. For GitHub Enterprise or a
 self-managed GitLab on a neutral host name, map the host in
@@ -555,12 +555,15 @@ not say "fix". A commit like `Handle empty carts (ENG-42)` reads as a feature
 to repowise, but if ENG-42 is a Bug in your tracker, that commit is a fix.
 
 Once a source is installed and configured, a commit linked to a `bug` or
-`incident` issue counts as a fix everywhere repowise counts fixes:
-`prior_defect_count` and the health markers built on it, the fix events,
-`git_commits.is_fix`, and the fix history that `get_context` and
-`get_change_risk` show. Those fix histories also quote the issue, for example
-`ENG-42 (bug): Checkout fails on an empty cart`. A link can only add a fix. It
-never removes one that the commit message already names.
+`incident` issue counts as a fix in `prior_defect_count` and the health markers
+built on it, the fix events, `git_commits.is_fix`, the fix history that
+`get_context`, `get_risk` and `get_change_risk` show, a change's category, and
+the "files later received fixes" outcome of a change. The fix histories, the
+`prior_defect` health finding and the change record also quote the issue, for
+example `ENG-42 (bug): Checkout fails on an empty cart`. One issue counts once
+per file, so a pull request whose three commits close the same bug adds one fix
+to each file it touched. A link can only add a fix. It never removes one that
+the commit message already names.
 
 Here is a complete source for a tracker with a JSON API. It declares its
 settings, so `repowise sources sync` and `repowise update` run it:
