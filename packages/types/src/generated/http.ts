@@ -432,6 +432,34 @@ export interface ArtifactUpdateRequest {
   pinned: boolean;
 }
 
+export interface BenchmarkGroup {
+  runs: BenchmarkRun[];
+  rows: BenchmarkRow[];
+  total: number;
+}
+
+/** One benchmark's result: what it measures and its numbers per operation. */
+export interface BenchmarkRow {
+  run_id: string;
+  benchmark: string;
+  benchmark_symbol_id: string | null;
+  measures: string | null;
+  time: number | null;
+  unit: string | null;
+  allocs_per_op: number | null;
+  bytes_per_op: number | null;
+}
+
+/** A workload's newest benchmark run. */
+export interface BenchmarkRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+}
+
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
@@ -623,6 +651,12 @@ export interface ChangeCandidatesResponse {
   health_check_supported?: boolean;
 }
 
+/** What decided ``category``: ``changelog_fragment``, ``forge_label`` or ``title``. */
+export interface ChangeCategoryBasis {
+  signal: string;
+  value?: string | null;
+}
+
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
 export interface ChangeEvidence {
   schema_version: number;
@@ -790,6 +824,7 @@ export interface ChangeRecord {
   provenance?: ChangeProvenance | null;
   health?: ChangeHealthResponse | null;
   touches_hotspot?: number;
+  category_basis?: ChangeCategoryBasis | null;
   commits: string[];
   files: ChangeFile[];
   metadata: ChangeForgeMetadata;
@@ -1414,6 +1449,46 @@ export interface CoordinatorHealthResponse {
   detail?: string | null;
 }
 
+/** Tests that run the same production files and take longer than the rest. */
+export interface CostCluster {
+  files: string[];
+  files_total: number;
+  tests: number;
+  mean_s: number;
+  others_mean_s: number;
+  excess_s: number;
+  share: number | null;
+  slowest: CostClusterTest[];
+  fixture: CostFixture | null;
+  within: CostGroup | null;
+}
+
+export interface CostClusterTest {
+  test_id: string;
+  duration_s: number;
+}
+
+export interface CostConcentration {
+  tests: number;
+  share: number;
+}
+
+/** The fixture most of a cluster's tests ask for and few other timed tests do. */
+export interface CostFixture {
+  name: string;
+  file_path: string;
+  line: number | null;
+  tests: number;
+  others: number;
+}
+
+/** A larger group of tests a cluster sits inside: code all of its tests run too. */
+export interface CostGroup {
+  files: string[];
+  files_total: number;
+  tests: number;
+}
+
 export interface CostGroupResponse {
   group: string;
   calls: number;
@@ -2031,6 +2106,13 @@ export interface DocDriftSummaryResponse {
   new_since_last_update?: number | null;
 }
 
+/** Tests whose duration is at most ``le`` seconds and above the bucket before. */
+export interface DurationBucket {
+  le: number | null;
+  tests: number;
+  seconds: number;
+}
+
 export interface EgoGraphResponse {
   nodes: GraphNodeResponse[];
   links: GraphEdgeResponse[];
@@ -2162,8 +2244,12 @@ export interface EvidenceRunSummary {
   repo_self_share: number | null;
   wait_share: number | null;
   library_share: number | null;
+  unattributed_share?: number | null;
+  total_samples?: number | null;
+  low_signal?: "pruned_1pct" | "no_samples" | null;
   mapping_partial: boolean;
   tests_failed: number | null;
+  window?: ProductionWindow | null;
 }
 
 /** Every stored run, newest first (bounded by the store's prune caps). */
@@ -2174,7 +2260,7 @@ export interface EvidenceRunsResponse {
 
 /** The newest run of every workload, and whether anything is ranked. */
 export interface EvidenceStatusResponse {
-  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
   command: string | null;
   reference_commit: string | null;
   runs_stored: Record<string, number>;
@@ -2370,22 +2456,6 @@ export interface FileScoreShiftResponse {
   before?: number | null;
   after?: number | null;
   change?: number | null;
-}
-
-/** The summed duration of the timed tests that run one production file. */
-export interface FileTestCost {
-  file_path: string;
-  test_seconds: number;
-  timed_tests: number;
-  tests: number;
-}
-
-export interface FileTestCosts {
-  basis: "measured" | "inferred";
-  files: FileTestCost[];
-  files_total: number;
-  not_production: number;
-  every_test: number;
 }
 
 export interface FileTrendPointResponse {
@@ -3189,6 +3259,27 @@ export interface McpToolSurfaceResponse {
   clients?: Record<string, McpClientSurface>;
 }
 
+/** What part of a measured function's time went to (``evidence.profile_convert``). */
+export interface MeasuredCallee {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+  leaf?: MeasuredLeaf | null;
+}
+
+export interface MeasuredChangedIn {
+  sha: string;
+  pr: number | null;
+}
+
+/** A caller that drove part of a measured function's time. */
+export interface MeasuredDriver {
+  name: string;
+  share: number;
+  symbol?: string | null;
+  path?: string | null;
+}
+
 /** What runtime evidence says about one function, from its basis run. */
 export interface MeasuredFunction {
   symbol_id: string;
@@ -3214,6 +3305,9 @@ export interface MeasuredFunction {
   wait_share: number | null;
   library_share: number | null;
   run_unlisted: number | null;
+  inside?: MeasuredCallee[] | null;
+  drivers?: MeasuredDriver[] | null;
+  next_step?: MeasuredNextStep | null;
 }
 
 /** Measured functions of the asked symbol or file; empty means unknown. */
@@ -3227,18 +3321,49 @@ export interface MeasuredGroup {
   total: number;
 }
 
-export interface MeasuredOwner {
-  name: string;
-  commit_pct: number | null;
+/** The newest commit blame credits a current line of the function to. */
+export interface MeasuredLastChange {
+  sha: string;
+  date: string | null;
+  subject: string | null;
+  pr: number | null;
 }
 
-/** What each workload's newest run ranks, grouped by workload class. */
+/** The frame a callee's stacks end in most: what the callee spends its time on. */
+export interface MeasuredLeaf {
+  name: string;
+  kind: "own" | "repo" | "wait" | "import" | "native" | "library";
+  share: number;
+}
+
+/** What a measured function's time is and what to do (``evidence.next_step``). */
+export interface MeasuredNextStep {
+  rule: string;
+  why: string;
+  next: string;
+  verify?: string | null;
+  callee: string;
+  share: number;
+  leaf?: string | null;
+  static?: string | null;
+}
+
+/** Who wrote most of the function's current lines, by line blame. */
+export interface MeasuredOwner {
+  name: string;
+  line_pct: number | null;
+}
+
+/** What each workload's newest run that ranks anything ranks, grouped by workload class. */
 export interface MeasuredResponse {
   basis: "measured" | "unknown";
-  status: "measured" | "no_runtime_data" | "stale" | "not_ranked" | "needs_update";
+  status: "measured" | "no_runtime_data" | "ahead_of_index" | "stale" | "not_ranked" | "needs_update";
   command: string | null;
   measured: MeasuredGroup | null;
   measured_in_tests: MeasuredGroup | null;
+  statements?: StatementGroup | null;
+  routes?: RouteGroup | null;
+  benchmarks?: BenchmarkGroup | null;
 }
 
 /** One ranked production function of one run. */
@@ -3256,9 +3381,30 @@ export interface MeasuredRow {
   freshness: "current" | "body_unchanged" | "stale";
   callers_total: number | null;
   callers: string[];
+  caller_shares?: Record<string, number>;
   owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
   tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
   on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+}
+
+/** A slower comparison that names a measured function (``evidence.action_row.row_slower``). */
+export interface MeasuredRowSlower {
+  workload: string;
+  base_commit: string | null;
+  metric?: string | null;
+  before?: number | null;
+  after?: number | null;
+  ratio?: number | null;
+  unit?: string | null;
+  changed_in: MeasuredChangedIn[];
 }
 
 /** A run's basis: workload, commit, age, samples and where its time went. */
@@ -3273,9 +3419,12 @@ export interface MeasuredRun {
   repo_self_share: number | null;
   wait_share: number | null;
   library_share: number | null;
+  unattributed_share?: number | null;
   outside_production: number | null;
   value_kind: string | null;
   ordering_only: boolean;
+  newer_run?: NewerRun | null;
+  window?: ProductionWindow | null;
 }
 
 export interface ModuleEdgeResponse {
@@ -3360,6 +3509,14 @@ export interface NeighboringCommunity {
   community_id: number;
   label: string;
   cross_edge_count: number;
+}
+
+/** A workload's newer run that ranks nothing, listed in place of by an older one. */
+export interface NewerRun {
+  run_id: string;
+  commit: string | null;
+  measured_at: string | null;
+  reason: "ahead_of_index" | "not_ranked" | "stale";
 }
 
 export interface NextAction {
@@ -3527,6 +3684,40 @@ export interface OwnershipEntry {
   owner_pct: number | null;
   file_count: number;
   is_silo: boolean;
+}
+
+/**
+ * The package's stored advisories, strongest tier first.
+ *
+ * *imported* is False when no advisory document was ever imported, so an
+ * empty list then means "not checked", not "no advisories".
+ */
+export interface PackageAdvisoriesResponse {
+  imported: boolean;
+  advisories: PackageAdvisoryRow[];
+}
+
+/** One stored advisory on the package and the closest production code comes to it. */
+export interface PackageAdvisoryRow {
+  package: string;
+  ecosystem?: string | null;
+  id: string;
+  tier: string;
+  basis: string;
+  aliases?: string[];
+  severity?: string | null;
+  score?: number | null;
+  version?: string | null;
+  fix?: string | null;
+  affected?: boolean | null;
+  summary?: string | null;
+  sites?: PackageAdvisorySite[];
+}
+
+export interface PackageAdvisorySite {
+  path: string;
+  line?: number | null;
+  symbol?: string | null;
 }
 
 export interface PackageUsageComponent {
@@ -3905,6 +4096,14 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
+}
+
+/** The window a production run covers: ``evidence.status.production_window``. */
+export interface ProductionWindow {
+  start: string | null;
+  end: string | null;
+  base_commit: string | null;
+  claim: string;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */
@@ -4468,6 +4667,77 @@ export interface RiskScaleRange {
   maximum: number | null;
 }
 
+/** What the requests one handler's routes served did in a production window. */
+export interface RouteFacts {
+  requests: number;
+  total_ms: number;
+  mean_ms: number | null;
+  p95_ms: number | null;
+  errors: number | null;
+  routes: string[];
+}
+
+export interface RouteGroup {
+  runs: RouteRun[];
+  rows: RouteRow[];
+  total: number;
+}
+
+/**
+ * One handler's production requests in one run, as a measured row.
+ *
+ * ``rank`` is by request time and ``share`` is of the window's stored
+ * request time; there is no interval, inclusive share, samples or
+ * freshness: the route was joined to its handler when it was stored. No
+ * ``next_step``: no rule reads a route's cost yet. ``verify`` is the next
+ * production window.
+ */
+export interface RouteRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  routes: RouteFacts;
+}
+
+/** A production route workload's newest run. */
+export interface RouteRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  requests: number;
+  routes: number;
+  unattributed: Record<string, UnattributedRoutes>;
+  window: ProductionWindow;
+}
+
 /** One agent's savings, labelled from the identity registry. */
 export interface SavingsAgentRow {
   agent: string;
@@ -4958,14 +5228,110 @@ export interface SlowTest {
   workload: string;
 }
 
-/** The slowest tests and the test time per production file, from stored JUnit timings. */
+/** What the statements one function issues did in a production window. */
+export interface StatementFacts {
+  calls: number;
+  total_ms: number;
+  mean_ms: number | null;
+  statements: number;
+}
+
+export interface StatementGroup {
+  runs: StatementRun[];
+  rows: StatementRow[];
+  total: number;
+}
+
+/**
+ * One function's production statements in one run, as a measured row.
+ *
+ * ``rank`` is by statement time and ``share`` is of the window's stored
+ * statement time; there is no interval, inclusive share or samples, and no
+ * freshness: the statement was joined to the function when it was stored.
+ * No ``next_step``: no rule reads a statement's cost yet. ``verify`` is the
+ * next production window.
+ */
+export interface StatementRow {
+  symbol_id: string;
+  file_path: string;
+  lines: number[] | null;
+  run_id: string;
+  rank: number;
+  share: number | null;
+  share_low: number | null;
+  share_high: number | null;
+  inclusive: number | null;
+  samples: number | null;
+  freshness?: "current" | "body_unchanged" | "stale" | null;
+  callers_total: number | null;
+  callers: string[];
+  caller_shares?: Record<string, number>;
+  owner: MeasuredOwner | null;
+  last_change: MeasuredLastChange | null;
+  tests: string[] | null;
+  tests_basis?: "per_test_map" | "call_graph" | null;
+  next_step?: MeasuredNextStep | null;
+  verify?: string | null;
+  verify_basis?: "benchmark" | "workload" | null;
+  on_static_findings?: string[];
+  slower?: MeasuredRowSlower | null;
+  label?: string | null;
+  sources?: Record<string, string>;
+  statements: StatementFacts;
+}
+
+/** A production statement workload's newest run. */
+export interface StatementRun {
+  run_id: string;
+  workload_class: string;
+  workload_name: string;
+  commit: string | null;
+  measured_at: string | null;
+  age_days: number | null;
+  window_start: string | null;
+  window_end: string | null;
+  total_ms: number;
+  statements: number;
+  unattributed: Record<string, UnattributedStatements>;
+  window: ProductionWindow;
+}
+
+/** Where the suite's time goes (``evidence.suite_cost.cost_fold``). */
+export interface SuiteCost {
+  verdict: "small_suite" | "no_test_map" | "small_excess" | "clusters";
+  seconds: number;
+  timed: number;
+  concentration: CostConcentration | null;
+  clusters: CostCluster[];
+  command: string | null;
+}
+
+/** The slowest tests and where the suite's time goes, from stored JUnit timings. */
 export interface SuiteCostResponse {
   status: "measured" | "no_test_timings";
   command: string | null;
   runs: EvidenceRunSummary[];
   slow_tests: SlowTest[];
   tests_total: number;
-  file_costs: FileTestCosts | null;
+  cost: SuiteCost | null;
+  suite?: SuiteSummary | null;
+}
+
+/** The summed duration of one test file's timed tests. */
+export interface SuiteFileTime {
+  test_file: string;
+  seconds: number;
+  tests: number;
+}
+
+/** Every test of the basis runs, including those the per-run row cap left out. */
+export interface SuiteSummary {
+  tests: number;
+  timed: number;
+  seconds: number;
+  histogram: DurationBucket[];
+  test_files: SuiteFileTime[];
+  test_files_total: number;
 }
 
 /** One change in reading order; ``signals`` holds each signal that fired. */
@@ -5173,6 +5539,18 @@ export interface TransitiveEntry {
   path: string;
   depth: number;
   via?: string | null;
+}
+
+export interface UnattributedRoutes {
+  routes: number;
+  total_ms: number;
+  share: number | null;
+}
+
+export interface UnattributedStatements {
+  statements: number;
+  total_ms: number;
+  share: number | null;
 }
 
 /**

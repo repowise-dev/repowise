@@ -209,10 +209,11 @@ def test_edits_no_graph_step_reads_are_patched(
         pytest.param(
             {"package.json": _package(exports={".": "./src/fmt.ts"})}, "package.json: a field", id="package-exports"
         ),
-        # A framework dependency changes the tech stack and so the framework edges.
+        # A new dependency name can mark a framework that loads files by
+        # convention, so the digest moves before the tech stack is compared.
         pytest.param(
             {"package.json": _package(dependencies={"express": "^4.0.0"})},
-            "tech stack changed",
+            "package.json: a field",
             id="framework-dependency",
         ),
         pytest.param(
@@ -225,7 +226,12 @@ def test_edits_no_graph_step_reads_are_patched(
         # tsconfig extends it, whatever its name.
         pytest.param({"configs/base.json": '{"compilerOptions": {"baseUrl": "src"}}\n'}, "json edits", id="extended-config"),
         pytest.param({"tsconfig.json": '{"compilerOptions": {"baseUrl": "src"}}\n'}, "json edits", id="tsconfig"),
-        pytest.param({".gitignore": "dist/\nbuild/\n"}, ".gitignore: the graph build reads", id="gitignore"),
+        # The walk now skips cmd/, so the indexed set moves.
+        pytest.param(
+            {".gitignore": "dist/\ncmd/\n"},
+            ".gitignore: it changed which files the walk indexes",
+            id="gitignore-moves-index",
+        ),
         pytest.param({"requirements-dev.txt": "pytest\n"}, "added or removed", id="unindexed-added"),
         pytest.param({"requirements.txt": None}, "added or removed", id="unindexed-removed"),
         pytest.param(
@@ -310,8 +316,16 @@ def test_chained_updates_keep_the_record_current(
         ("native/CMakeLists.txt", True),
         ("app/Package.swift", True),
         ("src/Shop/Shop.CSPROJ", True),
+        # Framework configs framework_facts reads (Nuxt srcDir, SvelteKit kit.files).
+        ("web/nuxt.config.mjs", True),
+        ("svelte.config.ts", True),
         (".github/workflows/ci.yml", False),
         ("src/locales/en.json", False),
+        (".gitattributes", False),
+        (".repowise/decisions.yaml", False),
+        (".repowise/config.yaml", True),
+        # The traverser flags an indexed API spec by reading it.
+        ("docs/openapi.json", True),
         # The package-root scan looks for it; an edit in place still patches (test_unread_unindexed).
         ("requirements.txt", True),
         ("yarn.lock", False),
@@ -335,8 +349,26 @@ def test_presence_read(path: str, read: bool) -> None:
         # Live walks read unindexed source of known extensions.
         ("big/Generated.cs", False),
         ("app/models/user.rb", False),
-        ("data/blob.json", False),
+        ("web/generated/http.ts", False),
+        ("db/queries.sql.go", False),
+        # Cleared only while the indexed set holds still (test_unindexed_edits_no_step_opens_are_patched).
         (".gitignore", False),
+        (".repowiseIgnore", False),
+        # Prose and data no step opens by extension; API specs are read only when indexed.
+        ("data/blob.json", True),
+        ("CHANGELOG.md", True),
+        ("docs/guide.adoc", True),
+        ("api/openapi.json", True),
+        ("swagger-private.json", True),
+        (".repowise/decisions.yaml", True),
+        (".gitattributes", True),
+        ("App/Resources/Localizable.xcstrings", True),
+        # ...unless a step opens them by name or by directory.
+        ("tsconfig.base.json", False),
+        ("docs/intro.mdx", False),
+        ("app/src/main/resources/application.yml", False),
+        ("app/src/main/resources/META-INF/services/com.acme.Spi", False),
+        (".repowise/config.yaml", False),
     ],
 )
 def test_unread_unindexed(path: str, unread: bool) -> None:
@@ -351,6 +383,24 @@ def test_digest_tracks_only_what_readers_read(tmp_path: Path) -> None:
     (tmp_path / "package.json").write_text(_package(scripts={"build": "tsc"}))
     assert _digest(tmp_path, "package.json") != before
     assert _digest(tmp_path, "missing/package.json") is None
+
+
+def test_digest_tracks_dependency_names_not_versions(tmp_path: Path) -> None:
+    """A dependency's name says which JS framework loads files by convention."""
+    (tmp_path / "package.json").write_text(_package())
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(dependencies={"left-pad": "^2.0.0"}))
+    assert _digest(tmp_path, "package.json") == before
+    (tmp_path / "package.json").write_text(_package(devDependencies={"react-email": "6.0.0"}))
+    assert _digest(tmp_path, "package.json") != before
+
+
+def test_digest_tracks_the_nuxt_version(tmp_path: Path) -> None:
+    """Nuxt's major version says whether its default source directory is ``app/``."""
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^3.12.0"}))
+    before = _digest(tmp_path, "package.json")
+    (tmp_path / "package.json").write_text(_package(devDependencies={"nuxt": "^4.1.0"}))
+    assert _digest(tmp_path, "package.json") != before
 
 
 def test_manifest_edit_the_diff_missed_falls_back(
@@ -428,6 +478,321 @@ def test_a_failed_save_leaves_no_older_record(tmp_path: Path, monkeypatch: pytes
     save_resolutions(index_dir, [], {}, {}, config_inputs={"files": {}, "stack": ["Go"]})
 
     assert load_config_inputs(index_dir) is None
+
+
+# --- files the walk does not index ---------------------------------------------
+
+_CMAKE = "cmake_minimum_required(VERSION 3.20)\nproject(native C)\nadd_library(core core.c)\n"
+# Over the traverser's 500 KB ceiling for files no parser reads.
+_BIG_MARKDOWN = "# Changelog\n\n" + "- fixed a thing that was broken before\n" * 16_000
+_BIG_SPEC = {"openapi": "3.0.0", "paths": {f"/r{i}": {"get": {}} for i in range(30_000)}}
+_UNINDEXED_TREE = {
+    **_TREE,
+    ".gitattributes": "* text=auto\n",
+    ".repowiseIgnore": "dist/\n",
+    ".repowise/decisions.yaml": "decisions: []\n",
+    ".repowise/config.yaml": "sql_dialect: postgres\n",
+    # Gitignored (dist/) and oversized files.
+    "dist/gen.py": "def made():\n    return 1\n",
+    "dist/notes.md": "# Notes\n",
+    "dist/App/Resources/Localizable.xcstrings": '{"strings": {}}\n',
+    "CHANGELOG.md": _BIG_MARKDOWN,
+    "api/openapi.json": json.dumps(_BIG_SPEC) + "\n",
+    # A C library its CMakeLists.txt builds.
+    "native/CMakeLists.txt": _CMAKE,
+    "native/core.h": "int core(void);\n",
+    "native/core.c": '#include "core.h"\nint core(void) { return 1; }\n',
+    "native/extra.c": '#include "core.h"\nint extra(void) { return core(); }\n',
+}
+
+
+@pytest.fixture
+def unindexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "repo"
+    _write(tree, _UNINDEXED_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    indexed = set(first._parsed_files)
+    assert not {"CHANGELOG.md", "api/openapi.json", "dist/notes.md", "native/CMakeLists.txt"} & indexed
+    return tree, _snapshot(first)
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        pytest.param({".gitattributes": "* text=auto eol=lf\n"}, id="gitattributes"),
+        pytest.param({".repowise/decisions.yaml": "decisions:\n  - id: d1\n"}, id="repowise-decisions"),
+        # Ignores a directory that holds nothing the walk indexed.
+        pytest.param({".gitignore": "dist/\nbuild/\n"}, id="gitignore-same-index"),
+        pytest.param({".repowiseIgnore": "dist/\nbuild/\n"}, id="repowiseignore-same-index"),
+        pytest.param({"CHANGELOG.md": "# Changelog\n\n- one more\n" + _BIG_MARKDOWN}, id="oversized-markdown"),
+        pytest.param(
+            {"api/openapi.json": json.dumps({**_BIG_SPEC, "info": {"title": "x"}}) + "\n"}, id="oversized-openapi"
+        ),
+        pytest.param({"dist/notes.md": "# Notes\n\nMore.\n"}, id="gitignored-markdown"),
+        pytest.param(
+            {"dist/App/Resources/Localizable.xcstrings": '{"strings": {"hi": {}}}\n'}, id="strings-under-resources"
+        ),
+        # Comments and commands the CMake reader skips.
+        pytest.param(
+            {"native/CMakeLists.txt": "# build the core\n" + _CMAKE + 'message(STATUS "core")\n'}, id="cmake-comment"
+        ),
+        pytest.param(
+            {
+                ".gitattributes": "*.c text\n",
+                "CHANGELOG.md": "# Changelog\n\n- release\n" + _BIG_MARKDOWN,
+                "src/fmt.ts": "export function fmt(s: string) { return s.trim(); }\n",
+            },
+            id="release-with-body-edit",
+        ),
+    ],
+)
+def test_unindexed_edits_no_step_opens_are_patched(
+    unindexed: tuple[Path, dict[str, list]], tmp_path: Path, edits: dict[str, str]
+) -> None:
+    tree, seed = unindexed
+
+    patched = _update(tree, seed, edits)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+@pytest.mark.parametrize(
+    ("edits", "reason"),
+    [
+        pytest.param(
+            {".repowise/config.yaml": "sql_dialect: mysql\n"},
+            ".repowise/config.yaml: the graph build reads",
+            id="repowise-config",
+        ),
+        # Live walks open unindexed source, whatever made the walk skip it.
+        pytest.param(
+            {"dist/gen.py": "def made():\n    return 2\n"}, "dist/gen.py: the graph build reads", id="unindexed-source"
+        ),
+        pytest.param(
+            {"native/CMakeLists.txt": _CMAKE.replace("core.c)", "core.c extra.c)")},
+            "native/CMakeLists.txt: a field",
+            id="cmake-target-sources",
+        ),
+        pytest.param(
+            {"native/CMakeLists.txt": _CMAKE + "target_include_directories(core PUBLIC include)\n"},
+            "native/CMakeLists.txt: a field",
+            id="cmake-include-dirs",
+        ),
+        pytest.param(
+            {".gitignore": "dist/\nnative/\n"},
+            ".gitignore: it changed which files the walk indexes",
+            id="gitignore-drops-indexed-files",
+        ),
+        pytest.param(
+            {".repowiseIgnore": "dist/\nnative/\n"},
+            ".repowiseIgnore: it changed which files the walk indexes",
+            id="repowiseignore-drops-indexed-files",
+        ),
+    ],
+)
+def test_unindexed_edits_a_step_opens_fall_back(
+    unindexed: tuple[Path, dict[str, list]], tmp_path: Path, edits: dict[str, str], reason: str
+) -> None:
+    tree, seed = unindexed
+
+    patched = _update(tree, seed, edits)
+
+    assert not patched.patch_plan.eligible
+    assert reason in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_cmake_target_edit_changes_the_graph(unindexed: tuple[Path, dict[str, list]], tmp_path: Path) -> None:
+    """Why a target edit must not patch: the full build stamps the newly compiled file."""
+    tree, seed = unindexed
+    before = dict(seed["nodes"])["native/extra.c"].get("build_listed")
+
+    patched = _update(tree, seed, {"native/CMakeLists.txt": _CMAKE.replace("core.c)", "core.c extra.c)")})
+
+    assert not before
+    assert patched.graph().nodes["native/extra.c"].get("build_listed")
+
+
+def test_cmake_digest_ignores_the_checkout_path(tmp_path: Path) -> None:
+    for name in ("a", "b"):
+        _write(tmp_path / name, {"CMakeLists.txt": _CMAKE})
+    assert _digest(tmp_path / "a", "CMakeLists.txt") == _digest(tmp_path / "b", "CMakeLists.txt")
+    (tmp_path / "b" / "CMakeLists.txt").write_text(_CMAKE.replace("core.c)", "core.c extra.c)"))
+    assert _digest(tmp_path / "a", "CMakeLists.txt") != _digest(tmp_path / "b", "CMakeLists.txt")
+
+
+# --- build outputs a package.json names ---------------------------------------
+
+# The TypeScript resolver reads a subpath export into gitignored build output
+# as the source it was built from, and a checked-in build as itself.
+_BUILDS_TREE = {
+    "package.json": json.dumps({"name": "root", "private": True, "workspaces": ["packages/*"]}) + "\n",
+    "packages/lib/package.json": json.dumps(
+        {"name": "@acme/lib", "version": "1.0.0", "exports": {"./x": "./dist/impl/x.js"}}
+    )
+    + "\n",
+    "packages/lib/src/impl/x.ts": "export function f() { return 1; }\n",
+    "packages/lib/dist/impl/x.js": "exports.f = function () { return 1; };\n",
+    "packages/app/package.json": json.dumps({"name": "app", "dependencies": {"@acme/lib": "*"}}) + "\n",
+    "packages/app/src/main.ts": "import { f } from '@acme/lib/x';\nexport const x = f();\n",
+    "packages/app/src/other.ts": "export const y = 1;\n",
+    ".gitignore": "dist/\n",
+}
+_MAIN = "packages/app/src/main.ts"
+
+
+@pytest.fixture
+def builds(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    import subprocess
+
+    tree = tmp_path / "repo"
+    _write(tree, _BUILDS_TREE)
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    assert first.graph().has_edge(_MAIN, "packages/lib/src/impl/x.ts")
+    return tree, _snapshot(first)
+
+
+def test_gitignore_that_checks_a_build_in_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """Un-ignoring dist/ leaves the indexed set alone but moves the import to the build."""
+    tree, seed = builds
+
+    patched = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "changed whether it is checked in" in (patched.patch_plan.reason or "")
+    assert not patched.graph().has_edge(_MAIN, "packages/lib/src/impl/x.ts")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_gitignore_that_leaves_builds_alone_is_patched(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, seed = builds
+
+    patched = _update(tree, seed, {".gitignore": "dist/\ncoverage/\n"})
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_a_local_build_the_diff_never_names_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """With dist/ not ignored, a build that appears on disk is checked in from then on."""
+    tree, seed = builds
+    (tree / ".gitignore").write_text("# nothing ignored\n")
+    (tree / "packages/lib/dist/impl/x.js").unlink()
+    first = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+    (tree / "packages/lib/dist/impl/x.js").write_text("exports.f = function () { return 2; };\n")
+
+    patched = _update(tree, _snapshot(first), {"packages/app/src/other.ts": "export const y = 2;\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "changed whether it is checked in" in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
+
+
+def test_a_failed_record_with_checked_in_builds_falls_back(
+    builds: tuple[Path, dict[str, list]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When this run cannot record its inputs, builds the last record holds still count."""
+    from repowise.core.pipeline.incremental import config_inputs
+
+    tree, seed = builds
+    first = _update(tree, seed, {".gitignore": "# nothing ignored\n"})
+    assert load_config_inputs(tree / ".repowise")["builds"] == ["packages/lib/dist/impl/x.js"]
+    monkeypatch.setattr(config_inputs, "record_inputs", lambda *_a, **_k: None)
+
+    patched = _update(tree, _snapshot(first), {"packages/app/src/other.ts": "export const y = 2;\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "no record of which build outputs" in (patched.patch_plan.reason or "")
+
+
+def test_gitignore_edit_without_a_builds_record_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record written before builds were recorded cannot clear a .gitignore edit."""
+    from repowise.core.pipeline.incremental import config_inputs
+
+    real = config_inputs.record_inputs
+
+    def without_builds(*args: Any, **kwargs: Any) -> Any:
+        record = real(*args, **kwargs)
+        record.pop("builds")
+        return record
+
+    tree = tmp_path / "repo"
+    _write(tree, _TREE)
+    monkeypatch.setattr(config_inputs, "record_inputs", without_builds)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+    monkeypatch.undo()
+    assert "builds" not in (load_config_inputs(tree / ".repowise") or {"builds": 1})
+
+    patched = _update(tree, _snapshot(first), {".gitignore": "dist/\ncoverage/\n"})
+
+    assert not patched.patch_plan.eligible
+    assert "no record of which build outputs" in (patched.patch_plan.reason or "")
+
+
+_REINDEXED = "detected changes include unparsed files"
+_INDEX_MOVED = ".repowiseIgnore: it changed which files the walk indexes"
+_NOTHING = "coverage/\n"
+_LIB_DIST = "packages/lib/dist/\n"
+_LIB_SRC = "packages/lib/src/\n"
+_META_DIR = "packages/meta/\n"
+_META = {"name": "@acme/meta", "version": "1.0.0"}
+
+
+@pytest.mark.parametrize(
+    ("gitignore", "before", "after", "reason"),
+    [
+        # dist/ gitignored: the import reads the source the build came from.
+        pytest.param("dist/\n", _NOTHING, _LIB_DIST, None, id="ignores-gitignored-build"),
+        # dist/ checked in: the import reads the build, which the walk never indexes.
+        pytest.param("", _NOTHING, _LIB_DIST, None, id="ignores-checked-in-build"),
+        pytest.param("", _LIB_DIST, _NOTHING, None, id="unignores-checked-in-build"),
+        # ...unless a negation hands the build to the walk.
+        pytest.param("", _NOTHING, "!" + _LIB_DIST, _REINDEXED, id="reincludes-build"),
+        # A package directory holding only its manifest.
+        pytest.param("dist/\n", _NOTHING, _META_DIR, _INDEX_MOVED, id="ignores-manifest-only"),
+        # The walk stops, or starts, indexing the package's source.
+        pytest.param("dist/\n", _NOTHING, _LIB_SRC, _INDEX_MOVED, id="ignores-source"),
+        pytest.param("dist/\n", _LIB_SRC, _NOTHING, _REINDEXED, id="unignores-source"),
+    ],
+)
+def test_repowiseignore_edit_over_package_builds(
+    tmp_path: Path, gitignore: str, before: str, after: str, reason: str | None
+) -> None:
+    """``.repowiseIgnore`` is read only by the walk; ``git check-ignore`` never sees it."""
+    import subprocess
+
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            **_BUILDS_TREE,
+            "packages/meta/package.json": json.dumps(_META) + "\n",
+            ".gitignore": gitignore or "# nothing ignored\n",
+            ".repowiseIgnore": before,
+        },
+    )
+    subprocess.run(["git", "init", "-q"], cwd=tree, check=True)
+    first = build_repo_graph(tree, [], collect_sources=True, cache_resolutions=True)[2]
+
+    patched = _update(tree, _snapshot(first), {".repowiseIgnore": after})
+
+    if reason is None:
+        assert patched.patch_plan.eligible, patched.patch_plan.reason
+    else:
+        assert not patched.patch_plan.eligible
+        assert reason in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path / "full")
 
 
 # --- files parsed without their grammar ---------------------------------------

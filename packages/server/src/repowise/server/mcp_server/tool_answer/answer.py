@@ -141,8 +141,10 @@ from repowise.server.mcp_server.tool_answer.callers import (
 )
 from repowise.server.mcp_server.tool_answer.citations import answer_files
 from repowise.server.mcp_server.tool_answer.clauses import cover_clauses
+from repowise.server.mcp_server.tool_answer.concept_names import concept_defining_files
 from repowise.server.mcp_server.tool_answer.confidence import (
     _agreement_dominant,
+    _Grade,
     _grade_answer,
     _is_value_question,
     _retrieval_quality,
@@ -178,12 +180,18 @@ from repowise.server.mcp_server.tool_answer.evidence import (
     _is_readable_path,
     _repo_root,
 )
+from repowise.server.mcp_server.tool_answer.fix_history import (
+    asks_fix_history,
+    fix_history_lines,
+    named_file_fix_history,
+)
 from repowise.server.mcp_server.tool_answer.grounding import attach_grounding_bodies
 from repowise.server.mcp_server.tool_answer.neighbors import (
     attach_graph_neighbors,
     lead_file,
     neighbor_evidence,
 )
+from repowise.server.mcp_server.tool_answer.origin import origin_hint, origin_reply, wants_origin
 from repowise.server.mcp_server.tool_answer.payload import (
     _apply_lean_high,  # noqa: F401  — backward-compatible helper re-export
     _build_best_guesses,  # noqa: F401  — re-exported: imported from here by tests
@@ -367,7 +375,7 @@ async def _run_retrieval_pipeline(
         await _apply_pagerank_bias(hits, ctx)
     # 1-hop walk rescues "right module, wrong file" near-misses.
     with contextlib.suppress(Exception):
-        hits = await _expand_via_graph(hits, ctx, repo_id)
+        hits = await _expand_via_graph(hits, ctx, repo_id, exclude_spec)
     # Graph expansion can pull excluded neighbors back in; re-filter before the cap.
     hits = filter_dicts_by_key(hits, "target_path", exclude_spec)
     # Symbol anchoring: force a question-named symbol's defining file in as a
@@ -396,7 +404,9 @@ async def _run_retrieval_pipeline(
     # anchors the function holding it.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await value_line_anchor_hits(ctx, session, repo_id, question, question_ids, hits)
+            hits = await value_line_anchor_hits(
+                ctx, session, repo_id, question, question_ids, hits, exclude_spec
+            )
     # Flow-path expansion: when the question anchors 2+ endpoints, inject the
     # files on the path between them, reaching a far endpoint 1-hop expansion
     # cannot. This and the stages below run before the cap so an injected file
@@ -414,13 +424,15 @@ async def _run_retrieval_pipeline(
         with contextlib.suppress(Exception):
             async with get_session(ctx.session_factory) as session:
                 hits, flow_paths = await _expand_via_flow_path(
-                    session, repo_id, hits, question, question_ids
+                    session, repo_id, hits, question, question_ids, exclude_spec
                 )
     # Neighborhood re-rank: for flow questions whose target file is never named,
     # re-rank the 1-2 hop neighborhood of the top hits. No-op on other shapes.
     with contextlib.suppress(Exception):
         async with get_session(ctx.session_factory) as session:
-            hits = await _expand_via_neighbor_rerank(session, repo_id, hits, question, ctx)
+            hits = await _expand_via_neighbor_rerank(
+                session, repo_id, hits, question, ctx, exclude_spec
+            )
     # Parent-concept surfacing: a subsystem-shaped question leads with the
     # rollup page for the subsystem. No-op on other shapes, and skipped once a
     # call trace answers the question: its entry file must keep the lead.
@@ -461,6 +473,14 @@ async def _run_retrieval_pipeline(
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+        elif not traced:
+            # Words spelling a symbol name ("bus factor" -> ``_bus_factor``)
+            # place its defining files the same way.
+            with contextlib.suppress(Exception):
+                async with get_session(ctx.session_factory) as session:
+                    concept = await concept_defining_files(session, repo_id, question, exclude_spec)
+                if concept := _in_scope(concept):
+                    hits = place_named_files(hits, concept)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
     hits = place_documents(hits, docs.hits)
@@ -598,6 +618,15 @@ async def _data_shape_answer(question: str, ctx, repository, t0: float) -> dict 
     return build_data_shape_payload(grounded, t0, repository)
 
 
+async def _origin_answer(ask: _Ask, scope: str | None) -> dict | None:
+    """The origin reply for "which change introduced X", or ``None``."""
+    try:
+        return await origin_reply(ask, scope)
+    except Exception:
+        _log.warning("get_answer: origin lookup failed", exc_info=True)
+        return None
+
+
 async def _graph_callers(ask: _Ask, retrieved: _Retrieved):
     """The graph's callers as evidence for a caller question; no query otherwise."""
     if not is_caller_question(ask.question, retrieved.question_ids):
@@ -679,6 +708,31 @@ async def _pre_synthesis_reply(
             t0=ask.t0,
         )
     return None
+
+
+async def _named_fix_history(ask: _Ask, hits: list[dict]) -> list[dict]:
+    """The fix record of each file the question asks why it breaks or keeps
+    changing; ``[]`` for every other question.
+
+    Its prompt line rides on that file's hit (the top hit when retrieval missed
+    the file), so synthesis reads it and the grade counts its numbers as shown.
+    """
+    if not asks_fix_history(ask.question):
+        return []
+    try:
+        async with get_session(ask.ctx.session_factory) as session:
+            history = await named_file_fix_history(
+                session, ask.repo_id, ask.question, ask.exclude_spec
+            )
+    except Exception:
+        _log.warning("get_answer: fix history lookup failed", exc_info=True)
+        return []
+    by_path = {h.get("target_path"): h for h in hits}
+    for row, line in zip(history, fix_history_lines(history), strict=True):
+        hit = by_path.get(row["path"]) or (hits[0] if hits else None)
+        if hit is not None:
+            hit.setdefault("_fix_history", []).append(line)
+    return history
 
 
 def _fallback_targets(hits: list[dict]) -> list[str]:
@@ -773,21 +827,30 @@ async def _user_prompt(
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
-    if graph_callers.rows:
-        graph_block = "Callers from the call graph:\n" + "\n".join(
-            f"- {line}" for line in caller_lines(graph_callers.rows)
-        )
-        prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
-    if other_repo_lines:
-        docs_block = "Lines from documents in other repositories of this workspace:\n" + "\n".join(
-            f"- {r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines
-        )
-        prelude = f"{prelude}\n\n{docs_block}" if prelude else docs_block
+    blocks = (
+        prelude,
+        _prompt_block("Callers from the call graph", caller_lines(graph_callers.rows)),
+        _prompt_block(
+            "Bug-fix history from the index",
+            [line for h in hits for line in h.get("_fix_history") or ()],
+        ),
+        _prompt_block(
+            "Lines from documents in other repositories of this workspace",
+            [f"{r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines],
+        ),
+    )
     return _USER_TEMPLATE.format(
         question=ask.question.strip(),
         n=len(hits),
-        context=_build_context_block_v2(hits, prelude=prelude, decisions=decisions),
+        context=_build_context_block_v2(
+            hits, prelude="\n\n".join(b for b in blocks if b), decisions=decisions
+        ),
     )
+
+
+def _prompt_block(title: str, lines: list[str]) -> str:
+    """A titled bullet block for the prelude, or ``""`` with no lines."""
+    return f"{title}:\n" + "\n".join(f"- {line}" for line in lines) if lines else ""
 
 
 async def _graded_payload(
@@ -798,8 +861,8 @@ async def _graded_payload(
     agreement_dominant: bool,
     dominance,
     stop_reason: str | None = None,
-) -> tuple[dict, str, list[str]]:
-    """Grade the synthesized answer and build its payload: ``(payload, confidence, citations)``."""
+) -> tuple[dict, _Grade, list[str]]:
+    """Grade the synthesized answer and build its payload: ``(payload, grade, citations)``."""
     hits = retrieved.hits
     cited = answer_files(
         answer_text, hits, retrieved.resolved_pool, fallback_targets, _repo_root(ask.ctx)
@@ -835,6 +898,8 @@ async def _graded_payload(
     )
     if retrieved.scope and grade.split_names:
         grade = grade._replace(split_names=_split_in_scope(grade.split_names, retrieved.scope))
+    if grade.off_topic:
+        return _off_topic_payload(ask, grade.off_topic), grade, []
     payload = await build_synthesized_payload(
         question=ask.question,
         answer_text=answer_text,
@@ -851,7 +916,26 @@ async def _graded_payload(
         repository=ask.repository,
         exclude_spec=ask.exclude_spec,
     )
-    return payload, grade.confidence, citations
+    return payload, grade, citations
+
+
+def _off_topic_payload(ask: _Ask, words: tuple[str, ...]) -> dict:
+    """The reply when the question asks about what the repository does not hold.
+
+    No answer, citations or files to read: whatever synthesis wrote came from
+    outside the evidence, and the files retrieved are only where a stray word
+    landed.
+    """
+    asked = ", ".join(f"'{w}'" for w in words[:3])
+    payload = _no_answer_payload("", repository=ask.repository, t0=ask.t0)
+    # The verdict is the answer: the reply has nothing else to say.
+    del payload["note"]
+    payload["answer"] = (
+        f"Not found in this repository: nothing indexed mentions {asked}, and the "
+        "synthesized reply drew on none of what was retrieved, so it is not served. "
+        "Ask about code, a file or a behaviour this repository has."
+    )
+    return payload
 
 
 async def _resolve_scope(ask: _Ask, scope: str | None) -> ScopeResolution:
@@ -1022,6 +1106,11 @@ async def get_answer(
     shaped = await _data_shape_answer(question, ctx, repository, t0)
     if shaped is not None:
         return shaped
+    # Before cache and retrieval: retrieval answers "which PR added X" with
+    # X's definition, and an origin reply costs one git log, not a synthesis.
+    origin = await _origin_answer(ask, scope)
+    if origin is not None:
+        return origin
 
     # Normalize once, then use the same value for retrieval and cache identity.
     # The versioned identity deliberately misses legacy question-only rows.
@@ -1058,6 +1147,7 @@ async def get_answer(
     clock.mark("retrieve")
     hits = retrieved.hits
     resolved_pool = retrieved.resolved_pool
+    fix_history = await _named_fix_history(ask, hits)
     graph_callers = await _graph_callers(ask, retrieved)
     # Impact questions the caller lookup left unanswered get the users of the
     # file the answer leads with, once that file is known.
@@ -1072,8 +1162,15 @@ async def get_answer(
     # Above the early returns: they rate retrieval too.
     agreement_dominant = _agreement(hits)
 
-    def _finish(payload: dict, *, keep: bool = False) -> dict:
+    def _finish(payload: dict, *, keep: bool = False, candidates: bool = True) -> dict:
+        if wants_origin(question):
+            # An origin question no symbol could be pinned to: the code-shaped
+            # answer stands, and the next step is the history of that code.
+            targets = _fallback_targets(hits)
+            payload["next_action_hint"] = origin_hint(targets[0] if targets else None)
         _with_scan_gaps(payload, retrieved.homonyms)
+        if fix_history:
+            payload["fix_history"] = fix_history
         _with_scope_note(payload, scoped)
         if retrieved.other_repo_lines:
             payload["other_repo_lines"] = retrieved.other_repo_lines
@@ -1085,7 +1182,8 @@ async def get_answer(
                 repo_id=ask.repo_id,
                 qhash=qhash,
             )
-        return _with_candidates(payload, resolved_pool)
+        # An off-topic reply ranks nothing: the pool is where stray words landed.
+        return _with_candidates(payload, resolved_pool if candidates else [])
 
     # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
@@ -1165,15 +1263,19 @@ async def get_answer(
     if failure_note is not None:
         return await _degrade("synthesis-failed", failure_note)
 
-    payload, confidence, citations = await _graded_payload(
+    payload, grade, citations = await _graded_payload(
         ask, retrieved, answer_text, fallback_targets, agreement_dominant, dominance, stop_reason
     )
+    confidence = grade.confidence
+    if grade.off_topic:
+        # Nothing retrieved is worth reading for it either.
+        fallback_targets = []
     attach_graph_callers(payload, graph_callers)
     await _neighbors(payload)
     if retrieved.flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in retrieved.flow_paths[:2]]
     # Navigation, not evidence: it survives the shrinking of ``retrieval``.
-    _finish(payload)
+    _finish(payload, candidates=not grade.off_topic)
     await _cache_and_stamp(
         payload,
         ask,

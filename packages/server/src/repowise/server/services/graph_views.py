@@ -13,12 +13,13 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import node_is_excluded, spec_key
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence import crud
@@ -82,12 +83,15 @@ class Population:
     """Which non-production populations a community view counts.
 
     Production is always in. Applied before anything is sized or ranked, so no
-    number on the map describes files it does not draw.
+    number on the map describes files it does not draw. A file the repo's
+    *exclude_spec* matches is in no population: it is dropped like an external
+    node, uncounted, and so is every edge with an end in it.
     """
 
     include_tests: bool = False
     include_examples: bool = False
     include_docs: bool = False
+    exclude_spec: Any = field(default=None, compare=False)
 
     def keeps(self, kind: FilePopulation) -> bool:
         if kind == "test":
@@ -97,6 +101,10 @@ class Population:
         if kind == "doc":
             return self.include_docs
         return True
+
+    def hides(self, node_id: str) -> bool:
+        """True for a node no population counts: external, or excluded by the rules."""
+        return is_external(node_id) or node_is_excluded(node_id, self.exclude_spec)
 
 
 PRODUCTION_ONLY = Population()
@@ -108,14 +116,19 @@ def is_external_node(node: GraphNode) -> bool:
 
 
 def bucket_by_community(
-    all_nodes: list[GraphNode], visible: list[GraphNode]
+    all_nodes: list[GraphNode],
+    visible: list[GraphNode],
+    population: Population = PRODUCTION_ONLY,
 ) -> tuple[dict[int, list[GraphNode]], Counter[int]]:
-    """Visible members per community, and how many each community hides."""
+    """Visible members per community, and how many each community hides.
+
+    A node *population* hides outright (external, excluded) is not counted.
+    """
     visible_ids = {n.node_id for n in visible}
     buckets: dict[int, list[GraphNode]] = {}
     hidden: Counter[int] = Counter()
     for n in all_nodes:
-        if is_external_node(n):
+        if population.hides(n.node_id):
             continue
         cid = n.community_id if n.community_id is not None else 0
         if n.node_id in visible_ids:
@@ -130,12 +143,12 @@ def split_population(
 ) -> tuple[list[GraphNode], Counter[str]]:
     """Return the nodes *population* keeps, and a count of every kind seen.
 
-    External nodes are dropped and not counted.
+    External and excluded nodes are dropped and not counted.
     """
     kept: list[GraphNode] = []
     counts: Counter[str] = Counter()
     for n in nodes:
-        if is_external_node(n):
+        if population.hides(n.node_id):
             continue
         kind = file_population(n.node_id, is_test=bool(n.is_test))
         counts[kind] += 1
@@ -191,9 +204,21 @@ _CODE_NODE_COLUMNS = (
     GraphNode.pagerank,
     GraphNode.is_entry_point,
 )
-# Entries, one per (repository, exclude rules) at the current index state;
-# older states are dropped on rebuild. Each holds a whole graph in memory.
-_code_graphs = IndexStampCache(4)
+# Rows (nodes plus edges) the cached graphs may hold together. A 119k-node /
+# 397k-edge graph is 516k rows and a few hundred MB of heap, so this keeps the
+# largest repository beside one medium one. Past it the least recently used
+# repository's graph goes; the newest is always kept, however large. A fixed
+# ceiling; make it a setting if a deployment needs more graphs resident.
+_CODE_GRAPH_ROW_BUDGET = 750_000
+
+
+def _code_graph_rows(graph: CodeGraph) -> int:
+    return len(graph.nodes) + len(graph.edges)
+
+
+# One entry per repository, at its current index state and exclude rules.
+# Each holds a whole graph in memory, so the cache is bounded by rows too.
+_code_graphs = IndexStampCache(4, weigh=_code_graph_rows, budget=_CODE_GRAPH_ROW_BUDGET)
 # One build per repository at a time, so a cold burst of requests loads once.
 _code_graph_locks: dict[str, asyncio.Lock] = {}
 
@@ -218,13 +243,6 @@ def clear_code_graph_cache() -> None:
     _code_graph_locks.clear()
 
 
-def _spec_key(exclude_spec: Any) -> tuple[str, ...] | None:
-    """The rules a spec was compiled from: equal rules share one cached graph."""
-    if exclude_spec is None:
-        return None
-    return tuple(str(p.pattern) for p in exclude_spec.patterns)
-
-
 async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
     """Every code node and edge of *repo_id*, minus excluded files, as a DiGraph.
 
@@ -234,16 +252,17 @@ async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any
     file layer to the symbol layer. Kept per index state and exclude rules;
     callers must not mutate the result.
     """
-    key = await _code_graphs.key(session, repo_id, _spec_key(exclude_spec))
+    key = await _code_graphs.key(session, repo_id, spec_key(exclude_spec))
     if key in _code_graphs:
         return _code_graphs.get(key)
     async with _code_graph_locks.setdefault(repo_id, asyncio.Lock()):
         if key in _code_graphs:
             return _code_graphs.get(key)
         loaded = await _build_code_graph(session, repo_id, exclude_spec)
-        # Older index states are never asked for again; other exclude rules
-        # at this state stay.
-        _code_graphs.drop_repo_except(repo_id, key[:3])
+        # One graph per repository: an older index state is never asked for
+        # again, and a second exclude spec is rare and rebuilds in seconds.
+        # Dropped once the build lands, so requests during it still hit.
+        _code_graphs.drop_repo(repo_id)
         return _code_graphs.remember(key, loaded)
 
 
@@ -304,7 +323,7 @@ async def build_architecture_graph(
     visible, counts = split_population(all_nodes, population)
     breakdown = population_breakdown(counts, len(visible), population)
 
-    buckets, hidden_per_community = bucket_by_community(all_nodes, visible)
+    buckets, hidden_per_community = bucket_by_community(all_nodes, visible, population)
     node_to_community = {n.node_id: cid for cid, members in buckets.items() for n in members}
 
     # Pull cross-link signals once for the visible population so super-nodes
@@ -360,6 +379,7 @@ async def build_architecture_graph(
     kept_communities = {a.community_id for a in arch_nodes}
 
     # Collapse cross-community edges; a doc link or co-change across is not coupling.
+    # Only visible nodes are mapped, so an edge with an excluded end is skipped.
     edge_result = await session.execute(
         select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
             GraphEdge.repository_id == repo_id,
@@ -431,7 +451,7 @@ async def neighbour_edge_counts(
         node = outside.get(target)
         if node is None or node.node_type != "file" or node.community_id == community_id:
             continue
-        if is_external_node(node):
+        if population.hides(node.node_id):
             continue
         if not population.keeps(file_population(node.node_id, is_test=bool(node.is_test))):
             continue
@@ -504,11 +524,11 @@ async def build_community_slice(
         if not src_in and not tgt_in:
             continue
         kept_edges.append(e)
-        # External stubs are ranked out here, not after the cap, so they
-        # cannot take the boundary slots from real files.
-        if not src_in and not is_external(e.source_node_id):
+        # External and excluded stubs are ranked out here, not after the cap,
+        # so they cannot take the boundary slots from real files.
+        if not src_in and not population.hides(e.source_node_id):
             boundary_degree[e.source_node_id] = boundary_degree.get(e.source_node_id, 0) + 1
-        if not tgt_in and not is_external(e.target_node_id):
+        if not tgt_in and not population.hides(e.target_node_id):
             boundary_degree[e.target_node_id] = boundary_degree.get(e.target_node_id, 0) + 1
 
     # Cap boundary stubs to the most-connected neighbors: hub communities can

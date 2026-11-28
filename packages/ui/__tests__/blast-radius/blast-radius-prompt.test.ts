@@ -126,7 +126,7 @@ describe("the review prompt for a scored change", () => {
 
   it("carries the rank and the review's tests, not the blast radius's", () => {
     const p = prompt(makeReview());
-    expect(p).toContain("Change risk: Riskier than 82% of this repo's recent commits, by size and spread. Mostly 400 lines added and 6 files touched.");
+    expect(p).toContain("Change risk: Larger than 82% of this repo's recent commits, by size and spread. Mostly 400 lines added and 6 files touched.");
     expect(p).toContain("`tests/test_a.py`");
     expect(p).toContain("pytest tests/test_a.py tests/test_b.py");
     expect(p).not.toContain("tests/test_blast.py");

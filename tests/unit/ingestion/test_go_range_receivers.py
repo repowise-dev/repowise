@@ -134,6 +134,10 @@ _COMMAND = (
 )
 
 
+# The rest of a one-loop body: ``sub.HasAlias("x")``, then the loop and function close.
+_HAS_ALIAS_BODY_END = '\t\tsub.HasAlias("x")\n\t}\n}\n'
+
+
 def _range_edges(tmp_path: Path, body: str) -> set[tuple[str, str]]:
     lang, head = _COMMAND
     edges = _edges(tmp_path, {"a.go": (lang, head + body)})
@@ -172,13 +176,75 @@ class TestResolution:
         body = "func filter(cmds []*Command) {\n\tfor i := range cmds {\n\t\ti.HasAlias(\"x\")\n\t}\n}\n"
         assert not _callees(tmp_path, body) & {"a.go::Command::HasAlias"}
 
-    def test_a_named_container_type_is_refused(self, tmp_path: Path) -> None:
-        """``Commands`` is a slice, but only a type checker would say so."""
+    @pytest.mark.parametrize(
+        "loop",
+        [
+            "for _, sub := range c.named {",
+            "for _, sub := range c.Named() {",
+            "for _, sub := range named {",
+        ],
+    )
+    def test_a_named_container_type_walks_its_declared_container(
+        self, tmp_path: Path, loop: str
+    ) -> None:
+        """``type Commands []*Command`` makes a range over a ``Commands`` yield a ``Command``."""
+        body = f"func (c *Command) find(named Commands) {{\n\t{loop}\n" + _HAS_ALIAS_BODY_END
+        assert ("a.go::Command::find", "a.go::Command::HasAlias") in _range_edges(tmp_path, body)
+
+    def test_a_named_type_declared_in_another_file_of_the_package(self, tmp_path: Path) -> None:
+        """gin's shape: ``engine.trees`` is a ``methodTrees`` declared beside ``node``, and
+        each tree's ``root`` field is read to the method."""
+        files = {
+            "tree.go": (
+                "go",
+                "package gin\n\ntype node struct{}\n\n"
+                "func (n *node) getValue(path string) int { return 0 }\n\n"
+                "type methodTree struct {\n\tmethod string\n\troot   *node\n}\n\n"
+                "type methodTrees []methodTree\n",
+            ),
+            "gin.go": (
+                "go",
+                "package gin\n\ntype Engine struct {\n\ttrees methodTrees\n}\n\n"
+                "func (engine *Engine) handle(p string) {\n"
+                "\tfor _, tree := range engine.trees {\n"
+                "\t\tif v := tree.root.getValue(p); v > 0 {\n\t\t\treturn\n\t\t}\n\t}\n}\n",
+            ),
+        }
+        edges = {(caller, callee) for caller, callee, _, _ in _edges(tmp_path, files)}
+        assert ("gin.go::Engine::handle", "tree.go::node::getValue") in edges
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            # Another named type, not a container spelled on the line.
+            "type Named Commands",
+            # A generic type: its element is a type parameter.
+            "type Named[T any] []T",
+            # A struct of the name walks nothing.
+            "type Named struct{}",
+        ],
+    )
+    def test_a_named_type_that_spells_no_container_is_refused(
+        self, tmp_path: Path, declaration: str
+    ) -> None:
         body = (
-            "func (c *Command) find() {\n\tfor _, sub := range c.named {\n\t\tsub.HasAlias(\"x\")\n\t}\n"
-            "\tfor _, sub := range c.Named() {\n\t\tsub.HasAlias(\"x\")\n\t}\n}\n"
+            f"{declaration}\n\n"
+            "func find(xs Named) {\n\tfor _, sub := range xs {\n\t\tsub.HasAlias(\"x\")\n\t}\n}\n"
         )
         assert not _callees(tmp_path, body) & {"a.go::Command::HasAlias"}
+
+    def test_a_named_type_of_another_package_is_refused(self, tmp_path: Path) -> None:
+        """An unqualified type name is its own package's: a sibling directory's does not answer."""
+        lang, head = _COMMAND
+        files = {
+            "a.go": (
+                lang,
+                head + "func find(xs Listed) {\n\tfor _, sub := range xs {\n" + _HAS_ALIAS_BODY_END,
+            ),
+            "other/listed.go": ("go", "package other\n\ntype Listed []*Command\n"),
+        }
+        callees = {callee for _, callee, _, _ in _edges(tmp_path, files)}
+        assert "a.go::Command::HasAlias" not in callees
 
     def test_a_loop_variable_does_not_retype_the_receiver_body_wide(self, tmp_path: Path) -> None:
         """A body is one scope, so the loop's ``c`` must not cost the method's."""

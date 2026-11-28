@@ -359,7 +359,10 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v5: one person counts once across names and emails (mailmap applied) in a
 #: file's owners, top authors, bus factor and blame owners (#6045), and bot
 #: accounts count toward neither ownership nor the contributor count (#6051).
-GIT_HISTORY_VERSION: int = 5
+#: v6: a commit a coding agent authored counts, in a file's owners, top
+#: authors, bus factor and blame owners, for the human its ``Co-authored-by``
+#: trailer or its committer names; with neither it stays the agent's.
+GIT_HISTORY_VERSION: int = 6
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution
 #: backfill`` so the next update re-walks history to label the newly bound
@@ -426,6 +429,12 @@ _GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
 # executor thread — for large files the commit-based ownership estimate is
 # used as a fallback instead.
 _MAX_BLAME_SIZE_BYTES: int = 100 * 1024  # 100 KB
+
+# A production file up to this size is still blamed, for its functions' owner
+# and last change only (``git_function_blame.history_only``): the file owner
+# and the health biomarkers keep the cap above. Without it a function in a
+# large module has no owner at all.
+_MAX_FUNCTION_BLAME_SIZE_BYTES: int = 512 * 1024  # 512 KB
 
 # Maximum seconds to wait for a single file's git indexing.  If exceeded the
 # file is recorded with whatever data was collected before the timeout and the

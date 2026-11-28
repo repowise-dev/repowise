@@ -31,6 +31,9 @@ GO_PARENT = _sym("command.go", "command.Command.HasParent", 120, 122, "method")
 JS_SEND = _sym("lib/response.js", "response.send", 5, 20)
 JS_TWIN_A = _sym("lib/twins.js", "twins.a", 1, 1)
 JS_TWIN_B = _sym("lib/twins.js", "twins.b", 1, 1)
+RS_CART = _sym("src/cart.rs", "src.cart.Cart", 1, 30, "struct")
+RS_TOTAL = _sym("src/cart.rs", "src.cart.Cart.total", 14, 23, "method")
+RS_HELPER = _sym("src/cart.rs", "src.cart.helper", 26, 28, "function")
 
 SYMBOLS = {
     "pkg/app.py": [PY_CLASS, PY_INIT, PY_RUN],
@@ -38,6 +41,7 @@ SYMBOLS = {
     "command.go": [GO_FLAGS, GO_PARENT],
     "lib/response.js": [JS_SEND],
     "lib/twins.js": [JS_TWIN_A, JS_TWIN_B],
+    "src/cart.rs": [RS_CART, RS_TOTAL, RS_HELPER],
     "gen/api_pb2.py": [_sym("gen/api_pb2.py", "gen.api_pb2.f", 1, 5)],
 }
 
@@ -58,6 +62,10 @@ def _resolve(*frames: ProfileFrame, **kw):
 
 def _py(line: int, name: str, path: str = "pkg/app.py") -> ProfileFrame:
     return ProfileFrame(f"{ROOT}/{path}", line, "python", function=name)
+
+
+def _rs(line: int, name: str, path: str = "src/cart.rs") -> ProfileFrame:
+    return ProfileFrame(f"{ROOT}/{path}", line, "rust", function=name)
 
 
 def _one(resolution):
@@ -152,7 +160,7 @@ def test_line_below_one_is_bad() -> None:
 
 
 def test_unknown_language_is_unsupported() -> None:
-    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "ruby", function="x")  # type: ignore[arg-type]
+    frame = ProfileFrame(f"{ROOT}/pkg/app.py", 5, "csharp", function="x")  # type: ignore[arg-type]
     assert _resolve(frame).skipped == {"unsupported_language": 1}
 
 
@@ -360,3 +368,37 @@ def test_frame_paths_lists_only_files_under_the_root() -> None:
         ProfileFrame("<built-in>", 0, "python"),
     ]
     assert frame_paths(frames, root=ROOT) == {"pkg/app.py"}
+
+
+# -- Rust ---------------------------------------------------------------------
+
+
+def test_rust_method_resolves_with_demangled_name() -> None:
+    assert _one(_resolve(_rs(15, "cart::Cart::total::h123456789abcdef0"))) is RS_TOTAL
+    assert _one(_resolve(_rs(15, "Cart::total"))) is RS_TOTAL
+    assert _one(_resolve(_rs(15, "total"))) is RS_TOTAL
+
+
+def test_rust_bare_function_resolves() -> None:
+    assert _one(_resolve(_rs(27, "cart::helper::h123456789abcdef0"))) is RS_HELPER
+    assert _one(_resolve(_rs(27, "helper"))) is RS_HELPER
+
+
+def test_rust_method_mismatch_is_second_signal_mismatch() -> None:
+    assert _resolve(_rs(15, "cart::Cart::add::h0123456789abcdef")).skipped == {"second_signal_mismatch": 1}
+    assert _resolve(_rs(15, "cart::Other::total::h0123456789abcdef")).skipped == {"second_signal_mismatch": 1}
+
+
+def test_rust_hash_cut_needs_sixteen_hex_digits() -> None:
+    # A method named ``head`` is not a hash: the frame keeps its name.
+    head = _sym("src/cart.rs", "src.cart.Cart.head", 14, 23, "method")
+    symbols = {**SYMBOLS, "src/cart.rs": [RS_CART, head]}
+    assert _one(_resolve(_rs(15, "cart::Cart::head"), symbols_by_file=symbols)) is head
+
+
+def test_rust_type_line_is_not_put_on_the_file() -> None:
+    assert _resolve(_rs(2, "cart::Cart")).skipped == {"no_span": 1}
+
+
+def test_rust_frame_without_name_is_no_second_signal() -> None:
+    assert _resolve(_rs(15, "")).skipped == {"no_second_signal": 1}

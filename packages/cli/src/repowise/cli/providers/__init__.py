@@ -16,6 +16,7 @@ from repowise.cli.providers.cost_tracking import (
 )
 from repowise.cli.providers.embedders import (
     build_embedder,
+    embedder_label,
     embedder_was_requested,
     is_free_embedder,
     keyless_run_embedder,
@@ -41,6 +42,7 @@ __all__ = [
     "build_vector_store",
     "cost_tracking_disabled",
     "embed_failure_message",
+    "embedder_label",
     "embedder_was_requested",
     "existing_vector_dim",
     "flush_cost_tracker",

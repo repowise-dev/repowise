@@ -1,9 +1,14 @@
 # Telemetry
 
-Repowise collects **completely anonymous** usage telemetry to help us decide
-what to build and fix. It is **impossible to tie any event to you, your
-machine, or your code**. There are no usernames, no IP addresses, no file
-paths, and no source content anywhere in what we send.
+Repowise collects anonymous usage telemetry to help us decide what to build
+and fix. Events carry a random install id and fixed labels: which command,
+MCP tool or web view ran, which client ran it, how it went, and coarse
+environment facts. There are no usernames, no IP addresses, no file paths, no
+repository names and no source content anywhere in what we send.
+
+Telemetry is **on by default** (anonymous, opt-out). Any one of four switches
+turns it off: `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`,
+`DO_NOT_TRACK=1` or `REPOWISE_OFFLINE=1` ([details](#how-to-opt-out)).
 
 This page documents exactly what is collected, what is never collected, how to
 verify it yourself, and how to turn it off.
@@ -28,23 +33,25 @@ Every event, whatever its type, carries the same anonymous envelope:
 
 | Field | Example | Purpose |
 |---|---|---|
-| `event` | `command_run` / `mcp_tool_call` | Event type |
+| `event` | `command_run` / `mcp_tool_call` / `view_opened` | Event type |
 | `anon_id` | `194639…d48a` | Random per-install id (see below) |
 | `session_id` | `e2ecb2…1158` | Random per-process id, groups one run |
-| `cli_version` | `0.21.0` | Version adoption |
+| `cli_version` | `0.62.0` | Version adoption |
 | `os` | `darwin` / `linux` / `windows` | Platform priorities |
 | `arch` | `arm64` / `x86_64` | Architecture priorities |
 | `python_version` | `3.12` | **major.minor only** |
 | `is_ci` | `true` / `false` | Separate automation from humans |
 
 Every event's `properties.client` names the host that ran repowise, as one
-fixed label: `claude_code`, `codex`, `cursor`, `vscode`, `ci` or `terminal`.
-It comes from which host-specific environment variables are set (never their
-values), from a hook's `--client` flag, or for an MCP tool call from the name
+fixed label: `vscode_ext`, `claude_code`, `codex`, `cursor`, `vscode`, `ci` or
+`terminal`. `vscode_ext` marks a run the VS Code extension started: it sets
+`REPOWISE_CLIENT=vscode_ext`, and only a known label in that variable counts.
+Otherwise the label comes from which host-specific environment variables are
+set (never their values), from a hook's `--client` flag, or for an MCP tool call from the name
 the client announces when it connects, which can also name another supported
 agent such as `opencode` (`unknown` when nothing matches).
 
-### `command_run` — once per CLI invocation
+### `command_run` - once per CLI invocation
 
 | Field | Example | Purpose |
 |---|---|---|
@@ -83,8 +90,25 @@ generation is used. Never exact counts, never repo or file names:
 | `properties.provider` / `properties.model` | `anthropic` / `claude-opus` | Which models generate docs |
 | `properties.embedder` | `openai` | Which embedders are in use |
 | `properties.pages_bucket` | `100-499` | Docs volume (a range) |
+| `properties.symbol_count_bucket` / `properties.deterministic_pages_bucket` | `1k-5k` | Symbols indexed and template-written pages (`init`, ranges) |
+| `properties.changed_files_bucket` | `1-9` | Files an `update` processed (a range) |
+| `properties.outcome` / `properties.index_only` / `properties.run_mode` | `success` / `true` / `fast` | How the run ended, whether it skipped docs, and which run mode `init` used (`fast` or `standard`) |
+| `properties.interactive` / `properties.instruction_source` | `false` / `setup_doc` | Whether `init` ran with prompts, and which setup instructions started it (a fixed label, else `other`) |
 
-### `mcp_tool_call` — once per MCP tool call
+A few other commands add fixed labels, booleans or ranges of their own:
+
+| Field | Sent by | Meaning |
+|---|---|---|
+| `properties.outcome`, `properties.refusal_reason`, `properties.pages_written_bucket`, `properties.provider`, `properties.provider_kind` | `generate` | How the run ended (`generated`, `partial`, `failed`, `dry_run`, `refused`), why it refused (`declined`, `no_documentation`, `nothing_selected`), a range of pages written, the provider name and how it runs |
+| `properties.outcome` | `publish` | How the publish ended, a fixed label |
+| `properties.transport`, `properties.transport_outcome` | `mcp` | The MCP transport (`stdio`, `streamable-http`, `sse`) and how the session ended |
+| `properties.link_anon_status`, `properties.already_signed_in` | `login` | The HTTP status of the install-id link (see below) and whether a session already existed |
+| `properties.client` | Codex and Cursor hooks (`augment`) | The same `client` field as above, set to `codex` or `cursor` from the hook's `--client` flag instead of the environment |
+| `properties.subscription_cli_detected` | commands that check for signed-in agent CLIs, such as `init` | Whether a signed-in agent CLI was found, a boolean |
+| `properties.hint_shown` | any command | The fixed id of a one-line hint the command printed |
+| `properties.error_leaves`, `properties.error_leaf_count` | any command that crashes | Exception class names when several failures ended the run together, and how many |
+
+### `mcp_tool_call` - once per MCP tool call
 
 Emitted by the MCP server (`repowise mcp` / `repowise serve`) so we can see
 which tools coding agents actually use and how often answers come back stale or
@@ -113,7 +137,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.index_mode` | `none` / `template` / `model` / `mixed` | Who wrote the served index's pages; absent when the server has no index to read |
 | `properties.provider_kind` | `none` / `subscription_cli` / `local` / `api_key` / `mock` / `other` | How the model that synthesised the answer runs (an agent CLI login, a local model, a hosted API key); never the provider or model name |
 | `properties.empty_result` | `true` / `false` | Whether the call found nothing; sent only by `search_codebase`, `get_context`, `get_answer` and `get_why`, and not on an `error` call |
-| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `cross_repo` and `branch_overlap` (`get_change_risk`) |
+| `properties.<stage>_ms` | `retrieve_ms`: `310` | Time spent in one stage of the call. The stages are `retrieve` and `synthesize` (`get_answer`), and `score`, `health_delta`, `impacted_tests`, `patch_coverage`, `prior_fixes`, `measured`, `cross_repo`, `in_repo_contracts` and `branch_overlap` (`get_change_risk`) |
 
 Example `command_run` payload:
 
@@ -122,7 +146,7 @@ Example `command_run` payload:
   "event": "command_run",
   "anon_id": "194639251e854669ae2f56081620d48a",
   "session_id": "e2ecb2aeb4df422883c5af451f2b1158",
-  "cli_version": "0.21.0",
+  "cli_version": "0.62.0",
   "os": "darwin",
   "arch": "arm64",
   "python_version": "3.12",
@@ -171,8 +195,12 @@ view in another repo, sends nothing new.
 `anon_id` is a random UUID generated once and stored in
 `~/.repowise/platform.json`. It is **not** derived from your hostname,
 username, or any machine identifier, so it cannot be reversed to a person. It
-only lets us count distinct installs. Delete the file and a new, unrelated id
-is generated; nothing links the two.
+lets us count distinct installs. Delete the file and a new, unrelated id is
+generated; nothing links the two.
+
+If you sign in with `repowise login`, the CLI sends this `anon_id` to your
+repowise.dev account once, which links that install's events to the account.
+Nothing is linked unless you sign in.
 
 ## When events are sent
 
@@ -219,5 +247,9 @@ Re-enable with `repowise telemetry enable`.
 
 ## Data retention
 
-Events are retained for 90 days and then deleted. Only aggregate figures (e.g.
-"X% of runs are on Windows") are ever used or shared.
+Raw events, and any per-install data derived from them (such as a daily
+rollup keyed by `anon_id`), are deleted after 90 days. After that, only
+anonymous aggregate counts are kept: event counts per day, tool, client and
+version, and weekly counts of how many installs from each start week are still
+active. These carry no `anon_id` or other per-install key. Only aggregate
+figures (for example "X% of runs are on Windows") are used or shared.

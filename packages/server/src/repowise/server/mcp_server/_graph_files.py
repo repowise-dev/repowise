@@ -17,11 +17,9 @@ scanning again.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import os
 import re
-import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from functools import lru_cache
@@ -65,8 +63,6 @@ _LOCKS: dict[str, asyncio.Lock] = {}
 # checkout keeps one __version__ across commits, so only this number tells them
 # apart there.
 _STORE_SCHEMA = 1
-# A temp file this old is an orphan of a killed write, never one in flight.
-_ORPHAN_TEMP_SECONDS = 3600
 _MISS = object()
 # Writes in flight, held so the loop does not drop them before they finish.
 _PENDING_STORES: set[asyncio.Task] = set()
@@ -117,6 +113,19 @@ def reset_cache() -> None:
     _CACHE.clear()
     # A lock that once waited is bound to that event loop; a fresh one is not.
     _LOCKS.clear()
+
+
+def drop_repo(repo_id: str) -> None:
+    """Drop *repo_id*'s projections; a build in flight for it may add them back."""
+    _CACHE.pop(repo_id, None)
+
+
+def set_limit(repos: int) -> None:
+    """Keep at most *repos* repositories, dropping the least recently used now."""
+    global _CACHE_MAX_REPOS
+    _CACHE_MAX_REPOS = repos
+    while len(_CACHE) > repos:
+        _CACHE.popitem(last=False)
 
 
 def _lock_for(name: str) -> asyncio.Lock:
@@ -243,12 +252,9 @@ def _store(path: Path, repo_id: str, name: str, key: str, value: Any) -> None:
 
 def _drop_orphan_temps(path: Path) -> None:
     """Remove temp files a killed write left beside *path*."""
-    cutoff = time.time() - _ORPHAN_TEMP_SECONDS
-    for pattern in (f"{path.name}*.tmp", f"{path.name}*.pkltmp"):
-        for orphan in path.parent.glob(pattern):
-            with contextlib.suppress(OSError):
-                if orphan.stat().st_mtime < cutoff:
-                    orphan.unlink()
+    from repowise.core.cache_seal import sweep_orphan_temps
+
+    sweep_orphan_temps(path.parent)
 
 
 def _store_soon(path: Path, repo_id: str, name: str, key: str, value: Any) -> None:

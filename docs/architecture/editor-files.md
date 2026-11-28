@@ -231,7 +231,7 @@ LIMIT 9   -- 3 shown, titles only; the spare rows cover records in excluded path
 SELECT AVG(confidence) FROM wiki_pages WHERE repository_id = :repo_id
 ```
 
-### Filesystem scan (in `tech_stack.py`)
+### Filesystem scan (in `ingestion/tech_stack.py`)
 
 `detect_tech_stack(repo_path)` scans the repo root for:
 
@@ -247,6 +247,11 @@ SELECT AVG(confidence) FROM wiki_pages WHERE repository_id = :repo_id
 | `Dockerfile` | Docker |
 | `docker-compose.yml` | Docker Compose |
 
+It also reads every production `package.json` below the root, so a Next.js,
+Nuxt, Remix, SvelteKit or Express app in a monorepo folder is in the stack.
+The framework-edge handlers read this same list, so the stack an editor file
+shows and the frameworks the graph knows agree.
+
 `detect_build_commands(repo_path)` returns a dict with keys from:
 `build`, `test`, `lint`, `dev`, `format`, `typecheck`.
 
@@ -261,10 +266,11 @@ only set once — the first source wins.
 packages/core/src/repowise/core/generation/editor_files/
 ├── __init__.py          Exports: ClaudeMdGenerator, EditorFileData, EditorFileDataFetcher
 ├── base.py              BaseEditorFileGenerator — marker-merge logic, Jinja2 setup, atomic write
-├── data.py              Frozen dataclasses: EditorFileData, TechStackItem, KeyModule,
+├── data.py              Frozen dataclasses: EditorFileData, KeyModule,
 │                        HotspotFile, DecisionSummary
-├── fetcher.py           EditorFileDataFetcher — all DB queries + filesystem calls
-├── tech_stack.py        detect_tech_stack(), detect_build_commands()
+├── fetcher.py           EditorFileDataFetcher — all DB queries + filesystem calls;
+│                        detect_tech_stack() and detect_build_commands() come from
+│                        ingestion/tech_stack.py
 └── claude_md.py         ClaudeMdGenerator — filename, marker_tag, template_name, user_placeholder
 
 packages/core/src/repowise/core/generation/templates/
@@ -279,7 +285,9 @@ packages/server/src/repowise/server/routers/
 
 tests/unit/generation/
 ├── test_editor_file_base.py     Marker-merge logic, idempotency, file structure
-├── test_editor_file_fetcher.py  DB query correctness with in-memory SQLite
+└── test_editor_file_fetcher.py  DB query correctness with in-memory SQLite
+
+tests/unit/ingestion/
 └── test_tech_stack.py           Filesystem detection with tmp_path fixtures
 ```
 
@@ -406,10 +414,8 @@ above, including the rewrite hook offer, *and* the project-local files
 repowise init --no-editor-setup --yes .
 ```
 
-It used to cover the machine-wide half only, and said so — which meant there
-was no combination of flags that indexed a repo without writing four files into
-the working tree, since VS Code had no opt-out flag of its own. Issue #1499 is
-the report of exactly that. One switch, one meaning.
+It covers both halves, so one flag indexes a repo without writing any editor
+file into the working tree. One switch, one meaning.
 
 `.repowise/mcp.json` is the one deliberate exception and is written either way.
 No editor reads it unless pointed at it, and it is what `repowise mcp .` prints
@@ -432,10 +438,9 @@ that gates an already-installed global rewrite hook off here.
 The same reasoning covers the instruction files: `--no-editor-setup
 --no-claude-md` still records `editor_files.claude_md: false`, and likewise for
 `--no-agents-md`. Those flags mean "never generate this file", not "skip it this
-once", and the generator declining on its way past used to be the only thing
-that wrote the preference down — so suppressing the writes would also have
-suppressed the memory of the refusal, and the next `repowise update` would have
-generated the file anyway. A preference is not a write.
+once", and the preference has to be written down even when the writes are
+suppressed, or the next `repowise update` would generate the file anyway. A
+preference is not a write.
 
 `REPOWISE_SKIP_EDITOR_SETUP=1` is the same switch as an env var, which is the
 better fit for CI and sandboxes where no one is passing flags by hand. Either

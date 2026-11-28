@@ -88,6 +88,15 @@ def test_fragile_without_coverage_states_graph_absence_and_basis_unknown() -> No
     assert "untested" not in _text(a)
 
 
+def test_fragile_impact_names_the_fix_window_and_what_counts() -> None:
+    (a,) = _run(code.fragile_file, _facts([_file("src/a.py")])).actions
+    # 90-day code fixes, not commit prefixes or get_risk's 6-month fix_count.
+    assert a.impact.startswith(
+        "Changed 10 times in 90 days; 5 of those were bug fixes that changed its code."
+    )
+    assert next(w for w in a.why if w.label == "bug-fix commits in 90 days").value == "5"
+
+
 def test_fragile_below_80_says_raise_coverage() -> None:
     (a,) = _run(code.fragile_file, _facts([_file("src/a.py", line_coverage_pct=62.0)])).actions
     assert a.title == "Raise test coverage on `src/a.py` from 62%"

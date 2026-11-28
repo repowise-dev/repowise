@@ -507,8 +507,9 @@ async def get_commit_labels(
 
 async def get_category_inputs(
     session: AsyncSession, repository_id: str, limit: int = 1000
-) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, str, str]]]:
-    """``(sha, subject, category)`` per commit and ``(change_id, title, category)`` per change.
+) -> tuple[list[tuple[str, str, str | None]], list[tuple[str, str, str, str, str | None]]]:
+    """``(sha, subject, category)`` per commit and, per change, ``(change_id,
+    title, category, files_json, labels_json)``: what its category is read from.
 
     Newest *limit* of each, so the read stays bounded as the tables grow.
     """
@@ -519,7 +520,9 @@ async def get_category_inputs(
         .limit(limit)
     )
     changes = await session.execute(
-        select(Change.change_id, Change.title, Change.category)
+        select(
+            Change.change_id, Change.title, Change.category, Change.files_json, Change.labels_json
+        )
         .where(Change.repository_id == repository_id)
         .order_by(Change.merged_at.desc().nulls_last())
         .limit(limit)

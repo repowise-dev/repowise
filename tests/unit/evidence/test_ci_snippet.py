@@ -170,3 +170,23 @@ def test_gitlab_quotes_a_unit_root_with_a_space() -> None:
     doc = yaml.safe_load(ci_snippet(stacks, "gitlab", "main")["content"])
 
     assert doc["repowise-evidence"]["script"][0] == 'cd "my app"'
+
+
+def test_the_python_job_runs_on_the_c_tracer_for_per_test_contexts() -> None:
+    root = yaml.safe_load(ci_snippet(_stacks(), "github", "main")["content"])["jobs"]["evidence-root-python"]
+    run = next(s["run"] for s in root["steps"] if s.get("name") == "Run tests with coverage")
+    assert run.startswith("COVERAGE_CORE=ctrace ") and "--cov-context=test" in run
+
+
+def test_go_keeps_its_test2json_events_and_gitlab_reads_no_junit_from_them() -> None:
+    files = {"go.mod": "module example.com/x\n\ngo 1.22\n"}
+    stacks = detect_stacks(["go.mod", "x_test.go"], files)
+
+    github = yaml.safe_load(ci_snippet(stacks, "github", "main")["content"])
+    (job,) = github["jobs"].values()
+    run = next(s["run"] for s in job["steps"] if s.get("name") == "Run tests with coverage")
+    assert run.endswith("-json > go-test.json")
+    assert "go-test.json" in job["steps"][-1]["with"]["path"].split()
+    gitlab = yaml.safe_load(ci_snippet(stacks, "gitlab", None)["content"])
+    (job,) = gitlab.values()
+    assert "go-test.json" in job["artifacts"]["paths"] and "reports" not in job["artifacts"]

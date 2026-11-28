@@ -8,6 +8,7 @@ always produced for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -1107,3 +1108,227 @@ def test_a_manifest_in_a_data_folder_is_no_unit(tmp_path):
     paths = list(files)
     assert "backend/data/problems/p0" in {s.root for s in detect_stacks(paths, files)}
     assert [(s.root, s.language) for s in detect_repo_stacks(tmp_path)] == [("", "go")]
+
+
+def _walked(root: Path) -> list[str]:
+    """The listing as the walk built it before: a pathlib ``relative_to`` per file."""
+    from repowise.core.fs_walk import INDEX_BLOCKED_DIRS, walk_repo
+
+    return sorted(
+        (Path(d) / name).relative_to(root).as_posix()
+        for d, _, names in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
+        for name in names
+    )
+
+
+def test_the_checkout_listing_matches_the_walk_without_ignored_folders(tmp_path, monkeypatch):
+    files = {
+        ".gitignore": "downloads/\n*.log\n",
+        "pyproject.toml": "[project]\nname = 'app'\n",
+        "app/a/b/c/deep.py": "",
+        "app/debug.log": "",
+        "web/package.json": _package({"test": "vitest run"}),
+        "web/.gitignore": "cache/\n",
+        "web/cache/package.json": _package({"test": "jest"}),
+        "web/src/index.js": "",
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/lib/x.js": "",
+        "node_modules/dep/package.json": _package(),
+        "vendor/lib/go.mod": "module v\n",
+    }
+    _write(tmp_path, files)
+    # Windows without the privilege makes no link; the walk lists a link and never enters it.
+    with contextlib.suppress(OSError):
+        (tmp_path / "linked").symlink_to(tmp_path / "app", target_is_directory=True)
+    ignored = ("downloads/", "web/cache/")
+    expected = [p for p in _walked(tmp_path) if not p.startswith(ignored)]
+    assert "app/debug.log" in expected  # an ignored file in a walked folder is still listed
+    # Separators and the root's spelling do not change the listing.
+    monkeypatch.chdir(tmp_path.parent)
+    for root in (tmp_path, Path(tmp_path.name), Path(str(tmp_path) + os.sep)):
+        assert sorted(stacks._listing(root)) == expected
+    assert all("\\" not in p for p in expected)
+
+
+def test_a_manifest_in_an_ignored_folder_starts_no_stack(tmp_path):
+    """Ignored folders hold downloads and build trees the index never reads."""
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/tool/package.json": _package({"test": "jest"}),
+        "downloads/tool/test/a.test.js": "",
+    })
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+def test_an_ignored_folder_git_tracks_a_file_in_lists_only_that_file(tmp_path):
+    """Git keeps a tracked file in an ignored folder; the downloads beside it stay out."""
+    import subprocess
+
+    _write(tmp_path, {
+        ".gitignore": "downloads/\n",
+        "package.json": _package({"test": "vitest run"}, devDependencies={"vitest": "^3"}),
+        "downloads/.gitkeep": "",
+    })
+    git = ["git", "-C", str(tmp_path), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-f", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "init"], check=True)
+    _write(tmp_path, {"downloads/tool/package.json": _package({"test": "jest"}),
+                      "downloads/notes.txt": ""})
+    assert sorted(p for p in stacks._listing(tmp_path) if p.startswith("downloads")) == ["downloads/.gitkeep"]
+    assert [s.root for s in detect_repo_stacks(tmp_path)] == [""]
+
+
+# ---------------------------------------------------------------------------
+# Test timings ride on the test command
+# ---------------------------------------------------------------------------
+
+_MOCHA = "--reporter xunit --reporter-option output=junit.xml,showRelativePaths=true"
+
+
+@pytest.mark.parametrize(
+    ("lock", "timed"),
+    [
+        # npm hands the flag to the script only after ``--``; pnpm reads ``pnpm test --x`` as its own.
+        ("package-lock.json", f"npx --yes c8 --reporter=lcov npm test -- {_MOCHA}"),
+        ("pnpm-lock.yaml", f"npx --yes c8 --reporter=lcov pnpm run test {_MOCHA}"),
+        ("yarn.lock", f"npx --yes c8 --reporter=lcov yarn test {_MOCHA}"),
+    ],
+)
+def test_mocha_writes_junit_through_its_own_xunit_reporter(lock, timed):
+    files = {"package.json": _package({"test": "mocha --check-leaks test/"}, devDependencies={"mocha": "11"})}
+    (stack,) = detect_stacks(["package.json", lock], files)
+    assert stack.runner == "c8" and stack.junit_report == "junit.xml"
+    assert stack.with_junit(stack.test) == timed
+    # The runner's own line, for profiling the suite.
+    assert stack.suite == "mocha --check-leaks test/"
+
+
+def test_a_chained_command_takes_no_junit_flag():
+    stack = stacks.Stack("node", "jest", junit_report="junit.xml", junit_flag="--reporters=jest-junit")
+    assert stack.with_junit("npx c8 jest && npx c8 report") is None
+    assert stacks.Stack("java", junit_report="target/surefire-reports").with_junit("mvn verify") == "mvn verify"
+    assert stacks.Stack("go").with_junit("go test ./...") is None
+
+
+def test_go_writes_test2json_events_beside_its_coverage(tmp_path):
+    _write(tmp_path, {"go.mod": "module example.com/x\n\ngo 1.22\n", "x_test.go": "package x\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert stack.with_junit(stack.test) == "go test -coverprofile=coverage.out ./... -json > go-test.json"
+    assert stack.junit_report == "go-test.json"
+
+
+@pytest.mark.parametrize(
+    ("files", "report"),
+    [
+        ({"pom.xml": "<project><modules><module>a</module></modules></project>"},
+         "**/target/surefire-reports/*.xml"),
+        ({"build.gradle": "plugins { id 'java' }\n", "settings.gradle": "include 'a'\n"},
+         "**/build/test-results/test/*.xml"),
+    ],
+)
+def test_a_multi_module_jvm_build_reads_every_modules_reports(files, report):
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == report
+
+
+def test_pytest_with_per_test_contexts_runs_on_the_c_tracer(tmp_path):
+    _write(tmp_path, {"pyproject.toml": '[project]\nname = "app"\n', "app/__init__.py": "",
+                      "tests/test_app.py": "def test_x():\n    pass\n"})
+    (stack,) = detect_repo_stacks(tmp_path)
+    assert "--cov-context=test" in stack.test
+    assert stack.environ() == {"COVERAGE_CORE": "ctrace"}
+
+
+def test_an_unknown_pinned_package_manager_is_refused_in_one_line():
+    files = {"package.json": _package(
+        {"test": "nub exec --node vitest run"}, packageManager="nub@0.8.3", devDependencies={"vitest": "^4.1.5"},
+    )}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    # No install is guessed; the runner runs through npx, which fails fast when it is missing.
+    assert (stack.package_manager, stack.requires) == ("nub", ())
+    assert stack.test.startswith("npx --no vitest run --coverage.enabled")
+    (note,) = stack.notes
+    assert note == ("`package.json` pins `nub` as its package manager, which Repowise does not know, so it "
+                    'prints no install: install the dependencies and `@vitest/coverage-v8@^4.1.5` with nub first.')
+    assert stack.suite == "vitest run" and stack.junit_report == "junit.xml"
+    assert "nub" in stack.setup[-1] and not any("cache:" in line for line in stack.setup)
+
+
+def test_an_unknown_package_manager_with_a_script_it_cannot_run_has_no_command():
+    files = {"package.json": _package({"test": "nub run build && nub exec --node vitest run"},
+                                      packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    assert stack.test == "" and stack.to_dict()["reason"].startswith("`package.json` pins `nub`")
+
+
+def test_a_pinned_mocha_unit_runs_mocha_from_node_modules_under_c8():
+    files = {"package.json": _package({"test": "mocha test/"}, packageManager="nub@0.8.3")}
+    (stack,) = detect_stacks(["package.json"], files)
+    # c8 is fetched as for every Mocha unit; mocha itself is never fetched.
+    assert stack.test == "npx --yes c8 --reporter=lcov mocha test/"
+
+
+def test_rust_without_nextest_config_keeps_coverage_command_and_adds_note():
+    files = {"Cargo.toml": '[package]\nname = "my_app"\n', "src/main.rs": "fn main() {}\n"}
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.test == "cargo llvm-cov --lcov --output-path lcov.info"
+    assert stack.junit_report == ""
+    assert any("cargo-nextest" in n for n in stack.notes)
+
+
+def test_rust_with_nextest_config_runs_llvm_cov_nextest_and_sets_junit_report():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+    assert stack.prepare == (
+        "- uses: taiki-e/install-action@cargo-llvm-cov",
+        "- uses: taiki-e/install-action@cargo-nextest",
+    )
+    assert stack.requires == ("cargo install cargo-llvm-cov", "cargo install cargo-nextest")
+    assert stack.notes == ()
+
+
+def test_rust_with_nextest_target_prefixed_path():
+    files = {
+        "Cargo.toml": '[package]\nname = "my_app"\n',
+        "src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.ci.junit]\npath = "target/junit.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.junit_report == "target/nextest/ci/target/junit.xml"
+
+
+def test_rust_with_nextest_workspace_and_custom_profile():
+    files = {
+        "Cargo.toml": '[workspace]\nmembers = ["app"]\n',
+        "app/Cargo.toml": '[package]\nname = "app"\n',
+        "app/src/main.rs": "fn main() {}\n",
+        ".config/nextest.toml": '[profile.default.junit]\npath = "reports/nextest.xml"\n',
+    }
+    (stack,) = detect_stacks(sorted(files), files)
+    assert stack.test == "cargo llvm-cov nextest --profile default --workspace --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/default/reports/nextest.xml"
+    assert stack.notes == ()
+
+
+def test_rust_detects_nextest_config_from_ancestor_directory(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            ".config/nextest.toml": '[profile.ci.junit]\npath = "junit.xml"\n',
+            "crates/core/Cargo.toml": '[package]\nname = "core"\n',
+            "crates/core/src/lib.rs": "pub fn f() {}\n",
+        },
+    )
+    stacks = detect_repo_stacks(tmp_path)
+    (stack,) = [s for s in stacks if s.language == "rust"]
+    assert stack.test == "cargo llvm-cov nextest --profile ci --lcov --output-path lcov.info"
+    assert stack.junit_report == "target/nextest/ci/junit.xml"
+

@@ -107,7 +107,7 @@ def _add_urlconf_edges(
 
 class _DjangoHandler:
     def detect(self, dctx: DetectionContext) -> bool:
-        return "django" in dctx.stack_lower
+        return dctx.uses("Django")
 
     def add_edges(
         self,

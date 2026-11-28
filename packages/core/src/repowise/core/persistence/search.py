@@ -21,6 +21,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -34,7 +35,7 @@ from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
 from .batches import chunked
-from .database import hold_schema_lock
+from .database import ReadOnlyStoreError, hold_schema_lock, is_read_only
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -315,11 +316,45 @@ def strip_leading_headings(text: str) -> str:
     return text[match.end() :]
 
 
+class PageFtsState(StrEnum):
+    """Whether a SQLite store's ``page_fts`` index can be searched as it stands."""
+
+    PRESENT = "present"  # on this version's column set
+    MISSING = "missing"  # never built in this store
+    STALE = "stale"  # another column set: only :meth:`FullTextSearch.ensure_index` repairs it
+
+
+async def page_fts_state(engine: AsyncEngine) -> PageFtsState:
+    """Read the state of ``page_fts`` without writing. SQLite only.
+
+    A writer repairs a missing or stale index with ``ensure_index``; a reader
+    that cannot write (a store opened read-only) checks this instead.
+    """
+    async with engine.connect() as conn:
+        info = await conn.execute(text("PRAGMA table_info(page_fts)"))
+        columns = [r[1] for r in info.fetchall()]
+    if not columns:
+        return PageFtsState.MISSING
+    if columns == list(PAGE_FTS_COLUMNS):
+        return PageFtsState.PRESENT
+    return PageFtsState.STALE
+
+
 class FullTextSearch:
     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
 
-    def __init__(self, engine: AsyncEngine, *, repository_id: str | None = None) -> None:
+    def __init__(
+        self,
+        engine: AsyncEngine,
+        *,
+        repository_id: str | None = None,
+        page_fts: PageFtsState | None = None,
+    ) -> None:
+        """*page_fts* is the index state a read-only opener read; anything but
+        present makes :meth:`search` answer empty instead of erroring. None, the
+        default, is a writer that runs :meth:`ensure_index` itself."""
         self._engine = engine
+        self._page_fts = page_fts
         # Set on a store several repositories share: search() reads this one's
         # pages unless a call names another.
         self._repository_id = repository_id
@@ -343,6 +378,10 @@ class FullTextSearch:
         recreates it when absent, which is what a store built before the
         migration existed needs.
         """
+        if is_read_only(self._engine):
+            raise ReadOnlyStoreError(
+                "ensure_index writes page_fts; this store was opened read-only"
+            )
         if self._dialect == "sqlite":
             async with self._engine.begin() as conn:
                 await conn.execute(text(PAGE_FTS_DDL))
@@ -738,6 +777,8 @@ class FullTextSearch:
         """
         if not query.strip():
             return []
+        if self._page_fts not in (None, PageFtsState.PRESENT):
+            return []  # a read-only store without a usable index: nothing to match
         if repository_id is None:
             repository_id = self._repository_id
 

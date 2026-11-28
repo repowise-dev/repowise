@@ -1104,7 +1104,7 @@
       "syncQueued": "{count} queued",
       "syncSkipped": "{count} skipped",
       "syncErrors": "{count} error",
-      "removeConfirm": "Remove '{name}' from .repowise-workspace.yaml?",
+      "removeConfirm": "Remove \"{name}\" from .repowise-workspace.yaml?",
       "removeFailed": "Failed to remove: {message}",
       "removeAria": "Remove {alias} from workspace",
       "removing": "Removing…",
@@ -1245,6 +1245,8 @@
         "fixWithAgentHint": "Copy one prompt for every open item in this section",
         "copyItemPrompt": "Copy prompt for this item",
         "moreInApp": "{n} more in the app",
+        "notInReport": "Not in this report",
+        "openSection": "Open {title}",
         "linesCovered": "lines covered",
         "branchesCovered": "branches covered",
         "table": {
@@ -1709,7 +1711,7 @@
       "referenceApi": "API",
       "referenceFiles": "Files",
       "referenceInfrastructure": "Infrastructure",
-      "referenceCycles": "Dependency cycles",
+      "referenceCycles": "Static import cycles",
       "projectActivity": "Project activity"
     },
     "reader": {

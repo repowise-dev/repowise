@@ -389,10 +389,19 @@ _TS_CJS_EXPORTS_RE = re.compile(
 # re-export the import pipeline already carries.
 _TS_EXPORT_LIST_SOURCE_RE = re.compile(r"\bexport\s*\{([^}]*)\}\s*(from\b)?")
 # ``export default name`` with nothing after the name: the statement form of
-# ``export { name as default }``. A declaration (``export default function f``)
-# or an expression (``export default f()``) does not match.
+# ``export { name as default }``. An expression (``export default f()``) does
+# not match.
 _TS_EXPORT_DEFAULT_NAME_RE = re.compile(
     r"^[ \t]*export[ \t]+default[ \t]+([A-Za-z_$][\w$]*)[ \t]*;?[ \t]*\r?$", re.MULTILINE
+)
+# A named default declaration (``export default function f``, ``export default
+# class C``) declares the symbol and publishes it as ``default`` in one. An
+# anonymous one (``export default function () {}``) declares no symbol to name.
+_TS_EXPORT_DEFAULT_DECL_RE = re.compile(
+    r"^[ \t]*export[ \t]+default[ \t]+(?:async[ \t]+)?"
+    r"(?:function\b[ \t]*\*?|(?:abstract[ \t]+)?class\b)[ \t]*"
+    r"(?!(?:extends|implements)\b)([A-Za-z_$][\w$]*)",
+    re.MULTILINE,
 )
 
 # Dropped outright rather than blanked: nothing downstream of the alias scan
@@ -447,8 +456,10 @@ def ts_export_aliases(src: str) -> dict[str, str]:
 
     Clauses that do not rename are omitted: the two names agree, so the symbol
     table already answers and an entry would only duplicate it.
-    ``export default name`` is the same clause written as a statement, so it is
-    recorded as ``{"default": name}``.
+    ``export default name`` is the same clause written as a statement, and
+    ``export default function name`` declares and publishes in one, so both
+    are recorded as ``{"default": name}``: an importer binds the default under
+    any local name, and only this entry links it back to the declaration.
     """
     # Every alias is written ``local as exported`` or ``export default name``,
     # so a file with neither token cannot hold one and need not be scanned.
@@ -462,7 +473,11 @@ def ts_export_aliases(src: str) -> dict[str, str]:
     # a local symbol as some module's published API and mint a call edge to it.
     cleaned = _TS_LINE_COMMENT.sub("", _TS_BLOCK_COMMENT.sub("", src))
 
-    pairs = [(m.group(1), "default") for m in _TS_EXPORT_DEFAULT_NAME_RE.finditer(cleaned)]
+    pairs = [
+        (m.group(1), "default")
+        for regex in (_TS_EXPORT_DEFAULT_NAME_RE, _TS_EXPORT_DEFAULT_DECL_RE)
+        for m in regex.finditer(cleaned)
+    ]
     for m in _TS_EXPORT_LIST_SOURCE_RE.finditer(cleaned):
         if m.group(2):  # ``export { a as b } from "./x"`` — a re-export
             continue

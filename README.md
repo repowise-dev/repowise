@@ -208,9 +208,9 @@ the code it governs, plus docs checked against the code.<br />
 | You ask | Repowise gives you |
 |---|---|
 | *What should we fix first?* | A ranked queue weighing impact against effort, using churn, fan-in, coverage and bug history. [Fix first](docs/layers/CODE_HEALTH.md#fix-first) |
-| *Where is the debt?* | A 1 to 10 score for every file from 53 deterministic detectors, split into defect risk, maintainability and performance, validated against real bug history. [Code health](docs/layers/CODE_HEALTH.md) |
+| *Where is the debt?* | A 1 to 10 score for every file from 59 deterministic detectors, split into defect risk, maintainability and performance, validated against real bug history. [Code health](docs/layers/CODE_HEALTH.md) |
 | *Why is this slow?* | N+1 queries, I/O in loops, blocking calls inside async code and quadratic loops, traced across function and file boundaries. [Performance](docs/layers/PERFORMANCE.md) |
-| *How do I break this up safely?* | Concrete refactoring plans: Extract Method, Extract Class, Move Method, Split File, Break Cycle, with the exact symbols that move and what moves with them. Ready to hand to an agent. [Refactoring](docs/layers/REFACTORING.md) |
+| *How do I break this up safely?* | Concrete refactoring plans of seven types: Extract Method, Extract Class, Extract Helper, Move Method, Split File, Break Cycle and Performance Fix, with the exact symbols that move and what moves with them. Ready to hand to an agent. [Refactoring](docs/layers/REFACTORING.md) |
 | *What can we delete?* | Unreachable files, unused exports and unused packages, each with a confidence tier and the evidence behind it. [Dead code](docs/layers/DEAD_CODE.md) |
 | *Where do bugs keep landing?* | Bug-fix commits traced to files and symbols, and a warning when your agent edits a bug magnet. [Bug history](docs/layers/BUG_HISTORY.md) |
 | *Are our tests testing anything?* | Tests with no assertions, tests that only check their own mocks, and untested hotspots. [Test-quality smells](docs/layers/CODE_HEALTH.md#findings) |
@@ -324,9 +324,9 @@ after it landed. No forge API is called.
 | You ask | Repowise gives you |
 |---|---|
 | *What landed in this PR, and what backs it up?* | The change's evidence checklist, each item `ok`, `attention` or `unknown`, with an in-toto export. [Change Records](docs/layers/CHANGES.md) |
-| *Can CI hold changes to our payment code to a higher bar?* | Rules in `.repowise/policies.yaml`, matched to components by name, tag or criticality and evaluated by `repowise check`, with SARIF or JUnit output. [Change policy](docs/layers/POLICY.md) |
+| *Can CI hold changes to our payment code to a higher bar?* | Rules in `.repowise/policies.yaml`, matched to components by name, tag or criticality and evaluated by `repowise check`, with SARIF or JUnit output. [Change policy](docs/layers/REPORTS.md#change-policy) |
 | *Something broke. Which change do we read first?* | Recent changes ranked against an error, a stack trace or an issue. On 43 real regressions, the change a later revert or fix named was in the top 5 for 67% of them, against 28% for ranking by shared files. [Suspects](docs/layers/CHANGES.md#suspects) |
-| *Who owns this, and are they still working on it?* | Backstage-shaped components with owners from your catalog and CODEOWNERS, compared with the last 90 days of commits. [Components](docs/layers/COMPONENTS.md) |
+| *Who owns this, and are they still working on it?* | Backstage-shaped components with owners from your catalog and CODEOWNERS, compared with the last 90 days of commits. [Components](docs/layers/REPORTS.md#components-and-ownership) |
 | *Can we show an auditor or an acquirer where we stand?* | Evidence packs: a repository assessment, a change report for a period and a component inventory, as JSON, Markdown, HTML or CSV. [Reports](docs/layers/REPORTS.md) |
 
 ---
@@ -335,7 +335,7 @@ after it landed. No forge API is called.
 
 ## Know exactly what to fix
 
-Every file gets a 1 to 10 score from **53 deterministic detectors**, read three ways:
+Every file gets a 1 to 10 score from **59 deterministic detectors**, read three ways:
 defect risk, maintainability and performance. Performance findings such as N+1
 queries and I/O in loops are traced across functions and files.
 
@@ -344,8 +344,9 @@ Repowise found **2.3x as many later-buggy files as CodeScene** in the same revie
 budget. It also checks itself on your repository after every index: *"16 of the 20
 lowest-health files had a bug fix in the last 6 months, 3.3x the 24% baseline."*
 
-Then it names the fix: **Extract Method**, **Extract Class**, **Move Method**,
-**Split File** or **Break Cycle**, with the exact symbols that move, ranked so a fix
+Then it names the fix, one of seven plan types: **Extract Method**, **Extract Class**,
+**Extract Helper**, **Move Method**, **Split File**, **Break Cycle** or **Performance
+Fix**, with the exact symbols that move, ranked so a fix
 on a central file comes before the same fix on a leaf. Each plan has a copy-to-agent
 button.
 
@@ -458,7 +459,7 @@ on 2026-10-03; the other Repowise rows are from `081a59fa`, August 2026.</sub>
 | | repowise | CodeScene |
 |---|---|---|
 | Self-hostable, open source | ✅ AGPL-3.0 | ⚠️ on-prem Docker, proprietary |
-| Code health score (1-10) | ✅ 53 detectors, 25 scoring | ✅ 25-30 |
+| Code health score (1-10) | ✅ 59 detectors, 22 move the health score ([how they count](docs/layers/CODE_HEALTH.md)) | ✅ 25-30 |
 | Brain Method / LCOM4 / god class | ✅ | ✅ |
 | **Defects found at a 20% review budget** *([measured](docs/BENCHMARKS.md#5-code-health-predicts-defects), 2,770 files)* | ✅ **0.173** | 0.074 |
 | **Effort-aware ranking, Popt** *(measured, p=0.003)* | ✅ **0.607** | 0.462 |
@@ -605,17 +606,6 @@ hover, and refactoring plans as CodeLens. One install also registers the MCP ser
 so the same index serves you and your agent. Install from the Marketplace or Open VSX
 and run **Repowise: Set Up This Repository**. [VS Code guide →](docs/agent/VSCODE.md)
 
-<img src=".github/assets/lens.gif" alt="Lens in Claude Code on Django: Claude edits query.py, which turns amber on the map while the 12 files that import it light up in plum; a second edit to django/conf/__init__.py lights its 248 importers, and Flow lists what to check before accepting" width="100%" />
-
-**In Claude Code**, Lens ships inside the Repowise plugin and shows you what the index
-knows while Claude works: the file it is on and how many files depend on it, a change
-review after a turn that edits files (code health, tests to run, other branches on the
-same files), and `/lens`, a pane with Flow (what to check before accepting each turn),
-a map of the repo lit by what Claude searched, opened and edited and what its edits
-reach, Ask, and a session recap. Nothing reaches Claude unless you press a button, and
-Lens makes no model calls of its own. It needs Claude Code 2.1.287 or later, and the
-map needs `repowise serve --no-ui` running. [Lens guide →](docs/agent/LENS.md)
-
 ---
 
 ## The ten MCP tools
@@ -704,9 +694,10 @@ your company under the AGPL creates no obligation to publish your own code.
 ## Privacy
 
 - **Deterministic or offline mode:** with `--no-prose`, code-derived content stays on
-  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command
-  names and coarse environment only); turn it off with `repowise telemetry disable`,
-  `DO_NOT_TRACK=1`, or by running fully offline.
+  your infrastructure. The CLI reports **anonymous, opt-out** usage telemetry (command,
+  MCP tool and client names, status, duration and coarse environment, never code,
+  paths or repo names; raw events deleted after 90 days); turn it off with
+  `repowise telemetry disable`, `REPOWISE_TELEMETRY_DISABLED=1`, `DO_NOT_TRACK=1`, or `REPOWISE_OFFLINE=1`.
   [What's collected →](docs/reference/TELEMETRY.md)
 - **Optional LLM features:** generated prose, decision extraction and refactoring code
   generation send code-derived prompts directly to the provider configured with your

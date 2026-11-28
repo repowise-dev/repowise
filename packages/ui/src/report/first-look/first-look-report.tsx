@@ -17,6 +17,7 @@ import { FIRST_LOOK_COPY_EN, type FirstLookCopy } from "./copy";
 import { PAIRED, isClosed, progress, resolvedBySection, stripValue, type Progress } from "./living";
 import {
   ReportSection,
+  sectionHref,
   sectionIcon,
   type FirstLookHrefFor,
   type LinkLike,
@@ -30,6 +31,12 @@ export interface FirstLookReportProps {
   /** The living report: rebuilt from the index, compared with the first look. */
   report: FirstLookLivingReport;
   hrefFor: FirstLookHrefFor;
+  /**
+   * The page for a section the report could not collect (`report.unavailable`).
+   * Omitted, the section's route key goes through `hrefFor`; null leaves the
+   * line without a link.
+   */
+  unavailableHref?: (section: string) => string | null;
   /** Where the top bar's back link goes. */
   overviewHref: string;
   /** The prompt for an item, a section, or the whole report (null). */
@@ -196,6 +203,58 @@ function Footer({
   );
 }
 
+/**
+ * The sections the report could not collect, each with core's reason, so an
+ * absent section never reads as "nothing found". Nothing when all were read.
+ */
+function Unavailable({
+  report,
+  copy,
+  title,
+  href,
+  Link,
+}: {
+  report: FirstLookLivingReport;
+  copy: FirstLookCopy;
+  title: (key: string) => string;
+  href: (section: string) => string | null;
+  Link: LinkLike;
+}) {
+  const entries = Object.entries(report.unavailable ?? {});
+  if (!entries.length) return null;
+  return (
+    <section aria-labelledby="fl-unavailable" className="mt-11">
+      <h2 id="fl-unavailable" className="m-0 font-serif text-[22px] font-semibold">
+        {copy.notInReport}
+      </h2>
+      <ul className="m-0 mt-3.5 list-none border-t border-[var(--color-border-default)] p-0">
+        {entries.map(([key, reason]) => {
+          const name = title(key);
+          const to = href(key);
+          return (
+            <li
+              key={key}
+              className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-[var(--color-border-default)] py-3"
+            >
+              <span className="font-medium">{name}</span>
+              <span className="min-w-0 flex-1 text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">{reason}</span>
+              {to ? (
+                <Link
+                  href={to}
+                  className={cn(CONTROL, "inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] hover:underline")}
+                >
+                  {copy.openSection(name)}
+                  <ArrowUpRight aria-hidden className="size-4" />
+                </Link>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
 type Rewrite = { onRewrite: () => void; cost: number | null; running: boolean } | null;
 
 /** Who wrote the wording, and the way to have the model write it again. */
@@ -250,6 +309,7 @@ function Toast({ message }: { message: string | null }) {
 export function FirstLookReport({
   report,
   hrefFor,
+  unavailableHref,
   overviewHref,
   loadPrompt,
   promptFlavor = "generic",
@@ -345,6 +405,13 @@ export function FirstLookReport({
         <StartHere report={report} copy={copy} text={text} />
         {report.sections.map((s) => (paired && PAIRED.includes(s.key) ? null : renderSection(s.key)))}
         {paired ? <div className="grid gap-x-10 md:grid-cols-2">{PAIRED.map(renderSection)}</div> : null}
+        <Unavailable
+          report={report}
+          copy={copy}
+          title={title}
+          href={unavailableHref ?? ((key) => sectionHref(key, hrefFor))}
+          Link={Link}
+        />
         <Footer report={report} copy={copy} sinceCommand={sinceCommand} />
       </main>
       <Toast message={toast} />

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
@@ -37,16 +37,17 @@ _UNREADABLE = "Could not be read from this index."
 
 
 async def collect_sections(
-    ctx: FirstLookContext, keys: Collection[str] | None = None
+    ctx: FirstLookContext, keys: Collection[str] | None = None, *, skip: Collection[str] = ()
 ) -> tuple[dict[str, Collected], dict[str, str]]:
-    """Every registered section's output by key (only *keys* when given), its
-    family members grouped (:func:`.rank.group_items`), and why any could not run."""
+    """Every registered section's output by key (only *keys* when given, never
+    one in *skip*), its family members grouped (:func:`.rank.group_items`), and
+    why any could not run."""
     import_module(f"{__package__}.sections")  # registers the built-in sections
 
     out: dict[str, Collected] = {}
     unavailable: dict[str, str] = {}
     for key, section in sorted(first_look_sections.all(), key=lambda p: section_key(p[0])):
-        if keys is not None and key not in keys:
+        if (keys is not None and key not in keys) or key in skip:
             continue
         try:
             async with ctx.session.begin_nested():
@@ -115,15 +116,22 @@ async def collect_first_look(
     generator: str = "template",
     cost: float | None = None,
     now: datetime | None = None,
+    unavailable: Mapping[str, str] | None = None,
 ) -> FirstLookReport:
     """The canonical report for *repository_id*, from what the index stores.
 
     *setup* is :func:`~repowise.core.persistence.crud.analysis.setup_facts.load_setup_facts`
     for this machine's checkout; without it "Turn on more" lists the stored
     signal steps only. *generator* and *cost* stamp who wrote the prose.
+
+    *unavailable* maps a section key to why its inputs are not in this store
+    (a host that never persisted them). Those sections are not collected and
+    are listed under ``unavailable`` with that reason, as a section that could
+    not be read is, so "Do these first" is picked over the rest.
     """
     ctx = await load_context(session, repository_id, repo_root)
-    collected, unavailable = await collect_sections(ctx)
+    collected, missing = await collect_sections(ctx, skip=unavailable or ())
+    unavailable = {**missing, **(unavailable or {})}
     blocks = tuple(
         SectionBlock(key, order_items(c.items), dict(c.facts))
         for key, c in collected.items()

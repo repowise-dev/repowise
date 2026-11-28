@@ -22,7 +22,8 @@ MANIFEST_BASENAME = "decisions.yaml"
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     "traversal": frozenset({"exclude_patterns"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
-    "health": frozenset({"assertions", "coverage", "refactoring"}),
+    # ``health`` holds switches for parts of the health pass (duplication).
+    "health": frozenset({"assertions", "coverage", "health", "refactoring"}),
     "generation": frozenset(
         {
             "provider",
@@ -46,6 +47,9 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # the server keeps the checkout current, not what the index holds.
     "state_only": frozenset(
         {
+            # Opt-in contract extraction keeps its own stamp in contracts.json;
+            # wiki.db does not depend on it.
+            "contracts",
             "distill",
             "editor_files",
             "editor_setup",
@@ -55,6 +59,10 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "hooks",
             "managed_checkout",
             "mcp",
+            # Read by a process when it starts (the MCP cache warmup).
+            "performance",
+            # Version history kept per page: trims old rows, never changes a page.
+            "wiki",
         }
     ),
 }

@@ -12,8 +12,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...ts_declarations import is_declaration_file
 from .builds import _built_source, get_checked_in_builds
-from .exports import _DECLARATION_SUFFIXES, _build_exports_map, _match_export_key
+from .exports import _build_exports_map, _match_export_key
 from .members import _entry_hint, get_or_build_workspace_info
 from .paths import _probe_path
 
@@ -48,7 +49,7 @@ def _resolve_nested_subpackage(dir_posix: str, sub: str, ctx: ResolverContext) -
     exports_map = _build_exports_map(sub_pkg_data)
     targets = _match_export_key("", exports_map) if exports_map else None
     for target in targets or ():
-        if target.endswith(_DECLARATION_SUFFIXES):
+        if is_declaration_file(target):
             continue
         cand = _probe_path(f"{sub_dir}/{target.lstrip('./')}", ctx.path_set)
         if cand is not None:
@@ -159,7 +160,7 @@ class _WorkspaceProbe:
     def spare_export_target(self) -> str | None:
         """A candidate past the ranked one; never a declaration file, which has no bodies."""
         for target in (self.targets or ())[1:]:
-            if target.endswith(_DECLARATION_SUFFIXES):
+            if is_declaration_file(target):
                 continue
             resolved = self.probe_target(target)
             if resolved is not None:

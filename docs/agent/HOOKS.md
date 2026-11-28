@@ -26,9 +26,10 @@ For the exact settings entries each install writes, see the
 | **PostToolUse enrichment** | Claude Code | `repowise init` | `Grep` / `Glob` / `Read` / `Edit` / `Write` / repowise MCP calls | Graph context on searches, read notices, edit-time decision and bug-history notices |
 | **Wrong-path rescue** | Claude Code | `repowise init` | a path tool call that failed on a path this tree does not have | Names the file when exactly one indexed file carries that basename; silent otherwise |
 | **Decision capture prompt** | Claude Code, Codex | `repowise init` and the Claude Code plugin; `repowise decision config capture-prompt --off` silences it per repository | a fresh `git commit` via `Bash` / `PowerShell` whose message states a choice | Once a session, asks the agent to record the decision with `repowise decision add --agent`; it comes into force when that commit merges |
+| **Decision stop prompt** (opt-in) | Claude Code | `repowise init` and the Claude Code plugin; silent until `repowise config set decisions.stop_prompt true` | the agent stopping, in a session that edited a file or made 20 or more tool calls and recorded no decision | Once a session, blocks the stop and asks the agent to record a decision it reasoned out or reply that there is none |
 | **Coverage re-ingest** (opt-in) | Claude Code | `hooks.coverage_reingest: true`, then the next `repowise coverage add` / `init` / `update` | `Bash` / `PowerShell` | Re-ingests a fresh full-suite coverage report in the background |
 | **Health gate** (opt-in) | Claude Code | `repowise hook health-gate install` | `git commit` / `git push` via `Bash` / `PowerShell` | Runs `repowise health check` on what the command records and blocks it when the gate fails ([details](../start/CI.md#before-an-agent-commits-or-pushes)) |
-| **Command rewrite (distill)** | Claude Code, Codex, Cursor | `repowise hook rewrite install`, or Yes at the `repowise init` prompt | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
+| **Command rewrite (distill)** | Claude Code (on by default); Codex, Cursor (opt-in) | Claude Code: `repowise init` by default (`--no-distill-hook` skips it) and the Claude Code plugin; Codex and Cursor: `repowise hook rewrite install`, which adds them when `~/.codex` or `~/.cursor` exists | `Bash` / `PowerShell` (Cursor: `Shell`) | Rewrites noisy commands to `repowise distill <cmd>` |
 | **Codex context and staleness** | Codex | `repowise init --codex` | SessionStart, edits, shell | Reminds Codex to use the MCP tools and flags stale context after git operations |
 
 Each agent hook records what it said and whether the agent acted on it. See
@@ -62,7 +63,7 @@ SessionStart hook tells the agent when the index falls behind.
 ## Claude Code agent hooks
 
 `repowise init` installs these into your global `~/.claude/settings.json`.
-Existing user hooks are preserved, and older repowise entries are updated in
+Existing user hooks are preserved, and repowise's own entries are updated in
 place on the next `init` or `update`. They all run the `repowise-augment` entry
 point, which does not load the full CLI.
 
@@ -189,9 +190,20 @@ their decisions, each once per session, and the one command for each outcome:
 still holds (`decision reaffirm`), replaced, or knowingly broken (`decision
 deprecate`). It fires from the shell entry the capture prompt uses.
 
+**Session-end capture.** The capture prompt reaches only sessions that commit,
+and many choices are made in sessions that never do: research, review,
+coordination. With `decisions.stop_prompt: true` (off by default), the Stop
+hook blocks one stop a session and asks the agent to record any durable choice
+it reasoned out with `repowise decision add`, or to reply that there is none.
+It asks only a session that did real work (an `Edit` or `Write`, or 20 or more
+tool calls the hooks counted) and recorded no decision since it started, and
+never the stop that follows its own block. With the switch off, a stop costs
+one read of `.repowise/config.yaml`.
+
 **The decisions mode.** Every decision line above follows `decisions.mode`.
 `read_only` keeps the edit-time notice and the upkeep line when it is on, and
-drops the capture prompt; `off` silences them all, including session start.
+drops the capture prompt; the stop prompt follows the same rule as the
+capture prompt; `off` silences them all, including session start.
 See [CONFIG.md](../reference/CONFIG.md#mode).
 
 Every decision line a hook delivers is recorded in
@@ -303,8 +315,9 @@ Flags and the `--reset` upgrade step: [CLI reference](../reference/CLI_REFERENCE
 | Claude Code | `SessionStart` | `startup\|resume\|clear` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUse` | `Grep\|Glob\|Read\|Edit\|Write\|mcp__.*[Rr]epowise.*__.*` | `~/.claude/settings.json` |
 | Claude Code | `PostToolUseFailure` | `Read\|Edit\|Write\|Grep\|Glob\|NotebookEdit` | `~/.claude/settings.json` |
-| Claude Code | `PreToolUse` (rewrite) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
+| Claude Code | `PreToolUse` (rewrite, on by default) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` (decision capture prompt) | `Bash\|PowerShell` | `~/.claude/settings.json`, or the plugin's `hooks.json` |
+| Claude Code | `Stop` (decision stop prompt, silent until switched on) | none | `~/.claude/settings.json`, or the plugin's `hooks.json` |
 | Claude Code | `PostToolUse` and `PostToolUseFailure` (opt-in coverage re-ingest) | `Bash\|PowerShell` | the repo's `.claude/settings.local.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | the repo's `.codex/hooks.json` |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | the repo's `.codex/hooks.json` |

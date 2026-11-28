@@ -314,13 +314,15 @@ tests. [Method](#method-graph).
 ## Which tests cover a change
 
 Repowise links tests to the code they exercise from the call graph, with no
-coverage run. Checked against real per-test coverage on this repository (37 test
-files, 159 production files):
+coverage run. Checked against this repository's own coverage: the whole unit
+suite's line coverage, and real per-test coverage on a slice with complete
+per-test attribution (37 test files, 159 production files):
 
 | Question | Precision | Sample |
 |---|---:|---|
-| Which tests reach this file | **95.7%** | 44 of 46 claims |
-| Which tests to run for a change | **97.5%** | 47 targets, all answered |
+| Which tests reach this file (whole unit suite, a function body ran) | **97.7%** | 1,515 claims |
+| Which tests reach this file (per-test slice) | **95.7%** | 44 of 46 claims |
+| Which tests to run for a change (per-test slice) | **97.5%** | 47 targets, all answered |
 
 Details: [Test intelligence](layers/TEST_INTELLIGENCE.md#accuracy-and-limits).
 
@@ -630,7 +632,8 @@ that it says why a file is at risk.
 
 Weights are fitted, not hand-set: a size-controlled logistic fit on files scored
 before their bug window, so a detector earns weight only for defect lift beyond
-being large. Of the 53 detectors, 25 move the defect score; the others feed the
+being large. Of the 59 detectors, 22 move the defect score
+([how they count](layers/CODE_HEALTH.md#what-moves-the-score)); the others feed the
 maintainability or performance score, or are advisory. CodeScene flags about 27
 files where repowise flags 132.
 

@@ -19,6 +19,9 @@ from repowise.core.analysis.health.duplication.pair_index import (
 from repowise.core.analysis.health.duplication.token_cache import (
     _CACHE_FILENAME as _DUPLICATION_TOKENS,
 )
+from repowise.core.analysis.health.duplication.token_cache import (
+    _DELTA_FILENAME as _DUPLICATION_TOKENS_DELTA,
+)
 from repowise.core.analysis.health.walk_cache import _CACHE_FILENAME as _HEALTH_WALK
 from repowise.core.analysis.knowledge_graph import KNOWLEDGE_GRAPH_FILENAME
 from repowise.core.ingestion.dynamic_hints.scan_cache import _CACHE_NAME as _DYNAMIC_HINT_SCANS
@@ -35,6 +38,7 @@ from repowise.core.persistence.database import (
     MCP_CACHE_DIRNAME,
     STATE_FILENAME,
 )
+from repowise.core.persistence.vector_store.lancedb_store import KEYLESS_MARKER
 from repowise.core.pipeline.cleanup_debt import CLEANUP_DEBT_FILENAME
 from repowise.core.pipeline.incremental.graph_seed import _CACHE_NAME as _GRAPH_SEED
 from repowise.core.pipeline.incremental.resolution_cache import _FILENAME as _RESOLVED_IMPORTS
@@ -53,6 +57,7 @@ SEALED_FILES: tuple[str, ...] = (
     _RESOLVED_IMPORTS,
     _FRAMEWORK_SCAN,
     _DUPLICATION_TOKENS,
+    _DUPLICATION_TOKENS_DELTA,
     _DUPLICATION_PAIRS,
     _HEALTH_WALK,
     _DEAD_CODE_TOKENS,
@@ -67,6 +72,7 @@ CARRIED_FILES: tuple[str, ...] = (
     STATE_FILENAME,
     KNOWLEDGE_GRAPH_FILENAME,
     CLEANUP_DEBT_FILENAME,
+    KEYLESS_MARKER,
     _RATIONALE_HARVEST,
     _WINDOW_CACHE_NAME,
     _FIX_WALK,

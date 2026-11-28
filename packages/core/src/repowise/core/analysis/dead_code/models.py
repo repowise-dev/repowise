@@ -46,6 +46,9 @@ class DeadCodeFindingData:
     # no line of it is deletable. Capped below the stored floor, so only a live
     # run (the CLI below ``--min-confidence 0.4``) ever shows one.
     export_only: bool = False
+    # A value export initialized by a call (``x = register(...)``): deleting
+    # it also deletes what the call did at import time. See :mod:`load_time_calls`.
+    runs_at_load: bool = False
 
     @property
     def is_spanned_symbol(self) -> bool:

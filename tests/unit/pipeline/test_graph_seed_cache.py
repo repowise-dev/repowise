@@ -8,9 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
+import pytest
 from sqlalchemy import select
 
 from repowise.core.cache_seal import dump_sealed_pickle
+from repowise.core.ingestion import GraphBuilder
+from repowise.core.ingestion.external_calls import EXTERNAL_CALL_SITES_VERSION
 from repowise.core.ingestion.parse_cache import parser_fingerprint
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
@@ -19,10 +22,11 @@ from repowise.core.persistence import (
     get_session,
     init_db,
 )
-from repowise.core.persistence.crud import upsert_repository
+from repowise.core.persistence.crud import stamp_external_call_sites, upsert_repository
 from repowise.core.persistence.database import resolve_db_url
 from repowise.core.persistence.models import Repository
 from repowise.core.pipeline.incremental.graph_seed import (
+    confirm_kept_snapshot,
     invalidate_seed_edge_cache,
     load_seed_edges,
     load_seed_edges_for_reconciliation,
@@ -100,6 +104,7 @@ async def _repo_db(tmp_path: Path, monkeypatch):
             head_commit="a" * 40,
         )
         repo.graph_edges_parser_fingerprint = parser_fingerprint()
+        await stamp_external_call_sites(session, repo.id, EXTERNAL_CALL_SITES_VERSION)
         await batch_upsert_graph_edges(
             session,
             repo.id,
@@ -194,6 +199,24 @@ async def test_stale_edge_fingerprint_disables_patch_seed(tmp_path: Path, monkey
         await engine.dispose()
 
 
+@pytest.mark.parametrize("version", [None, EXTERNAL_CALL_SITES_VERSION - 1])
+async def test_stale_external_call_sites_disable_patch_seed(
+    tmp_path: Path, monkeypatch, version
+) -> None:
+    # A patch re-resolves only its scope, so a table no full build filled at
+    # this version must be refilled by one.
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+        assert await load_seed_edges(root) is not None
+        async with get_session(sf) as session:
+            repo = (await session.execute(select(Repository))).scalar_one()
+            await stamp_external_call_sites(session, repo.id, version)
+        assert await load_seed_edges(root) is None
+    finally:
+        await engine.dispose()
+
+
 async def test_stale_fingerprint_snapshot_remains_available_for_reconciliation(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -232,6 +255,8 @@ async def test_seed_save_restores_persisted_rows_omitted_from_full_graph(
         builder.graph().remove_edge("a.py", "b.py")
         builder.previous_seed_edges = previous
 
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
         await save_seed_edge_cache(root, builder)
         snapshot = await load_seed_edges(root)
 
@@ -353,12 +378,248 @@ async def test_snapshot_written_with_a_checkout_path_still_loads(
 
 def test_invalidation_removes_snapshot_before_update_write(tmp_path: Path) -> None:
     cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    kept = cache.with_name("graph_seed_edges.pkl.kept")
     cache.parent.mkdir()
     cache.write_bytes(b"previous snapshot")
+    kept.write_bytes(b"set aside by a run that never saved")
 
     invalidate_seed_edge_cache(tmp_path)
 
     assert not cache.exists()
+    assert not kept.exists()
+
+
+def test_kept_snapshot_is_moved_where_no_load_reads_it(tmp_path: Path) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"loaded snapshot")
+
+    assert invalidate_seed_edge_cache(tmp_path, keep=True)
+
+    assert not cache.exists()
+    assert cache.with_name("graph_seed_edges.pkl.kept").read_bytes() == b"loaded snapshot"
+
+
+@pytest.mark.parametrize("keep", [False, True])
+def test_a_leftover_that_cannot_be_removed_still_lets_the_snapshot_go(
+    tmp_path: Path, keep: bool
+) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"pre-commit snapshot")
+    # A directory in its place makes the leftover's removal fail.
+    cache.with_name("graph_seed_edges.pkl.kept").mkdir()
+
+    assert invalidate_seed_edge_cache(tmp_path, keep=keep) is False
+
+    assert not cache.exists()
+
+
+async def test_a_failed_set_aside_never_puts_a_stale_file_back(tmp_path: Path, monkeypatch) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+        cache = root / ".repowise" / "graph_seed_edges.pkl"
+        kept = cache.with_name("graph_seed_edges.pkl.kept")
+        kept.write_bytes(b"left by a run that crashed before its save")
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+
+        def locked(_src: object, _dst: object) -> None:
+            raise PermissionError("file is in use")
+
+        from repowise.core.pipeline.incremental import graph_seed
+
+        with monkeypatch.context() as patched:
+            patched.setattr(graph_seed.os, "replace", locked)
+            set_aside = invalidate_seed_edge_cache(root, keep=True)
+
+        assert set_aside is False
+        assert not kept.exists()
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = set_aside
+        # Even if the stale file came back, a run that did not set it aside never restores it.
+        kept.write_bytes(b"left by a run that crashed before its save")
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        assert not kept.exists()
+        assert await load_seed_edges(root) is not None
+    finally:
+        await engine.dispose()
+
+
+async def _seeded_update(root: Path) -> tuple[GraphBuilder, bytes]:
+    """An update's builder seeded from the saved snapshot, which is set aside."""
+    await save_seed_edge_cache(root, _gb())
+    cache = root / ".repowise" / "graph_seed_edges.pkl"
+    saved = cache.read_bytes()
+    snapshot = await load_seed_edges(root)
+    assert snapshot is not None
+    builder = GraphBuilder(root)
+    builder.seed_graph_snapshot(snapshot)
+    builder._built = True  # the patch's re-resolution over an empty scope adds nothing
+    builder.previous_seed_edges = snapshot
+    builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+    assert builder.seed_snapshot_kept
+    return builder, saved
+
+
+def _count_writes(monkeypatch) -> list[Path]:
+    from repowise.core.pipeline.incremental import graph_seed
+
+    writes: list[Path] = []
+    real_dump = graph_seed.dump_sealed_pickle
+
+    def dump(path: Path, payload: object, *, domain: str) -> None:
+        writes.append(path)
+        real_dump(path, payload, domain=domain)
+
+    monkeypatch.setattr(graph_seed, "dump_sealed_pickle", dump)
+    return writes
+
+
+async def test_unchanged_update_graph_puts_the_loaded_snapshot_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder, saved = await _seeded_update(root)
+        writes = _count_writes(monkeypatch)
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        cache = root / ".repowise" / "graph_seed_edges.pkl"
+        assert writes == []
+        assert cache.read_bytes() == saved
+        assert not cache.with_name("graph_seed_edges.pkl.kept").exists()
+        # The next update still seeds from it.
+        assert await load_seed_edges(root) is not None
+    finally:
+        await engine.dispose()
+
+
+async def test_an_edge_edited_in_place_still_rewrites_the_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder, _saved = await _seeded_update(root)
+        writes = _count_writes(monkeypatch)
+        # A pass appending to a seeded list edits the in-memory snapshot too.
+        builder.graph()["a.py::run"]["b.py::work"]["call_lines"].append(7)
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        assert len(writes) == 1
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        assert ("a.py::run", "b.py::work", "calls", (), (4, 7)) in _seed_identity(snapshot)
+        assert not (root / ".repowise" / "graph_seed_edges.pkl.kept").exists()
+    finally:
+        await engine.dispose()
+
+
+async def test_a_changed_node_still_rewrites_the_snapshot(tmp_path: Path, monkeypatch) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder, _saved = await _seeded_update(root)
+        writes = _count_writes(monkeypatch)
+        builder.graph().nodes["a.py::run"]["end_line"] = 12
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        assert len(writes) == 1
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        assert dict(snapshot["nodes"])["a.py::run"]["end_line"] == 12
+    finally:
+        await engine.dispose()
+
+
+async def test_a_node_set_edited_in_place_still_rewrites_the_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb_with_type_uses())
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+        writes = _count_writes(monkeypatch)
+        # The type-reference pass adds to a file's set in place.
+        builder.graph().nodes["a.py"]["local_type_uses"].add("Other")
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        assert len(writes) == 1
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        assert dict(snapshot["nodes"])["a.py"]["local_type_uses"] == {"Local", "Other"}
+    finally:
+        await engine.dispose()
+
+
+def _gb_with_type_uses() -> SimpleNamespace:
+    builder = _gb()
+    builder.graph().nodes["a.py"]["local_type_uses"] = {"Local"}
+    return builder
+
+
+async def test_a_new_parser_fingerprint_rewrites_an_equal_graph(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder, _saved = await _seeded_update(root)
+        writes = _count_writes(monkeypatch)
+        async with get_session(sf) as session:
+            repo = (await session.execute(select(Repository))).scalar_one()
+            repo.graph_edges_parser_fingerprint = "previous-parser"
+
+        # The update's rebuild compares the finished graph once.
+        confirm_kept_snapshot(root, builder)
+        await save_seed_edge_cache(root, builder)
+
+        assert len(writes) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_a_full_index_writes_and_clears_a_leftover_kept_snapshot(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        kept = root / ".repowise" / "graph_seed_edges.pkl.kept"
+        kept.write_bytes(b"left by an update that crashed before its save")
+        writes = _count_writes(monkeypatch)
+
+        # A full build loads no snapshot, so it has none to compare against.
+        await save_seed_edge_cache(root, _gb())
+
+        assert len(writes) == 1
+        assert not kept.exists()
+        assert await load_seed_edges(root) is not None
+    finally:
+        await engine.dispose()
 
 
 async def test_unreadable_database_means_no_seed_not_a_failed_update(tmp_path: Path) -> None:
@@ -405,3 +666,250 @@ def test_full_build_restores_rows_for_unparsed_files_from_prior_snapshot() -> No
 
     assert current_graph.has_edge("a.py::run", "b.py")
     assert current_graph.edges["a.py::run", "b.py"]["resolution_origin"] == "same_file"
+
+
+async def _update_after_a_memo(root: Path) -> GraphBuilder:
+    """The next update's builder, after an update stored its metrics with the snapshot."""
+    previous, _saved = await _seeded_update(root)
+    await previous.compute_metrics_parallel()
+    previous.metrics_on_final_graph = True
+    previous.graph_nodes_written = True
+    confirm_kept_snapshot(root, previous)
+    await save_seed_edge_cache(root, previous)
+    snapshot = await load_seed_edges(root)
+    assert snapshot is not None
+    builder = GraphBuilder(root)
+    builder.seed_graph_snapshot(snapshot)
+    builder._built = True
+    builder.previous_seed_edges = snapshot
+    builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+    return builder
+
+
+def _replay(root: Path, builder: GraphBuilder) -> bool:
+    from repowise.core.pipeline.incremental.graph import _replay_graph_metrics
+
+    return _replay_graph_metrics(root, builder, None, lambda _message: None)
+
+
+async def _fresh_metrics(builder: GraphBuilder) -> dict:
+    fresh = GraphBuilder(builder._repo_path)
+    fresh._graph = builder.graph().copy()
+    fresh._built = True
+    await fresh.compute_metrics_parallel()
+    return fresh.metric_memo()
+
+
+async def test_an_unchanged_graph_replays_the_metrics_a_fresh_build_computes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+
+        assert _replay(root, builder) is True
+
+        assert builder.graph_metrics_reused is True
+        assert builder.metric_memo() == await _fresh_metrics(builder)
+        # Replayed metrics leave the store and the snapshot file as they were.
+        writes = _count_writes(monkeypatch)
+        builder.graph_nodes_written = True
+        builder.metrics_on_final_graph = True
+        await save_seed_edge_cache(root, builder)
+        assert writes == []
+        assert (await load_seed_edges(root)) is not None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["edge", "test_flag", "language"],
+)
+async def test_a_graph_or_metric_input_change_computes_afresh(
+    tmp_path: Path, monkeypatch, change: str
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        graph = builder.graph()
+        if change == "edge":
+            graph.add_edge("c.py", "b.py", edge_type="imports")
+        elif change == "test_flag":
+            # Same nodes and edges; centrality drops test-to-test edges.
+            graph.nodes["a.py"]["is_test"] = True
+            graph.nodes["b.py"]["is_test"] = True
+        else:
+            graph.nodes["a.py"]["language"] = "go"
+
+        assert _replay(root, builder) is False
+
+        assert builder.graph_metrics_reused is False
+        assert builder.kept_snapshot_match is False
+        assert builder._pagerank_cache is None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_full_rescore_computes_afresh_on_an_unchanged_graph(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        builder.fresh_communities = True
+
+        assert _replay(root, builder) is False
+        assert builder.kept_snapshot_match is True
+        assert builder._pagerank_cache is None
+    finally:
+        await engine.dispose()
+
+
+async def test_a_memo_from_other_code_is_not_replayed(tmp_path: Path, monkeypatch) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        from repowise.core.pipeline.incremental import graph_seed
+
+        monkeypatch.setattr(graph_seed, "_metric_memo_code", lambda: "an upgraded release")
+
+        assert _replay(root, builder) is False
+        assert builder.kept_snapshot_match is True
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("missing", ["graph_nodes_written", "metrics_on_final_graph"])
+async def test_no_memo_is_stored_unless_the_rows_follow_from_the_final_graph(
+    tmp_path: Path, monkeypatch, missing: str
+) -> None:
+    """A run whose node rows did not all come from its metrics (a failed write,
+    explicit entry-point scores), or whose metrics predate its final graph
+    (init), stores no memo, so the next update computes and writes."""
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        previous, _saved = await _seeded_update(root)
+        await previous.compute_metrics_parallel()
+        previous.metrics_on_final_graph = True
+        previous.graph_nodes_written = True
+        setattr(previous, missing, False)
+        confirm_kept_snapshot(root, previous)
+        await save_seed_edge_cache(root, previous)
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+
+        assert _replay(root, builder) is False
+        assert builder.kept_snapshot_match is True
+    finally:
+        await engine.dispose()
+
+
+async def test_a_kernel_that_fell_back_is_not_stored_as_a_memo(tmp_path: Path, monkeypatch) -> None:
+    builder = GraphBuilder(tmp_path)
+    builder._graph = _gb().graph().copy()
+    builder._built = True
+
+    def fail(*_args: object) -> object:
+        raise RuntimeError("detector crashed")
+
+    monkeypatch.setattr("repowise.core.analysis.communities.detect_symbol_communities", fail)
+    await builder.compute_metrics_parallel()
+
+    assert builder._symbol_community_cache == {}
+    assert builder.metric_memo() is None
+
+
+async def test_a_failed_snapshot_check_only_costs_the_shortcut(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+
+        def broken(*_args: object) -> object:
+            raise OSError("snapshot unreadable")
+
+        monkeypatch.setattr(
+            "repowise.core.pipeline.incremental.graph_seed.confirm_kept_snapshot", broken
+        )
+
+        assert _replay(root, builder) is False
+        assert builder.graph_metrics_reused is False
+        assert builder.kept_snapshot_match is False
+    finally:
+        await engine.dispose()
+
+
+async def test_replayed_metrics_still_write_node_rows_the_store_lost(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.pipeline.persist import persist_graph_nodes
+
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        assert _replay(root, builder) is True
+        async with get_session(sf) as session:
+            repo = (await session.execute(select(Repository))).scalar_one()
+            # The store holds no node rows: the replay must not skip the write.
+            await persist_graph_nodes(session, repo.id, builder)
+        conn_count = await _node_count(sf)
+        assert conn_count == builder.graph().number_of_nodes()
+        assert builder.graph_nodes_written is True
+
+        # With the rows in place, the next replayed write is skipped.
+        writes: list[object] = []
+        from repowise.core.persistence.crud import graph as crud_graph
+
+        real = crud_graph.batch_upsert_graph_nodes
+        monkeypatch.setattr(
+            "repowise.core.persistence.batch_upsert_graph_nodes",
+            lambda *a, **k: writes.append(a) or real(*a, **k),
+        )
+        async with get_session(sf) as session:
+            await persist_graph_nodes(session, repo.id, builder)
+        assert writes == []
+    finally:
+        await engine.dispose()
+
+
+async def _node_count(sf) -> int:
+    from sqlalchemy import func
+
+    from repowise.core.persistence.models import GraphNode
+
+    async with get_session(sf) as session:
+        return int(await session.scalar(select(func.count()).select_from(GraphNode)))
+
+
+async def test_a_rescore_that_rewrites_node_rows_drops_the_memo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repowise.core.pipeline.incremental.graph_seed import discard_snapshot_metrics
+
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        builder = await _update_after_a_memo(root)
+        # Undo the set-aside so the stored snapshot is where a re-score finds it.
+        kept = root / ".repowise" / "graph_seed_edges.pkl.kept"
+        kept.replace(root / ".repowise" / "graph_seed_edges.pkl")
+
+        discard_snapshot_metrics(root)
+
+        snapshot = await load_seed_edges(root)
+        assert snapshot is not None, "the graph snapshot itself survives"
+        builder = GraphBuilder(root)
+        builder.seed_graph_snapshot(snapshot)
+        builder._built = True
+        builder.previous_seed_edges = snapshot
+        builder.seed_snapshot_kept = invalidate_seed_edge_cache(root, keep=True)
+        assert _replay(root, builder) is False
+        assert builder.kept_snapshot_match is True
+    finally:
+        await engine.dispose()

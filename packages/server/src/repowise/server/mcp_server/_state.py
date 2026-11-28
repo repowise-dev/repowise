@@ -95,6 +95,10 @@ _keyless_search_noted = False
 # the globals above. A ContextVar, so concurrent requests on one loop never see
 # each other's repo.
 _request_context: ContextVar[Any] = ContextVar("repowise_mcp_request_context", default=None)
+# Whether a call in this request may send the anonymous ``mcp_tool_call``
+# event. Cleared by ``serving(ctx, telemetry=False)`` for a host that embeds
+# the tools and counts usage itself; the local savings ledger is unaffected.
+_request_telemetry: ContextVar[bool] = ContextVar("repowise_mcp_request_telemetry", default=True)
 
 
 def request_context() -> Any:
@@ -103,13 +107,26 @@ def request_context() -> Any:
 
 
 @contextmanager
-def serving(ctx: Any) -> Iterator[Any]:
-    """Serve every tool call inside the block from *ctx*, a ``RepoContext``."""
+def serving(ctx: Any, *, telemetry: bool | None = None) -> Iterator[Any]:
+    """Serve every tool call inside the block from *ctx*, a ``RepoContext``.
+
+    ``telemetry=False`` stops those calls sending the anonymous usage event;
+    ``None`` keeps whatever an enclosing ``serving`` block set.
+    """
     token = _request_context.set(ctx)
+    telemetry_token = _request_telemetry.set(
+        _request_telemetry.get() if telemetry is None else telemetry
+    )
     try:
         yield ctx
     finally:
+        _request_telemetry.reset(telemetry_token)
         _request_context.reset(token)
+
+
+def telemetry_allowed() -> bool:
+    """Whether this request may send usage telemetry; ``False`` only inside ``serving(..., telemetry=False)``."""
+    return _request_telemetry.get()
 
 
 def served_path() -> str | None:

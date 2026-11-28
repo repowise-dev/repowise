@@ -15,6 +15,7 @@ from repowise.core.ingestion.graph._centrality_cache import (
     CentralityCache,
     subgraph_signature,
 )
+from repowise.core.ingestion.graph._pagerank import pagerank
 from repowise.core.ingestion.models import FileInfo
 
 _MAIN = "from util import helper\n\n\ndef main():\n    return helper(2)\n"
@@ -324,12 +325,12 @@ def test_mid_graph_reuses_within_budget_and_rescores_exactly_past_it(tmp_path, m
 
 
 def _forbid_pagerank(monkeypatch):
-    import networkx as nx
+    from repowise.core.ingestion.graph import _pagerank
 
     def _boom(*args, **kwargs):
         raise AssertionError("pagerank must not recompute on an unchanged graph")
 
-    monkeypatch.setattr(nx, "pagerank", _boom)
+    monkeypatch.setattr(_pagerank, "_power_iteration", _boom)
 
 
 def test_unchanged_structure_reuses_pagerank(tmp_path, monkeypatch):
@@ -347,7 +348,6 @@ def test_unchanged_structure_reuses_pagerank(tmp_path, monkeypatch):
 def test_reused_pagerank_is_within_the_persist_tolerance_of_a_fresh_one(tmp_path):
     """Insertion order moves PageRank only in the last bits; a reused value must
     stay inside the tolerance graph_nodes persistence already applies."""
-    import networkx as nx
     import pytest
 
     from repowise.core.persistence.crud.graph import _CENTRALITY_ATOL
@@ -363,7 +363,7 @@ def test_reused_pagerank_is_within_the_persist_tolerance_of_a_fresh_one(tmp_path
     reused_builder.symbol_subgraph = lambda: shuffled
     reused = reused_builder.symbol_pagerank()
     assert reused == cached
-    assert reused == pytest.approx(nx.pagerank(shuffled), rel=0, abs=_CENTRALITY_ATOL)
+    assert reused == pytest.approx(pagerank(shuffled), rel=0, abs=_CENTRALITY_ATOL)
 
 
 def test_structural_change_recomputes_pagerank(tmp_path):
@@ -434,7 +434,6 @@ def test_cache_file_without_pagerank_still_serves_betweenness(tmp_path):
 
 def test_weighted_graphs_are_never_served_cached_pagerank(tmp_path):
     """The signature ignores weights, so a weight-only change must not hit."""
-    import networkx as nx
 
     g = _graph([("a", "b"), ("b", "c"), ("c", "a")])
     gb = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
@@ -445,7 +444,7 @@ def test_weighted_graphs_are_never_served_cached_pagerank(tmp_path):
     weighted["a"]["b"]["weight"] = 5.0
     gb2 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
     gb2.symbol_subgraph = lambda: weighted
-    assert gb2.symbol_pagerank() == nx.pagerank(weighted)
+    assert gb2.symbol_pagerank() == pagerank(weighted)
 
 
 # --- communities -------------------------------------------------------------

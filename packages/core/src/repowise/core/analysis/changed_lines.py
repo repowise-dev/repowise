@@ -310,7 +310,9 @@ class ChangeSet:
     change, which have no new-side lines); *deleted* the paths it removed. A
     rename reads as a deletion plus an addition. *base* and *head* are the
     commits either side; *head* is ``None`` for staged changes, and either is
-    ``None`` when git cannot name it.
+    ``None`` when git cannot name it. *added* are the paths of *files* absent
+    before the change (an untracked file in working-tree mode); empty when
+    the reader could not tell.
     """
 
     files: dict[str, FileDiff]
@@ -318,6 +320,7 @@ class ChangeSet:
     label: str
     base: str | None
     head: str | None
+    added: set[str] = field(default_factory=set)
 
 
 def change_set(
@@ -346,6 +349,7 @@ def change_set(
     fields = [f.strip("\n") for f in listing.split("\0")]
     files: dict[str, FileDiff] = {}
     deleted: set[str] = set()
+    added: set[str] = set()
     counts = path_filter(exclude_patterns=exclude_patterns)
     for status, path in zip(fields[0::2], fields[1::2], strict=False):
         if not path or not counts(path):
@@ -354,14 +358,19 @@ def change_set(
             deleted.add(path)
         else:
             files[path] = diffs.get(path) or FileDiff(path=path)
+            if status.startswith("A"):
+                added.add(path)
     if working_tree:
-        files.update(untracked_diffs(repo_path, exclude_patterns))
-    # One re-keying for both sides: each relative path maps back to git's.
+        untracked = untracked_diffs(repo_path, exclude_patterns)
+        files.update(untracked)
+        added.update(untracked)
+    # One re-keying for every side: each relative path maps back to git's.
     named = checkout_relative(repo_path, {p: p for p in [*files, *deleted]})
     deleted = {rel for rel, top in named.items() if top in deleted}
+    added = {rel for rel, top in named.items() if top in added}
     files = {rel: replace(files[top], path=rel) for rel, top in named.items() if top in files}
     base, head = _change_ends(repo_path, revspec, staged=staged or working_tree)
-    return ChangeSet(files, deleted, label, base, head)
+    return ChangeSet(files, deleted, label, base, head, added)
 
 
 def _change_ends(

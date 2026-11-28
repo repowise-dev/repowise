@@ -18,8 +18,10 @@ the other way round.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 
 #: Verbs the contract layer records as an HTTP method. A consumer that sees a
 #: wider verb set (Express ``use``/``all``) filters against this.
@@ -352,6 +354,9 @@ _GO_ROUTE_RE = go_route_pattern(_GO_VERBS, f"{GO_PATH_LITERAL}|{_GO_PATH_CONCAT}
 _GO_GROUP_RE = re.compile(
     r"""(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Group\s*\(\s*["'](?P<prefix>[^"']+)["']"""
 )
+# r := g.Use(mw) — gin's Use returns the group it is called on, so routes on
+# `r` serve under `g`'s prefix.
+_GO_USE_RE = re.compile(r"(?P<var>\w+)\s*:?=\s*(?P<parent>\w+)\s*\.\s*Use\s*\(")
 
 # Go 1.22 net/http patterns: `"GET /items/{id}"`, `"POST api.example.com/x"`.
 _GO_METHOD_PATTERN_RE = re.compile(
@@ -440,8 +445,17 @@ def go_routes(content: str) -> Iterator[RouteMatch]:
 
 
 def go_groups(content: str) -> Iterator[GroupMatch]:
-    """``Group`` prefix bindings in *content*."""
-    return _groups(_GO_GROUP_RE, content)
+    """``Group`` prefix bindings in *content*, and ``Use`` bindings with no prefix of their own."""
+    groups = list(_groups(_GO_GROUP_RE, content))
+    yield from groups
+    bound = {g.var for g in groups}
+    uses = [(m.group("var"), m.group("parent")) for m in _GO_USE_RE.finditer(content)]
+    names = Counter(var for var, _parent in uses)
+    for var, parent in uses:
+        # Bindings are file-wide by name: `v1 = v1.Use(mw)` would erase v1's own
+        # Group binding, and a name two functions bind from Use is neither's.
+        if var != parent and var not in bound and names[var] == 1:
+            yield GroupMatch(var=var, parent=parent, prefix="")
 
 
 # ---------------------------------------------------------------------------
@@ -1107,12 +1121,17 @@ _APEX_URL_MAPPING_RE = re.compile(
 _APEX_REST_VERB_RE = re.compile(r"@Http(?P<verb>Get|Post|Put|Patch|Delete)\b", re.IGNORECASE)
 
 
-def apex_code(content: str) -> str:
-    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
-    out = [c if c == "\n" else " " for c in content]
-    for i, c, _depth in scan_code(content, quotes="'"):
+def _blank_outside(text: str, code: Iterable[tuple[int, str, int]]) -> str:
+    """*text* with every character that *code* (a :func:`scan_code` run) skips blanked."""
+    out = [c if c == "\n" else " " for c in text]
+    for i, c, _depth in code:
         out[i] = c
     return "".join(out)
+
+
+def apex_code(content: str) -> str:
+    """*content* with Apex comments and string literals blanked, offsets and newlines kept."""
+    return _blank_outside(content, scan_code(content, quotes="'"))
 
 
 def apex_rest_routes(content: str, code: str | None = None) -> Iterator[RouteMatch]:
@@ -1700,6 +1719,16 @@ def _spring_paths(args: str, path_key: re.Pattern[str] = _SPRING_PATH_KEY_RE) ->
     if read is None or not masked[read[1] :].lstrip().startswith((",", ")")):
         return None
     return read[0] or ("",)
+
+
+@lru_cache(maxsize=8)
+def java_code(text: str) -> str:
+    """*text* of a Java or Kotlin file with comments, string and char literals blanked.
+
+    Offsets and newlines are kept, as :func:`apex_code` keeps them. The last few texts are
+    kept, so call it with a whole file that is read again, and never with a piece of one.
+    """
+    return _blank_outside(text, _jvm_code(text))
 
 
 def _spring_literals(args: str, masked: str, at: int) -> tuple[tuple[str, ...], int] | None:

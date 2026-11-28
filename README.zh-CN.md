@@ -27,7 +27,7 @@ Repowise 在你自己的机器上，把代码、依赖图、git 历史、测试�
 ### 看懂代码
 
 - 这个模块怎么工作：一次调用就能拿到带来源的回答，依据是依赖图和生成的文档。[搜索与文档](docs/layers/WIKI.md)
-- 谁调用了这个函数，它又调用了谁：28 种语言解析到 AST。每条边标明怎么解析的、可以信到什么程度，也能从入口追执行路径。[依赖图](docs/layers/GRAPH.md)
+- 谁调用了这个函数，它又调用了谁：29 种语言解析到 AST。每条边标明怎么解析的、可以信到什么程度，也能从入口追执行路径。[依赖图](docs/layers/GRAPH.md)
 - 为什么当初这样写：从 ADR、`# WHY:` 注释、提交、PR 和智能体会话里挖出决策，连到它所约束的代码，过期了会标出来。[决策](docs/layers/DECISIONS.md)
 - 文档有没有写错：Markdown 里指向已经不存在的文件或符号会被标出，并给出要改的那一行。[文档漂移](docs/layers/DOC_DRIFT.md)
 
@@ -40,9 +40,9 @@ Repowise 在你自己的机器上，把代码、依赖图、git 历史、测试�
 ### 持续改进
 
 - 先修什么：按影响和代价排序。命令是 `repowise next`。[优先修复](docs/layers/CODE_HEALTH.md#fix-first)
-- 技术债在哪：53 个确定性检测器给每个文件打 1 到 10 分，分成缺陷风险、可维护性和性能。[代码健康](docs/layers/CODE_HEALTH.md)
+- 技术债在哪：59 个确定性检测器给每个文件打 1 到 10 分，分成缺陷风险、可维护性和性能。[代码健康](docs/layers/CODE_HEALTH.md)
 - 可以删什么：不可达的文件、未使用的导出和未使用的包，按置信度分档，并附上依据。[死代码](docs/layers/DEAD_CODE.md)
-- 怎么拆才安全：Extract Method、Extract Class、Move Method、Split File、Break Cycle 这类具体计划，标明要移动的符号，可以直接交给编程智能体。[重构](docs/layers/REFACTORING.md)
+- 怎么拆才安全：给出具体的重构计划，共七类（Extract Method、Extract Class、Extract Helper、Move Method、Split File、Break Cycle 和 Performance Fix），标明要移动的符号，可以直接交给编程智能体。[重构](docs/layers/REFACTORING.md)
 
 ## 快速开始
 
@@ -94,7 +94,7 @@ repowise agents print-config claude-code
 - [快速开始](docs/start/QUICKSTART.md)
 - [仪表盘](docs/start/DASHBOARD.md)
 - [五层索引](docs/layers/INTELLIGENCE_LAYERS.md)
-- [语言支持](docs/layers/LANGUAGE_SUPPORT.md)（28 种语言解析到 AST，五级阶梯一共 42 种，开源版本全部包含）
+- [语言支持](docs/layers/LANGUAGE_SUPPORT.md)（29 种语言解析到 AST，五级阶梯一共 43 种，开源版本全部包含）
 - [CLI 参考](docs/reference/CLI_REFERENCE.md)
 - [英文 README](README.md)
 - 许可证：[AGPL-3.0](LICENSE)

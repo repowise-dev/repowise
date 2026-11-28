@@ -59,6 +59,7 @@ AREAS: tuple[str, ...] = (
     "hooks",
     "indexing",
     "mcp",
+    "performance",
     "providers",
     "report",
     "server",

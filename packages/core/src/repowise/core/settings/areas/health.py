@@ -46,7 +46,6 @@ SETTINGS: tuple[Setting, ...] = (
         minimum=0,
     ),
     _s("coverage.gates", "list", [], "Coverage gates scoped to paths.", on_invalid="error"),
-    _s("refactoring.enabled", "bool", True, "Work out refactoring plans in the health pass."),
     _s("refactoring.detectors.disabled", "list", [], "Refactoring detectors to silence, such as extract_class or split_file."),
     _s(
         "refactoring.min_confidence",

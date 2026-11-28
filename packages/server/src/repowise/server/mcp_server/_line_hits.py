@@ -1316,7 +1316,7 @@ async def _symbol_sources(
     sets are ``None`` past ``MAX_SYMBOLS``. One git grep per name serves both."""
     with line_read_memo():
         sets = None if len(nodes) > MAX_SYMBOLS else [
-            await reference_edit_set(session, repo_id, root, n) for n in nodes
+            await reference_edit_set(session, repo_id, root, n, exclude_spec=spec) for n in nodes
         ]
         names = sorted({_bare_name(n) for n in nodes})
         # A name past MAX_SYMBOLS serves definitions only and already says it

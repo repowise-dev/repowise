@@ -1,171 +1,117 @@
 /**
- * Knowledge Graph webview: mounts the shared radial-constellation GraphFlow
- * shell against host RPC data. The shell keeps its own toolbar/legend/controls;
- * this view adds only a slim header and wires the shell's structural callbacks
- * back into the lazy data hook so scope changes fetch just what they render.
+ * Knowledge Graph webview: the web Knowledge Graph page's continuous-zoom
+ * canvas (packages/web app/repos/[id]/knowledge-graph), composed from the same
+ * shared pieces. Start at the whole repo and zoom into a card to reveal its
+ * layers, groups, folders and files; the breadcrumb follows the focus and the
+ * bottom-left controls zoom, fit and step up a level.
+ *
+ * The web page's detail sheet, search, map key and export are web-only
+ * components (they link to file pages and the chat dock), so this panel keeps
+ * the canvas, breadcrumb and controls, and selecting a file card opens the
+ * file in an editor column instead.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
-  GraphFlow,
-  type GraphFlowProps as GraphFlowShellProps,
-} from "@repowise-dev/ui/graph/graph-flow";
-import { ApiError } from "@repowise-dev/ui/shared";
-import { PathFinderPanel } from "@repowise-dev/ui/graph/path-finder-panel";
-import { GraphCommunityPanel } from "@repowise-dev/ui/graph/graph-community-panel";
-import type {
-  ArchitectureGraph,
-  CommunityDetail,
-  CommunitySlice,
-  CommunitySummaryItem,
-  ExecutionFlows,
-  GraphExport,
-  GraphPath,
-  ModuleGraph,
-  NodeSearchResult,
-} from "@repowise-dev/types/graph";
-import type { WebviewHost } from "../../runtime/rpc";
+  ZoomCanvas,
+  indexRelationsByNode,
+  type ZoomCanvasHandle,
+  type ZoomMap,
+  type ZoomNode,
+} from "@repowise-dev/ui/zoom";
+import { ZoomBreadcrumb } from "@repowise-dev/ui/zoom/zoom-breadcrumb";
+import { ZoomControls } from "@repowise-dev/ui/zoom/zoom-controls";
+import { ApiError, OrbLoader, ORB_STATE } from "@repowise-dev/ui/shared";
 import type { ViewProps } from "../../runtime/mount";
-import { useGraphData } from "./use-graph-data";
-import { GraphHeader } from "./graph-header";
+import { useHostQuery } from "../architecture/use-architecture-data";
 
-/** Hub (`__community__N`) and repo-core (`__repo_core__`) ids are synthetic and
- *  not backed by a file; everything else the shell hands us is a repo path. */
-function isFileBackedNodeId(nodeId: string): boolean {
-  return !nodeId.startsWith("__");
-}
+/** Same frame the web page draws the canvas in. */
+const FRAME =
+  "relative min-h-[360px] flex-1 overflow-hidden rounded-lg border border-[var(--color-border-default)]";
 
-export function App({ host, params, repo, refreshToken }: ViewProps<"graph">) {
-  const data = useGraphData(host, refreshToken);
-
-  const openIfFile = useCallback(
-    (nodeId: string) => {
-      if (isFileBackedNodeId(nodeId)) host.openFile(nodeId);
-    },
-    [host],
-  );
-
-  const handleNodeClick = useCallback<NonNullable<GraphFlowShellProps["onNodeClick"]>>(
-    (nodeId, nodeType) => {
-      if (nodeType === "file") host.openFile(nodeId);
-    },
-    [host],
+export function App({ host, params, refreshToken }: ViewProps<"graph">) {
+  const { data: zoomMap, error } = useHostQuery<ZoomMap>(
+    "zoom-map",
+    () => host.api.zoomMap(),
+    refreshToken,
   );
 
   return (
-    <div className="flex h-full flex-col">
-      <GraphHeader repoName={repo.name} stats={data.stats} />
-      <div className="relative min-h-0 flex-1">
-        {data.error ? (
-          <div className="flex h-full items-center justify-center p-6">
-            <ApiError title="Could not load the knowledge graph." message={data.error} />
-          </div>
-        ) : (
-          <GraphFlow
-            fullGraph={data.fullGraph as GraphExport | undefined}
-            isLoadingFullGraph={data.isLoadingFullGraph}
-            // Legacy file-level architecture graph is unused by the constellation
-            // scope; the ui prop is still required, so pass an empty pair.
-            architectureGraph={undefined}
-            isLoadingArchitectureGraph={false}
-            constellationGraph={data.constellationGraph as ArchitectureGraph | undefined}
-            isLoadingConstellationGraph={data.isLoadingConstellationGraph}
-            constellationSlices={
-              data.constellationSlices as Map<number, CommunitySlice>
-            }
-            onExpandedHubsChange={data.setExpandedHubs}
-            repoName={repo.name}
-            deadCodeGraph={data.deadCodeGraph as GraphExport | undefined}
-            isLoadingDeadCodeGraph={data.isLoadingDeadCodeGraph}
-            hotFilesGraph={data.hotFilesGraph as GraphExport | undefined}
-            isLoadingHotFilesGraph={data.isLoadingHotFilesGraph}
-            communities={data.communities as CommunitySummaryItem[] | undefined}
-            executionFlows={data.executionFlows as ExecutionFlows | undefined}
-            initialSelectedNode={params.selectNode ?? null}
-            onViewModeChange={data.setViewMode}
-            onNodeClick={handleNodeClick}
-            onNodeViewDocs={openIfFile}
-            renderPathFinder={(p) => (
-              <PathFinderPanel
-                searchNodes={(q, l) =>
-                  host.api.searchNodes(q, l) as Promise<NodeSearchResult[]>
-                }
-                findPath={(from, to) =>
-                  host.api.graphPath(from, to) as Promise<GraphPath>
-                }
-                onPathFound={p.onPathFound}
-                onClear={p.onClear}
-                onClose={p.onClose}
-                initialFrom={p.initialFrom}
-                initialTo={p.initialTo}
-              />
-            )}
-            renderCommunityPanel={(p) => (
-              <CommunityPanel
-                host={host}
-                communityId={p.communityId}
-                onClose={p.onClose}
-                onEnterCommunity={p.onEnterCommunity}
-                onNeighborSelect={p.onNeighborSelect}
-              />
-            )}
-          />
-        )}
-      </div>
+    <div className="flex h-full min-h-0 flex-col gap-3 px-4 py-3">
+      {error && !zoomMap ? (
+        <div className="flex flex-1 items-center justify-center p-6">
+          <ApiError title="Could not load the knowledge graph." message={error} />
+        </div>
+      ) : !zoomMap ? (
+        <div className={`${FRAME} flex items-center justify-center`}>
+          <OrbLoader state={ORB_STATE.page} size={64} label="Building the map" />
+        </div>
+      ) : (
+        <ZoomMapView
+          zoomMap={zoomMap}
+          initialFocusId={params.selectNode}
+          onOpenFile={(path) => host.openFile(path)}
+        />
+      )}
     </div>
   );
 }
 
-/**
- * Fetches one community's detail on open and feeds the shared panel shell.
- * The shell expects pre-fetched data + a loading flag (it does no fetching of
- * its own), so this thin wrapper owns the host call, mirroring the web app's
- * SWR wrapper. Member links open the file in an editor column.
- */
-function CommunityPanel({
-  host,
-  communityId,
-  onClose,
-  onEnterCommunity,
-  onNeighborSelect,
+function ZoomMapView({
+  zoomMap,
+  initialFocusId,
+  onOpenFile,
 }: {
-  host: WebviewHost;
-  communityId: number;
-  onClose: () => void;
-  onEnterCommunity: () => void;
-  onNeighborSelect: (communityId: number) => void;
+  zoomMap: ZoomMap;
+  initialFocusId: string | undefined;
+  onOpenFile: (path: string) => void;
 }) {
-  const [community, setCommunity] = useState<CommunityDetail | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const canvasRef = useRef<ZoomCanvasHandle | null>(null);
+  const [chain, setChain] = useState<ZoomNode[]>([]);
+  // Indexed once per map for the hover card, as the web page does.
+  const relationsByNode = useMemo(() => indexRelationsByNode(zoomMap), [zoomMap]);
+  // Snapshot so a later re-init does not yank the camera back. The open
+  // parameter may name a node id or a repo path; zoom ids are not paths, so a
+  // path resolves to the node that carries it.
+  const initialFocus = useRef(
+    initialFocusId
+      ? zoomMap.nodes.find((n) => n.id === initialFocusId || n.path === initialFocusId)?.id
+      : undefined,
+  ).current;
 
-  useEffect(() => {
-    let cancelled = false;
-    setIsLoading(true);
-    setCommunity(null);
-    host.api
-      .communityDetail(communityId)
-      .then((detail) => {
-        if (!cancelled) setCommunity(detail as CommunityDetail);
-      })
-      .catch(() => {
-        if (!cancelled) setCommunity(null);
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [host, communityId]);
+  const flyTo = useCallback((id: string) => {
+    canvasRef.current?.flyTo(id);
+  }, []);
+
+  const handleSelect = useCallback(
+    (node: ZoomNode | null) => {
+      if (node?.kind === "file" && node.path) onOpenFile(node.path);
+    },
+    [onOpenFile],
+  );
 
   return (
-    <GraphCommunityPanel
-      communityId={communityId}
-      community={community}
-      isLoading={isLoading}
-      onClose={onClose}
-      onEnterCommunity={onEnterCommunity}
-      onNeighborSelect={onNeighborSelect}
-    />
+    <>
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
+        <h1 className="text-[15px] font-semibold text-[var(--color-text-primary)]">
+          Knowledge Graph
+        </h1>
+        <div className="min-w-0 flex-1">
+          <ZoomBreadcrumb chain={chain} onCrumb={flyTo} />
+        </div>
+      </header>
+      <div className={FRAME}>
+        <ZoomCanvas
+          ref={canvasRef}
+          data={zoomMap}
+          {...(initialFocus ? { initialFocusId: initialFocus } : {})}
+          onSelect={handleSelect}
+          onFocusChange={setChain}
+          relationsByNode={relationsByNode}
+          minimapClassName="bottom-14 left-3"
+        />
+        <ZoomControls canvas={canvasRef} canGoUp={chain.length > 1} />
+      </div>
+    </>
   );
 }
