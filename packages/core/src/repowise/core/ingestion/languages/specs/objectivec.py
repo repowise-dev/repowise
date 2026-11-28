@@ -36,10 +36,10 @@ SPEC = LanguageSpec(
     grammar_package="tree_sitter_objc",
     scm_file="objectivec.scm",
     heritage_node_types=frozenset({"class_interface"}),
-    # No dedicated resolver. ``#import "Foo.h"`` resolves through the generic
-    # stem map, which covers the near-universal one-class-per-file naming
-    # convention; a framework import (``<Foundation/Foundation.h>``) names no
-    # in-repo file and correctly resolves to nothing.
+    # ``#import`` / ``#include`` resolve through the C/C++ include resolver; a
+    # framework import (``<Foundation/Foundation.h>``) names no in-repo file
+    # and resolves to nothing. The grade stays ``none``: it gates dead-code
+    # confidence and the graph view, and raising it is a separate change.
     import_support="none",
     # main.m holds UIApplicationMain/NSApplicationMain.
     entry_point_patterns=("main.m",),
