@@ -118,6 +118,7 @@ _FACTORIES = (
     "Stranger& TheStranger();\n"
     "template <typename Stranger> Stranger Wrap(Stranger s) { return s; }\n"
     "inline auto Trailing(int n) -> Peer* { return nullptr; }\n"
+    "inline auto Fresh() -> Peer* { return nullptr; }\n"
     "inline auto Deduced(int n) { return Peer(); }\n"
     "using PeerAlias = Peer;\n"
     "inline auto Aliased(int n) -> PeerAlias* { return nullptr; }\n"
@@ -142,6 +143,7 @@ class TestLocalDeclarationForms:
             "  for (const Peer& peer : peers) peer.sendMessage(1);\n  return 0;",
             "  auto peer = new Peer(1, 2);\n  return peer->sendMessage(1);",
             "  auto peer = Peer{};\n  return peer.sendMessage(1);",
+            "  auto peer = Peer();\n  return peer.sendMessage(1);",
             "  auto peer = Peer(1, 2);\n  return peer.sendMessage(1);",
             "  auto peer = std::unique_ptr<Peer>(new Peer);\n  return peer->sendMessage(1);",
         ],
@@ -163,6 +165,7 @@ class TestLocalDeclarationForms:
             "  auto peer = MakePeer(1);\n  return peer->sendMessage(1);",
             "  auto* peer = Trailing(1);\n  return peer->sendMessage(1);",
             "  auto peer = Aliased(1);\n  return peer->sendMessage(1);",
+            "  auto peer = Fresh();\n  return peer->sendMessage(1);",
         ],
     )
     def test_an_auto_local_takes_the_return_type_the_callee_declares(

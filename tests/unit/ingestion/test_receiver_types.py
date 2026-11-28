@@ -1106,6 +1106,7 @@ class TestCppDeclarations:
             "return a * b(c);",
             "for (auto* node : nodes) {}",
             "auto peer = makePeer(1);",
+            "auto peer = makePeer();",
             "auto spec = Spec(s).Clone();",
             "auto spec = Spec{1}.Clone();",
             "auto peer = new Peer(1)\n  ->Next();",

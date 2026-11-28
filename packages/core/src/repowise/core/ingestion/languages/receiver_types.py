@@ -343,10 +343,10 @@ _CPP_RANGE_FOR = re.compile(
     r"(?:\s*[*&]{1,2}\s*|\s+)(?P<name>[a-z_]\w*)\s*:(?!:)"
 )
 
-# ``auto x = T()``, ``auto x = T{..}``, ``auto x = new T(..)``,
-# ``auto x = W<T>(..)``: the right-hand side names a type. ``T(args)`` with no
-# template arguments may be a function call, so ``_cpp_construction_ends``
-# leaves it to the call-typed scan, which can tell the two apart. A
+# ``auto x = T{..}``, ``auto x = new T(..)``, ``auto x = W<T>(..)``: the
+# right-hand side names a type. ``T(..)`` with no template arguments, an empty
+# list included, may be a function call, so ``_cpp_construction_ends`` leaves
+# it to the call-typed scan, which can tell the two apart. A
 # member/factory call or a chained result carries no evidence of the type.
 _CPP_CONSTRUCTED = re.compile(
     rf"\bauto\s*[*&]{{0,2}}\s*(?P<name>[a-z_]\w*)\s*=\s*(?P<new>new\s+)?"
@@ -1652,11 +1652,9 @@ def _cpp_construction_ends(cleaned: str, match: re.Match[str]) -> bool:
         return bool(match.group("new"))
     if cleaned[opener] == "{":
         return _ends_statement(cleaned, _lambda_end(cleaned, opener), "cpp")
-    end = _call_end(cleaned, opener + 1)
-    named = match.group("new") or "<" in match.group("type")
-    if not named and cleaned[opener + 1 : end - 1].strip():
+    if not (match.group("new") or "<" in match.group("type")):
         return False
-    return _ends_statement(cleaned, end, "cpp")
+    return _ends_statement(cleaned, _call_end(cleaned, opener + 1), "cpp")
 
 
 # Declaration shapes a regex cannot close by itself, checked past the match.
