@@ -320,6 +320,76 @@ class TestFieldReceivers:
         assert "lib/peer.cc::Peer::sendMessage" not in callees
 
 
+def _add_host_field(root: Path, declaration: str) -> None:
+    header = root / "lib" / "host.h"
+    header.write_text(
+        header.read_text().replace("  Host* parent_;", f"  Host* parent_;\n  {declaration}")
+    )
+
+
+class TestFieldDeclarationForms:
+    """Field and local spellings beyond ``T name;`` that still name the receiver's class."""
+
+    def test_an_elaborated_class_field_binds_its_class(self, tmp_path: Path) -> None:
+        """``class Peer* peer_;`` names ``Peer``; it is no nested class owning the field."""
+        _field_repo(tmp_path, "  elaborated_->sendMessage(1);")
+        _add_host_field(tmp_path, "class Peer* elaborated_;")
+        assert "lib/peer.cc::Peer::sendMessage" in _callees(
+            _build(tmp_path), "lib/host.cc::Host::Run"
+        )
+
+    def test_a_const_pointer_field_binds_its_class(self, tmp_path: Path) -> None:
+        _field_repo(tmp_path, "  fixed_->sendMessage(1);")
+        _add_host_field(tmp_path, "Peer* const fixed_;")
+        assert "lib/peer.cc::Peer::sendMessage" in _callees(
+            _build(tmp_path), "lib/host.cc::Host::Run"
+        )
+
+    def test_a_later_declarator_of_a_local_list_binds(self, tmp_path: Path) -> None:
+        _repo(tmp_path, "  Peer *first, *second;\n  return second->sendMessage(1);")
+        targets = _call_targets(_build(tmp_path), "lib/caller.cc")
+        assert any(t.endswith("Peer::sendMessage") for t in targets)
+
+
+def _port_repo(root: Path, *, include_example: bool) -> None:
+    """A ``port::Lock`` two includes away, beside a same-named example port."""
+    (root / "port").mkdir(parents=True, exist_ok=True)
+    (root / "db").mkdir(parents=True, exist_ok=True)
+    for name in ("port_posix", "port_example"):
+        (root / "port" / f"{name}.h").write_text(
+            "#pragma once\nnamespace store {\nnamespace port {\n"
+            "class Lock {\n public:\n  void Acquire();\n};\n}\n}\n"
+        )
+        (root / "port" / f"{name}.cc").write_text(
+            f'#include "port/{name}.h"\n'
+            "namespace store {\nnamespace port {\nvoid Lock::Acquire() {}\n}\n}\n"
+        )
+    extra = '#include "port/port_example.h"\n' if include_example else ""
+    (root / "port" / "port.h").write_text('#pragma once\n#include "port/port_posix.h"\n' + extra)
+    (root / "db" / "db.h").write_text(
+        '#pragma once\n#include "port/port.h"\nnamespace store {\n'
+        "class Db {\n public:\n  void Run();\n private:\n  port::Lock lock_;\n};\n}\n"
+    )
+    (root / "db" / "db.cc").write_text(
+        '#include "db/db.h"\nnamespace store {\nvoid Db::Run() { lock_.Acquire(); }\n}\n'
+    )
+
+
+class TestClassReachedThroughIncludes:
+    """Two same-named classes refuse the repository-wide tier; the includes can tell them apart."""
+
+    def test_the_one_class_the_includes_reach_binds(self, tmp_path: Path) -> None:
+        _port_repo(tmp_path, include_example=False)
+        assert _callees(_build(tmp_path), "db/db.cc::Db::Run") == {
+            "port/port_posix.cc::Lock::Acquire"
+        }
+
+    def test_two_classes_in_reach_refuse(self, tmp_path: Path) -> None:
+        _port_repo(tmp_path, include_example=True)
+        callees = _callees(_build(tmp_path), "db/db.cc::Db::Run")
+        assert not any(t.endswith("::Acquire") for t in callees)
+
+
 class TestTypedCalleeOnHeaderDeclarations:
     """A typed call lands on a header declaration only where no body could be missing."""
 

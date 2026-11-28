@@ -453,6 +453,21 @@ class CppFieldOwners:
                 return True
         return False
 
+    def _cpp_reached_method(self, path: str, call: CallSite, bare: str) -> tuple[str, str] | None:
+        """The method of the one class *bare* that *path*'s includes reach, directly or not.
+
+        Two same-named classes (a platform port beside an example port) refuse
+        the repository-wide tier, though only one is in reach of the file that
+        typed the receiver.
+        """
+        reach = self._cpp_include_closure(path)
+        classes = {identity for file, identity, _ in self._declared_types_named(bare) if file in reach}
+        if len(classes) != 1:
+            return None
+        methods = self._global_methods.get((bare, call.target_name), ())
+        found = self._collapse_declarations([sym_id for file, sym_id in methods if file in reach])
+        return (found.pop(), "import") if len(found) == 1 else None
+
     def _typed_callee(self, sym_id: str, caller_id: str) -> str | None:
         """The callee a typed receiver's method *sym_id* stands for, or None.
 

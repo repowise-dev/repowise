@@ -315,8 +315,9 @@ _CPP_KEYWORDS = (
 # Two levels of nesting: the same ceiling as ``_TYPE``.
 _CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?"
 
-# ``T name``, ``T* name``, ``T& name``, ``ns::T name``, ``W<T> name``, closed by
-# the same punctuation the C family requires plus ``{`` for brace init.
+# ``T name``, ``T* name``, ``T& name``, ``T* const name``, ``ns::T name``,
+# ``W<T> name``, closed by the same punctuation the C family requires plus
+# ``{`` for brace init.
 #
 # ``(`` is NOT a closer: ``Status doIt(int x);`` is a method declaration, the
 # commonest line in a header. ``Foo bar(args);`` is read by
@@ -324,8 +325,12 @@ _CPP_TYPE = r"(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*(?:\s*<(?:[^<>]|<[^<>]*>)*>)?
 # restart inside a type already read (``std::shared_ptr<Foo>& p``).
 _CPP_DECLARATION = re.compile(
     rf"(?<![\w.>:])(?!{_CPP_KEYWORDS}\b)(?P<type>{_CPP_TYPE})"
-    rf"(?:\s*[*&]{{1,2}}\s*|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
+    rf"(?:\s*[*&]{{1,2}}\s*(?:const\s+)?|\s+)(?P<name>[a-z_]\w*)\s*(?=(?P<closer>[=;,){{]))"
 )
+
+# A later declarator of ``T a, *b = x;``, read from the ``,`` or ``=`` that
+# closed the one before it.
+_CPP_LATER_DECLARATOR = re.compile(r",\s*(?:[*&]{1,2}\s*(?:const\s+)?)?(?P<name>[a-z_]\w*)\s*")
 
 # ``Foo bar(args);``, a local constructed in place. The same spelling declares
 # a function (``Status doIt(int x);``, ``Foo bar(Baz);``), so
@@ -1352,6 +1357,9 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                 closer = ""
             if in_type_body is not None and not in_type_body(match.start()):
                 closer = ""
+            later = _cpp_later_declarators(cleaned, match) if pattern is _CPP_DECLARATION else ()
+            if later and closer == ",":
+                closer = ";"
             found.append(
                 Declaration(
                     bisect_right(starts, match.start()),
@@ -1363,6 +1371,10 @@ def scan_declarations(text: str, language: str) -> tuple[Declaration, ...]:
                     unwrapped,
                     bool(groups.get("member")),
                 )
+            )
+            found.extend(
+                Declaration(bisect_right(starts, at), name, type_name, closer and ";", unwrapped)
+                for at, name in later
             )
 
     found.sort()
@@ -1624,6 +1636,48 @@ def _top_level_arguments(text: str) -> list[str]:
             start = index + 1
     pieces.append(text[start:].strip())
     return pieces
+
+
+# How far an initializer is read for its end. A longer one (a lambda body)
+# drops the declarators after it, never the first one.
+_INITIALIZER_WINDOW = 400
+
+
+def _initializer_end(cleaned: str, index: int) -> int:
+    """Where the initializer starting at *index* ends: its top-level ``,`` or ``;``, else -1."""
+    depth = 0
+    for at in range(index, min(len(cleaned), index + _INITIALIZER_WINDOW)):
+        char = cleaned[at]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+            if depth < 0:
+                return -1
+        elif char in ",;" and not depth:
+            return at
+    return -1
+
+
+def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int, str]]:
+    """``(offset, name)`` of each declarator after the first of ``T a, *b = x, c;``.
+
+    Kept only when the list ends its statement at ``;``: anything else (a
+    parameter list, a template argument) gives none.
+    """
+    at, later = match.end(), []
+    while True:
+        if cleaned.startswith("=", at):
+            at = _initializer_end(cleaned, at + 1)
+            if at < 0:
+                return []
+        if cleaned.startswith(";", at):
+            return later
+        declarator = _CPP_LATER_DECLARATOR.match(cleaned, at)
+        if declarator is None or not cleaned.startswith((",", ";", "="), declarator.end()):
+            return []
+        later.append((declarator.start("name"), declarator.group("name")))
+        at = declarator.end()
 
 
 def _cpp_constructs_in_place(cleaned: str, match: re.Match[str]) -> bool:

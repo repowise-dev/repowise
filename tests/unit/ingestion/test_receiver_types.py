@@ -1067,6 +1067,43 @@ class TestCppDeclarations:
     def test_the_shapes_it_reads(self, body: str, expected: dict[str, str]) -> None:
         assert declared_types(body, "cpp") == expected
 
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("Iterator* const iter_;", {"iter_": "Iterator"}),
+            ("Context *const ctx_;", {"ctx_": "Context"}),
+            ("class Pool* pool_;", {"pool_": "Pool"}),
+            ("const Poly* prev, *poly, *next;", {"prev": "Poly", "poly": "Poly", "next": "Poly"}),
+            ("Node* a = nullptr, *b = f(1, 2), c;", {"a": "Node", "b": "Node", "c": "Node"}),
+        ],
+    )
+    def test_the_field_and_declarator_forms_it_reads(
+        self, body: str, expected: dict[str, str]
+    ) -> None:
+        assert declared_types(body, "cpp") == expected
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            ("void f(Slice key, int n);", {"key": "Slice"}),
+            ("Slice a, b(3);", {"a": "Slice"}),
+            ("Slice a, b) {", {"a": "Slice"}),
+            ("x = y < z, w;", {}),
+        ],
+    )
+    def test_a_list_that_ends_no_declaration_adds_no_later_name(
+        self, body: str, expected: dict[str, str]
+    ) -> None:
+        """Only a list closed by ``;`` declares its later names."""
+        assert declared_types(body, "cpp") == expected
+
+    def test_a_later_declarator_of_a_field_list_is_a_field(self) -> None:
+        source = "class Host {\n  Peer a, *b;\n};\n"
+        assert {(d.name, d.closer) for d in scan_declarations(source, "cpp")} == {
+            ("a", ";"),
+            ("b", ";"),
+        }
+
     def test_a_method_declaration_is_not_a_variable(self) -> None:
         """The commonest line in a C++ header, and the reason ``(`` cannot close.
 
