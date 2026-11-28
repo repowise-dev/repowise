@@ -10,7 +10,7 @@ from tree_sitter import Node, Parser, Query
 
 from ..languages.receiver_types import Declaration
 from ..models import CallSite, Symbol
-from ..type_names import bare_type_name, strip_type_arguments
+from ..type_names import bare_type_name, scoped_type_segments, strip_type_arguments
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS, _store_capped
 
 # ``virtual void f() = 0;``, a trailing ``const``/``override`` included.
@@ -155,30 +155,33 @@ class CppFieldOwners:
         ``(class, None)`` at the chain's end, with ``""`` for a refusal, else
         ``(None, next target)``.
         """
-        head, _, bare = written.rpartition("::")
-        if head.partition("::")[0] == "std":
+        *qualifiers, bare = scoped_type_segments(written)
+        host = qualifiers[-1] if qualifiers else None
+        if qualifiers[:1] == ["std"]:
             return "", None
-        members = self._cpp_member_aliases(head.rpartition("::")[2], bare, reach) if head else set()
+        members = self._cpp_member_aliases(host, bare, reach) if host else set()
         if members:
             return None, members.pop() if len(members) == 1 else None
         declared = self._declared_types_named(bare)
         if declared:
-            return (bare if self._cpp_qualified_class(declared, head, reach) else ""), None
+            return (bare if self._cpp_qualified_class(declared, host, reach) else ""), None
         return None, self._cpp_visible_alias(path, bare, 0)
 
     def _cpp_qualified_class(
-        self, declared: list[tuple[str, tuple[str, ...], int]], head: str, reach: frozenset[str]
+        self,
+        declared: list[tuple[str, tuple[str, ...], int]],
+        host: str | None,
+        reach: frozenset[str],
     ) -> bool:
-        """Is *declared* one class *reach* sees, in a file that opens the namespace *head* names?"""
+        """Is *declared* one class *reach* sees, in a file that opens the namespace *host*?"""
         files = {file for file, _, _ in declared} & reach
         if len({identity for _, identity, _ in declared}) != 1 or not files:
             return False
-        if not head:
+        if not host:
             return True
         # Ceiling: the qualifier is matched against the namespaces the class's
         # file opens, not the one that encloses the class.
-        host = re.escape(head.rpartition("::")[2])
-        opened = re.compile(rf"\bnamespace\s+(?:\w+::)*{host}\b")
+        opened = re.compile(rf"\bnamespace\s+(?:\w+::)*{re.escape(host)}\b")
         return any(opened.search(self._text_of(f)) for f in files)
 
     def _cpp_visible_alias(self, path: str, name: str, position: int) -> tuple[str, str] | None:
@@ -243,7 +246,7 @@ class CppFieldOwners:
         """Does *alias* write a target that no class template around it declares as a parameter?"""
         if alias.written is None or not alias.nested:
             return alias.written is not None
-        head = alias.written.partition("::")[0]
+        head = scoped_type_segments(alias.written)[0]
         parsed = self._parsed_files.get(path)
         return not any(
             s.kind in _TYPE_KINDS
