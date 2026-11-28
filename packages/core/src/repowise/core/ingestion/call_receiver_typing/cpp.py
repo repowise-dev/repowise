@@ -255,8 +255,10 @@ class CppFieldOwners:
         name = self._cpp_written_return(symbol, path, written)
         if not name.isidentifier():
             return None
+        from . import _enclosing_id  # the package imports this module
+
         lines = self._lines_of(path)
-        owner = self._symbols_by_id.get(symbol.id.rpartition("::")[0])
+        owner = self._symbols_by_id.get(_enclosing_id(symbol.id))
         for declared in (symbol, owner):
             if declared is None or declared.language != "cpp":
                 continue
