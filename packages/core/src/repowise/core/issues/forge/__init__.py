@@ -19,6 +19,7 @@ and Bitbucket are not read: the source refuses those remotes by name.
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from importlib import import_module
 from typing import Any
 
 from repowise.core.settings.areas.plugins import FORGE_API_URL, FORGE_BUG_LABELS, FORGE_TOKEN
@@ -31,6 +32,9 @@ __all__ = ["ROLLUP", "ForgeIssues", "closing_mentions", "first_closers", "link_t
 #: release, a branch merge) that lists fixes made elsewhere: its links are
 #: dropped. A release PR's changelog names every issue since the last one.
 ROLLUP = 5
+
+#: The forges this source reads, by kind, and the module beside this one for each.
+_MODULES = {"github": "github", "gitlab": "gitlab"}
 
 #: Issue types a forge names natively, folded to the seam's types.
 _NATIVE_TYPES = {"bug": "bug", "incident": "incident", "feature": "feature", "task": "task"}
@@ -101,7 +105,6 @@ class ForgeIssues:
         self._transport = transport
 
     def fetch(self, request: IssueRequest) -> Iterator[IssueLink]:
-        from repowise.core.forges.base import ForgeKind
         from repowise.core.forges.registry import get_forge
 
         remote = request.remote
@@ -114,17 +117,15 @@ class ForgeIssues:
         token = (request.credentials or {}).get(FORGE_TOKEN.key, "")
         api_url = str(settings.get(FORGE_API_URL.key) or "").strip()
         labels = settings.get(FORGE_BUG_LABELS.key, FORGE_BUG_LABELS.default)
-        if remote.forge is ForgeKind.GITHUB:
-            from . import github as forge_api
-        elif remote.forge is ForgeKind.GITLAB:
-            from . import gitlab as forge_api  # type: ignore[no-redef]
-        else:
+        module = _MODULES.get(remote.forge)
+        if module is None:
             label = get_forge(remote.forge).label
             raise SourceRefused(
                 f"the forge issue source reads GitHub and GitLab, and this repository's "
                 f"remote is on {label}. For a self-managed GitHub or GitLab, map its host "
                 "in forges.hosts."
             )
+        forge_api = import_module(f"{__name__}.{module}")
         yield from forge_api.fetch_links(
             request.commits,
             remote,
