@@ -9,7 +9,13 @@ from rich.table import Table
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.commands.status_cmd import _format_relative_time, _query_repo_counts
-from repowise.cli.helpers import console, resolve_repo_path
+from repowise.cli.helpers import (
+    console,
+    get_head_commit,
+    release_update_locks,
+    resolve_repo_path,
+    try_acquire_update_locks,
+)
 
 from ._index import _resolve_docs_flag, _run_index_for_repo
 from ._shared import _require_workspace
@@ -208,38 +214,58 @@ def workspace_add(
 
     entry = RepoEntry(path=rel_path, alias=alias)
 
-    try:
-        ws_config.add_repo(entry)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    ws_config.save(ws_root)
-    console.print(f"[green]✓[/green] Added repo '{alias}' ({rel_path}) to workspace.")
-
-    if not run_index:
-        console.print(
-            "[yellow]Skipping index[/yellow] (--no-index). "
-            f"Run [bold]repowise update --repo {alias}[/bold] to index later."
+    # One lock domain (#5341): adding indexes a repo — the same work a
+    # concurrent `repowise update` or workspace pass would do on it — so the
+    # add takes the workspace lock and the new repo's per-repo lock for the
+    # whole add (config save, index, cross-repo hooks). A held lock fails
+    # fast with a retryable message instead of racing the other writer on
+    # the same index. The workspace being added to is guarded explicitly:
+    # the added repo may live outside it, where a walk-up would find none.
+    locks = try_acquire_update_locks(repo_path, get_head_commit(repo_path), workspace_root=ws_root)
+    if locks.blocking_owner is not None:
+        owner = locks.blocking_owner
+        scope = "workspace" if locks.blocking_scope == "workspace" else "repo"
+        raise click.ClickException(
+            f"Cannot add '{alias}': another update is already running "
+            f"(pid {owner.get('pid')}, holding the {scope} lock). "
+            "Wait for it to finish and run `repowise workspace add` again."
         )
-        return
 
-    # Resolve whether docs should run.
-    docs_mode, docs_skip_reason = _resolve_docs_flag(
-        run_docs=run_docs, provider_name=provider_name
-    )
+    try:
+        try:
+            ws_config.add_repo(entry)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
 
-    _run_index_for_repo(
-        repo_path,
-        alias,
-        ws_root,
-        ws_config,
-        docs_mode=docs_mode,
-        provider_name=provider_name,
-        model=model,
-        concurrency=concurrency,
-        docs_skip_reason=docs_skip_reason,
-        save_key=save_key,
-    )
+        ws_config.save(ws_root)
+        console.print(f"[green]✓[/green] Added repo '{alias}' ({rel_path}) to workspace.")
+
+        if not run_index:
+            console.print(
+                "[yellow]Skipping index[/yellow] (--no-index). "
+                f"Run [bold]repowise update --repo {alias}[/bold] to index later."
+            )
+            return
+
+        # Resolve whether docs should run.
+        docs_mode, docs_skip_reason = _resolve_docs_flag(
+            run_docs=run_docs, provider_name=provider_name
+        )
+
+        _run_index_for_repo(
+            repo_path,
+            alias,
+            ws_root,
+            ws_config,
+            docs_mode=docs_mode,
+            provider_name=provider_name,
+            model=model,
+            concurrency=concurrency,
+            docs_skip_reason=docs_skip_reason,
+            save_key=save_key,
+        )
+    finally:
+        release_update_locks(repo_path, locks.workspace_root)
 
 
 # ---------------------------------------------------------------------------
