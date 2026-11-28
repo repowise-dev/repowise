@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **C++ template overloads that share a signature get their own symbol ids.** SFINAE overloads such as two `write(OutputIt, T)` templates that differ only in their `enable_if` constraint used to share one id, so the graph kept one node and charged the second body's calls to the first. Each now appends its compacted template parameters, as in `format.h::write#2(OutputIt,T)<Char,OutputIt,T,FMT_ENABLE_IF(is_integral<T>)>`; template definitions equal even there append `~2`, `~3`. This changes C++ template-overload symbol ids on the next index, so saved references to them (decisions, notes, bookmarks) need the new id.
+
+---
+
 ## [0.62.0] - 2026-11-22
 
 repowise 0.62 shows what your code costs at run time. Store a profile, benchmark or test run with `repowise evidence add`, and the Performance tab ranks the functions it measured and confirms the causes behind them. `repowise evidence setup` shows how to collect that evidence for each part of your repository.
