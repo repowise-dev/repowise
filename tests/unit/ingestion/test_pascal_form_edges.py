@@ -125,6 +125,16 @@ def test_firemonkey_and_lazarus_forms_bind_like_delphi_forms(
     assert "uMain.pas::TMainForm::Button1Click" in _bound(graph, f"uMain{extension}")
 
 
+def test_a_form_saved_with_a_utf8_bom_still_binds(tmp_path: Path) -> None:
+    graph = _build(tmp_path, {"uMain.pas": _UNIT, "uMain.dfm": _FORM.encode("utf-8-sig")})
+
+    assert graph.has_edge("uMain.dfm", "uMain.pas")
+    assert _bound(graph) == {
+        "uMain.pas::TMainForm::Button1Click",
+        "uMain.pas::TMainForm::SaveClick",
+    }
+
+
 def test_a_form_with_the_unit_in_another_case_still_binds(tmp_path: Path) -> None:
     graph = _build(tmp_path, {"uMain.pas": _UNIT, "UMAIN.DFM": _FORM})
 

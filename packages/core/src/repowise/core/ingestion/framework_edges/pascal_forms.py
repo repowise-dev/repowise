@@ -132,7 +132,8 @@ class _PascalFormHandler:
             unit = units.get((posixpath.dirname(form).lower(), stem.lower()))
             if unit is None or unit not in parsed_files:
                 continue
-            text = source_text(form, parsed_files[form], source_map)
+            # A BOM would hide the root line and let a child pass for the root.
+            text = source_text(form, parsed_files[form], source_map, "utf-8-sig")
             count += _form_edges(graph, form, text, unit, parsed_files[unit])
         return count
 
