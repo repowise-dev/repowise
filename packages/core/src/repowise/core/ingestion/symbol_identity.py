@@ -423,6 +423,27 @@ def id_holders(symbols: Iterable[Symbol]) -> list[Symbol]:
     return list(holders.values())
 
 
+def symbols_by_id(symbols: Iterable[Symbol]) -> dict[str, Symbol]:
+    """``{id: symbol}`` over *symbols*, the last listed holding each id.
+
+    Except that a type forward declaration never displaces the type it names:
+    a ``class Shape;`` written after ``class Shape {..}`` would otherwise take
+    the id, and with it the span and fields, from the definition.
+    """
+    held: dict[str, Symbol] = {}
+    for sym in symbols:
+        current = held.get(sym.id)
+        if (
+            current is not None
+            and current.kind in _FORWARD_DECLARED_TYPE_KINDS
+            and not current.is_declaration
+            and is_type_forward_declaration(vars(sym))
+        ):
+            continue
+        held[sym.id] = sym
+    return held
+
+
 def disambiguate_colliding_ids(symbols: list[Symbol], language: str) -> None:
     """Give each member of a colliding id its own id, in place.
 
@@ -624,6 +645,7 @@ __all__ = [
     "symbol_discriminator",
     "symbol_id_arity",
     "symbol_id_discriminator",
+    "symbols_by_id",
     "takes_shared_id",
     "untyped_symbol_id",
 ]

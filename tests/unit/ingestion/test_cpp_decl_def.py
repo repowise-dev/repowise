@@ -287,6 +287,75 @@ class TestTypeDeclarationFlag:
         assert graph.nodes["t.hh::fn"]["is_declaration"] is False
 
 
+_DISK_HEADER = (
+    "#pragma once\n#include <string>\n"
+    "struct DiskInterface {\n  virtual int RemoveFile(const std::string& path) = 0;\n};\n"
+)
+_BUILDER_BODY = "struct Builder {\n  void Cleanup();\n  DiskInterface* disk_interface_;\n};\n"
+_CLEANUP = (
+    '#include "build.h"\n#include "disk.h"\n'
+    'void Builder::Cleanup() { disk_interface_->RemoveFile("x"); }\n'
+)
+
+
+class TestForwardDeclaredClassKeepsItsFields:
+    """A class declared ``struct Builder;`` beside its definition reads the definition's fields.
+
+    Both share one id, so an out-of-line body's field receiver is typed from
+    whichever the resolver takes for that id.
+    """
+
+    def _calls(self, tmp_path: Path, header: str) -> set[tuple[str, str]]:
+        (tmp_path / "disk.h").write_text(_DISK_HEADER)
+        (tmp_path / "build.h").write_text(header)
+        (tmp_path / "build.cc").write_text(_CLEANUP)
+        graph = _build(tmp_path)
+        return {(u, v) for u, v, d in graph.edges(data=True) if d.get("edge_type") == "calls"}
+
+    def test_a_forward_declaration_above_the_class(self, tmp_path: Path) -> None:
+        header = (
+            "#pragma once\nstruct DiskInterface;\nstruct Builder;\n"
+            "struct Plan { Builder* b; };\n" + _BUILDER_BODY
+        )
+        assert ("build.cc::Builder::Cleanup", "disk.h::DiskInterface::RemoveFile") in self._calls(
+            tmp_path, header
+        )
+
+    def test_a_forward_declaration_below_the_class(self, tmp_path: Path) -> None:
+        header = "#pragma once\nstruct DiskInterface;\n" + _BUILDER_BODY + "struct Builder;\n"
+        assert ("build.cc::Builder::Cleanup", "disk.h::DiskInterface::RemoveFile") in self._calls(
+            tmp_path, header
+        )
+
+    def test_the_id_maps_to_the_definition_in_either_order(self) -> None:
+        from repowise.core.ingestion.models import Symbol
+        from repowise.core.ingestion.symbol_identity import symbols_by_id
+
+        def sym(line: int, *, declaration: bool, kind: str = "struct") -> Symbol:
+            return Symbol(
+                id="s.h::S",
+                name="S",
+                qualified_name="S",
+                kind=kind,
+                signature="S",
+                start_line=line,
+                end_line=line,
+                docstring=None,
+                language="cpp",
+                is_declaration=declaration,
+            )
+
+        decl, body = sym(1, declaration=True), sym(2, declaration=False)
+        twin = sym(3, declaration=False)
+        assert symbols_by_id([decl, body])["s.h::S"] is body
+        assert symbols_by_id([body, decl])["s.h::S"] is body
+        assert symbols_by_id([body, twin])["s.h::S"] is twin
+        # Only the type it names outranks a forward declaration; anything else
+        # keeps the plain last-listed rule.
+        function = sym(4, declaration=False, kind="function")
+        assert symbols_by_id([function, decl])["s.h::S"] is decl
+
+
 # A header that names third-party and sibling types without defining them, then
 # defines its own class: the shape of almost every large C++ header.
 _FORWARD_HEADER = """#pragma once
