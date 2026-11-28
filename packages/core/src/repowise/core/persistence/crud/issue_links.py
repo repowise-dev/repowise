@@ -190,9 +190,7 @@ async def fix_issue_quotes(
     if not wanted:
         return {}
     try:
-        # A savepoint, so a failed read never aborts the caller's transaction.
-        async with session.begin_nested():
-            events, linked = await _quoted_events(session, repository_id, wanted)
+        events, linked = await _quoted_events(session, repository_id, wanted)
     except SQLAlchemyError:
         return {}
     out: dict[str, dict[str, str]] = {}
@@ -423,8 +421,7 @@ async def _issue_basis(
     from ...changes.category import SIGNAL_ISSUE
 
     try:
-        async with session.begin_nested():
-            linked = await linked_defect_issues(session, repository_id, shas)
+        linked = await linked_defect_issues(session, repository_id, shas)
     except SQLAlchemyError:
         return
     for sha in shas:
