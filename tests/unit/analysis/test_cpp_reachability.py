@@ -620,3 +620,184 @@ def test_stamp_cpp_build_listed_ignores_headers(tmp_path: Path) -> None:
     assert g.nodes["include/branding.h"].get("build_listed") is True
     assert "build_listed" not in g.nodes["include/stale.h"]
     assert "build_listed" not in g.nodes["cmake_hdr.h"]
+
+
+def test_header_only_target_header_rescued_by_another_member() -> None:
+    g = nx.DiGraph()
+    stamp = {"language": "cpp", "cpp_header_only_targets": ("cmake:lib",)}
+    g.add_node("include/lib/core.h", **stamp)
+    g.add_node("include/lib/detail/format.h", **stamp)
+    g.add_node("app/main.cc", language="cpp")
+    g.add_edge("app/main.cc", "include/lib/core.h", edge_type="imports")
+    packages = build_cpp_package_files(g)
+    assert is_cpp_file_reachable("include/lib/detail/format.h", g, packages) is True
+
+
+def test_header_only_target_with_no_importer_rescues_nothing() -> None:
+    g = nx.DiGraph()
+    stamp = {"language": "cpp", "cpp_header_only_targets": ("cmake:lib",)}
+    g.add_node("include/lib/core.h", **stamp)
+    g.add_node("include/lib/detail/format.h", **stamp)
+    # An imported header of another target, in another directory.
+    g.add_node("other/api.h", language="cpp")
+    g.add_node("app/main.cc", language="cpp")
+    g.add_edge("app/main.cc", "other/api.h", edge_type="imports")
+    packages = build_cpp_package_files(g)
+    assert is_cpp_file_reachable("include/lib/detail/format.h", g, packages) is False
+
+
+def test_header_only_target_imported_only_by_its_own_headers_rescues_nothing() -> None:
+    g = nx.DiGraph()
+    stamp = {"language": "cpp", "cpp_header_only_targets": ("cmake:lib",)}
+    for node in ("include/lib/a.h", "include/lib/b/b.h", "include/lib/c/c.h"):
+        g.add_node(node, **stamp)
+    # a.h includes b.h; nothing outside the library includes either.
+    g.add_edge("include/lib/a.h", "include/lib/b/b.h", edge_type="imports")
+    packages = build_cpp_package_files(g)
+    assert is_cpp_file_reachable("include/lib/c/c.h", g, packages) is False
+    assert is_cpp_file_reachable("include/lib/a.h", g, packages) is False
+
+
+def test_stamp_marks_headers_of_header_only_targets(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.ingestion.graph_warmups import _stamp_cpp_build_listed
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    g = nx.DiGraph()
+    for node in ("lib/a.h", "lib/sub/b.h", "core/c.h", "core/c.cc"):
+        g.add_node(node)
+    index = SimpleNamespace(
+        targets={
+            "hdr": SimpleNamespace(
+                sources=(), public_headers=("lib/a.h",), private_headers=("lib/sub/b.h",)
+            ),
+            "core": SimpleNamespace(
+                sources=("core/c.cc",), public_headers=("core/c.h",), private_headers=()
+            ),
+        }
+    )
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    _stamp_cpp_build_listed(ctx, g, index)
+    assert g.nodes["lib/a.h"]["cpp_header_only_targets"] == ("hdr",)
+    assert g.nodes["lib/sub/b.h"]["cpp_header_only_targets"] == ("hdr",)
+    assert "cpp_header_only_targets" not in g.nodes["core/c.h"]
+
+
+def test_stamp_replaces_what_a_seeded_node_carried(tmp_path: Path) -> None:
+    # A patch build seeds untouched nodes from the last snapshot, stamps included.
+    from types import SimpleNamespace
+
+    from repowise.core.ingestion.graph_warmups import _stamp_cpp_build_listed
+    from repowise.core.ingestion.resolvers import ResolverContext
+
+    g = nx.DiGraph()
+    g.add_node("lib/a.h", cpp_header_only_targets=("hdr",))
+    g.add_node("lib/sub/b.h", cpp_header_only_targets=("hdr",))  # has left the target
+    g.add_node("old/gone.cc", build_listed=True)  # no longer compiled by any target
+    index = SimpleNamespace(
+        targets={"hdr": SimpleNamespace(sources=(), public_headers=("lib/a.h",), private_headers=())}
+    )
+    ctx = ResolverContext(path_set=set(), stem_map={}, graph=None, repo_path=tmp_path)
+    for _ in range(2):
+        _stamp_cpp_build_listed(ctx, g, index)
+    assert g.nodes["lib/a.h"]["cpp_header_only_targets"] == ("hdr",)
+    assert "cpp_header_only_targets" not in g.nodes["lib/sub/b.h"]
+    assert "build_listed" not in g.nodes["old/gone.cc"]
+
+
+def test_patch_build_header_stamps_match_a_full_build(tmp_path: Path) -> None:
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    def write(rel: str, text: str) -> None:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(text)
+
+    def parsed_builder() -> GraphBuilder:
+        builder = GraphBuilder(repo_path=tmp_path)
+        parser = ASTParser()
+        for fi in FileTraverser(tmp_path).traverse():
+            builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+        return builder
+
+    def stamps(graph: nx.DiGraph) -> dict:
+        return {n: d.get("cpp_header_only_targets") for n, d in graph.nodes(data=True)}
+
+    cmake = (
+        "add_library(hdr INTERFACE)\n"
+        "target_sources(hdr INTERFACE include/hdr/core.h {extra})\n"
+        "target_include_directories(hdr INTERFACE include)\n"
+    )
+    write("CMakeLists.txt", cmake.format(extra="include/hdr/detail/format.h"))
+    write("include/hdr/core.h", "int core_fn();\n")
+    write("include/hdr/detail/format.h", "int format_fn();\n")
+    write("app/main.cc", '#include "hdr/core.h"\nint main() { return core_fn(); }\n')
+    first = parsed_builder().build()
+    snapshot = {"nodes": list(first.nodes(data=True)), "edges": list(first.edges(data=True))}
+
+    # format.h leaves the library; the patch re-resolves only main.cc.
+    write("CMakeLists.txt", cmake.format(extra=""))
+    patched = parsed_builder()
+    patched.seed_graph_snapshot(snapshot, scope=["app/main.cc"])
+    patch_graph = patched.build(scope=["app/main.cc"], refresh_global=True)
+    full_graph = parsed_builder().build()
+
+    assert stamps(patch_graph) == stamps(full_graph)
+    assert len(patch_graph.nodes["include/hdr/core.h"]["cpp_header_only_targets"]) == 1
+    assert "cpp_header_only_targets" not in patch_graph.nodes["include/hdr/detail/format.h"]
+
+
+def _index_repo(repo: Path, files: dict[str, str]):
+    from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
+
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+    builder = GraphBuilder(repo_path=repo)
+    parser = ASTParser()
+    for fi in FileTraverser(repo).traverse():
+        builder.add_file(parser.parse_file(fi, Path(fi.abs_path).read_bytes()))
+    graph = builder.build()
+    report = DeadCodeAnalyzer(graph, parsed_files=builder._parsed_files).analyze(
+        {"min_confidence": 0.0}
+    )
+    return graph, report
+
+
+def test_including_a_target_header_links_no_other_target_source(tmp_path: Path) -> None:
+    graph, report = _index_repo(
+        tmp_path,
+        {
+            "CMakeLists.txt": "add_library(engine STATIC src/world.cpp src/sound.cpp src/weather.cpp)\n"
+            "target_include_directories(engine PUBLIC src)\n",
+            "src/world.hpp": "struct World { int tick(); };\n",
+            "src/world.cpp": '#include "world.hpp"\nint World::tick() { return 1; }\n',
+            "src/sound.cpp": "int play() { return 2; }\n",
+            "src/weather.cpp": "int rain() { return 3; }\n",
+            "app/main.cpp": '#include "world.hpp"\nint main() { World w; return w.tick(); }\n',
+        },
+    )
+    for importer in ("app/main.cpp", "src/world.cpp"):
+        targets = {
+            t for _, t, d in graph.out_edges(importer, data=True) if d.get("edge_type") == "imports"
+        }
+        assert "src/sound.cpp" not in targets and "src/weather.cpp" not in targets
+    unreachable = {f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    # Listed in the target, so still reachable without the fake edges.
+    assert not unreachable & {"src/sound.cpp", "src/weather.cpp"}
+
+
+def test_header_only_library_across_directories_stays_reachable(tmp_path: Path) -> None:
+    _, report = _index_repo(
+        tmp_path,
+        {
+            "CMakeLists.txt": "add_library(hdr INTERFACE)\n"
+            "target_sources(hdr INTERFACE include/hdr/core.h include/hdr/detail/format.h)\n"
+            "target_include_directories(hdr INTERFACE include)\n",
+            "include/hdr/core.h": "int core_fn();\n",
+            "include/hdr/detail/format.h": "int format_fn();\n",
+            "app/main.cc": '#include "hdr/core.h"\nint main() { return core_fn(); }\n',
+        },
+    )
+    unreachable = {f.file_path for f in report.findings if f.kind == DeadCodeKind.UNREACHABLE_FILE}
+    assert "include/hdr/detail/format.h" not in unreachable

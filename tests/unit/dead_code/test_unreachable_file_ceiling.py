@@ -97,7 +97,11 @@ def test_cpp_header_production_code_names_is_capped_and_a_silent_one_is_not(tmp_
     found = _confidences(
         tmp_path,
         {
-            "src/main.cpp": "#include <rw_mingw.hpp>\nint main() { return 0; }\n",
+            # A computed include names the header, but no resolver follows it.
+            "src/main.cpp": (
+                "#define COMPAT_HEADER <rw_mingw.hpp>\n#include COMPAT_HEADER\n"
+                "int main() { return 0; }\n"
+            ),
             "rwengine/compat/rw_mingw.hpp": (
                 "#pragma once\n#ifdef __MINGW32__\n#define RW_MINGW_COMPAT 1\n#endif\n"
             ),
