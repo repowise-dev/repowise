@@ -147,8 +147,9 @@ def test_the_host_functions_own_parameters_and_locals_take_the_name():
 # -- casing --------------------------------------------------------------------
 
 
-def test_csharp_placeholders_use_pascal_case_and_numbered_suffixes():
-    assert list(islice(placeholder_names("csharp"), 3)) == [
+@pytest.mark.parametrize("language", ["csharp", "razor"])
+def test_csharp_placeholders_use_pascal_case_and_numbered_suffixes(language):
+    assert list(islice(placeholder_names(language), 3)) == [
         "ExtractedHelper",
         "ExtractedHelper2",
         "ExtractedHelper3",

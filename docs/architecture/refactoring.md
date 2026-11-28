@@ -131,7 +131,8 @@ command.
 `impact_delta` credits the share of the source finding the plan removes; for
 Extract Method that is `ccn_removed / ccn`, `slice_nloc / nloc`, or the larger of
 the two for `brain_method`, capped at 1. Extract Method's `helper_naming.py` gives
-a helper the placeholder `extracted_helper`, numbered when the name is taken in
+a helper the placeholder `extracted_helper` (`extractedHelper` in camelCase
+languages, `ExtractedHelper` in C#), numbered when the name is taken in
 scope, and the plan asks the agent applying it to rename it.
 
 Plan ids come from `identity.py`: a `refac<version>_` prefix over a per-type stable

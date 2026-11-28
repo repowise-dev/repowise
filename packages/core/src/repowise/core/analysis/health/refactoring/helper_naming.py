@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 # default rather than getting one answer that is wrong for most C++ repos.
 NAME_CONVENTION: dict[str, str] = {
     "csharp": "PascalCase",
+    "razor": "PascalCase",
     "go": "camelCase",
     "java": "camelCase",
     "apex": "camelCase",
