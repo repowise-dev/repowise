@@ -1712,13 +1712,9 @@ def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int
     Kept only when the list ends its statement at ``;``: anything else (a
     parameter list, a template argument) gives none.
     """
+    if not _cpp_opens_list(cleaned, match):
+        return []
     at, later = match.end(), []
-    # ``a * b, c;`` multiplies: a declarator's star binds to one side.
-    spaced = _CPP_SPACED_STAR.search(cleaned, match.end("type"), match.start("name"))
-    if not cleaned.startswith((",", "="), at) or cleaned.startswith("==", at) or spaced:
-        return []
-    if not _cpp_starts_statement(cleaned, match.start()):
-        return []
     while True:
         if cleaned.startswith("=", at):
             at = _initializer_end(cleaned, at + 1)
@@ -1727,12 +1723,26 @@ def _cpp_later_declarators(cleaned: str, match: re.Match[str]) -> list[tuple[int
         if cleaned.startswith(";", at):
             return later
         declarator = _CPP_LATER_DECLARATOR.match(cleaned, at)
-        if declarator is None or not cleaned.startswith((",", ";", "="), declarator.end()):
-            return []
-        if cleaned.startswith("==", declarator.end()):
+        if declarator is None or not _closes_declarator(cleaned, declarator.end()):
             return []
         later.append((declarator.start("name"), declarator.group("name")))
         at = declarator.end()
+
+
+def _closes_declarator(cleaned: str, at: int) -> bool:
+    """Does a ``,``, ``;`` or ``=`` (not ``==``) end a declarator at *at*?"""
+    return cleaned.startswith((",", ";", "="), at) and not cleaned.startswith("==", at)
+
+
+def _cpp_opens_list(cleaned: str, match: re.Match[str]) -> bool:
+    """Can the declaration *match* be the first of a list, at its statement's head?"""
+    at = match.end()
+    if not cleaned.startswith((",", "="), at) or cleaned.startswith("==", at):
+        return False
+    # ``a * b, c;`` multiplies: a declarator's star binds to one side.
+    if _CPP_SPACED_STAR.search(cleaned, match.end("type"), match.start("name")):
+        return False
+    return _cpp_starts_statement(cleaned, match.start())
 
 
 def _cpp_constructs_in_place(cleaned: str, match: re.Match[str]) -> bool:
