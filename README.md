@@ -410,7 +410,7 @@ advertised surface, against answer keys we did not write.
 | **Finding the right files** | **88%** of the files a fix needed, against 61% for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
-| **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
+| **Call graph the compiler agrees with** | **93.9% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
 **[Every result, in plain English, with the method →](docs/BENCHMARKS.md)** ·
