@@ -147,13 +147,10 @@ def test_claude_user_prompt_submit_stays_silent(runner: CliRunner, tmp_path: Pat
 
 
 def test_claude_subagent_start_payload_returns_steer_in_indexed_repo(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner, tmp_path: Path
 ) -> None:
     from repowise.core.agent_steer import AGENT_STEER_DEFERRED
 
-    monkeypatch.setattr(
-        "repowise.cli.commands.augment_cmd.command._claim_emission", lambda e, c: True
-    )
     _init_repowise_repo(tmp_path)
 
     result = _invoke_augment(
@@ -161,6 +158,8 @@ def test_claude_subagent_start_payload_returns_steer_in_indexed_repo(
         {
             "hook_event_name": "SubagentStart",
             "cwd": str(tmp_path),
+            "session_id": f"parent-session-{tmp_path.name}",
+            "agent_id": f"agent-{tmp_path.name}",
         },
     )
 
@@ -170,17 +169,25 @@ def test_claude_subagent_start_payload_returns_steer_in_indexed_repo(
 
 
 def test_claude_subagent_start_parallel_emits_for_each_agent(
-    runner: CliRunner, tmp_path: Path
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from repowise.cli.commands.augment_cmd import command
     from repowise.core.agent_steer import AGENT_STEER_DEFERRED
 
     _init_repowise_repo(tmp_path)
+    recorded_sessions: list[str] = []
+    monkeypatch.setattr(
+        command,
+        "_count_run",
+        lambda cwd, session_id, event, tool, emitted: recorded_sessions.append(session_id),
+    )
+    parent_session_id = f"parent-session-{tmp_path.name}"
     res1 = _invoke_augment(
         runner,
         {
             "hook_event_name": "SubagentStart",
             "cwd": str(tmp_path),
-            "session_id": "parent-session-123",
+            "session_id": parent_session_id,
             "agent_id": "agent-sub-1",
         },
     )
@@ -189,7 +196,7 @@ def test_claude_subagent_start_parallel_emits_for_each_agent(
         {
             "hook_event_name": "SubagentStart",
             "cwd": str(tmp_path),
-            "session_id": "parent-session-123",
+            "session_id": parent_session_id,
             "agent_id": "agent-sub-2",
         },
     )
@@ -197,6 +204,7 @@ def test_claude_subagent_start_parallel_emits_for_each_agent(
     assert res2.exit_code == 0
     assert AGENT_STEER_DEFERRED in _hook_context(res1.output)
     assert AGENT_STEER_DEFERRED in _hook_context(res2.output)
+    assert recorded_sessions == [parent_session_id, parent_session_id]
 
 
 def test_claude_subagent_start_outside_repo_returns_empty(

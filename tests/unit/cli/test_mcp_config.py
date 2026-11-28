@@ -264,9 +264,7 @@ def test_save_codex_hooks_config_migration_spares_a_user_hook_on_a_retired_event
     mcp_config.save_codex_hooks_config(tmp_path)
 
     saved = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
-    remaining = [
-        hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]
-    ]
+    remaining = [hook["command"] for entry in saved["UserPromptSubmit"] for hook in entry["hooks"]]
     assert remaining == ["echo alongside", "echo mine"]
 
 
@@ -557,6 +555,19 @@ def test_install_claude_code_hooks_creates_missing_file(
     assert _repowise_entries(saved, "PostToolUseFailure") == [
         (claude_config._FAILURE_MATCHER, claude_config._augment_hook_command())
     ]
+
+
+def test_install_then_uninstall_removes_subagent_start_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    settings_path = claude_config.install_claude_code_hooks()
+    installed = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert _repowise_entries(installed, "SubagentStart")
+
+    assert claude_config.uninstall_claude_code_augment_hooks() is True
+    uninstalled = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "SubagentStart" not in uninstalled.get("hooks", {})
 
 
 def test_the_failure_matcher_covers_only_tools_that_take_a_path() -> None:
@@ -878,14 +889,18 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
             "PostToolUse": [
                 {
                     "matcher": claude_config._AUGMENT_MATCHER,
-                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
+                    "hooks": [
+                        {"type": "command", "command": claude_config._augment_hook_command()}
+                    ],
                 },
                 claude_config._capture_entry(),
             ],
             "SessionStart": [
                 {
                     "matcher": "startup|resume|clear",
-                    "hooks": [{"type": "command", "command": claude_config._augment_hook_command()}],
+                    "hooks": [
+                        {"type": "command", "command": claude_config._augment_hook_command()}
+                    ],
                 }
             ],
             "SubagentStart": [claude_config._subagent_start_entry()],
@@ -893,7 +908,7 @@ def test_migrate_claude_code_hooks_noop_when_already_current(
             "Stop": [claude_config._stop_entry()],
         }
     }
-    original =json.dumps(payload, indent=2) + "\n"
+    original = json.dumps(payload, indent=2) + "\n"
     settings_path.write_text(original, encoding="utf-8")
     mtime_before = settings_path.stat().st_mtime_ns
 
@@ -957,8 +972,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                     "PostToolUse": [
                         {
                             "matcher": (
-                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
-                                "|mcp__.*[Rr]epowise.*__.*"
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
                             ),
                             "hooks": [
                                 {
@@ -972,8 +986,7 @@ def test_migrate_narrows_the_shell_tools_out_of_an_existing_install(
                         # tool the user pointed it at on purpose.
                         {
                             "matcher": (
-                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write"
-                                "|mcp__.*[Rr]epowise.*__.*"
+                                "Bash|PowerShell|Grep|Glob|Read|Edit|Write|mcp__.*[Rr]epowise.*__.*"
                             ),
                             "hooks": [{"type": "command", "command": "node theirs.js"}],
                         },

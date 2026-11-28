@@ -469,8 +469,7 @@ _CAPTURE_HOOK_COMMAND = (
 #: augment package, so a stop in a repository without the switch pays one
 #: config read. No matcher: Stop has no tool to match.
 _STOP_HOOK_COMMAND = (
-    "if command -v repowise-augment >/dev/null 2>&1; "
-    "then exec repowise-augment --decision-stop; fi"
+    "if command -v repowise-augment >/dev/null 2>&1; then exec repowise-augment --decision-stop; fi"
 )
 
 _AUGMENT = "repowise-augment"
@@ -849,9 +848,7 @@ def _stop_entry() -> dict:
 
 def _plugin_ships_stop_hook() -> bool:
     """Whether an enabled repowise plugin already carries the Stop entry."""
-    return any(
-        _has_repowise_hook(entries) for _, entries in _plugin_hook_entries("Stop")
-    )
+    return any(_has_repowise_hook(entries) for _, entries in _plugin_hook_entries("Stop"))
 
 
 def _failure_entry() -> dict:
@@ -1250,7 +1247,6 @@ def uninstall_claude_code_distill_allow_rules() -> bool:
     return _write_settings(settings_path, existing)
 
 
-
 def _migrate_legacy_rewrite_matcher(hook_list: list) -> bool:
     """Widen legacy rewrite-hook matchers in place (``Bash`` → current)."""
     changed = False
@@ -1304,9 +1300,9 @@ def uninstall_claude_code_augment_hooks() -> bool:
     The sibling of :func:`uninstall_claude_code_rewrite_hook`, and deliberately
     a separate function: the rewrite hook is one opt-in entry under one event,
     while the augment hooks are installed across ``SessionStart``,
-    ``PostToolUse`` and ``PostToolUseFailure``. Sweeping every event with the
-    same predicate is what keeps a future fourth event from being missed here
-    while ``install_claude_code_hooks`` grows one.
+    ``SubagentStart``, ``PostToolUse``, ``PostToolUseFailure`` and ``Stop``.
+    Sweeping every event with the same predicate is what keeps a future event
+    from being missed here while ``install_claude_code_hooks`` grows one.
 
     Prunes as it goes, in the same order the file nests: our command out of an
     entry, an entry we emptied out of its event, an event we emptied out of
@@ -1356,7 +1352,9 @@ def uninstall_claude_code_mcp_entry() -> bool:
     from repowise.cli.agent_targets.types import FileAction
 
     try:
-        action = remove_json_object_member(_claude_code_user_config_path(), "mcpServers", "repowise")
+        action = remove_json_object_member(
+            _claude_code_user_config_path(), "mcpServers", "repowise"
+        )
     except (OSError, click.ClickException):
         return False
     return action is FileAction.REMOVED
@@ -1645,9 +1643,7 @@ def _strip_hooks(hook_list: list, predicate) -> bool:
 
 def _has_repowise_hook(hook_list: list) -> bool:
     """Check if a repowise hook is already registered, current or legacy."""
-    return any(
-        any(_is_repowise_hook(hook) for hook in _hooks_of(entry)) for entry in hook_list
-    )
+    return any(any(_is_repowise_hook(hook) for hook in _hooks_of(entry)) for entry in hook_list)
 
 
 def _is_repowise_hook(hook: dict) -> bool:

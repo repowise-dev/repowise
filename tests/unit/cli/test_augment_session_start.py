@@ -65,6 +65,19 @@ def test_subagent_start_outside_indexed_repo_is_silent(tmp_path: Path) -> None:
     assert session_start._handle_claude_subagent_start(str(tmp_path)) is None
 
 
+@pytest.mark.parametrize(
+    "handler",
+    [session_start._handle_claude_session_start, session_start._handle_claude_subagent_start],
+)
+@pytest.mark.parametrize("state", [b"[]", b"\xff"])
+def test_invalid_state_is_ignored_by_both_handlers(tmp_path: Path, handler, state: bytes) -> None:
+    state_path = tmp_path / ".repowise" / "state.json"
+    state_path.parent.mkdir()
+    state_path.write_bytes(state)
+
+    assert handler(str(tmp_path)) is None
+
+
 def test_current_index_without_agent_block_gives_only_the_call_first_line(
     repo, monkeypatch
 ) -> None:
@@ -202,7 +215,9 @@ def test_temp_root_repowise_is_ignored(tmp_path, monkeypatch) -> None:
     assert _shared._find_repo_root(repo) == repo.resolve()
 
 
-@pytest.mark.parametrize("bad", ["--output=/tmp/x", "-p", "--no-index", "HEAD~1", "abc", "g" * 40, ""])
+@pytest.mark.parametrize(
+    "bad", ["--output=/tmp/x", "-p", "--no-index", "HEAD~1", "abc", "g" * 40, ""]
+)
 def test_changed_file_count_rejects_non_commit_ids(tmp_path, monkeypatch, bad) -> None:
     import subprocess
 
