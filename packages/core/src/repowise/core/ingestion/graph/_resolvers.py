@@ -17,6 +17,7 @@ from ..decorator_names import decorator_base
 from ..external_calls import ExternalCallSite
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
+from ..resolution_containment import resolve_contained
 from ..symbol_identity import make_symbol_id
 
 log = structlog.get_logger(__name__)
@@ -81,8 +82,15 @@ class ResolveMixin:
         if progress:
             progress.on_phase_start("graph.heritage", len(files_with_heritage))
         for path, parsed in files_with_heritage:
-            resolved = resolver.resolve_file(path, parsed.heritage)
-            for rh in resolved:
+            resolved = resolve_contained(
+                self.resolve_failures,
+                "heritage",
+                path,
+                resolver.resolve_file,
+                path,
+                parsed.heritage,
+            )
+            for rh in resolved or ():
                 if rh.child_id in self._graph and rh.parent_id in self._graph:
                     if not self._graph.has_edge(rh.child_id, rh.parent_id):
                         self._graph.add_edge(
@@ -706,10 +714,18 @@ class ResolveMixin:
             progress.on_phase_start("graph.calls", len(files_with_calls))
         for path, parsed in files_with_calls:
             external: list[ExternalCallSite] = []
-            resolved = resolver.resolve_file(path, parsed.calls, external)
-            if external:
+            resolved = resolve_contained(
+                self.resolve_failures,
+                "calls",
+                path,
+                resolver.resolve_file,
+                path,
+                parsed.calls,
+                external,
+            )
+            if external and resolved is not None:
                 external_sites[path] = external
-            for rc in resolved:
+            for rc in resolved or ():
                 if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
                     continue
                 if not self._graph.has_edge(rc.caller_id, rc.callee_id):
@@ -839,10 +855,20 @@ class ResolveMixin:
                 (bare, bare_kinds),
                 (qualified, _QUALIFIED_REFERENCE_KINDS),
             )
+            # Both batches resolve before either writes, so a raise adds none of the file's edges.
+            resolved_batches = []
             for sites, allowed_kinds in batches:
                 if not sites:
                     continue
-                for rc in resolver.resolve_file(path, sites):
+                resolved = resolve_contained(
+                    self.resolve_failures, "references", path, resolver.resolve_file, path, sites
+                )
+                if resolved is None:
+                    resolved_batches = []
+                    break
+                resolved_batches.append((resolved, allowed_kinds))
+            for resolved, allowed_kinds in resolved_batches:
+                for rc in resolved:
                     if rc.confidence < _MIN_REFERENCE_CONFIDENCE:
                         continue
                     if rc.caller_id not in self._graph or rc.callee_id not in self._graph:
@@ -889,7 +915,10 @@ class ResolveMixin:
             sites = _decorator_sites(parsed, names)
             if not sites:
                 continue
-            for rc in resolver.resolve_file(path, sites):
+            resolved = resolve_contained(
+                self.resolve_failures, "registrations", path, resolver.resolve_file, path, sites
+            )
+            for rc in resolved or ():
                 if rc.confidence < _MIN_REFERENCE_CONFIDENCE or rc.callee_id not in registrar_ids:
                     continue
                 total += self._add_reference_edge(

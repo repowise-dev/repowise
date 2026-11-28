@@ -18,6 +18,7 @@ import structlog
 from ...analysis.public_api import stamp_public_api
 from ...build_units import BuildUnitIndex
 from ...cancellation import check_cancelled
+from ...pipeline.progress import emit_warning
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
     SAME_PACKAGE_HINT,
@@ -29,6 +30,7 @@ from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, combine_load_kinds
+from ..resolution_containment import Failure, failure_summary, resolve_contained
 from ..resolvers import ResolverContext
 from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
@@ -216,6 +218,8 @@ class GraphBuilder(
         # {path: the targets each of its imports resolved to, in order}. A
         # patch compares these to decide which files an edit re-routes.
         self.import_resolutions: dict[str, list[tuple[str, ...]]] = {}
+        # Files a resolution pass skipped this build (``resolution_containment``).
+        self.resolve_failures: list[Failure] = []
         # ``co_changes`` edges a refreshing patch set aside; see
         # ``restore_co_change_edges``.
         self._stashed_co_changes: list[tuple[str, str, dict[str, Any]]] = []
@@ -533,6 +537,7 @@ class GraphBuilder(
         self._invalidate_metric_caches()
         # Set again by the call pass; a build that stops before it writes none.
         self.external_call_sites, self.external_call_scope = None, None
+        self.resolve_failures = []
         self._qualify_python_symbols()
         # Apex and Pascal names are case-insensitive; every resolver keys on
         # the declared spelling.
@@ -613,16 +618,30 @@ class GraphBuilder(
             # repowise.core.ingestion.cohesion.
             _unit_fanout = _lang in UNIT_FANOUT_LANGUAGES
             _own_dir = PurePosixPath(path).parent.as_posix() if _unit_fanout else ""
-            resolved: list[tuple[str, ...]] = []
-            for imp in parsed.imports:
-                targets = resolve_import_targets(imp, path, _lang, ctx)
-                resolved.append(targets)
+            resolved = resolve_contained(
+                self.resolve_failures,
+                "imports",
+                path,
+                self._resolve_file_imports,
+                path,
+                parsed,
+                ctx,
+            )
+            if resolved is None:
+                # Left out of ``import_resolutions``, so the next patch rebuilds in full.
+                for imp in parsed.imports:
+                    imp.resolved_file = None
+                    for binding in imp.bindings:
+                        binding.source_file = None
+                resolved = [()] * len(parsed.imports)
+            else:
+                self.import_resolutions[path] = resolved
+            for imp, targets in zip(parsed.imports, resolved, strict=True):
                 if targets:
                     imp.resolved_file = targets[0]
                 for target in targets:
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
-            self.import_resolutions[path] = resolved
             # Already resolved, and kept out of ``import_resolutions``, which
             # lines up with ``parsed.imports`` one for one.
             for imp in self._implicit_imports.get(path, ()):
@@ -751,6 +770,9 @@ class GraphBuilder(
             log.warning("public_api_stamp_failed", error=str(exc))
 
         self._built = True
+        if summary := failure_summary(self.resolve_failures):
+            log.warning("graph_build_files_skipped", files=len(self.resolve_failures))
+            emit_warning(progress, summary)
 
         # Keep the resolver-built DotNetProjectIndex reachable after the
         # context goes out of scope: the dynamic-hints phase (XAML) needs
@@ -780,6 +802,13 @@ class GraphBuilder(
             edge_types=edge_counts,
         )
         return self._graph
+
+    def _resolve_file_imports(
+        self, path: str, parsed: ParsedFile, ctx: ResolverContext
+    ) -> list[tuple[str, ...]]:
+        """The targets of each of *parsed*'s imports, in order; writes nothing to the graph."""
+        language = parsed.file_info.language
+        return [resolve_import_targets(imp, path, language, ctx) for imp in parsed.imports]
 
     def _add_import_edge(
         self, path: str, target: str, imp: Any, unit_fanout: bool, own_dir: str
@@ -839,7 +868,7 @@ class GraphBuilder(
         )
         if progress:
             progress.on_phase_start("graph.type_refs", len(parsed))
-        type_use_counts = resolve_type_refs(parsed, ctx, self._graph)
+        type_use_counts = resolve_type_refs(parsed, ctx, self._graph, self.resolve_failures)
         for path in parsed:
             for _, target, data in self._graph.out_edges(path, data=True):
                 # Treat both real ``using`` imports and synthesised
