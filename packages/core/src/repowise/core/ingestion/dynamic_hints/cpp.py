@@ -16,19 +16,16 @@ from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from .base import DynamicEdge, DynamicHintExtractor
 
 # Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
-# Matched case-insensitively and across the vendored third-party spellings
-# code_origin already knows, so engine trees that vendor into ``ThirdParty/``
-# or ``3rdParty/`` are skipped like ``third_party``/``thirdparty``.
-_SKIP_DIRS = frozenset(
-    {
-        "build", "out", "cmake-build-debug", "cmake-build-release",
-        "third_party", "thirdparty", "3rdparty", "3rd_party", "_deps",
-    }
-)
+_SKIP_DIRS = {"build", "out", "cmake-build-debug", "cmake-build-release", "_deps"}
+# Vendored third-party spellings matched case-insensitively (#6613), so
+# engine trees that vendor into ``ThirdParty/`` or ``3rdParty/`` are skipped
+# like ``third_party``/``thirdparty``. Other _SKIP_DIRS stay case-sensitive
+# (a first-party ``src/Build/`` tree is still read).
+_VENDORED_DIRS = {"third_party", "thirdparty", "3rdparty", "3rd_party"}
 
 
 def _part_is_skip_dir(part: str) -> bool:
-    return part.lower() in _SKIP_DIRS
+    return part in _SKIP_DIRS or part.lower() in _VENDORED_DIRS
 
 # Include fragments are scanned too: a generated binding table pasted into a
 # .inl is exactly where function-pointer and designated-initialiser wiring

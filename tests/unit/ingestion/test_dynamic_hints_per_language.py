@@ -229,6 +229,16 @@ class TestCHints:
         edges = CDynamicHints().extract(tmp_path)
         assert not any("libignored.so" in e.target for e in edges)
 
+    def test_src_build_dir_still_read(self, tmp_path: Path) -> None:
+        # Only the vendored spellings are case-insensitive: a first-party
+        # src/Build/ tree keeps its hint edges (review of #6629).
+        (tmp_path / "src" / "Build").mkdir(parents=True)
+        (tmp_path / "src" / "Build" / "loader.c").write_text(
+            "#include <dlfcn.h>\nvoid load() { dlopen(\"./libwanted.so\", 0); }\n"
+        )
+        edges = CDynamicHints().extract(tmp_path)
+        assert any("libwanted.so" in e.target for e in edges)
+
     def test_static_function_in_another_c_file_is_not_a_target(self, tmp_path: Path) -> None:
         # Internal linkage: the assignment in b.c can only mean its own handler.
         (tmp_path / "a.c").write_text("static void handler(int x) {\n}\n")

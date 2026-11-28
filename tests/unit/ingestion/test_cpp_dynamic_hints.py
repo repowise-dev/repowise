@@ -115,6 +115,19 @@ class TestSkipDirs:
         edges = _extract(tmp_path)
         assert not any("ignored.so" in e.target for e in edges)
 
+    def test_src_build_dir_still_read(self, tmp_path: Path) -> None:
+        # Only the vendored spellings are case-insensitive: a first-party
+        # src/Build/ tree keeps its hint edges (review of #6629).
+        (tmp_path / "src" / "Build").mkdir(parents=True)
+        (tmp_path / "src" / "Build" / "loader.cpp").write_text(
+            'void load() { dlopen("wanted.so", 0); }\n'
+            "void handler() {}\n"
+            "void (*fp)(void) = handler;\n"
+        )
+        edges = _extract(tmp_path)
+        assert any("wanted.so" in e.target for e in edges)
+        assert any(e.source.endswith("loader.cpp") for e in edges)
+
     @pytest.mark.parametrize("dirname", ["ThirdParty", "thirdparty", "3rdParty"])
     def test_thirdparty_case_variants_skipped(self, tmp_path: Path, dirname: str) -> None:
         # #6613: the skip test is case-sensitive and lists one spelling, so
