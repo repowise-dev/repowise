@@ -27,8 +27,18 @@ def _build_repo_vector_store(repo_path: Path, embedder: Any, *, create: bool) ->
     Search-only callers do not create a new store when no persisted index
     exists. Job callers pass ``create=True`` so server-generated embeddings use
     the same durable ``.repowise/lancedb`` location as the CLI.
+
+    A search reader with a keyless embedder gets ``None``, as in the MCP
+    server: keyless vectors are never searched (``store_has_semantic_vectors``),
+    and opening the store cost every keyless ``serve`` a lancedb and pyarrow
+    import at startup. Jobs still open it: model generation reads earlier
+    pages' summaries back from the store.
     """
+    from repowise.core.providers.embedding.base import is_semantic_embedder
+
     lance_dir = repo_path / ".repowise" / "lancedb"
+    if not create and not is_semantic_embedder(embedder):
+        return None
     if not create and not lance_dir.is_dir():
         return None
 

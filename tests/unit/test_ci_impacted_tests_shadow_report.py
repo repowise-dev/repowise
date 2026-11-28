@@ -115,3 +115,16 @@ def test_no_records_reports_without_an_ordering_line(tmp_path) -> None:
     assert s["runs"] == 0 and s["ordered_runs"] == 0 and s["unordered_runs"] == 0
     text = report.render(s)
     assert "First failing file" not in text and "No failing file" not in text
+
+
+def test_summary_counts_runs_whose_map_was_measured_at_the_base() -> None:
+    records = [
+        _record(1, "a", map_at_base=True),
+        _record(2, "b", map_at_base=False),
+        _record(3, "c"),  # an older record that does not say
+    ]
+
+    s = report.summarize(records)
+
+    assert (s["map_at_base"], s["map_known"]) == (1, 2)
+    assert "Per-test map measured at the base: 1 of 2 runs (50.0%)" in report.render(s)

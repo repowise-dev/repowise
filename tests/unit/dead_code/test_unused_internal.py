@@ -201,8 +201,9 @@ def test_unused_internal_skipped_when_referenced_as_a_value():
     assert "_handle" not in names
 
 
-def _private_nested_classes(edges: list) -> set[str]:
-    """Unused-internal names for a C# file holding private nested ``Inner``/``Spare``."""
+def _private_nested_classes(edges: list, nodes: dict[str, dict] | None = None) -> set[str]:
+    """Unused-internal names for a C# file holding private nested ``Inner``/``Spare``,
+    with the extra symbol *nodes* of that file."""
     g = _build_graph(
         nodes={
             "src/Outer.cs": {
@@ -223,6 +224,9 @@ def _private_nested_classes(edges: list) -> set[str]:
         },
         edges=edges,
     )
+    for node, attrs in (nodes or {}).items():
+        g.add_node(node, node_type="symbol", file_path="src/Outer.cs", language="csharp", **attrs)
+        g.add_edge("src/Outer.cs", node, edge_type="defines")
     report = DeadCodeAnalyzer(g, git_meta_map={}).analyze(
         {
             "detect_unreachable_files": False,
@@ -239,6 +243,37 @@ def test_a_class_constructed_through_its_constructor_is_used():
     ctor = "src/Outer.cs::Inner::Inner"
     edges = [("src/Main.cs::Main::Run", ctor, {"edge_type": "calls"})]
     assert _private_nested_classes(edges) == {"Spare"}
+
+
+_BUILD = "src/Outer.cs::Inner::build"
+_MEMBER = {_BUILD: {"name": "build", "kind": "method", "start_line": 5, "end_line": 5}}
+
+
+def test_a_class_whose_member_is_called_from_outside_it_is_used():
+    """A generated class (a Lombok builder) has no constructor call or name in
+    the source for a use to land on; a call of its member is its use."""
+    edges = [("src/Main.cs::Main::Run", _BUILD, {"edge_type": "calls"})]
+    assert _private_nested_classes(edges, _MEMBER) == {"Spare"}
+
+
+def test_a_dispatch_to_an_override_is_no_use_of_its_class():
+    edges = [("src/Base.cs::Base::build", _BUILD, {"edge_type": "dispatches_to"})]
+    assert _private_nested_classes(edges, _MEMBER) == {"Inner", "Spare"}
+
+
+def test_a_call_from_inside_a_class_is_no_use_of_it():
+    caller = {"name": "go", "kind": "method", "start_line": 4, "end_line": 4}
+    edges = [("src/Outer.cs::Inner::go", _BUILD, {"edge_type": "calls"})]
+    nodes = {**_MEMBER, "src/Outer.cs::Inner::go": caller}
+    assert _private_nested_classes(edges, nodes) == {"Inner", "Spare"}
+
+
+def test_a_member_of_a_class_whose_name_another_type_bears_is_no_use_of_it():
+    # A member's id names its parent by simple name, so it may be the other's.
+    other = {"name": "Inner", "kind": "class", "visibility": "public", "start_line": 15}
+    edges = [("src/Main.cs::Main::Run", _BUILD, {"edge_type": "calls"})]
+    nodes = {**_MEMBER, "src/Outer.cs::Other::Inner": {**other, "end_line": 19}}
+    assert _private_nested_classes(edges, nodes) == {"Inner", "Spare"}
 
 
 def test_a_constructor_with_only_containment_edges_does_not_rescue_its_class():
@@ -484,6 +519,32 @@ def test_ts_module_const_read_in_the_same_file_is_not_reported():
     )
     assert "RETRY_LIMIT" not in found
     assert "STRANDED" in found  # the control: a const nothing reads
+
+
+def test_js_ts_short_and_dollar_identifiers_read_in_same_file_not_reported():
+    source = (
+        "const currentUser$ = makeStore();\n"  # 1
+        "const ws = makeStore();\n"  # 2
+        "const unused$ = makeStore();\n"  # 3
+        "function makeStore() { return {}; }\n"  # 4
+        "export function run(cb) {\n"  # 5
+        "  cb(currentUser$);\n"  # 6
+        "  cb(ws);\n"  # 7
+        "}\n"
+    )
+    found = _internals_over(
+        "src/a.ts",
+        source,
+        [
+            {"name": "currentUser$", "kind": "constant", "start_line": 1, "end_line": 1},
+            {"name": "ws", "kind": "constant", "start_line": 2, "end_line": 2},
+            {"name": "unused$", "kind": "constant", "start_line": 3, "end_line": 3},
+        ],
+        language="typescript",
+    )
+    assert "currentUser$" not in found
+    assert "ws" not in found
+    assert "unused$" in found
 
 
 def test_python_callback_passed_as_target_is_not_reported():

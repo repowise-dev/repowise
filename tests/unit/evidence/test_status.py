@@ -134,3 +134,54 @@ def test_a_profile_without_sample_counts_is_flagged_with_its_cause() -> None:
     assert run_status(pruned, None)["low_signal"] == "pruned_1pct"
     assert "Low signal" in _status_line(run_status(pruned, None))
     assert "Low signal" not in _status_line(run_status(counted, None))
+
+
+def _production(commit: str | None, **fields) -> SimpleNamespace:
+    window = {
+        "window_start": datetime(2026, 10, 30, 8, 0),  # SQLite hands it back without a zone
+        "window_end": datetime(2026, 11, 26, 13, 29, tzinfo=UTC),
+        "base_commit_sha": None,
+    }
+    return _run(
+        "p1", "api", commit, kind="statement_stats", workload_class="production",
+        environment="production", **{**window, **fields},
+    )
+
+
+def test_a_production_run_names_its_window_and_deploy() -> None:
+    unknown = run_status(_production(None), None)
+    assert unknown["window"] == {
+        "start": "2026-10-30T08:00:00+00:00",
+        "end": "2026-11-26T13:29:00+00:00",
+        "base_commit": None,
+        "claim": "in production over 2026-10-30 to 2026-11-26, deployed commit unknown",
+    }
+    assert unknown["window"]["claim"] in _status_line(unknown)
+
+    span = run_status(
+        _production(
+            "b" * 40,
+            window_start=datetime(2026, 11, 26, 13, 24, 55, tzinfo=UTC),
+            base_commit_sha="a" * 40,
+        ),
+        None,
+    )["window"]
+    assert span["base_commit"] == "a" * 40
+    assert span["claim"] == (
+        f"in production over 2026-11-26 13:24 to 13:29 UTC, deployed {'a' * 12} to {'b' * 12}"
+    )
+    same = run_status(_production("b" * 40, base_commit_sha="b" * 40), None)["window"]
+    assert same["claim"].endswith(f"deployed {'b' * 12}")
+    oldest_only = run_status(_production(None, base_commit_sha="a" * 40), None)["window"]
+    assert oldest_only["claim"].endswith(f"deployed from {'a' * 12}, newest commit unknown")
+    unbounded = _production(None, window_start=None)
+    assert run_status(unbounded, None)["window"]["claim"] == (
+        "in production, window unknown, deployed commit unknown"
+    )
+
+
+def test_only_a_production_run_carries_a_window() -> None:
+    for workload_class in ("entry_point", "load_test", "unit_test", "benchmark"):
+        run = run_status(_run("r1", "w", "a" * 40, workload_class=workload_class), None)
+        assert "window" not in run
+        assert "in production" not in _status_line(run)

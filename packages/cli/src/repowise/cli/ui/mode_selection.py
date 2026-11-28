@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import click
@@ -308,6 +307,8 @@ def _prompt_generation(
     prompt_reasoning: bool = True,
     wiki_style: str | None = None,
     language: str | None = None,
+    provider: str | None = None,
+    embedder_flag: str | None = None,
 ) -> None:
     """Generation section: concurrency, reasoning, embedder, test run, tiering,
     onboarding, wiki style, and output language.
@@ -342,13 +343,14 @@ def _prompt_generation(
         result["reasoning"] = None
 
     # Embedder selection
-    detected_embedder = _resolve_embedder_from_env()
+    detected_embedder = _resolve_embedder_from_env(provider, embedder_flag)
     embedder_choices = ["gemini", "openai", "openrouter", "ollama", "fastembed", "edenai", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,
         type=click.Choice(embedder_choices),
     )
+    result["embedder_default"] = detected_embedder
 
     result["test_run"] = click.confirm(
         "  Test run? (full ingestion; LLM page generation limited to top 10 files for quick validation)",
@@ -446,6 +448,8 @@ def interactive_advanced_config(
     language: str | None = None,
     commit_limit: int | None = None,
     ask_file_pages: bool = True,
+    provider: str | None = None,
+    embedder_flag: str | None = None,
 ) -> dict[str, Any]:
     """Prompt for advanced init options, grouped into logical sections.
 
@@ -502,6 +506,8 @@ def interactive_advanced_config(
             prompt_reasoning=prompt_reasoning,
             wiki_style=wiki_style,
             language=language,
+            provider=provider,
+            embedder_flag=embedder_flag,
         )
     elif result.get("run_mode") != "fast":
         # Fast mode renders no wiki at all, so there would be nothing to embed.
@@ -548,23 +554,27 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
     )
 
 
-def _resolve_embedder_from_env() -> str:
-    """Auto-detect embedder from env vars (for advanced config default)."""
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "openrouter"
-    if os.environ.get("OLLAMA_EMBEDDING_MODEL"):
-        return "ollama"
-    # Last, like the shared resolver in cli/providers/embedders.py: an unrelated
-    # EDENAI_API_KEY in the environment must not outrank a provider the user was
-    # already resolving to.
-    if os.environ.get("EDENAI_API_KEY"):
-        return "edenai"
-    # Same last tier as the shared resolver, or the advanced prompt would
-    # default to mock on a machine whose run header just said otherwise.
-    from repowise.cli.providers.keys import global_config_embedder
+def chosen_embedder(adv: dict[str, Any]) -> str | None:
+    """The embedder the user picked on the advanced screen, or ``None``.
 
-    return global_config_embedder() or "mock"
+    An answer equal to the generation prompt's default counts as accepting
+    it, not as a choice: that default was resolved from the environment at
+    the time, and stored as one it would outrank the provider picked
+    afterwards, like ``--embedder``. ``click.prompt`` returns the same value
+    for Enter and for typing the default's name, so typing it also counts as
+    accepting it.
+    """
+    embedder = adv.get("embedder")
+    return None if embedder and embedder == adv.get("embedder_default") else embedder
+
+
+def _resolve_embedder_from_env(provider: str | None = None, flag: str | None = None) -> str:
+    """The advanced prompt's default: the same answer the run itself would reach.
+
+    Delegates to the shared resolver so the two cannot drift. Passes the
+    ``--embedder`` *flag*, which the run keeps when Enter is pressed, and the
+    chosen LLM *provider*, so an ollama run defaults to a local embedder.
+    """
+    from repowise.cli.providers.embedders import resolve_embedder_choice
+
+    return resolve_embedder_choice(flag, provider=provider)[0]

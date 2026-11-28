@@ -27,6 +27,7 @@ PARSE_INPUTS: tuple[str, ...] = (
     "ingestion/parser/grammars.py",
     "ingestion/sfc_source.py",
     "ingestion/lang_helpers/source_prep.py",
+    "ingestion/lang_helpers/preproc_arms.py",
     "ingestion/extractors/synthetic_symbols/cpp_macros.py",
     "ingestion/cobol/__init__.py",
     "ingestion/cobol/source.py",

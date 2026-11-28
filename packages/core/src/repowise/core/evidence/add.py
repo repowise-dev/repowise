@@ -1,4 +1,4 @@
-"""Read one evidence file, join it to the index and store the run.
+"""Read one evidence file (or one evidence-source batch), join it to the index and store the run.
 
 The steps behind ``repowise evidence add``, without the command line, so a
 server that receives the same file (a CI upload) runs the same checks and
@@ -12,6 +12,10 @@ it opens the index, :func:`store_evidence` inside it) so a file refused on its
 content never opens a store. A profile refused against the index (a checkout
 file that is bundled output by its stored ``code_origin``) is refused by
 :func:`store_evidence` before anything is written.
+
+A batch from a source on the ``evidence-source`` seam (:mod:`.sources`) is
+stored by :func:`ingest_batch` through the same steps, as the
+``repowise-evidence-v1`` file a user would upload with the same entries.
 
 One run may come in several profiles: a parent process and its workers each
 write their own. :func:`prepare_evidence_files` reads them all and merges
@@ -28,8 +32,9 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.git_sha import is_full_sha
 
@@ -37,11 +42,15 @@ from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument, EvidenceFormatError, p
 from .ingest import PRODUCTION_FLAG_REFUSAL, EvidenceCaps, RunProvenance
 from .kinds import FLAG_WORKLOAD_CLASSES, LOCATION_JOINS, evidence_kinds
 
+if TYPE_CHECKING:
+    from .sources import SourceBatch
+
 
 class EvidenceRefusedError(Exception):
     """A file or option refused before anything is stored.
 
-    *code* is ``file_too_large``, ``invalid_evidence`` or ``invalid_option``;
+    *code* is ``file_too_large``, ``invalid_evidence``, ``invalid_option``, or
+    ``no_index`` for a source batch with no index to join to;
     *hint* says what to do; *option* names the ``evidence add`` option at
     fault for an ``invalid_option``.
     """
@@ -59,13 +68,18 @@ def _bad_option(option: str, message: str) -> EvidenceRefusedError:
     return EvidenceRefusedError("invalid_option", message, option=option)
 
 
+#: Why a profile (or Go output) is refused with no checkout.
+_NEEDS_CHECKOUT = "this file is read against the checkout's source; name an existing checkout."
+
+
 @dataclass(frozen=True)
 class PreparedEvidence:
     """The file as read and checked: a v1 document (written or converted), or a profile run still to convert."""
 
     format: str
-    #: The checkout the run used; frames are placed on its source.
-    checkout_root: Path
+    #: The checkout the run used; frames are placed on its source. None for
+    #: a source batch of entries with no checkout (:func:`ingest_batch`).
+    checkout_root: Path | None
     #: The commit the run measured; None only for a production-only kind
     #: whose file names none (its window spans deploys).
     commit: str | None
@@ -222,6 +236,89 @@ def evidence_caps(config: Any) -> tuple[float, EvidenceCaps, list[str]]:
     return max_file_mb, caps, problems
 
 
+_WS = frozenset(b" \t\r\n")
+_V1_VALUE = EVIDENCE_FORMAT.encode()
+
+
+def _skip_json_ws(data: bytes, idx: int) -> int:
+    while idx < len(data) and data[idx] in _WS:
+        idx += 1
+    return idx
+
+
+def _read_json_string_bytes(data: bytes, idx: int) -> tuple[bytes | None, int]:
+    if idx >= len(data) or data[idx] != 0x22:  # '"'
+        return None, idx
+    start = idx + 1
+    i = start
+    while i < len(data):
+        ch = data[i]
+        if ch == 0x5C:  # '\\'
+            i += 2
+            continue
+        if ch == 0x22:  # '"'
+            return data[start:i], i + 1
+        i += 1
+    return None, len(data)
+
+
+def _skip_json_container(data: bytes, idx: int) -> int:
+    depth = 1
+    i = idx + 1
+    while i < len(data) and depth > 0:
+        cur = data[i]
+        if cur == 0x22:
+            _, i = _read_json_string_bytes(data, i)
+            continue
+        if cur in (0x7B, 0x5B):
+            depth += 1
+        elif cur in (0x7D, 0x5D):
+            depth -= 1
+        i += 1
+    return i
+
+
+def _skip_json_value(data: bytes, idx: int) -> int:
+    idx = _skip_json_ws(data, idx)
+    if idx >= len(data):
+        return idx
+    ch = data[idx]
+    if ch == 0x22:  # '"'
+        _, end = _read_json_string_bytes(data, idx)
+        return end
+    if ch in (0x7B, 0x5B):  # '{' or '['
+        return _skip_json_container(data, idx)
+    while idx < len(data) and data[idx] not in b",}] \t\r\n":
+        idx += 1
+    return idx
+
+
+def _is_v1_head(head: bytes) -> bool:
+    buf = head.lstrip(b"\xef\xbb\xbf").lstrip()
+    if not buf.startswith(b"{"):
+        return False
+    i = _skip_json_ws(buf, 1)
+    while i < len(buf):
+        if buf[i] == 0x7D:  # '}'
+            return False
+        key, after_key = _read_json_string_bytes(buf, i)
+        if key is None:
+            return False
+        i = _skip_json_ws(buf, after_key)
+        if i >= len(buf) or buf[i] != 0x3A:  # ':'
+            return False
+        i = _skip_json_ws(buf, i + 1)
+        if key == b"format":
+            val, _ = _read_json_string_bytes(buf, i)
+            return val == _V1_VALUE
+        i = _skip_json_value(buf, i)
+        i = _skip_json_ws(buf, i)
+        if i >= len(buf) or buf[i] != 0x2C:  # ','
+            return False
+        i = _skip_json_ws(buf, i + 1)
+    return False
+
+
 def input_format(given: str | None, data: bytes) -> str:
     """*given* checked against the registry, else the format sniffed from *data*.
 
@@ -236,7 +333,7 @@ def input_format(given: str | None, data: bytes) -> str:
             raise _bad_option("--input-format", f"{given!r} is not one of {', '.join(names)}.")
         return given
     head = data[:SNIFF_BYTES]
-    if EVIDENCE_FORMAT.encode() in head:
+    if _is_v1_head(head):
         return EVIDENCE_FORMAT
     return detect_profile_format(head) or EVIDENCE_FORMAT
 
@@ -245,7 +342,7 @@ def prepare_evidence(
     data: bytes,
     *,
     name: str | Path,
-    checkout_root: Path,
+    checkout_root: Path | None,
     commit: str | None = None,
     dirty: bool | None = None,
     input_format_name: str | None = None,
@@ -279,6 +376,10 @@ def prepare_evidence(
             doc = parse_evidence(text)
         else:
             reader = profile_formats.get(fmt)
+            # A profile's frames, and Go output's packages, are placed on the
+            # checkout; the other report formats name their files already.
+            if checkout_root is None and (reader.read is not None or reader.needs_checkout):
+                raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
             if reader.to_v1 is not None:
                 text = json.dumps(reader.convert_to_v1(data, name, checkout_root), sort_keys=True)
                 doc = parse_evidence(text)
@@ -314,7 +415,7 @@ def prepare_evidence(
 def prepare_evidence_files(
     files: Sequence[tuple[str | Path, bytes]],
     *,
-    checkout_root: Path,
+    checkout_root: Path | None,
     commit: str | None = None,
     dirty: bool | None = None,
     input_format_name: str | None = None,
@@ -484,6 +585,27 @@ def _measured_commit(
     return measured
 
 
+async def _statement_sites(session: Any, repo_id: str, doc: Any) -> list[Any]:
+    """The stored statement sites, when *doc* has entries that join through them."""
+    spec = evidence_kinds[doc.kind]
+    if spec.join != "statement" and not (
+        doc.kind == "query_count" and any(e.get("path") is None for e in doc.entries)
+    ):
+        return []
+    from repowise.core.persistence.crud.statement_sites import list_statement_sites
+
+    return await list_statement_sites(session, repo_id)
+
+
+async def _stored_routes(session: Any, repo_id: str, doc: Any) -> list[Any]:
+    """The stored routes (``http_routes``), when *doc*'s entries join through them."""
+    if evidence_kinds[doc.kind].join != "route":
+        return []
+    from repowise.core.persistence.crud.http_routes import list_http_routes
+
+    return await list_http_routes(session, repo_id)
+
+
 async def store_evidence(
     session: Any,
     repo: Any,
@@ -497,13 +619,15 @@ async def store_evidence(
     caps: EvidenceCaps,
     source: str = "cli",
     verified: bool = False,
+    measured_at: datetime | None = None,
 ) -> StoredEvidence:
     """Join *prepared* to the index of *repo* (a repository row) and store the run.
 
     *repo_path* is the indexed checkout: its HEAD says whether the run is
     stale, and its settings rank the refreshed read model. *workload_class*
     None takes the class from the kind; *verified* lets a host that verified
-    the sender store ``production`` (:func:`~.ingest.run_class`). Raises
+    the sender store ``production`` (:func:`~.ingest.run_class`).
+    *measured_at* is when the run was measured, when the sender knows. Raises
     :class:`EvidenceRefusedError`, before anything is written, for a profile
     that ran bundled or compiled code of the checkout or a class the kind
     does not take.
@@ -533,6 +657,8 @@ async def store_evidence(
 
     text, doc, conversion = prepared.text, prepared.doc, None
     if prepared.run is not None:
+        if root is None:  # prepare_evidence refuses this first; kept for the type
+            raise _bad_option("--checkout-root", _NEEDS_CHECKOUT)
         conversion = await _convert(
             session, repo.id, prepared.run, root, changed, prepared.value_kind
         )
@@ -551,6 +677,8 @@ async def store_evidence(
         await load_symbols(session, repo.id, paths),
         origins,
         changed or frozenset(),
+        await _statement_sites(session, repo.id, doc),
+        await _stored_routes(session, repo.id, doc),
     )
     # A benchmark or test keeps its row without its function, and a route or
     # statement names none, so only the kinds that need the join can be
@@ -564,7 +692,7 @@ async def store_evidence(
         workload_name=workload,
         workload_class=stored_class,
         commit_sha=prepared.commit,
-        checkout_root=str(root),
+        checkout_root=str(root) if root is not None else None,
         dirty=dirty,
         environment=environment,
         source=source,
@@ -598,18 +726,24 @@ async def store_evidence(
             rows,
             index_at_measured_commit=index_commit is not None and index_commit == prepared.commit,
         )
+    fields = run_fields(
+        doc,
+        provenance,
+        joined,
+        key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
+        truncated=truncated,
+        mapping_partial=partial,
+        unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
+    )
+    if measured_at is not None:
+        # Stored times are UTC (SQLite keeps no zone); a naive time is read as UTC.
+        fields["measured_at"] = (
+            measured_at.astimezone(UTC) if measured_at.tzinfo is not None else measured_at
+        )
     write = await save_evidence_run(
         session,
         repo.id,
-        run_fields(
-            doc,
-            provenance,
-            joined,
-            key=run_key(text, provenance, doc.kind, index_commit, prepared.report_dir),
-            truncated=truncated,
-            mapping_partial=partial,
-            unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
-        ),
+        fields,
         rows,
         history_runs=caps.history_runs,
         max_runs=caps.max_runs,
@@ -721,6 +855,9 @@ async def ingest_evidence(
     caps: EvidenceCaps | None = None,
     source: str = "cli",
     verified: bool = False,
+    measured_at: datetime | None = None,
+    expect_kind: str | None = None,
+    require_checkout: bool = True,
 ) -> dict[str, Any]:
     """Read *data*, join it to the index of *repo* and store the run; what ``evidence add`` does.
 
@@ -733,13 +870,17 @@ async def ingest_evidence(
     are ``evidence add``'s; *max_file_mb* and *caps* default to the
     repository's ``evidence`` settings. Returns the result ``evidence add
     --format json`` prints. Raises :class:`EvidenceRefusedError` for a file or
-    option it will not take.
+    option it will not take, and for a file that is not of *expect_kind* when given.
+    *require_checkout* False takes a checkout that is not a directory as none
+    (stored as no ``checkout_root``): only for v1 entries, which read no source.
     """
     commit = commit.lower() if commit is not None else None
     check_options(workload, workload_class, environment, commit, verified=verified)
-    root = (checkout_root or repo_path).resolve()
+    root: Path | None = (checkout_root or repo_path).resolve()
     if not root.is_dir():
-        raise _bad_option("--checkout-root", f"{root} is not a directory.")
+        if require_checkout:
+            raise _bad_option("--checkout-root", f"{root} is not a directory.")
+        root = None
     if repo is None:
         return {"stored": False, "reason": "no_index"}
     if max_file_mb is None or caps is None:
@@ -758,6 +899,11 @@ async def ingest_evidence(
         value_kind=value_kind,
         max_file_mb=max_file_mb,
     )
+    read_kind = prepared.doc.kind if prepared.doc is not None else "profile"
+    if expect_kind is not None and read_kind != expect_kind:
+        raise EvidenceRefusedError(
+            "invalid_evidence", f"{name} holds a {read_kind} run, not a {expect_kind} run"
+        )
     stored = await store_evidence(
         session,
         repo,
@@ -770,8 +916,111 @@ async def ingest_evidence(
         caps=caps,
         source=source,
         verified=verified,
+        measured_at=measured_at,
     )
     return stored.payload
+
+
+async def ingest_batch(
+    session: Any,
+    repo: Any,
+    batch: SourceBatch,
+    *,
+    repo_path: Path,
+    checkout_root: Path | None = None,
+    caps: EvidenceCaps | None = None,
+) -> dict[str, Any]:
+    """Store one :class:`~.sources.SourceBatch` the way :func:`ingest_evidence` stores a file.
+
+    The batch's entries become the ``repowise-evidence-v1`` file a user would
+    upload (:func:`~.sources.batch_v1`), or its bytes are read by their
+    ``profile-format``; then the same read, join, store and refresh run, so the
+    stored rows match an upload of the same entries. A source is verified by
+    the host that registered it, so its batch may carry ``production`` where
+    the kind allows it; a typed ``--class`` never can. Everything is written in
+    one savepoint: a batch is stored whole or not at all. Raises
+    :class:`EvidenceRefusedError` like :func:`ingest_evidence`.
+
+    Only profile bytes and Go output need the checkout (their frames and
+    packages are placed on the source). A batch of entries, or of bytes in a
+    format that names its files (v1, benchmark and test reports), reads no
+    source, so a host with no checkout (hosted) passes one that does not
+    exist and the run stores none.
+    """
+    from .sources import SOURCE_COLUMN, batch_v1
+
+    if repo is None:
+        # Refused, not ``stored: false``: the fetch keeps its cursor, so the
+        # batch is fetched again once the repository is indexed.
+        raise EvidenceRefusedError(
+            "no_index",
+            "the repository has no index to join the batch to",
+            "run `repowise init`, then fetch again",
+        )
+    if (batch.entries is None) == (batch.data is None):
+        raise EvidenceRefusedError(
+            "invalid_evidence", "a batch carries exactly one of entries and data"
+        )
+    if batch.data is not None:
+        data, input_format_name = batch.data, batch.format
+    else:
+        try:
+            data, input_format_name = batch_v1(batch), EVIDENCE_FORMAT
+        except ValueError as exc:
+            raise EvidenceRefusedError("invalid_evidence", str(exc)) from None
+    try:
+        async with session.begin_nested():
+            return await ingest_evidence(
+                session,
+                repo,
+                data,
+                repo_path=repo_path,
+                workload=batch.workload,
+                workload_class=batch.workload_class,
+                name=f"the {batch.kind} batch",
+                checkout_root=checkout_root,
+                commit=batch.commit,
+                environment=batch.environment or _batch_environment(batch),
+                input_format_name=input_format_name,
+                value_kind=batch.value_kind,
+                # ``evidence.max_file_mb`` bounds a file someone hands over; a
+                # batch is in memory already, and the per-run row caps still apply.
+                # Refusing it would stop the cursor on it for good.
+                max_file_mb=math.inf,
+                caps=caps,
+                source=SOURCE_COLUMN,
+                verified=True,
+                measured_at=batch.measured_at,
+                expect_kind=batch.kind,
+                # prepare_evidence refuses profile bytes with no checkout itself.
+                require_checkout=False,
+            )
+    except EvidenceRefusedError as exc:
+        field = _BATCH_FIELDS.get(exc.option or "")
+        if field is None:
+            raise
+        # Name the batch field at fault, not the ``evidence add`` option it stands in for.
+        raise EvidenceRefusedError(exc.code, f"batch {field}: {exc}", exc.hint) from None
+
+
+def _batch_environment(batch: SourceBatch) -> str:
+    """Where a batch that names no environment ran: production ran where users are."""
+    spec = evidence_kinds.get(batch.kind)
+    production = batch.workload_class == "production" or (
+        spec is not None and spec.production_only and batch.workload_class is None
+    )
+    return "production" if production else "unknown"
+
+
+#: ``evidence add`` options and the :class:`~.sources.SourceBatch` field each one is.
+_BATCH_FIELDS = {
+    "--class": "workload_class",
+    "--commit": "commit",
+    "--environment": "environment",
+    "--input-format": "format",
+    "--value-kind": "value_kind",
+    "--workload": "workload",
+}
 
 
 async def _convert(
@@ -836,17 +1085,21 @@ async def _convert(
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
 
 
-def _tree_state(root: Path, commit: str | None, dirty: bool | None) -> tuple[Any, bool | None]:
+def _tree_state(
+    root: Path | None, commit: str | None, dirty: bool | None
+) -> tuple[Any, bool | None]:
     """Files that differ from *commit*, and *dirty* filled in from them.
 
     Files that differ from the commit are skipped: their lines are not the
     ones measured. Known only when the commit is the checkout's HEAD and git
-    can say; otherwise the tree's state stays unknown.
+    can say; otherwise (and with no checkout) the tree's state stays unknown.
     """
     from repowise.core.analysis.health.coverage import live_head_commit
 
     from .ingest import uncommitted_paths
 
+    if root is None:
+        return None, dirty
     at_head = commit is not None and live_head_commit(root, None) == commit
     changed = uncommitted_paths(root) if at_head else None
     if dirty is None and changed is not None:
@@ -898,6 +1151,7 @@ __all__ = [
     "evidence_caps",
     "evidence_paths",
     "evidence_report_dir",
+    "ingest_batch",
     "ingest_evidence",
     "input_format",
     "prepare_evidence",

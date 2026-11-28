@@ -359,7 +359,7 @@ def _is_import_guard_body(node: Node, child: Node, src: str) -> bool:
         clause
         for clause in node.children
         if clause.type == "except_clause"
-        and _catches_import_failure(clause.child_by_field_name("value"), src)
+        and any(_catches_import_failure(val, src) for val in clause.children_by_field_name("value"))
     ]
     return bool(handlers) and all(_handler_lets_the_module_go_on(h, src) for h in handlers)
 

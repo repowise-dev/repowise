@@ -1104,7 +1104,7 @@
       "syncQueued": "{count} queued",
       "syncSkipped": "{count} skipped",
       "syncErrors": "{count} error",
-      "removeConfirm": "Remove '{name}' from .repowise-workspace.yaml?",
+      "removeConfirm": "Remove \"{name}\" from .repowise-workspace.yaml?",
       "removeFailed": "Failed to remove: {message}",
       "removeAria": "Remove {alias} from workspace",
       "removing": "Removing…",
@@ -1546,6 +1546,7 @@
         "hooks": "Agent hooks",
         "indexing": "Indexing",
         "mcp": "MCP",
+        "plugins": "Plugins",
         "providers": "Model providers",
         "server": "Server"
       }

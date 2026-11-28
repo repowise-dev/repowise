@@ -8,12 +8,6 @@
           "severity": "high",
           "snippet": "x = eval(user_input)",
           "line": 1
-        },
-        {
-          "kind": "eval_call",
-          "severity": "high",
-          "snippet": "obj.eval(y)",
-          "line": 2
         }
       ]
     },

@@ -144,6 +144,13 @@ class TestScanFile:
             ("exec (payload)\n", {"exec_call"}),
             ("eval(\n    payload\n)\n", {"eval_call"}),
             ("builtins.eval(payload)\n", {"eval_call"}),
+            ("__builtins__.eval(payload)\n", {"eval_call"}),
+            # A method named eval is not the builtin: PyTorch's mode switch,
+            # an object's own method, and one reached through a call.
+            ("model = Net().to(device).eval()\n", set()),
+            ("model.eval()\n", set()),
+            ("self.parser.eval(expr)\n", set()),
+            ("obj.exec(payload)\n", {"exec_call"}),
             ("retrieval (payload)\n", set()),
             ("my_eval(payload)\n", set()),
             ("# eval(payload)\n", set()),
@@ -155,6 +162,26 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("calls.py", source, symbols=[]))
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # An unclosed bracket keeps ast from parsing, so the lexical
+            # fallback reads these, and it applies the same eval rule.
+            ("x = (\neval(payload)\n", ["eval_call"]),
+            ("x = (\nbuiltins . eval(payload)\n", ["eval_call"]),
+            ("x = (\nmodel = Net().to(device).eval()\n", []),
+            ("x = (\nmodel . eval()\n", []),
+            ("x = (\nobj.exec(payload)\n", ["exec_call"]),
+            ("x = (\n...\neval(payload)\n", ["eval_call"]),
+        ],
+    )
+    def test_python_fallback_eval_is_the_builtin_only(
+        self, source: str, expected: list[str]
+    ) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("calls.py", source, symbols=[]))
+        assert [row["kind"] for row in findings if row["kind"].endswith("_call")] == expected
 
     @pytest.mark.parametrize(
         ("source", "expected"),
@@ -179,6 +206,36 @@ class TestScanFile:
         scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
         findings = asyncio.run(scanner.scan_file("calls.js", source, symbols=[]))
         assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # PHP's eval is a construct called bare; after ->, ?-> or :: it is a
+            # method, such as Redis EVAL running a Lua script (#6294).
+            ("<?php\neval($code);\n", {"eval_call"}),
+            ("<?php\n$r = eval ('return 1;');\n", {"eval_call"}),
+            ("<?php\nreturn $this->redis->eval($script, [], 0);\n", set()),
+            ("<?php\n$c->eval('return 1');\n", set()),
+            ("<?php\n$c?->eval($script);\n", set()),
+            ("<?php\n$c -> eval($script);\n", set()),
+            ("<?php\nRedis::eval($script, [], 0);\n", set()),
+            ("<?php\n$r = $c->eval($s); eval($code);\n", {"eval_call"}),
+            # A decrement, then a comparison: ($n--) > eval($x) is a bare eval.
+            ("<?php\nif ($n-->eval($x)) {}\n", {"eval_call"}),
+            ("<?php\nif ($n-- > eval($x)) {}\n", {"eval_call"}),
+            # Three dashes lex as -- then ->: a method call after a decrement.
+            ("<?php\n$n--->eval($x);\n", set()),
+        ],
+    )
+    def test_php_method_eval_is_not_an_eval_call(self, source: str, expected: set[str]) -> None:
+        scanner = SecurityScanner(session=None, repo_id="r1")  # type: ignore[arg-type]
+        findings = asyncio.run(scanner.scan_file("src/r.php", source, symbols=[]))
+        assert {row["kind"] for row in findings if row["kind"].endswith("_call")} == expected
+
+    def test_method_eval_outside_php_is_still_an_eval_call(self) -> None:
+        # Only PHP changes: in JavaScript a receiver's eval stays reported.
+        source = "this.redis.eval(script);\n"
+        assert [f["kind"] for f in scan_source("calls.js", source)] == ["eval_call"]
 
     @pytest.mark.parametrize(
         ("source", "expected"),

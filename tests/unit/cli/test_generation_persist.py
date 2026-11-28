@@ -396,8 +396,8 @@ def test_run_repo_generation_prints_partial_failure_warning_after_progress(monke
     monkeypatch.setattr(
         generation_cmd, "console", Console(file=output, force_terminal=False, width=200)
     )
-    monkeypatch.setattr(generation_cmd, "build_embedder", lambda *_args: object())
-    monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args: object())
+    monkeypatch.setattr(generation_cmd, "build_embedder", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(generation_cmd, "build_vector_store", lambda *_args, **_kwargs: object())
 
     async def fake_generation(*, on_generation_complete, **_kwargs):
         on_generation_complete(["module_page:api", "[red]spoof[/red]:src/main.py"])

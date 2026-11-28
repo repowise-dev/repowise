@@ -42,7 +42,6 @@ For a map of every layer and how they feed each other, read
 | [agent/HOOKS.md](agent/HOOKS.md) | Context and warnings that reach the agent without it asking |
 | [agent/DISTILL.md](agent/DISTILL.md) | Compress noisy command output before your agent reads it |
 | [agent/CLAUDE_CODE_COMMANDS.md](agent/CLAUDE_CODE_COMMANDS.md) | The 18 `/repowise:*` slash commands in the Claude Code plugin |
-| [agent/LENS.md](agent/LENS.md) | Lens in the Claude Code plugin: spinner, change review, Flow and the `/lens` map |
 | [agent/CLAUDE_CODE_PROVIDER.md](agent/CLAUDE_CODE_PROVIDER.md) | Claude Code as the model that writes your docs |
 | [agent/CODEX.md](agent/CODEX.md) | Codex: MCP and hooks setup, the `codex_cli` provider, the plugin |
 | [agent/OPENCODE.md](agent/OPENCODE.md) | OpenCode as an MCP host and as a provider |
@@ -139,6 +138,7 @@ For a map of every layer and how they feed each other, read
 | [architecture/README.md](architecture/README.md) | Index of the internals pages |
 | [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md) | How repowise is built, end to end |
 | [architecture/single-sources.md](architecture/single-sources.md) | Which module owns each shared concept; check it before writing a helper |
+| [architecture/version-stamps.md](architecture/version-stamps.md) | Every version stamp and what bumping it does; check it before moving one |
 | [architecture/ci.md](architecture/ci.md) | Which CI jobs run when, and how to reproduce a failure |
 | [architecture/deep-dives.md](architecture/deep-dives.md) | Algorithm walkthroughs referenced from the architecture page |
 | [architecture/graph-algorithms.md](architecture/graph-algorithms.md) | Every graph algorithm, its math, and why it was chosen |

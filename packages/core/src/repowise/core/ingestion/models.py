@@ -80,6 +80,8 @@ LanguageTag = Literal[
     "sql",
     "openapi",
     "xaml",
+    # Delphi / FireMonkey / Lazarus forms: no symbols, read for the event handlers they bind.
+    "pascal_form",
     # Markup with no symbols, but <script src>/<link href> are real edges.
     "html",
     # Salesforce Visualforce (.page/.component): markup that names its Apex controller.
@@ -351,6 +353,17 @@ class Import:
         being the token that appears in this file.
         """
         return [b.local_name for b in self.bindings] or list(self.imported_names)
+
+
+@dataclass
+class GlobImport(Import):
+    """A Vite ``import.meta.glob`` call: it loads every indexed file its patterns match.
+
+    ``module_path`` is the first pattern; ``glob_patterns`` holds all of them in
+    order, ``!`` negations included.
+    """
+
+    glob_patterns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -802,6 +815,8 @@ class TypeReference:
         "generic_constraint",  # TS/JS
         "extends",
         "implements",  # TS heritage clauses (file-level type_use)
+        "mixin",  # Ruby ``include`` / ``extend`` / ``prepend``
+        "constant",  # Ruby: any other constant mention
     ] = "ctor_param"
 
 

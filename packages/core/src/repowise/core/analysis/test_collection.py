@@ -21,6 +21,7 @@ and the gap as inputs is the upgrade.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ import structlog
 
 from ..pytest_roots import PytestRoots
 from .function_hunks import FileFunctions
-from .test_selection import Selection, TestSelectionConfig, project_dirs
+from .test_selection import Selection, TestSelectionConfig, is_runnable_test, project_dirs
 
 log = structlog.get_logger(__name__)
 
@@ -217,7 +218,9 @@ def plan_scopes(
     scopes = trigger_scopes(paths, checkout.tracked, namers, config, dirs)
     if change.head is None:
         scopes.update(_empty_new_files(change.files, checkout))
-    groups = _package_groups(scopes, set(paths))
+    added, sibling_groups = _new_file_scopes(change, checkout, scopes, config, dirs)
+    scopes.update(added)
+    groups = {**_package_groups(scopes, set(paths)), **sibling_groups}
     routes = sorted({r for scope in scopes.values() for r in scope.routes} - set(paths))
     return Plan(namers, scopes, routes, groups, dirs)
 
@@ -265,6 +268,153 @@ def _empty_new_files(paths: Collection[str], checkout: Checkout) -> dict[str, An
         text = checkout.read(path)
         if text is not None and not text.strip():
             out[path] = Scope(EMPTY_NEW_FILE, NO_TESTS_NEEDED)
+    return out
+
+
+# File stems that name their directory, not themselves: ``pkg/index.ts`` is
+# imported as ``pkg``.
+_DIRECTORY_STEMS = frozenset({"index", "__init__", "main", "mod", "page", "route", "layout"})
+# Code a tool loads by its file name, which no import names: a runner, bundler
+# or framework config (``playwright.config.ts``, ``jest.setup.js``,
+# ``setupTests.ts``), a dotfile, ``sitecustomize.py``, a Cargo ``build.rs``. A
+# new one keeps its rule: it can change any test.
+_TOOL_LOADED = re.compile(
+    r"\.(config|setup)\.|^setup|^\.|^(sitecustomize|usercustomize)\.py$|^build\.rs$", re.I
+)
+# A line that loads a module by name: an import-like keyword, or the word
+# written as a path or a dotted name (``"./fresh"``, ``plugins.fresh``).
+_LOADS = re.compile(r"\b(import|from|require|use|mod|include|load|extends)\b")
+# What is left of a block comment's continuation line, or a line comment in a
+# language whose marker the mask does not read.
+_COMMENT = re.compile(r"\s*(//|/?\*|--)")
+
+
+def _without_comment(path: str, line: str) -> str:
+    """One added *line* of *path* with its comments blanked, columns kept.
+
+    Python is cut at its comment token (a fragment that does not tokenize is
+    kept whole); other languages go through the masking :func:`~.fixture_readers.code_text`
+    uses, which keeps ``#`` (a lost ``#include`` would select less).
+    """
+    import io
+    import tokenize
+
+    from .security_scan import mask_comments_and_strings, mask_dialect
+
+    if not path.endswith(".py"):
+        return mask_comments_and_strings(
+            line, strings=False, hash_comments=False, **mask_dialect(path)
+        )
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(line.strip() + "\n").readline):
+            if token.type == tokenize.COMMENT:
+                stripped = line.strip()
+                return stripped[: token.start[1]]
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        pass
+    return line
+
+
+def _new_file_scopes(
+    change, checkout: Checkout, taken: Mapping[str, Any], config, dirs: Collection[str]
+) -> tuple[dict[str, Any], dict[str, tuple[str, ...]]]:
+    """A :func:`~.selection_scopes.new_file_scope` for each code file the change
+    adds that no other scope took, and the sibling routes, as :func:`_package_groups`.
+
+    The unchanged code beside each file is walked as one ``<dir>/*`` route; a
+    changed sibling is looked up as itself. Test code is left to the test rules.
+    """
+    from ..test_paths import is_test_related_path
+    from .selection_scopes import new_file_scope
+    from .test_selection import full_run_reason, is_code_file
+
+    tracked = set(checkout.tracked)
+    new = set(change.added) & set(change.files)
+    if change.head is None:  # uncommitted work: an untracked file is new too
+        new |= {p for p in change.files if p not in tracked}
+    asked = sorted(
+        p
+        for p in new
+        if p not in taken
+        and is_code_file(p)
+        and not is_test_related_path(p)
+        and not _TOOL_LOADED.search(PurePosixPath(p).name)
+        and full_run_reason(p, config.full_run_on, dirs) is None
+    )
+    if not asked:
+        return {}, {}
+    namers = _changed_namers(asked, change.files)
+    wanted = {str(PurePosixPath(p).parent) for p in asked}
+    by_dir: dict[str, list[str]] = {}
+    for p in checkout.tracked:
+        parent = str(PurePosixPath(p).parent)
+        if parent in wanted and p not in new and is_code_file(p) and not is_test_related_path(p):
+            by_dir.setdefault(parent, []).append(p)
+    scopes: dict[str, Any] = {}
+    groups: dict[str, tuple[str, ...]] = {}
+    for path in asked:
+        parent = str(PurePosixPath(path).parent)
+        siblings = by_dir.get(parent, [])
+        beside = [s for s in siblings if s in change.files]
+        if rest := tuple(s for s in siblings if s not in change.files):
+            label = f"{parent}/*"
+            groups[label] = rest
+            beside.append(label)
+        scopes[path] = new_file_scope(path, namers.get(path, ()), tuple(beside), len(siblings))
+    return scopes, groups
+
+
+def _changed_namers(new: Collection[str], files: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
+    """``{new file: the changed code loading it}``: its module word in a line the change adds.
+
+    The word is the file's stem, or its directory's name for a stem that
+    names the directory (``pkg/index.ts``). It counts outside comments, in a
+    line that loads by name (:data:`_LOADS`), or written as a path or
+    dotted name (``"./fresh"``, ``plugins.fresh``). A file naming a new file
+    that is named in turn stands for it too, so a chain of added modules
+    reaches the changed file at its top. Ceiling: a word match can still
+    over-claim (a common stem in an unrelated import line), which replaces the
+    full run for a file nothing beside it stands for; an import resolved per
+    language is the upgrade.
+    """
+    from .test_selection import is_code_file
+
+    words: dict[str, set[str]] = {}
+    for p in new:
+        pure = PurePosixPath(p)
+        if word := pure.parent.name if pure.stem in _DIRECTORY_STEMS else pure.stem:
+            words.setdefault(word, set()).add(p)
+    if not words:
+        return {}
+    alternatives = "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    pattern = re.compile(rf"(?<![\w$])({alternatives})(?![\w$])")
+    direct: dict[str, set[str]] = {}
+    for path, diff in files.items():
+        lines = getattr(diff, "added", None)
+        if not lines or not is_code_file(path):
+            continue
+        for added in lines:
+            line = _without_comment(path, added)
+            if _COMMENT.match(line):
+                continue
+            loads = _LOADS.search(line) is not None
+            for m in pattern.finditer(line):
+                around = line[m.start() - 1 : m.start()] + line[m.end() : m.end() + 1]
+                if loads or any(c in "./\\'\"`" for c in around):
+                    for target in words[m.group(1)] - {path}:
+                        direct.setdefault(target, set()).add(path)
+    out: dict[str, tuple[str, ...]] = {}
+    for p in new:
+        seen: set[str] = set()
+        stack = list(direct.get(p, ()))
+        while stack:
+            namer = stack.pop()
+            if namer in seen or namer == p:
+                continue
+            seen.add(namer)
+            stack.extend(direct.get(namer, ()))
+        if seen:
+            out[p] = tuple(sorted(seen))
     return out
 
 
@@ -353,11 +503,19 @@ async def collect(
     routes = sorted({*routes, *scope_routes})
     # git runs off the event loop when the map's commit needs moving to the base.
     out["query_lines"] = lines = await asyncio.to_thread(query_lines, change, measured, repo_path)
+    usable = out["map_current"] and not (out["map_empty"] or out["map_truncated"])
     functions = (
         await function_scoped_lines(
             session, repo_id, repo_path, change, measured_side(change, measured), lines
         )
-        if out["map_current"] and not (out["map_empty"] or out["map_truncated"])
+        if usable
+        else {}
+    )
+    modules = (
+        await _module_scoped(
+            session, repo_id, repo_path, change, lines, functions, repo_keys, read_source, roots
+        )
+        if usable
         else {}
     )
     await resolve_impacted(
@@ -373,7 +531,12 @@ async def collect(
         groups=scope_groups,
         cancelled=cancelled,
         functions=functions,
+        modules=modules,
     )
+    if out["measured_test_files"]:
+        # What these read is source text, not code they run: the map cannot speak for them.
+        walkers = await _tree_walking_helper_tests(session, repo_id, repo_path, read_source, roots)
+        out["measured_test_files"] = [t for t in out["measured_test_files"] if t not in walkers]
     # Changed files with lines whose covering tests were matched by file all the same.
     covered = {f for row in out["covered"].values() for f in row["source_files"]}
     out["matched_by_file"] = sorted(
@@ -385,6 +548,69 @@ async def collect(
     if explain:
         await _explain_route(session, repo_id, explain, change, out)
     return out
+
+
+async def _module_scoped(
+    session, repo_id, repo_path, change, lines, functions, repo_keys, read_source, roots
+) -> dict[str, frozenset[str]]:
+    """The changed Python files with module-level changes the per-test map can answer
+    (:func:`~.module_hunks.module_scoped_tests`), with the test files each needs."""
+    from .function_hunks import is_python_source
+    from .module_hunks import module_scoped_tests
+
+    paths = [
+        p
+        for p, asked in lines.items()
+        if asked is not None and p in change.files and p not in functions and is_python_source(p)
+    ]
+    return await module_scoped_tests(
+        session,
+        repo_id,
+        repo_path,
+        change,
+        paths,
+        repo_keys=repo_keys,
+        read_source=read_source,
+        is_test=lambda p: is_runnable_test(p, roots),
+    )
+
+
+async def _tree_walking_helper_tests(
+    session, repo_id: str, repo_path, read_source, roots
+) -> set[str]:
+    """Test files importing a test helper that lists and reads files under a source
+    directory, directly or through other helpers.
+
+    A test doing the walk itself always runs (``always_run``); one calling a
+    helper that does is not seen there. The per-test map cannot leave it out
+    either: a module-level edit changes the text it reads without it running
+    any changed line.
+    """
+    from ..ingestion.always_run import walks_source_tree
+    from .test_reach.db import cached_file_paths, imported_names
+    from .test_selection import is_test_helper
+
+    def read(path: str) -> str | None:
+        if read_source is not None:
+            return read_source(path)
+        try:
+            return (Path(repo_path) / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+
+    helpers = sorted(p for p in await cached_file_paths(session, repo_id) if is_test_helper(p))
+    frontier = [p for p in helpers if (text := read(p)) and walks_source_tree(p, text)]
+    seen, tests = set(frontier), set()
+    while frontier:
+        rows = await imported_names(session, repo_id, frontier)
+        frontier = []
+        for source, _, _ in rows:
+            if is_runnable_test(source, roots):
+                tests.add(source)
+            elif is_test_helper(source) and source not in seen:
+                seen.add(source)
+                frontier.append(source)
+    return tests
 
 
 async def _explain_route(session, repo_id: str, test: str, change, out: dict) -> None:
@@ -425,7 +651,7 @@ async def _place_tests(session, repo_id: str, out: dict) -> None:
 
 def _indexed_commit(repo_path, row_commit: str | None, out: dict) -> None:
     """The commit the index describes, read by the one resolver the server's freshness uses."""
-    from ..workspace.update import resolve_indexed_commit
+    from ..workspace.state import resolve_indexed_commit
 
     resolved = resolve_indexed_commit(Path(repo_path), row_commit)
     if resolved.problem:
@@ -456,7 +682,7 @@ async def _gap_routes(
         cached_import_graphs,
         cached_test_files,
     )
-    from .test_selection import is_code_file, is_runnable_test, split_rewired, with_rewired
+    from .test_selection import is_code_file, split_rewired, with_rewired
 
     try:
         indexed: frozenset[str] | None = await cached_file_paths(session, repo_id)
@@ -724,9 +950,14 @@ def empty_result(changed_files: int) -> dict:
         "test_hops": {},  # test file -> fewest hops from the change, for ordering only
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
+        # test helper no test imports -> the test code naming it (``helper_readers``)
+        "helper_readers": {},
         # changed files whose covering tests answer them (``function_hunks``),
         # and every test file the per-test map measured, read only for those
         "function_covered": [],
+        # changed files with module-level changes, and the test files that ran
+        # code reading a changed name or import one (``module_hunks``)
+        "module_covered": {},
         "measured_test_files": [],
         "inferred": [],  # {source_file, test_file, via}
         "unknown": [],  # source_file (nothing knows of a test for it)
@@ -747,6 +978,7 @@ async def resolve_impacted(
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
     functions: Mapping[str, FileFunctions] | None = None,
+    modules: Mapping[str, Collection[str]] | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -797,7 +1029,8 @@ async def resolve_impacted(
     graph_targets = sorted({*changed, *route_only})
     has_rows = await _record_coverage(session, repo_id, asked, route_only, out, groups)
     out["function_covered"] = answered = sorted(p for p in functions if p in has_rows)
-    if answered:
+    out["module_covered"] = {p: sorted(t) for p, t in sorted((modules or {}).items())}
+    if answered or out["module_covered"]:
         out["measured_test_files"] = sorted(await measured_test_files(session, repo_id))
     if not graph_targets:
         return out
@@ -818,8 +1051,9 @@ async def resolve_impacted(
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
-        graph = GraphCandidates({}, {}, [], {})
+        graph = GraphCandidates({}, {}, [], {}, {})
     out["helper_importers"] = graph.importers
+    out["helper_readers"] = graph.readers
     out["conftest_notes"] = graph.notes
     out["test_hops"] = graph.hops
     _record_inferred(graph_targets, graph.candidates, changed, has_rows, repo_keys, out)
@@ -906,12 +1140,14 @@ def _record_inferred(
 
 
 class GraphCandidates(NamedTuple):
-    """What :func:`_graph_candidates` found: per-target picks, importers, notes, hops."""
+    """What :func:`_graph_candidates` found: per-target picks, importers, notes, hops,
+    and the test code naming each helper no test imports."""
 
     candidates: dict[str, list]
     importers: dict[str, list[str]]
     notes: list[str]
     hops: dict[str, int]
+    readers: dict[str, list[str]]
 
 
 async def _graph_candidates(
@@ -925,6 +1161,7 @@ async def _graph_candidates(
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
+    helper_readers: bool = True,
 ) -> GraphCandidates:
     """``{target: [(test file, via), ...]}`` from the graph, each test file's importers, notes.
 
@@ -944,14 +1181,22 @@ async def _graph_candidates(
 
     The import edges are read once per index state (:func:`cached_import_graphs`)
     and every walk runs over them in memory; *hops* is each candidate's distance to the
-    *changed* files (every target when not given; :func:`_test_hops`).
+    *changed* files (every target when not given; :func:`_test_hops`). A caller reading
+    only the candidates passes ``helper_readers=False``: the helper scan reads every
+    test file.
     """
     from .conftest_routes import scoped_candidates
-    from .test_reachability import cached_import_graphs, cached_test_files
+    from .plugin_loaders import local_module_check
+    from .test_reachability import cached_file_paths, cached_import_graphs, cached_test_files
     from .test_selection import is_code_file, plugin_loader
 
     texts = pytest_texts or {}
-    test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
+    # Plugins are judged against the indexed files and the targets, which hold
+    # the files changed since the index. Ceiling: a file the index excludes
+    # counts as installed here; selection's helper rule reads the checkout.
+    files = {*await cached_file_paths(session, repo_id), *targets} if texts else set()
+    indexed_tests = await cached_test_files(session, repo_id)
+    test_files = {f for f in indexed_tests if is_code_file(f)}
     graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
         session, repo_id, targets, test_files, roots, graph, wide, groups, cancelled
@@ -970,13 +1215,46 @@ async def _graph_candidates(
         parent_entries,
         test_files,
         texts.get,
-        plugin_loader=plugin_loader(texts.items()),
+        plugin_loader=plugin_loader(texts.items(), files),
+        local_plugin=local_module_check(files),
         read_source=read_source,
     )
     importers = {test: sorted(found_by) for test, found_by in parents.items()}
     sources = targets if changed is None else [t for t in targets if t in changed]
     hops = _test_hops(out, calls, wide.hops(sources), set(sources))
-    return GraphCandidates(out, importers, notes, hops)
+    readers = (
+        _unimported_helper_readers(out, importers, indexed_tests, read_source)
+        if helper_readers
+        else {}
+    )
+    return GraphCandidates(out, importers, notes, hops, readers)
+
+
+def _unimported_helper_readers(
+    candidates: Mapping[str, list],
+    importers: Mapping[str, list[str]],
+    test_files: Collection[str],
+    read_source: Callable[[str], str | None] | None,
+) -> dict[str, list[str]]:
+    """``{test helper the walk met that no test imports: the test files naming it}``.
+
+    *test_files* are every file the index flags as a test, data included: a case
+    list naming the helper is a reader too. Read only when such a helper is met,
+    since selection otherwise runs everything for it; without *read_source*
+    nothing is read and it still does.
+    """
+    from .fixture_readers import helper_readers
+    from .test_selection import is_test_helper
+
+    if read_source is None:
+        return {}
+    helpers = {
+        t
+        for picks in candidates.values()
+        for t, _ in picks
+        if t in test_files and not importers.get(t) and is_test_helper(t)
+    }
+    return helper_readers(helpers, test_files, read_source) if helpers else {}
 
 
 def _test_hops(
@@ -1146,7 +1424,7 @@ def select(change, result: dict, config, checkout: Checkout, plan: Plan) -> Sele
             go_test_dirs=go_test_dirs,
             known_tests=known_tests,
             doc_readers={p: n[0] for p, n in plan.namers.items() if is_documentation(p)},
-            plugin_loader=plugin_loader(checkout.pytest_texts),
+            plugin_loader=plugin_loader(checkout.pytest_texts, tracked),
             unplaced_tests=[] if placed is None else [t for t in known_tests if t not in placed],
             always_run_tests=result["always_run_tests"],
             scopes=plan.scopes,
@@ -1230,7 +1508,12 @@ async def narrow_scopes(
     try:
         candidates = (
             await _graph_candidates(
-                session, repo_id, files, pytest_texts=texts, read_source=read_source
+                session,
+                repo_id,
+                files,
+                pytest_texts=texts,
+                read_source=read_source,
+                helper_readers=False,
             )
         ).candidates
     except Exception as exc:  # the walk's own answer stands: every test under each scope

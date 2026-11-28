@@ -221,7 +221,9 @@ describe("DependenciesView wiring", () => {
   it("cancels a stale focused request when package identity changes", () => {
     mocks.queryValues = { package: "npm:react", focus: "relationships" };
     const { rerender } = render(<DependenciesView repoId="repo-id" />);
-    const firstFetcher = mocks.swrCalls.find((call) => call.key?.includes("npm:react"))!.fetcher;
+    const firstFetcher = mocks.swrCalls.find(
+      (call) => call.key?.startsWith("external-system-relationships:") && call.key.includes("npm:react"),
+    )!.fetcher;
     void firstFetcher();
     const firstSignal = (mocks.apiGet.mock.calls[0]![2] as { signal: AbortSignal }).signal;
     expect(firstSignal.aborted).toBe(false);
@@ -231,6 +233,15 @@ describe("DependenciesView wiring", () => {
     rerender(<DependenciesView repoId="repo-id" />);
     expect(firstSignal.aborted).toBe(true);
     expect(mocks.swrCalls.some((call) => call.key?.includes("npm:next"))).toBe(true);
+  });
+
+  it("asks for a selected package's advisories and hands them to the table", async () => {
+    mocks.queryValues = { package: "npm:react" };
+    render(<DependenciesView repoId="repo-id" />);
+    const advisories = mocks.swrCalls.find((call) => call.key?.startsWith("external-system-advisories:"));
+    expect(advisories?.key).toBe("external-system-advisories:repo-id:npm:react");
+    await advisories!.fetcher();
+    expect(mocks.apiGet).toHaveBeenCalledWith("/api/repos/repo-id/external-systems/npm%3Areact/advisories");
   });
 
   it("keeps importing-file requests independently bounded", async () => {

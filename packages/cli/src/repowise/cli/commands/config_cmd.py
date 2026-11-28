@@ -31,6 +31,7 @@ from repowise.core.settings.views import changed as _changed
 
 _PATH_HELP = "A path inside the repository (defaults to the current directory)."
 
+
 @click.group(name="config")
 def config_group() -> None:
     """Find, explain and change repowise settings.
@@ -39,6 +40,10 @@ def config_group() -> None:
     `explain <key>` says what one does, `set <key> <value>` changes it and
     prints the undo command, `reset <key>` goes back to the default.
     """
+    from repowise.core.registry.plugins import load_plugins
+
+    # Installed plugins add their settings as they load (the plugins area).
+    load_plugins()
 
 
 # ---------------------------------------------------------------------------
@@ -328,13 +333,41 @@ def _write(action: str, key: str, value: str | None, path: str | None, fmt: str)
     _report(action, change, root, path, fmt)
 
 
+def _missing_provider_extra(change: Any) -> str | None:
+    """The extra a newly chosen provider ships in, when it is not installed here."""
+    if change.setting.key != "provider" or not isinstance(change.after.value, str):
+        return None
+    from repowise.core.providers.llm.registry import provider_missing_extra
+
+    return provider_missing_extra(change.after.value)
+
+
 def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) -> None:
     report = change_report(action, change, path)
+    extra = _missing_provider_extra(change) if action == "set" else None
     if fmt == "json":
+        if extra:
+            from repowise.core.extras import plan_install
+
+            report["install_command"] = plan_install(extra).command
         emit_json({"repo": str(root), **report})
         return
     moved = [m for m in (change.main, *change.also) if m.moved]
     _print_report(change, moved, report["effect"], report["env_override"], report["undo"])
+    if extra:
+        import contextlib
+        import sys
+
+        from repowise.cli.ui.extra_install import offer_extra
+
+        # An unreadable stdin aborts the question, which already named the command.
+        with contextlib.suppress(EOFError, click.Abort):
+            offer_extra(
+                console,
+                extra,
+                f"The {change.after.value} provider",
+                interactive=sys.stdin.isatty(),
+            )
 
 
 def _written(value: Any) -> Any:

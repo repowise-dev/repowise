@@ -68,7 +68,7 @@ Each inferred answer about a file is one of six states
 ### Supported formats
 
 **LCOV**, **Cobertura**, **Clover** and **JaCoCo** XML, **Go coverprofile**
-(`go test -coverprofile`), **Salesforce Apex JSON** (`sf apex run test
+(`go test -coverprofile`), **DelphiCodeCoverage XML** (`CodeCoverage.exe -xml -xmllines`), **Salesforce Apex JSON** (`sf apex run test
 --code-coverage --result-format json`), **coverage.py `.coverage`** and **normalized JSON**
 (`repowise-coverage-v1`). Three carry a per-test map: LCOV when each record has
 a non-blank `TN:` test name, `.coverage` when recorded with per-test contexts,
@@ -76,8 +76,9 @@ and the Apex run result (`test-result-<run id>.json`).
 
 - The format is sniffed and found in the usual locations
   ([rules](../architecture/test-intelligence.md#report-formats-and-discovery)); force
-  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco|apex`. Go
-  percentages are line-based, not `go tool cover`'s statement percentage.
+  one with `--format lcov|cobertura|clover|repowise-json|go-coverprofile|jacoco|apex|delphi-codecoverage`. Go
+  percentages are line-based, not `go tool cover`'s statement percentage. DelphiCodeCoverage
+  names units without a directory, so two units of one name in different directories are reported as ambiguous.
 - Paths map by suffix, a tie is reported, never guessed
   ([rules](../architecture/test-intelligence.md#report-path-matching)); `--strict` fails
   on any unmapped report file. The coverage summary (`get_health`, the REST coverage
@@ -133,9 +134,19 @@ the plain range, and a single SHA is one commit; change risk follows the same ru
   measured at the change's base or head, the test files covering those functions are
   the answer for that file: tests that only import it are left out. Adding a
   standard-library import, a literal constant or an undecorated function is allowed
-  beside them. Any other module-level change (an import, a constant, a decorator, a
-  class body, a default value), a function that runs at import, from a memo or from a
-  session fixture, or a function no test covers keeps the graph's answer.
+  beside them. A function that runs at import, from a memo or from a session fixture,
+  or a function no test covers keeps the graph's answer.
+- A module-level change (an import, a constant, a class body, a default value) runs at
+  import, which the map credits to no test. With the same map, the answer for that file
+  is the test files that ran any of its code or code reading a name the change binds
+  (followed through importers and re-exports), plus those importing such a name. A
+  module-level call, a store into another object, control flow, a decorator that may
+  register, an import that leads back to the file, a removed name still imported, or a
+  conftest taking a changed name keeps the graph's answer
+  ([how](../architecture/test-intelligence.md#module-level-changes)).
+- Either way, a test the map never ran keeps the graph's answer, and so does a test
+  importing a test helper that lists and reads files under a source directory: what it
+  reads is text, which the map does not see.
 - The graph also links tests to wiring no import states
   ([details](../architecture/test-intelligence.md#test-wiring-edges)).
 - The headline counts the tests the change reaches. Two groups run but are counted

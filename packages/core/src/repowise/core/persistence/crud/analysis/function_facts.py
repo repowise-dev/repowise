@@ -44,6 +44,7 @@ LINEAGE_EVENT_CAP = 5_000
 
 def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -> dict[str, Any]:
     assigns = row.get("receiver_assigns")
+    eager = row.get("eager_defaults")
     return {
         "repository_id": repository_id,
         "symbol_id": row["symbol_id"],
@@ -61,6 +62,7 @@ def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -
         "body_tokens": row.get("body_tokens"),
         "lineage_id": row.get("lineage_id"),
         "tests_json": tests.get(row["symbol_id"]),
+        "eager_defaults_json": json.dumps([list(d) for d in eager]) if eager else None,
     }
 
 

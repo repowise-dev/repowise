@@ -52,6 +52,7 @@ from ...symbol_body import body_digest, body_parts, rows_between
 from ..asserts.lexicon import assert_dialect as _assert_dialect
 from ..duplication.tokenizer import tree_token_rows
 from ..mocks.lexicon import mock_dialect as _mock_dialect
+from ..perf.eager_defaults import eager_defaults
 from .assertions import _collect_assertion_facts
 from .ast_utils import (
     _collect_function_nodes,
@@ -279,6 +280,9 @@ def walk_file(
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc
     _stamp_bodies(functions, language, tree.root_node, prepared, source)
+    if language == "python":
+        for node_id, found in eager_defaults(tree.root_node, source, fc_by_node_id).items():
+            fc_by_node_id[node_id].eager_defaults = found
 
     classes = _collect_classes(
         scan.class_nodes,

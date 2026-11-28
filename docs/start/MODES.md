@@ -64,6 +64,10 @@ The extra covers Python 3.11 and 3.12; on 3.13 and newer, run
 | `anthropic`, `deepseek`, `kimi`, `litellm` | `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, `KIMI_API_KEY`, `LITELLM_API_KEY` | no |
 | `claude_cli`, `codex_cli`, `copilot_cli`, `opencode` | your logged-in subscription | no |
 
+`litellm` is the one provider outside the default install: picking it in
+`repowise init` installs the `repowise[litellm]` extra after one question (see
+[LiteLLM](../reference/CONFIG.md#litellm-100-providers)).
+
 When nothing names an embedder, repowise takes the first one with a key set,
 in the order gemini, openai, openrouter, ollama, edenai, and every model run
 prints which embedder it uses and why. init reads each logged-in Claude Code,

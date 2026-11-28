@@ -7,7 +7,6 @@ from pathlib import Path as _DoctorPath
 from repowise.cli.helpers import console, run_async
 
 from ._checks.context import CheckContext, StoreDrift, open_store
-from ._checks.providers import _stale_page_guidance
 
 
 async def _repair_fts(engine, sf, drift: StoreDrift) -> int:
@@ -168,19 +167,16 @@ def _report_store_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
         console.print("\n[bold]Repairing store mismatches...[/bold]")
         repaired_count = run_async(_repair_stores(ctx))
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
-        if ctx.stale_count:
-            console.print(f"[yellow]{_stale_page_guidance(ctx.stale_counts)}[/yellow]")
+        if ctx.stale_guidance:
+            console.print(f"[yellow]{ctx.stale_guidance}[/yellow]")
     elif not (
         ctx.registration_wedged
         or ctx.agents_need_refresh
         or ctx.invalid_settings
         or ctx.retired_settings
     ):
-        if ctx.stale_count:
-            console.print(
-                f"[yellow]No store drift to repair. "
-                f"{_stale_page_guidance(ctx.stale_counts)}[/yellow]"
-            )
+        if ctx.stale_guidance:
+            console.print(f"[yellow]No store drift to repair. {ctx.stale_guidance}[/yellow]")
         elif repo_ok:
             console.print("[green]Nothing to repair.[/green]")
         else:

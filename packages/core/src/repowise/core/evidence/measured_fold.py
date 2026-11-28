@@ -7,7 +7,13 @@ Two pure folds over rows a host already holds, with no store or session:
   ``analysis.health.perf.opportunities.build_performance_opportunities``
   takes as ``measured``, ``hot``, ``in_tests``, ``hot_in_tests`` and ``ranks``;
 - :func:`fold_query_readings`: ``query_count`` runs and their rows into each
-  call site's strongest reading (``evidence.query_counts``), its ``queries``.
+  call site's strongest reading (``evidence.query_counts``), its ``queries``;
+- :func:`fold_statements`: each production ``statement_stats`` workload's newest
+  run and its statements into what each issuing function's statements cost in
+  that window (``crud.measured_costs``'s ``statements`` group);
+- :func:`fold_routes`: each production ``route_latency`` workload's newest run
+  and its routes into what each handler's requests cost in that window
+  (``crud.measured_costs``'s ``routes`` group).
 
 The engine's own writer reads the rows from its store and calls these, so a
 host that keeps evidence elsewhere builds the same queue from the same rows.
@@ -20,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any, NamedTuple
 
-from .hotness import LEAD_CLASSES, newest_runs
+from .hotness import LEAD_CLASSES, _age_key, newest_runs
 from .query_counts import QueryReading, read_statement, strongest
 
 
@@ -134,10 +140,284 @@ def fold_query_readings(
     return {site: strongest(readings) for site, readings in by_site.items()}
 
 
+#: What a statement the join did not put on one function is, by its stored
+#: ``issuer``: several functions could issue it, only a ``cron.schedule`` job
+#: runs it, or nothing matched (``evidence.statement_join``).
+UNJOINED = "unjoined"
+
+
+class StatementCost(NamedTuple):
+    """One function's production statements in one run: the ``measured`` row
+    ``evidence.action_row.action_row`` reads, plus what the statements did.
+
+    ``self_share`` is the function's statement time as a share of all the
+    statement time the run stored (the window's top statements when the
+    source cut them); a statement window has no interval, samples or
+    freshness, so those are ``None``.
+    """
+
+    symbol_id: str
+    run_id: str
+    #: 1-based place among the run's functions by statement time.
+    rank: int
+    self_share: float | None
+    total_ms: float
+    calls: int
+    #: Distinct statements the function issues in the run.
+    statements: int
+    share_low: float | None = None
+    share_high: float | None = None
+    total_share: float | None = None
+    samples: int | None = None
+    freshness: str | None = None
+
+
+class StatementRun(NamedTuple):
+    """One production statement run, folded."""
+
+    run: Any
+    #: Every function exactly one statement site names, costliest first.
+    rows: list[StatementCost]
+    #: All the statement time and statements the run stored.
+    total_ms: float
+    statements: int
+    #: Statements on no single function, by what the join found
+    #: (``ambiguous``, ``database_schedule``, :data:`UNJOINED`):
+    #: ``{"statements", "total_ms", "share"}`` each.
+    unattributed: dict[str, dict[str, Any]]
+
+
+#: One ``evidence_statement_stats`` row: ``(run_id, symbol_id, issuer, calls, total_ms)``.
+StatementPoint = tuple[str, "str | None", "str | None", int, "float | None"]
+
+
+_Sums = dict[str, dict[str, list[float]]]
+
+
+def _sum_statements(
+    points: Iterable[StatementPoint], keep: set[str]
+) -> tuple[_Sums, _Sums, dict[str, list[float]]]:
+    """Per kept run: ``[ms, calls, statements]`` per function the join named,
+    ``[ms, statements]`` per label on no single function, and the run's
+    ``[ms, statements]``."""
+    by_fn: _Sums = {rid: {} for rid in keep}
+    other: _Sums = {rid: {} for rid in keep}
+    totals: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
+    for run_id, symbol_id, issuer, calls, total_ms in points:
+        if run_id not in keep:
+            continue
+        ms = float(total_ms or 0.0)
+        totals[run_id][0] += ms
+        totals[run_id][1] += 1
+        if issuer == "function" and symbol_id:
+            acc = by_fn[run_id].setdefault(symbol_id, [0.0, 0, 0])
+            acc[1] += calls or 0
+        else:
+            acc = other[run_id].setdefault(issuer or UNJOINED, [0.0, 0])
+        acc[0] += ms
+        acc[-1] += 1
+    return by_fn, other, totals
+
+
+def fold_statements(runs: Iterable[Any], points: Iterable[StatementPoint]) -> list[StatementRun]:
+    """Each production statement workload's newest run, newest first, with what
+    each issuing function's statements cost in its window.
+
+    *runs* are the repository's ``statement_stats`` runs (``id``,
+    ``workload_name``, ``environment``, ``measured_at``, ``ingested_at``,
+    ``mapping_partial``); *points* their rows as :data:`StatementPoint`
+    tuples. Only each workload's newest complete run speaks
+    (:func:`query_runs_to_read`): a window's counters are the workload's
+    latest word, and an older window never adds to it.
+
+    A statement counts toward a function only when the join named exactly
+    that function (``issuer == "function"``): an ``ambiguous`` statement
+    (several functions could issue it), a ``database_schedule`` one (only a
+    ``cron.schedule`` job runs it) or an unjoined one is never put on a
+    function; each is counted under its label in ``unattributed``. Shares
+    are of all the statement time the run stored, so they sum to at most 1
+    with ``unattributed``. A run that names no function still folds (rows
+    empty), so a reader can tell joined-nothing from no run.
+    """
+    runs = list(runs)
+    keep = set(query_runs_to_read(runs))
+    if not keep:
+        return []
+    by_fn, other, totals = _sum_statements(points, keep)
+
+    def share(ms: float, whole: float) -> float | None:
+        return ms / whole if whole > 0 else None
+
+    out = []
+    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
+        whole, count = totals[run.id]
+        ranked = sorted(by_fn[run.id].items(), key=lambda kv: (-kv[1][0], kv[0]))
+        rows = [
+            StatementCost(sid, run.id, rank, share(ms, whole), ms, int(calls), int(n))
+            for rank, (sid, (ms, calls, n)) in enumerate(ranked, start=1)
+        ]
+        unattributed = {
+            label: {"statements": int(n), "total_ms": ms, "share": share(ms, whole)}
+            for label, (ms, n) in sorted(other[run.id].items())
+        }
+        out.append(StatementRun(run, rows, whole, int(count), unattributed))
+    return out
+
+
+class RouteCost(NamedTuple):
+    """One handler's production requests in one run: the ``measured`` row
+    ``evidence.action_row.action_row`` reads, plus what the requests did.
+
+    ``self_share`` is the handler's request time as a share of all the
+    request time the run stored; a request window has no interval, samples
+    or freshness, so those are ``None``.
+    """
+
+    symbol_id: str
+    run_id: str
+    #: 1-based place among the run's handlers by request time.
+    rank: int
+    self_share: float | None
+    total_ms: float
+    requests: int
+    #: Mean time per request over the routes whose source gave a total; None
+    #: when none did (an untimed route is never read as 0 ms).
+    mean_ms: float | None
+    #: Failed requests across its routes; None when the source did not say.
+    errors: int | None
+    #: The slowest 95th percentile among its routes; None when none said.
+    p95_ms: float | None
+    #: Its routes as ``METHOD template``, costliest first.
+    routes: tuple[str, ...]
+    share_low: float | None = None
+    share_high: float | None = None
+    total_share: float | None = None
+    samples: int | None = None
+    freshness: str | None = None
+
+
+class RouteRun(NamedTuple):
+    """One production route run, folded."""
+
+    run: Any
+    #: Every handler the route join named, costliest first.
+    rows: list[RouteCost]
+    #: All the request time, requests and routes the run stored.
+    total_ms: float
+    requests: int
+    routes: int
+    #: Routes on no handler (:data:`UNJOINED`: no stored route, several, or
+    #: an inline handler): ``{"routes", "total_ms", "share"}``.
+    unattributed: dict[str, dict[str, Any]]
+
+
+#: One ``evidence_route_latency`` row: ``(run_id, handler_symbol_id, method,
+#: route, request_count, total_ms, p95_ms, error_count)``.
+RoutePoint = tuple[str, "str | None", str, str, int, "float | None", "float | None", "int | None"]
+
+
+def fold_routes(runs: Iterable[Any], points: Iterable[RoutePoint]) -> list[RouteRun]:
+    """Each production route workload's newest run, newest first, with what
+    each handler's requests cost in its window.
+
+    *runs* are the repository's ``route_latency`` runs (as
+    :func:`fold_statements` reads them); *points* their rows as
+    :data:`RoutePoint` tuples. Only each workload's newest complete run
+    speaks. A route counts toward a function only when the route join named
+    its handler when the run was stored (``evidence.route_join``); the rest
+    are counted under :data:`UNJOINED`. Shares are of all the request time
+    the run stored, so they sum to at most 1 with ``unattributed``.
+    """
+    runs = list(runs)
+    keep = set(query_runs_to_read(runs))
+    if not keep:
+        return []
+    by_fn, totals, other = _sum_routes(points, keep)
+    out = []
+    for run in sorted((r for r in runs if r.id in keep), key=_age_key, reverse=True):
+        whole, requests, count = totals[run.id]
+        costs = sorted(
+            (_handler_cost(sid, held) for sid, held in by_fn[run.id].items()),
+            key=lambda c: (-c[1], -c[2], c[0]),
+        )
+        rows = [
+            RouteCost(sid, run.id, rank, _share(ms, whole), ms, n, mean, errs, p95, names)
+            for rank, (sid, ms, n, mean, p95, errs, names) in enumerate(costs, start=1)
+        ]
+        ms, n = other[run.id]
+        unattributed = (
+            {UNJOINED: {"routes": int(n), "total_ms": ms, "share": _share(ms, whole)}} if n else {}
+        )
+        out.append(RouteRun(run, rows, whole, int(requests), int(count), unattributed))
+    return out
+
+
+#: One route of a handler: ``(ms, "METHOD route", requests, p95_ms, errors, timed)``.
+_HeldRoute = tuple[float, str, int, "float | None", "int | None", bool]
+
+
+def _share(ms: float, whole: float) -> float | None:
+    return ms / whole if whole > 0 else None
+
+
+def _sum_routes(
+    points: Iterable[RoutePoint], keep: set[str]
+) -> tuple[dict[str, dict[str, list[_HeldRoute]]], dict[str, list[float]], dict[str, list[float]]]:
+    """Per kept run: each handler's routes, the run's ``[ms, requests, routes]``
+    and the ``[ms, routes]`` on no handler."""
+    by_fn: dict[str, dict[str, list[_HeldRoute]]] = {rid: {} for rid in keep}
+    totals: dict[str, list[float]] = {rid: [0.0, 0, 0] for rid in keep}
+    other: dict[str, list[float]] = {rid: [0.0, 0] for rid in keep}
+    for run_id, symbol_id, method, route, count, total_ms, p95_ms, errors in points:
+        if run_id not in keep:
+            continue
+        ms = float(total_ms or 0.0)
+        totals[run_id][0] += ms
+        totals[run_id][1] += count or 0
+        totals[run_id][2] += 1
+        if symbol_id:
+            by_fn[run_id].setdefault(symbol_id, []).append(
+                (ms, f"{method} {route}", count or 0, p95_ms, errors, total_ms is not None)
+            )
+        else:
+            other[run_id][0] += ms
+            other[run_id][1] += 1
+    return by_fn, totals, other
+
+
+def _handler_cost(sid: str, held: list[_HeldRoute]) -> tuple[Any, ...]:
+    """``(sid, ms, requests, mean_ms, p95_ms, errors, routes)`` for one handler:
+    the mean over the requests of routes whose source gave a total, the
+    slowest p95, errors as far as the source said, routes costliest first."""
+    held = sorted(held, key=lambda h: (-h[0], -h[2], h[1]))
+    ms = sum(h[0] for h in held)
+    p95s = [h[3] for h in held if h[3] is not None]
+    errs = [h[4] for h in held if h[4] is not None]
+    timed = sum(h[2] for h in held if h[5])
+    return (
+        sid,
+        ms,
+        sum(h[2] for h in held),
+        ms / timed if timed else None,
+        max(p95s) if p95s else None,
+        sum(errs) if errs else None,
+        tuple(h[1] for h in held),
+    )
+
+
 __all__ = [
+    "UNJOINED",
     "MeasuredFold",
     "QueryPoint",
+    "RouteCost",
+    "RoutePoint",
+    "RouteRun",
+    "StatementCost",
+    "StatementPoint",
+    "StatementRun",
     "fold_measured",
     "fold_query_readings",
+    "fold_routes",
+    "fold_statements",
     "query_runs_to_read",
 ]

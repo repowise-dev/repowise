@@ -6,6 +6,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.extractors.http import HttpExtractor
 
 
@@ -369,3 +371,161 @@ def test_a_comma_inside_a_type_keeps_parameter_positions(tmp_path: Path) -> None
             """,
         },
     ) == {("/api/users", "src/users.ts")}
+
+
+# --- barrel modules (#6442) ------------------------------------------------------
+
+_BARREL_APP = """
+    const express = require('express');
+    const routes = require('./routes');
+    const app = express();
+    app.use('/api/user', routes.user);
+"""
+_USER_ROUTER = """
+    const express = require('express');
+    const router = express.Router();
+    router.get('/plugins', list);
+    module.exports = router;
+"""
+
+
+def test_a_barrel_member_mount_reaches_the_required_router_file(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const user = require('./user');
+                module.exports = { user };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_direct_require_mount_still_takes_the_prefix(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": """
+                const express = require('express');
+                const app = express();
+                app.use('/api/user', require('./routes/user'));
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_barrel_defining_its_router_inline_keeps_its_own_key(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const express = require('express');
+                const user = express.Router();
+                user.get('/plugins', list);
+                module.exports = { user };
+            """,
+        },
+    ) == {("/api/user/plugins", "server/routes/index.js")}
+
+
+def test_a_direct_mount_wins_over_a_barrel_re_export(tmp_path: Path) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": """
+                const express = require('express');
+                const app = express();
+                app.use('/v2/user', require('./routes/user'));
+            """,
+            "server/routes/index.js": """
+                const user = require('./user');
+                module.exports = { user };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/v2/user/plugins", "server/routes/user.js")}
+
+
+def test_a_renamed_barrel_member_names_the_router_it_exports(tmp_path: Path) -> None:
+    # `user` is imported, but the barrel's `user` member is its own `admin` router,
+    # so user.js must not take the mount. The renamed inline router keeping its
+    # in-file path is the existing ceiling documented on `_named_export_re`.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": """
+                const express = require('express');
+                const user = require('./user');
+                const admin = express.Router();
+                admin.get('/settings', show);
+                module.exports = { user: admin };
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/settings", "server/routes/index.js"), ("/plugins", "server/routes/user.js")}
+
+
+@pytest.mark.parametrize(
+    "barrel",
+    [
+        "const account = require('./user');\nmodule.exports = { user: account };\n",
+        "import account from './user';\nexport { account as user };\n",
+        "const account = require('./user');\nexports.user = account;\n",
+    ],
+    ids=["object-key", "export-as", "exports-assign"],
+)
+def test_other_barrel_export_forms_reach_the_router_file(tmp_path: Path, barrel: str) -> None:
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.js": barrel,
+            "server/routes/user.js": _USER_ROUTER,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.js")}
+
+
+def test_a_barrel_importing_the_router_by_its_own_name_reaches_it(tmp_path: Path) -> None:
+    # user.ts exports one router both as default and by name; the barrel imports the name.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.ts": """
+                import { router as user } from './user';
+                export { user };
+            """,
+            "server/routes/user.ts": """
+                import { Router } from 'express';
+                export const router = Router();
+                router.get('/plugins', list);
+                export default router;
+            """,
+        },
+    ) == {("/api/user/plugins", "server/routes/user.ts")}
+
+
+def test_an_export_from_list_names_the_other_module_not_a_local(tmp_path: Path) -> None:
+    # The barrel's own `user` import is unrelated: `user` is re-exported from ./account.
+    assert _routes(
+        tmp_path,
+        {
+            "server/index.js": _BARREL_APP,
+            "server/routes/index.ts": """
+                import user from './user';
+                export { default as user } from './account';
+            """,
+            "server/routes/user.js": _USER_ROUTER,
+            "server/routes/account.js": """
+                const express = require('express');
+                const router = express.Router();
+                router.get('/settings', show);
+                module.exports = router;
+            """,
+        },
+    ) == {("/plugins", "server/routes/user.js"), ("/api/user/settings", "server/routes/account.js")}

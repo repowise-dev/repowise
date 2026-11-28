@@ -307,6 +307,8 @@ def test_every_dependency_key_is_registered():
     keys = {s.key for s in all_settings() if s.scope == "repo"}
     for bucket in CONFIG_DEPENDENCY_KEYS.values():
         for name in bucket:
+            if name == "plugins":
+                continue  # its keys come from installed plugins, none of them built in
             assert name in keys or any(k.startswith(f"{name}.") for k in keys), name
 
 
@@ -605,6 +607,7 @@ def test_refactoring_and_assertion_defaults_match():
     assert real.refactoring_min_confidence == get("refactoring.min_confidence").default
     assert real.assert_extra_names == get("assertions.extra_names").default
     assert llm_enrichment_enabled({}) == get("refactoring.llm.enabled").default
+    assert real.duplication_enabled == get("health.duplication.enabled").default
 
 
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, "maybe"])

@@ -52,7 +52,7 @@ from .complexity import FileComplexity, FunctionComplexity, walk_file
 from .coverage_actions import paired_test_index
 from .crossfn_perf import CrossFunctionPerfStage
 from .dataflow import FileDataflowCache
-from .duplication import ClonePair, DuplicationReport
+from .duplication import ClonePair, DuplicationReport, drop_clone_caches
 from .duplication.detector import clone_ranges, clones_against_index, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
 from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig, run_extract_method_job
@@ -138,9 +138,17 @@ log = structlog.get_logger(__name__)
 # third-party import no longer contradicts a test named for a file (#5958), and
 # coverage names the indexed production files a report leaves out (#5917).
 #
+# v47 (0.63): benchmark runs stop confirming, admitting, ordering and minting
+# measured hotspots in the perf queue (#6317), and a measured hotspot carries
+# its function's measured row onto Fix first (#6390).
+# ``PERFORMANCE_MODEL_VERSION`` moved with it. A build folder inside source code
+# is shipped code, not tooling (#6228), and a large repo that overruns the
+# duplication window budget still gets clones found in its production code
+# (#6357).
+#
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 46
+HEALTH_ANALYZER_VERSION = 47
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -582,7 +590,7 @@ class HealthAnalyzer:
         # would otherwise sit at zero.
         dup_task = (
             None
-            if "dry_violation" in run.disabled
+            if self._duplication_off(run)
             else asyncio.ensure_future(asyncio.to_thread(self._duplication, run, changed_set, None))
         )
         target_files = self._target_files(changed_set)
@@ -623,7 +631,7 @@ class HealthAnalyzer:
 
         self.clone_source = None
         # An empty splice set: no file whose clone list a biomarker reads changed.
-        if "dry_violation" in run.disabled or changed == set():
+        if self._duplication_off(run) or changed == set():
             return DuplicationReport()
         if self.clone_index_dir is not None:
             report = self._clones_against_index()
@@ -645,6 +653,22 @@ class HealthAnalyzer:
         except Exception as exc:
             log.debug("health_duplication_failed", error=str(exc))
             return DuplicationReport()
+
+    def _duplication_off(self, run: _RunConfig) -> bool:
+        """Whether the pass skips clone detection, and with the switch off, drop its caches.
+
+        Clone detection runs only for ``dry_violation`` (the duplicated
+        assertion block marker and Extract Helper reuse its pairs). With
+        ``health.duplication.enabled: false`` the token, delta and pair caches
+        under ``.repowise`` are deleted so the disk is freed on the next pass;
+        turning it back on rebuilds them on the pass after. A biomarker
+        disabled in ``health-rules.json`` alone keeps them, as before.
+        """
+        if "dry_violation" not in run.disabled:
+            return False
+        if not run.duplication_enabled and self.duplication_cache_dir is not None:
+            drop_clone_caches(Path(self.duplication_cache_dir))
+        return True
 
     def _clones_against_index(self) -> DuplicationReport | None:
         # A missing, stale or truncated clone state is ``None`` without raising,
@@ -1123,6 +1147,7 @@ class HealthAnalyzer:
                         **fc.stored_metrics(),
                         "body_digest": fc.body_digest,
                         "body_tokens": fc.body_tokens,
+                        "eager_defaults": fc.eager_defaults,
                     }
                 )
         return rows

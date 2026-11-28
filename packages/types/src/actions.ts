@@ -19,6 +19,7 @@ export type ActionRule =
   | "sync_hook_missing"
   | "coverage_found"
   | "evidence_found"
+  | "sources_unsynced"
   | "decisions_unchecked"
   | "docs_model_ready"
   | "settings_suggested"

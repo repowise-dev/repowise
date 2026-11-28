@@ -9,12 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.exclusion import build_exclude_spec, node_is_excluded
 from repowise.core.ingestion.models import (
     FILE_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
 from repowise.core.persistence import crud
-from repowise.core.persistence.models import GraphNode
+from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.deps import get_db_session
 from repowise.server.mcp_server._graph_utils import (
     bfs_trace,
@@ -44,7 +45,7 @@ async def get_graph_metrics(
     repo_id: str,
     node_id: str = Query(..., description="File path or symbol_id"),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> GraphMetricsResponse:
     """Return importance metrics for a file or symbol with percentile ranks."""
     node = await crud.get_graph_node(session, repo_id, node_id)
@@ -58,7 +59,7 @@ async def get_graph_metrics(
         session, repo_id, pagerank, betweenness
     )
 
-    degrees = await _layer_degrees(session, repo_id, node)
+    degrees = await _layer_degrees(session, repo_id, node, build_exclude_spec(repo.local_path))
     meta = parse_community_meta(node)
 
     return GraphMetricsResponse(
@@ -80,8 +81,12 @@ async def get_graph_metrics(
     )
 
 
-async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -> dict[str, int]:
+async def _layer_degrees(
+    session: AsyncSession, repo_id: str, node: GraphNode, exclude_spec: Any
+) -> dict[str, int]:
     """In/out degree over the node's own layer: symbol-use or file-dependency edges.
+
+    An edge with an end in a file the repo rules exclude is not counted.
 
     Same scope as /api/symbols/detail, which renders the same symbol component,
     so a symbol reports one degree whichever of the two surfaces is open.
@@ -92,6 +97,7 @@ async def _layer_degrees(session: AsyncSession, repo_id: str, node: GraphNode) -
         repo_id,
         node.node_id,
         edge_types=sorted(SYMBOL_USE_EDGE_TYPES if is_symbol else FILE_DEPENDENCY_EDGE_TYPES),
+        exclude_spec=exclude_spec,
     )
 
 
@@ -116,7 +122,7 @@ async def get_callers_callees(
     ),
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> CallersCalleesResponse:
     """Who calls a symbol, what it calls, and every other relation it has.
 
@@ -143,7 +149,12 @@ async def get_callers_callees(
 
     node = await _resolve_symbol(session, repo_id, symbol_id)
     relations = await load_symbol_relations(
-        session, repo_id, node.node_id, present=True, call_row_cap=limit
+        session,
+        repo_id,
+        node.node_id,
+        present=True,
+        call_row_cap=limit,
+        exclude_spec=build_exclude_spec(repo.local_path),
     )
     groups = [g for g in relations.groups if _wants_group(g, et_filter, direction)]
 
@@ -219,23 +230,29 @@ async def get_execution_flows(
     max_depth: int = Query(5, ge=1, le=12),
     entry_point: str | None = Query(None, description="Specific symbol to trace from"),
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> ExecutionFlowsResponse:
-    """Return top entry points with BFS call-path traces."""
+    """Return top entry points with BFS call-path traces.
+
+    No entry point or hop is taken from a file the repo rules exclude.
+    """
+    exclude_spec = build_exclude_spec(repo.local_path)
     if entry_point:
         node = await crud.get_graph_node(session, repo_id, entry_point)
-        if node is None:
+        if node is None or node_is_excluded(node.node_id, exclude_spec):
             raise HTTPException(status_code=404, detail=f"Entry point not found: {entry_point}")
         entry_nodes = [node]
     else:
-        entry_nodes = await crud.get_top_entry_points(session, repo_id, min_score=0.0, limit=top_n)
+        entry_nodes = await crud.get_top_entry_points(
+            session, repo_id, min_score=0.0, limit=top_n, exclude_spec=exclude_spec
+        )
 
     if not entry_nodes:
         return ExecutionFlowsResponse(total_entry_points=0, flows=[])
 
     node_cache: dict[str, GraphNode] = {}
     flows = [
-        await _trace_flow(session, repo_id, ep_node, max_depth, node_cache)
+        await _trace_flow(session, repo_id, ep_node, max_depth, node_cache, exclude_spec)
         for ep_node in entry_nodes
     ]
     flows.sort(key=lambda f: -f.entry_point_score)
@@ -252,6 +269,7 @@ async def _trace_flow(
     ep_node: GraphNode,
     max_depth: int,
     node_cache: dict[str, GraphNode],
+    exclude_spec: Any = None,
 ) -> ExecutionFlowEntry:
     """BFS the call path from one entry point, with per-hop origins."""
     hop_origins: dict[tuple[str, str], str] = {}
@@ -264,6 +282,7 @@ async def _trace_flow(
         node_cache,
         hop_origins,
         termination,
+        exclude_spec,
     )
     communities_visited, crosses = await resolve_trace_communities(
         session, repo_id, trace, node_cache

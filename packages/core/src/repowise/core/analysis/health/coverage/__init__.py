@@ -18,8 +18,10 @@ from .decay import (
     decay_since,
     measurement_ref,
 )
+from .delphi import parse_delphi_codecoverage
 from .detector import PARSERS, detect_format, is_test_file, parse
 from .discovery import (
+    EMPTY_COVERAGE_REPORT_NOTE,
     CoverageConfig,
     CoverageProvenance,
     CoverageScope,
@@ -60,6 +62,7 @@ from .repowise_json import parse_repowise_json
 __all__ = [
     "DRIFT_MIN_MEASURED",
     "DRIFT_PCT",
+    "EMPTY_COVERAGE_REPORT_NOTE",
     "PARSERS",
     "ContextCoverageReport",
     "CoverageConfig",
@@ -96,6 +99,7 @@ __all__ = [
     "parse_cobertura",
     "parse_contexts_file",
     "parse_coverage_sqlite",
+    "parse_delphi_codecoverage",
     "parse_go_coverprofile",
     "parse_jacoco",
     "parse_lcov",

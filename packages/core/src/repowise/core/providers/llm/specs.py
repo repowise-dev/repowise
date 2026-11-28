@@ -60,12 +60,19 @@ class ProviderSpec:
     needs_repo_cwd: bool = False
     #: Runs on this machine, so high concurrency can time out.
     local: bool = False
+    #: The embedder a run on this provider uses when none was named, so it
+    #: embeds through the same server instead of a hosted service guessed
+    #: from an exported key. Empty: the usual key detection decides.
+    local_embedder: str = ""
     #: Models named ``"<name>/..."`` cost nothing per token.
     zero_cost: bool = False
     #: Flood guard; ``None`` attaches no rate limiter.
     rate_limit: RateLimitConfig | None = None
     #: Package named when the provider's module fails to import.
     package: str = ""
+    #: The ``repowise[<extra>]`` that ships ``package`` when it is not in the
+    #: default install; :mod:`repowise.core.extras` knows how to add it.
+    extra: str = ""
     #: Position in credential auto-detection; ``None`` never auto-detects.
     autodetect_rank: int | None = None
     #: The agent slug whose CLI this provider drives.
@@ -105,6 +112,10 @@ class ProviderSpec:
             return f"{identity.install_hint}, then: {identity.login_hint}"
         if not self.api_key_envs and self.signup_url:
             return self.signup_url
+        if self.extra:
+            from repowise.core.extras import plan_install
+
+            return plan_install(self.extra).command
         return f"pip install {self.package}" if self.package else ""
 
 
@@ -244,6 +255,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         default_base_url="http://localhost:11434",
         keyless=True,
         local=True,
+        local_embedder="ollama",
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=10_000_000),
         package="openai",
         autodetect_rank=3,
@@ -262,6 +274,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
         keyless=True,
         rate_limit=RateLimitConfig(requests_per_minute=1_000, tokens_per_minute=2_000_000),
         package="litellm",
+        extra="litellm",
         note="proxy in front of another provider",
         signup_url="https://docs.litellm.ai/docs/providers",
     ),
@@ -305,7 +318,11 @@ _SPECS: tuple[ProviderSpec, ...] = (
         impl=f"{_LLM}.opencode:OpenCodeProvider",
         label="OpenCode (Local CLI)",
         default_model="opencode/default",
-        models=("opencode/default", "opencode/openai/gpt-6-luna", "opencode/deepseek/deepseek-v4-pro"),
+        models=(
+            "opencode/default",
+            "opencode/openai/gpt-6-luna",
+            "opencode/deepseek/deepseek-v4-pro",
+        ),
         keyless=True,
         needs_repo_cwd=True,
         local=True,

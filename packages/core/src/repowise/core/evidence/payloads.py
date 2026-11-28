@@ -60,14 +60,31 @@ def runs_payload(runs: Iterable[Any], head_commit: str | None) -> dict[str, Any]
     }
 
 
+def view_ranks(view: Mapping[str, Any] | None) -> bool:
+    """Whether a ``measured_costs`` *view* measured anything: a statement
+    window that joined no function lists its run, and ranks nothing."""
+    if view is None:
+        return False
+    statements = view.get("statements") or {}
+    return bool(
+        view.get("measured")
+        or view.get("measured_in_tests")
+        or view.get("benchmarks")
+        or view.get("routes")
+        or statements.get("total")
+    )
+
+
 def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, Any]:
     """The ``measured`` route from a ``measured_costs`` *view*.
 
-    With no view, *status* (the repository's ``measured_status``) says why;
-    ``measured`` then reads ``not_ranked``: something is ranked, just not in
-    the asked run (an older run of its workload, or one that ranks nothing).
+    With no view, or one that ranks nothing (:func:`view_ranks`), *status*
+    (the repository's ``measured_status``) says why; ``measured`` then reads
+    ``not_ranked``: something is ranked, just not in the asked run (an older
+    run of its workload, or one that ranks nothing). A statement window that
+    joined no function still lists its run under ``statements``.
     """
-    if view is None:
+    if not view_ranks(view):
         if status == "measured":
             status = "not_ranked"
         return {
@@ -76,14 +93,19 @@ def measured_payload(view: Mapping[str, Any] | None, status: str) -> dict[str, A
             "command": _command(status),
             "measured": None,
             "measured_in_tests": None,
+            "statements": (view or {}).get("statements"),
             "benchmarks": None,
         }
+    assert view is not None
     return {
         "basis": "measured",
         "status": "measured",
         "command": None,
         "measured": view.get("measured"),
         "measured_in_tests": view.get("measured_in_tests"),
+        "statements": view.get("statements"),
+        # Only when a route run names a handler, so every other payload is unchanged.
+        **({"routes": view["routes"]} if view.get("routes") else {}),
         "benchmarks": view.get("benchmarks"),
     }
 
@@ -228,5 +250,6 @@ __all__ = [
     "owner_history_payload",
     "runs_payload",
     "status_payload",
+    "view_ranks",
     "weighted_callers",
 ]

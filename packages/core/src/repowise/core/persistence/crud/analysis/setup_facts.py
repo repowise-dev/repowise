@@ -135,6 +135,7 @@ def _local_facts(root: Path, known: dict[str, Any]) -> tuple[dict[str, Any], dic
         # then reports the history as unavailable.
         ("settings", lambda: _settings(root, known.get("synced_commits") or 0)),
         ("model", lambda: _model(root)),
+        ("sources", lambda: _sources(root)),
     )
     for name, reader in readers:
         try:
@@ -156,6 +157,12 @@ def _sync(root: Path) -> dict[str, Any]:
     if synced and head:
         behind = 0 if synced == head else count_commits_between(root, synced, head)
     return {"sync_hook": installed, "unsynced_commits": behind}
+
+
+def _sources(root: Path) -> dict[str, Any]:
+    from repowise.core.source_sync import unsynced_sources
+
+    return {"unsynced_sources": unsynced_sources(root)}
 
 
 def _found(

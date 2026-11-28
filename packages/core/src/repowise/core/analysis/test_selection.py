@@ -19,8 +19,8 @@ is chosen when any of these hold:
 5. a changed code file has no known test, only a filename guess names one, or
    a route to it passes through a test helper no test imports (unless every
    known test is selected anyway), or any Python
-   test helper while a conftest or pytest config loads plugins by name (its
-   users are unknown);
+   test helper while a conftest or pytest config loads by name a plugin that
+   may be a module of the repository (its users are unknown);
 6. the index is missing, disagrees with itself about its commit, or its graph
    could not be read; or the files changed between its commit and the base are
    unknown, too many to trace, or include a manifest, lockfile or build config;
@@ -55,7 +55,8 @@ holds and no code sits beside, that no code names is skipped without a test.
 A file whose reach is known runs a scope (:mod:`.selection_scopes`) in place of
 everything: a manifest or lockfile its ecosystem's tests, a production
 ``__init__.py`` the tests reaching the modules under it, an asset the tests
-reaching the code naming it or else its package's tests.
+reaching the code naming it or else its package's tests, and a code file the
+change adds the tests of the changed files naming it and of the code beside it.
 
 :func:`runner_args` renders a selection as arguments for one test runner; a
 full run renders as the :data:`RUN_ALL` sentinel. pytest and go reject it as a
@@ -66,7 +67,6 @@ a pipeline must branch on the run-all flag rather than rely on the sentinel.
 from __future__ import annotations
 
 import functools
-import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
@@ -114,8 +114,11 @@ _FULL_RUN_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "package-lock.json",
             "yarn.lock",
             "pnpm-lock.yaml",
+            "bun.lock",
+            "bun.lockb",
             "poetry.lock",
             "uv.lock",
+            "pdm.lock",
             "Pipfile.lock",
             "Pipfile",
             "requirements*.txt",
@@ -360,10 +363,6 @@ def is_documentation(path: str) -> bool:
     )
 
 
-# ``pytest_plugins = [...]`` or ``-p name`` (not ``-p no:name``, which disables one).
-_PLUGIN_DECLARATION = re.compile(r"\bpytest_plugins\b|(?:^|[\s\"'=])-p\s*(?!no:)[A-Za-z_]")
-
-
 def is_scan_source(path: str) -> bool:
     """Code or pytest config: the files :func:`doc_readers` and :func:`plugin_loader` read."""
     name = PurePosixPath(path).name
@@ -446,16 +445,24 @@ def _named_in(
     return out
 
 
-def plugin_loader(sources: Iterable[tuple[str, str]]) -> str | None:
+def plugin_loader(
+    sources: Iterable[tuple[str, str]], files: Collection[str] | None = None
+) -> str | None:
     """The first conftest or pytest config that loads a plugin module by name.
 
     Such a plugin's fixtures reach tests that never import it, so while one is
-    declared, a test helper's importers are not all of its users.
+    declared, a test helper's importers are not all of its users. Given the
+    repository's *files*, only a plugin that may be one of them counts
+    (:mod:`.plugin_loaders`): an installed package or a pytest builtin is no
+    test helper here. A declaration whose names cannot be read always counts.
     """
+    from .plugin_loaders import loads_local, local_module_check
+
+    local = local_module_check(files or ())
     for path, text in sources:
         name = PurePosixPath(path).name
         pytest_file = name == "conftest.py" or name in PYTEST_CONFIG_NAMES
-        if pytest_file and _PLUGIN_DECLARATION.search(text):
+        if pytest_file and loads_local(path, text, local):
             return path
     return None
 
@@ -796,15 +803,22 @@ def _function_notes(
     """One line per changed file the tests covering its changed functions answer."""
     out = []
     for path in code:
-        if path not in ev.functions:
+        if path not in ev.functions and path not in ev.modules:
             continue
         files = {f for _, f in per_file[path][0] if f}
-        covering = files & {f for _, f in ev.covered.get(path, ())}
-        line = (
-            f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
-            "change in it sits inside function bodies, so measured tests that only import "
-            "it are left out"
-        )
+        if path in ev.functions:
+            covering = files & {f for _, f in ev.covered.get(path, ())}
+            line = (
+                f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
+                "change in it sits inside function bodies, so measured tests that only import "
+                "it are left out"
+            )
+        else:
+            covering = files & ev.modules[path]
+            line = (
+                f"{path}: {len(covering)} test file(s) ran code reading a name its module-level "
+                "change binds, or import one, so measured tests that did neither are left out"
+            )
         if unmeasured := len(files - covering):
             line += f"; {unmeasured} test file(s) the map never ran still run for it"
         out.append(f"{line}.")
@@ -838,9 +852,11 @@ def _why(
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
         by_coverage = FUNCTION_COVERAGE_VIA if path in ev.functions else "coverage"
+        readers = ev.modules.get(path, frozenset())
         for _, test_file in tests:
             if test_file and test_file not in out:
                 via = by_coverage if test_file in covered else vias.get(test_file, basis)
+                via = MODULE_READERS_VIA if test_file in readers else via
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
 
@@ -869,10 +885,17 @@ _IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
 #: How :attr:`Selection.why` names a test that covers a changed function's body,
 #: in a file whose every change sits inside function bodies (``function_hunks``).
 FUNCTION_COVERAGE_VIA = "function-coverage"
+#: How :attr:`Selection.why` names a test that ran code reading a name a module-level
+#: change binds, or imports one (``module_hunks``).
+MODULE_READERS_VIA = "module-readers"
 
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
     FUNCTION_COVERAGE_VIA: f"{FUNCTION_COVERAGE_VIA}: it covers the changed function lines",
+    MODULE_READERS_VIA: (
+        f"{MODULE_READERS_VIA}: it ran code reading a name the module-level change binds, "
+        "or imports one"
+    ),
     BROADCAST_VIA: (
         f"{BROADCAST_VIA}: a conftest above it is on the route and keeps every test under it"
     ),
@@ -1394,9 +1417,12 @@ class _Evidence:
     known_tests: tuple[str, ...]
     plugin_loader: str | None
     gap: frozenset[str] = frozenset()
-    # Changed files their covering tests answer (``function_covered``), and the
-    # test files the per-test map measured (``measured_test_files``).
+    # Changed files their covering tests answer (``function_covered``), changed
+    # files with module-level changes and the test files reading them
+    # (``module_covered``), and the test files the per-test map measured
+    # (``measured_test_files``).
     functions: frozenset[str] = frozenset()
+    modules: Mapping[str, frozenset[str]] = field(default_factory=dict)
     measured: frozenset[str] = frozenset()
     # Tests every subset runs (unplaced and detected always-run).
     every_subset: frozenset[str] = frozenset()
@@ -1407,6 +1433,9 @@ class _Evidence:
     # Test files evidence or a changed scope file reached, and ``{test file:
     # (changed file, scope on its route)}`` for those a route's scope expanded to.
     reached: set[str] = field(default_factory=set, compare=False)
+    # ``{test helper no test imports: the test code naming it}`` (``helper_readers``);
+    # a helper absent was not read for, so its users stay unknown.
+    readers: Mapping[str, Collection[str]] = field(default_factory=dict)
     broadcast: dict[str, tuple[str, str]] = field(default_factory=dict, compare=False)
 
     @classmethod
@@ -1429,7 +1458,9 @@ class _Evidence:
             plugin_loader=inp.plugin_loader,
             gap=frozenset(inp.index_gap or ()),
             functions=frozenset(inp.tiers.get("function_covered") or ()),
+            modules={p: frozenset(t) for p, t in (inp.tiers.get("module_covered") or {}).items()},
             measured=frozenset(inp.tiers.get("measured_test_files") or ()),
+            readers=inp.tiers.get("helper_readers") or {},
             every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
         )
 
@@ -1479,19 +1510,23 @@ def _file_tests(
     """
     found = ev.found(path)
     covered = _covering(path, ev)
-    tests = ev.present([*covered, *found])
+    readers = [(t, t) for t in sorted(ev.modules.get(path, ()))]
+    tests = ev.present([*covered, *found, *readers])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
     tests = _function_scoped(path, _expand_scopes(path, tests, scopes, ev), covered, ev)
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
+    read_by = _read_by_tests([path] if is_test_helper(path) else helpers, ev)
+    tests += ev.present([(t, t) for found in read_by.values() for t in found])
     drop = {*helpers, path} if is_test_helper(path) else set(helpers)
     tests = [(t, f) for t, f in tests if f is None or f not in drop]
     if is_test_helper(path):
-        return tests, "helper-importers", _own_helper_reasons(path, ev)
+        return tests, "helper-importers", _own_helper_reasons(path, ev, read_by)
 
-    reasons = _helper_route_reasons(path, helpers, tests, ev) + _unfiled_reasons(path, tests)
+    reasons = _helper_route_reasons(path, helpers, tests, ev, read_by)
+    reasons += _unfiled_reasons(path, tests)
     # A deleted test needs no run of its own; the tests importing it do.
     if path in ev.deleted and is_runnable_test(path):
         basis = "deleted-test"
@@ -1513,11 +1548,17 @@ def _covering(path: str, ev: _Evidence) -> list[_TestRef]:
 def _function_scoped(
     path: str, tests: list[_TestRef], covered: list[_TestRef], ev: _Evidence
 ) -> list[_TestRef]:
-    """*tests* less, for a file answered by its changed functions, the measured tests
-    that do not cover them: those only import them. One the map never ran stays."""
-    if path not in ev.functions:
+    """*tests* less the measured tests the per-test map says cannot see the change.
+
+    For a file answered by its changed functions, those not covering them: they
+    only import them. For a module-level change, those that ran no code reading
+    a changed name and import none. One the map never ran stays."""
+    if path in ev.functions:
+        mine = {f for _, f in covered}
+    elif path in ev.modules:
+        mine = set(ev.modules[path])
+    else:
         return tests
-    mine = {f for _, f in covered}
     return [(t, f) for t, f in tests if f in mine or f not in ev.measured]
 
 
@@ -1574,11 +1615,47 @@ def _known_under(ev: _Evidence, dirs: Collection[str]) -> list[str]:
     return ev.under_memo[key]
 
 
-def _own_helper_reasons(path: str, ev: _Evidence) -> list[str]:
-    """A changed helper stands for its importers; one no test imports is unknown."""
+def _read_by_tests(helpers: list[str], ev: _Evidence) -> dict[str, list[str]]:
+    """``{helper no test imports: the tests naming it}`` for each only runnable tests name.
+
+    Those tests are all its users (:func:`~.fixture_readers.helper_readers`), and
+    none may be one (a type-check input, a script run by hand). A helper other
+    test code names (a conftest, another helper), or that was not read for,
+    keeps its users unknown.
+    """
+    out: dict[str, list[str]] = {}
+    for h in helpers:
+        if ev.importers.get(h) or h not in ev.readers:
+            continue
+        found = list(ev.readers[h])
+        if all(is_runnable_test(r) for r in found):
+            out[h] = found
+    return out
+
+
+def _read_by_notes(read_by: Mapping[str, list[str]], ev: _Evidence) -> None:
+    """Say once per helper why it forces no full run."""
+    for h, found in read_by.items():
+        note = (
+            f"{h} is a test helper no test imports; the {len(found)} test file(s) naming it "
+            f"run for it (e.g. {found[0]})."
+            if found
+            else f"{h} is a test helper no test imports or names, so no test runs it."
+        )
+        if note not in ev.notes:
+            ev.notes.append(note)
+
+
+def _own_helper_reasons(
+    path: str, ev: _Evidence, read_by: Mapping[str, list[str]] | None = None
+) -> list[str]:
+    """A changed helper stands for its importers, or the tests naming it; else it is unknown."""
     if plugin := _plugin_reason(path, ev):
         return [plugin]
     if ev.importers.get(path):
+        return []
+    if read_by and path in read_by:
+        _read_by_notes(read_by, ev)
         return []
     return [
         f"{path} is a test helper no test imports; tests that use it without an "
@@ -1597,19 +1674,25 @@ def _plugin_reason(helper: str, ev: _Evidence) -> str | None:
 
 
 def _helper_route_reasons(
-    path: str, helpers: list[str], tests: list[_TestRef], ev: _Evidence
+    path: str,
+    helpers: list[str],
+    tests: list[_TestRef],
+    ev: _Evidence,
+    read_by: Mapping[str, list[str]],
 ) -> list[str]:
     """A helper on a route stands for its importers, which the walk adds beside it.
 
     One no test imports is used some other way (a fixture, a plugin), so its
-    users are unknown, unless every known test already runs for *path*: then
-    no user it could have is left out. Any language counts, since a test can
+    users are unknown, unless only runnable tests name it (*read_by*, which
+    the caller adds), or every known test already runs for *path*: then no
+    user it could have is left out. Any language counts, since a test can
     start a helper in another language by path.
     """
     plugins = [r for h in helpers if (r := _plugin_reason(h, ev))]
     if plugins:
         return [f"{path} is reached through a test helper: {plugins[0]}"]
-    unimported = [h for h in helpers if not ev.importers.get(h)]
+    _read_by_notes(read_by, ev)
+    unimported = [h for h in helpers if not ev.importers.get(h) and h not in read_by]
     if unimported and _all_tests_selected(tests, ev):
         ev.notes.extend(
             f"{path} is reached through the test helper {h}, which no test imports, "

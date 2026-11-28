@@ -14,12 +14,14 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import logging
+from bisect import bisect_left
+from collections.abc import Collection, Iterable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import case, delete, false, func, not_, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...batches import chunked
@@ -32,7 +34,7 @@ from ...models import (
     _new_uuid,
     _now_utc,
 )
-from ...sql import order_by, rule_predicate
+from ...sql import json_text, order_by, rule_predicate
 from .refactoring import _refactoring_row_kwargs
 from .shown import gated_counts, ungated
 
@@ -45,6 +47,8 @@ if TYPE_CHECKING:
     from ....evidence.measured_fold import MeasuredFold
 
 _PLAN_TYPE = "performance_fix"
+
+logger = logging.getLogger(__name__)
 
 _EVIDENCE_LIMIT = 8
 """Evidence rows folded into a persisted plan's affected-location list.
@@ -105,7 +109,45 @@ def opportunity_details(
         "may_lead": opportunity.may_lead,
         **({"fix_api": opportunity.fix.api} if opportunity.fix and opportunity.fix.api else {}),
         "siblings": [dict(entry) for entry in opportunity.siblings],
+        **(
+            {"measured_row": opportunity.measured_row}
+            if opportunity.measured_row is not None
+            else {}
+        ),
+        # Top level, so SQL can tell a measured item that leads (``agent_hidden``).
+        **({LEADS_WITH_STEP: step["rule"]} if (step := _lead_step(opportunity)) else {}),
     }
+
+
+#: The ``details_json`` key a measured hotspot that may lead stores its next
+#: step's rule under; absent on every other cause.
+LEADS_WITH_STEP = "measured_step"
+
+
+def _lead_step(opportunity: OpportunityModel) -> dict[str, Any] | None:
+    """A measured hotspot's next step when the item may lead with it."""
+    if not opportunity.may_lead or opportunity.measured_row is None:
+        return None
+    return opportunity.measured_row.get("next_step") or None
+
+
+def agent_hidden(model: Any = PerformanceOpportunity) -> Any:
+    """SQL: a cause the agent surfaces leave out, a measured hotspot with no
+    next step to lead with (``perf.opportunities._measured_hotspot``). One that
+    leads Fix first with a next step and a verify command is work an agent can
+    do, so ``get_health`` (Fix first, the perf page, the headline counts) and
+    ``get_overview``'s Do next keep it. A hotspot stored before hotspots
+    carried a row reads as hidden until the next update."""
+    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+
+    # CASE, so PostgreSQL parses the details of measured hotspots only.
+    return case(
+        (
+            model.biomarker_type == MEASURED_HOTSPOT,
+            json_text(model.details_json, LEADS_WITH_STEP).is_(None),
+        ),
+        else_=false(),
+    )
 
 
 def _row_kwargs(
@@ -267,6 +309,7 @@ async def finalize_performance_opportunities(
         hot_in_tests=measured.hot_in_tests,
         ranks=measured.ranks,
         queries=await _query_readings(session, repository_id),
+        measured_rows=await _hotspot_rows(session, repository_id, measured),
     )
 
     plan_states, plans = await _replace_plans(session, repository_id, opportunities, policy)
@@ -327,6 +370,44 @@ async def _measured_functions(session: AsyncSession, repository_id: str) -> Meas
     from .evidence import ranked_by_workload
 
     return fold_measured(await ranked_by_workload(session, repository_id))
+
+
+async def _hotspot_rows(
+    session: AsyncSession, repository_id: str, measured: MeasuredFold
+) -> dict[str, dict[str, Any]]:
+    """The action row (``evidence.action_row``, JSON form) of each function a
+    leading workload measured above the lead bar, from the run ``measured``
+    names for it: what a measured hotspot carries onto Fix first and the
+    performance queue. Built by :func:`measured_costs`, the reader every
+    measured surface uses, so the item and the measured table say the same.
+    Nothing is read when no function is hot. A read that fails leaves every
+    hotspot without a row (listed, never leading), never the health write.
+
+    Ceiling: the row is stored as of this finalize, which runs before the
+    index writes function blame and the per-test map and before this finalize
+    reconciles the causes, so its ``owner``, ``last_change``, map-backed
+    ``tests`` and ``on_static_findings`` can lag one update (none of them
+    decides the step or the lead; Fix first shows no owner). No ``slower``:
+    comparisons are read per request. Upgrade path: build the rows after the
+    blame and map writes.
+    """
+    if not measured.hot:
+        return {}
+    try:
+        async with session.begin_nested():
+            view = await measured_costs(
+                session, repository_id, limit=len(measured.hot), symbol_ids=measured.hot
+            )
+    except Exception as exc:  # best effort: the row is an addition to the item
+        logger.warning("measured hotspot rows unavailable: %s", exc)
+        return {}
+    block = (view or {}).get("measured") or {}
+    workload = {run["run_id"]: run["workload_name"] for run in block.get("runs", ())}
+    return {
+        row["symbol_id"]: row
+        for row in block.get("rows", ())
+        if workload.get(row["run_id"]) == measured.measured.get(row["symbol_id"])
+    }
 
 
 async def _query_readings(session: AsyncSession, repository_id: str) -> dict[str, Any]:
@@ -648,10 +729,9 @@ def _predicates(
 
     Opportunities on a file of a language the registry gates for performance
     are left out unless ``include_unverified``; causes minted from runtime
-    evidence alone (:func:`measured_hotspot_ids`) unless
-    ``include_measured_hotspots``.
+    evidence alone with no next step to lead with (:func:`agent_hidden`)
+    unless ``include_measured_hotspots``.
     """
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
     from ....analysis.health.perf.serving import FILTERS
     from ....analysis.health.queue_rules import active_filters
 
@@ -660,7 +740,7 @@ def _predicates(
         *(
             ()
             if include_measured_hotspots
-            else (PerformanceOpportunity.biomarker_type != MEASURED_HOTSPOT,)
+            else (not_(agent_hidden()),)
         ),
         ungated(
             "performance",
@@ -793,17 +873,30 @@ class PerformanceHeadline(NamedTuple):
         return self._asdict()
 
 
-async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> frozenset[str]:
+async def measured_hotspot_ids(
+    session: AsyncSession, repository_id: str, *, without_step: bool = False
+) -> frozenset[str]:
     """The open causes minted from runtime evidence alone
     (``perf.opportunities.measured_hotspots``), for a surface that shows no
-    evidence. One indexed lookup."""
+    evidence. One indexed lookup.
+
+    ``without_step=True`` keeps only those an agent surface leaves out
+    (:func:`agent_hidden`): no rule fired on what their run measured, so
+    their one step is "profile it". The generated agent files, a push, leave
+    out every one.
+    """
     from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
 
+    which = (
+        agent_hidden()
+        if without_step
+        else PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT
+    )
     result = await session.execute(
         select(PerformanceOpportunity.opportunity_id).where(
             PerformanceOpportunity.repository_id == repository_id,
             PerformanceOpportunity.status == "open",
-            PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+            which,
         )
     )
     return frozenset(result.scalars().all())
@@ -812,10 +905,9 @@ async def measured_hotspot_ids(session: AsyncSession, repository_id: str) -> fro
 async def measured_hotspot_counts(
     session: AsyncSession, repository_id: str, *, include_unverified: bool = False
 ) -> tuple[int, int]:
-    """``(open, in the default queue)`` over the causes runtime evidence alone
-    minted that a language gate does not hold back, for a surface that shows
-    no evidence to take out of a stored rollup. One aggregate."""
-    from ....analysis.health.perf.actionability import MEASURED_HOTSPOT
+    """``(open, in the default queue)`` over the causes an agent surface
+    leaves out (:func:`agent_hidden`) that a language gate does not hold
+    back, to take out of a stored rollup. One aggregate."""
 
     row = (
         await session.execute(
@@ -824,7 +916,7 @@ async def measured_hotspot_counts(
                 func.count().filter(PerformanceOpportunity.queue_eligible.is_(True)),
             ).where(
                 *_predicates(repository_id, include_unverified=include_unverified),
-                PerformanceOpportunity.biomarker_type == MEASURED_HOTSPOT,
+                agent_hidden(),
             )
         )
     ).one()
@@ -844,8 +936,8 @@ async def performance_headline(
     The scope sizes the Performance view's scope control shows, from the same
     grouped aggregate, so a headline never states a number that view
     contradicts. *covered_nloc* is the caller's ``PerfCoverage.covered_nloc``.
-    ``include_measured_hotspots=False`` leaves out the causes runtime evidence alone
-    minted, for a surface that shows no evidence.
+    ``include_measured_hotspots=False`` leaves out the causes an agent surface
+    does not show (:func:`agent_hidden`).
     """
     from ....analysis.health.perf.serving import scope_counts
     from .queue_counts import any_unjudged
@@ -1160,12 +1252,15 @@ async def measured_costs(
     now: datetime | None = None,
     run_id: str | None = None,
     comparisons: Iterable[Any] = (),
+    symbol_ids: Collection[str] | None = None,
 ) -> dict[str, Any] | None:
     """What each workload's newest stored run that ranks any function
     measured, ranked by what it costs.
 
     *run_id* keeps that one run (a workload's listed run); any other id ranks
-    nothing here and gives ``None``.
+    nothing here and gives ``None``. *symbol_ids* keeps those functions' rows
+    only, before the *limit* cut (the rows a measured hotspot carries); each
+    group's ``total`` then counts the kept rows.
 
     Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence
@@ -1178,6 +1273,23 @@ async def measured_costs(
       workloads rank is listed under each.
     - ``measured_in_tests``: the same for ``unit_test`` runs, listed apart and
       never leading.
+    - ``statements``: each production statement workload's newest run
+      (``crud.statement_costs``) with the functions that issue its statements,
+      by statement time: a row's ``share`` is of the window's stored
+      statement time and its ``statements`` holds calls, total and mean ms.
+      Only a statement the join put on exactly one function counts toward
+      it; each run counts the rest by label in ``unattributed``. A run whose
+      statements joined no function is listed with no rows (not with
+      *symbol_ids*), so its ``unattributed`` still shows. No rule reads a
+      statement's cost into a next step yet, so these rows never lead or mint a hotspot; their
+      ``verify`` is the next production window, never a benchmark (a local
+      benchmark does not measure a production statement).
+    - ``routes``: the same for each production route workload's newest run
+      (``crud.route_costs``): one row per handler the route join named, by
+      request time; a row's ``share`` is of the window's stored request time
+      and its ``routes`` holds requests, total, mean and p95 ms, errors and
+      its routes. Each run counts the routes on no handler in
+      ``unattributed``. Listed, never leading, as statements are.
     - Each group carries ``total``: its ranked rows before the *limit* cut.
 
     Each run names its basis (workload class and name, commit, age, samples)
@@ -1199,13 +1311,28 @@ async def measured_costs(
     they name. Each row is ``evidence.action_row.action_row``'s JSON form.
     Stale evidence and code outside production are never rows.
     """
+    from ....evidence.action_row import route_facts, statement_facts
     from ....evidence.hotness import LEAD_CLASSES
     from ....ingestion.symbol_identity import file_of_symbol
-    from .evidence import newer_unranked, ranked_by_workload, step_findings
+    from .evidence import (
+        newer_unranked,
+        ranked_by_workload,
+        route_costs,
+        statement_costs,
+        step_findings,
+    )
 
     ranked = await ranked_by_workload(session, repository_id)
     if run_id is not None:
         ranked = [(run, rows) for run, rows in ranked if run.id == run_id]
+    if symbol_ids is not None:
+        ranked = [(run, [r for r in rows if r.symbol_id in symbol_ids]) for run, rows in ranked]
+    # A window whose statements joined no function still lists its run, so
+    # where its time went (``unattributed``) shows; a hotspot's rows do not.
+    statements = _window_runs(
+        await statement_costs(session, repository_id), run_id, symbol_ids, keep_unjoined=True
+    )
+    routes = _window_runs(await route_costs(session, repository_id), run_id, symbol_ids)
     benchmarks = await _benchmark_group(session, repository_id, limit, now, run_id)
     groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
     for run, rows in ranked:
@@ -1213,13 +1340,19 @@ async def measured_costs(
             groups["measured"].append((run, rows))
         elif run.workload_class == "unit_test":
             groups["measured_in_tests"].append((run, rows))
-    if not any(groups.values()):
+    if not any(groups.values()) and not statements and not routes:
         return {"benchmarks": benchmarks} if benchmarks else None
     # ``limit=0`` keeps each group's runs and total with no rows.
     shown = {
         key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()
     }
-    ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
+    statement_rows = [r for found in statements for r in found.rows[: max(limit, 0)]]
+    route_rows = [r for found in routes for r in found.rows[: max(limit, 0)]]
+    ids = sorted(
+        {r.symbol_id for runs in shown.values() for _, rows in runs for r in rows}
+        | {r.symbol_id for r in statement_rows}
+        | {r.symbol_id for r in route_rows}
+    )
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
     context = await _function_context(session, repository_id, ids, spans)
@@ -1258,6 +1391,28 @@ async def measured_costs(
                 ],
                 "total": sum(len(rows) for _, rows in groups[key]),
             }
+    if statements:
+        by_run = {found.run.id: found.run for found in statements}
+        view["statements"] = {
+            "runs": [_statement_run(found, at) for found in statements],
+            "rows": [
+                _window_row(
+                    r, by_run[r.run_id], spans, context, covered, statements=statement_facts(r)
+                )
+                for r in statement_rows
+            ],
+            "total": sum(len(found.rows) for found in statements),
+        }
+    if routes:
+        by_run = {found.run.id: found.run for found in routes}
+        view["routes"] = {
+            "runs": [_route_run(found, at) for found in routes],
+            "rows": [
+                _window_row(r, by_run[r.run_id], spans, context, covered, routes=route_facts(r))
+                for r in route_rows
+            ],
+            "total": sum(len(found.rows) for found in routes),
+        }
     if benchmarks:
         view["benchmarks"] = benchmarks
     return view or None
@@ -1317,7 +1472,7 @@ def _benchmark_run(run: Any, at: datetime) -> dict[str, Any]:
 async def _symbol_spans(
     session: AsyncSession, repository_id: str, paths: set[str]
 ) -> dict[str, list[Any]]:
-    """Every indexed symbol's span in *paths*, per file."""
+    """Every indexed symbol's span and kind in *paths*, per file."""
     from ...models import WikiSymbol
 
     out: dict[str, list[Any]] = {}
@@ -1328,6 +1483,7 @@ async def _symbol_spans(
                 WikiSymbol.symbol_id,
                 WikiSymbol.start_line,
                 WikiSymbol.end_line,
+                WikiSymbol.kind,
             ).where(WikiSymbol.repository_id == repository_id, WikiSymbol.file_path.in_(batch))
         )
         for row in result:
@@ -1435,18 +1591,12 @@ async def _function_context(
     (``evidence.function_tests.row_tests``). A benchmark that calls the
     function or ran its lines is its verify command, never a test.
     """
-    from ....evidence.function_tests import (
-        benchmark_command,
-        is_benchmark,
-        row_tests,
-        runnable_test,
-    )
+    from ....evidence.function_tests import benchmark_command, is_benchmark, row_tests
     from ....evidence.ingest import load_origins
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
     from ..git import function_owner_history
     from ..graph import get_node_degree_counts_bulk
-    from .coverage_map import tests_running_spans
     from .function_facts import tests_for_functions
 
     if not symbol_ids:
@@ -1463,18 +1613,8 @@ async def _function_context(
         sid: [s for s in found if origins.get(file_of_symbol(s)) == "production"]
         for sid, found in sources.items()
     }
-    wanted = set(symbol_ids)
-    lines = {
-        s.symbol_id: (path, s.start_line, s.end_line)
-        for path, held in spans.items()
-        for s in held
-        if s.symbol_id in wanted and s.start_line and s.end_line
-    }
-    ran = await tests_running_spans(session, repository_id, lines)
-    ran_tests = {sid: {runnable_test(t, f) for t, f, _ in found} for sid, found in ran.items()}
+    reach, ran = await _benchmark_reach(session, repository_id, symbol_ids, spans, sources)
     near = await tests_for_functions(session, repository_id, symbol_ids)
-    # A benchmark is a direct caller or a test that ran the function's lines.
-    reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
     # The nearest tests are asked too, so a stored benchmark there is never listed as a test.
     listed = {t.selector for found in near.values() for t in found}
     stored = await _stored_benchmarks(session, repository_id, set().union(listed, *reach.values()))
@@ -1502,6 +1642,121 @@ async def _function_context(
         },
         benchmark=benchmark,
     )
+
+
+async def _benchmark_reach(
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: list[str],
+    spans: dict[str, list[Any]],
+    sources: dict[str, list[str]],
+) -> tuple[dict[str, set[str]], dict[str, Any]]:
+    """``(reach, ran)``: per function, the selectors that may benchmark it (its
+    direct callers, *sources*, and the tests the per-test map saw run its lines
+    in *spans*), and what the map read (``crud.tests_running_spans``)."""
+    from ....evidence.function_tests import runnable_test
+    from .coverage_map import tests_running_spans
+
+    wanted = set(symbol_ids)
+    lines = {
+        s.symbol_id: (path, s.start_line, s.end_line)
+        for path, held in spans.items()
+        for s in held
+        if s.symbol_id in wanted and s.start_line and s.end_line
+    }
+    ran = await tests_running_spans(session, repository_id, lines)
+    ran_tests = {sid: {runnable_test(t, f) for t, f, _ in found} for sid, found in ran.items()}
+    # A benchmark is a direct caller or a test that ran the function's lines.
+    reach = {sid: {*sources.get(sid, ()), *ran_tests.get(sid, ())} for sid in symbol_ids}
+    return reach, ran
+
+
+#: Symbol kinds a change's measured functions are read from: function level only.
+_CALLABLE_KINDS = ("function", "method", "constructor")
+
+
+async def measured_in_change(
+    session: AsyncSession, repository_id: str, changed: dict[str, set[int]]
+) -> list[Any]:
+    """The production functions *changed* (``{path: new-side lines}``) edits
+    that a measurement speaks for, each with its verify command
+    (``evidence.change_measured.measured_changes``): ranked by a workload in a
+    class that may lead, or measured by a benchmark with stored results.
+
+    A function is edited when a changed line falls inside it and in no
+    narrower callable. Lines are the change's new side, read against the
+    indexed spans: a change far ahead of the index can miss a function that
+    moved (the upgrade is mapping lines through the diff since the indexed
+    commit, as ``direct_test_selectors`` notes too). Functions outside
+    production code (``code_origin``) are never measured. Empty when the
+    index holds no evidence, after two one-row reads.
+    """
+    from ....evidence.change_measured import Ranked, measured_changes
+    from ....evidence.function_tests import benchmark_command
+    from ....evidence.ingest import load_origins
+    from ....symbol_spans import symbol_at
+    from ...models import EvidenceBenchmarkResult, EvidenceRun, WorkloadHotness
+
+    if not await _holds_any(session, repository_id, (WorkloadHotness, EvidenceBenchmarkResult)):
+        return []
+    origins = await load_origins(session, repository_id, changed)
+    files = {p for p in changed if origins.get(p) == "production"}
+    if not files:
+        return []
+    spans = await _symbol_spans(session, repository_id, files)
+    edited: list[str] = []
+    for path, held in spans.items():
+        lines = sorted(changed[path])
+        touched = [s for s in held if s.kind in _CALLABLE_KINDS and _holds_a_line(s, lines)]
+        # Each line is charged to the narrowest callable holding it, so an
+        # outer function edited in its own body stays edited beside a nested one.
+        here = {span.symbol_id for n in lines if (span := symbol_at(touched, n)) is not None}
+        edited += sorted(here)
+    if not edited:
+        return []
+    ranked: list[tuple[str, Ranked]] = []
+    for batch in chunked(sorted(set(edited))):
+        result = await session.execute(
+            select(
+                WorkloadHotness.symbol_id,
+                EvidenceRun.workload_name,
+                EvidenceRun.workload_class,
+                WorkloadHotness.rank,
+            )
+            .join(EvidenceRun, EvidenceRun.id == WorkloadHotness.run_id)
+            .where(
+                WorkloadHotness.repository_id == repository_id,
+                WorkloadHotness.symbol_id.in_(batch),
+            )
+        )
+        ranked += [(sid, Ranked(name, cls, rank)) for sid, name, cls, rank in result.tuples()]
+    sources = await _callers_of(session, repository_id, edited)
+    reach, _ = await _benchmark_reach(session, repository_id, edited, spans, sources)
+    # Measured means a stored result: a benchmark nobody ran measured nothing yet.
+    stored = await _stored_benchmarks(session, repository_id, set().union(*reach.values()))
+    benchmarks = {
+        sid: command
+        for sid, found in reach.items()
+        if (command := benchmark_command(b for b in found if b in stored))
+    }
+    return measured_changes(edited, ranked, benchmarks)
+
+
+def _holds_a_line(span: Any, lines: list[int]) -> bool:
+    """Whether *span* holds one of the sorted *lines*: a bisect, not a scan."""
+    i = bisect_left(lines, span.start_line)
+    return i < len(lines) and lines[i] <= span.end_line
+
+
+async def _holds_any(session: AsyncSession, repository_id: str, tables: tuple[Any, ...]) -> bool:
+    """Whether any of *tables* has a row for the repository."""
+    for table in tables:
+        found = await session.execute(
+            select(table.repository_id).where(table.repository_id == repository_id).limit(1)
+        )
+        if found.first() is not None:
+            return True
+    return False
 
 
 async def _stored_benchmarks(
@@ -1601,15 +1856,16 @@ def _measured_run(
     """A run's basis: workload, commit, age, samples and where its time went.
 
     *rows* are all the run's ranked functions, not the ones a limit kept;
-    *newer* is the workload's newer run this one is listed in place of.
+    *newer* is the workload's newer run this one is listed in place of. A
+    production run also names its ``window`` (``evidence.status.production_window``).
     """
     from ....evidence.hotness import run_samples
-    from ....evidence.status import time_split, unattributed_share
+    from ....evidence.status import production_window, time_split, unattributed_share
 
     measured_at = run.measured_at or run.ingested_at
     if measured_at is not None and measured_at.tzinfo is None:
         measured_at = measured_at.replace(tzinfo=UTC)
-    return {
+    out = {
         "run_id": run.id,
         "workload_class": run.workload_class,
         "workload_name": run.workload_name,
@@ -1624,6 +1880,11 @@ def _measured_run(
         "ordering_only": any(r.ordering_only for r in rows),
         "newer_run": newer,
     }
+    # Production only, so other runs do not grow.
+    window = production_window(run)
+    if window is not None:
+        out["window"] = window
+    return out
 
 
 def _measured_row(
@@ -1671,8 +1932,113 @@ def _measured_row(
     ).as_dict()
 
 
+def _statement_run(found: Any, at: datetime) -> dict[str, Any]:
+    """A production statement run's basis: workload, commit, age, its window,
+    the statement time it stored and the statements on no single function
+    (``evidence.measured_fold.StatementRun``)."""
+    from ....evidence.status import production_window
+
+    run = found.run
+    basis = _benchmark_run(run, at)
+    return {
+        **basis,
+        "window_start": _iso(run.window_start),
+        "window_end": _iso(run.window_end),
+        "total_ms": found.total_ms,
+        "statements": found.statements,
+        "unattributed": found.unattributed,
+        "window": production_window(run),
+    }
+
+
+def _route_run(found: Any, at: datetime) -> dict[str, Any]:
+    """A production route run's basis: workload, commit, age, its window, the
+    request time, requests and routes it stored and the routes on no handler
+    (``evidence.measured_fold.RouteRun``)."""
+    from ....evidence.status import production_window
+
+    run = found.run
+    return {
+        **_benchmark_run(run, at),
+        "window_start": _iso(run.window_start),
+        "window_end": _iso(run.window_end),
+        "total_ms": found.total_ms,
+        "requests": found.requests,
+        "routes": found.routes,
+        "unattributed": found.unattributed,
+        "window": production_window(run),
+    }
+
+
+def _window_runs(
+    found: list[Any],
+    run_id: str | None,
+    symbol_ids: Collection[str] | None,
+    *,
+    keep_unjoined: bool = False,
+) -> list[Any]:
+    """Production window runs (``StatementRun`` or ``RouteRun``) kept to
+    *run_id* and *symbol_ids* as :func:`measured_costs` reads them; a run
+    left naming no function is dropped, unless *keep_unjoined* and no
+    *symbol_ids* filter applies (a statement window that joined no function)."""
+    kept = [
+        f._replace(rows=[r for r in f.rows if symbol_ids is None or r.symbol_id in symbol_ids])
+        for f in found
+        if run_id in (None, f.run.id)
+    ]
+    return [f for f in kept if f.rows or (keep_unjoined and symbol_ids is None)]
+
+
+def _iso(at: datetime | None) -> str | None:
+    # SQLite hands back the stored UTC time without its zone.
+    return at.replace(tzinfo=at.tzinfo or UTC).isoformat() if at is not None else None
+
+
+def _window_row(
+    cost: Any,
+    run: Any,
+    spans: dict[str, list[Any]],
+    context: _FunctionContext,
+    covered: dict[str, set[str]],
+    *,
+    statements: dict[str, Any] | None = None,
+    routes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One function's production statements (``evidence.measured_fold.StatementCost``,
+    with *statements*) or requests (``RouteCost``, with *routes*) as
+    ``evidence.action_row`` builds it: no next step (no rule reads a
+    window's cost yet), the next window as its verify, never a benchmark,
+    and no ``slower`` (comparisons measure profiles, not windows).
+
+    Ceiling: the function is the one the join named when the run was stored;
+    one renamed or removed since keeps its row with ``lines`` null (it did
+    issue the statements or serve the requests in that window). Upgrade
+    path: re-join window rows on update, as profile rows get a freshness."""
+    from ....evidence.action_row import action_row
+    from ....ingestion.symbol_identity import file_of_symbol
+
+    symbol_id = cost.symbol_id
+    held = spans.get(file_of_symbol(symbol_id), ())
+    span = next((s for s in held if s.symbol_id == symbol_id), None)
+    return action_row(
+        cost,
+        lines=(span.start_line, span.end_line) if span is not None else None,
+        workload_name=run.workload_name,
+        workload_class=run.workload_class,
+        callers=context.callers.get(symbol_id, ()),
+        callers_total=context.callers_total.get(symbol_id),
+        tests=context.tests[symbol_id],
+        history=context.history.get(symbol_id),
+        static_causes=covered.get(symbol_id, ()),
+        statements=statements,
+        routes=routes,
+    ).as_dict()
+
+
 __all__ = [
+    "LEADS_WITH_STEP",
     "PerformanceHeadline",
+    "agent_hidden",
     "fill_static_costs",
     "finalize_performance_opportunities",
     "gated_performance_counts",
@@ -1684,6 +2050,7 @@ __all__ = [
     "list_opportunity_evidence",
     "list_performance_opportunities",
     "measured_costs",
+    "measured_in_change",
     "opportunity_details",
     "performance_facet_counts",
     "performance_headline",

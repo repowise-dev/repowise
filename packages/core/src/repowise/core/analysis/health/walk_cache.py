@@ -43,6 +43,7 @@ WALK_INPUTS: tuple[str, ...] = (
     "analysis/symbol_body.py",
     "analysis/health/dataflow/**/*.py",
     "analysis/health/perf/dialects/*.py",
+    "analysis/health/perf/eager_defaults.py",
     "analysis/health/perf/io_boundaries.py",
     "analysis/health/perf/loop_facts.py",
     "analysis/health/perf/loop_lexicon.py",

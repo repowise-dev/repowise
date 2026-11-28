@@ -126,7 +126,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--skip-tests` | No docs for test files. | off |
 | `--skip-infra` | No docs for infra (Dockerfiles, Makefiles, Terraform). | off |
 | `--include-submodules` | Include git submodules. | excluded |
-| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
+| `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, DelphiCodeCoverage XML, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
 | `--commit-limit` | Newest commits read for file history and co-change. Above the commit count reads the full history. Saved. | `5000` |
 | `--follow-renames` | Track renames via `git log --follow` (slower, more accurate). Saved. | off |
 | `--resume` | Continue a previous run; see notes. | off |
@@ -271,6 +271,8 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 - Index-only runs reuse stored layer names and node summaries (no LLM call). Docs mode saves pages as they finish; reruns skip them by prompt hash.
 - Failed best-effort steps (git metadata, decisions, dead code, ...) still exit 0, listed in the completion panel and `done` event's `degraded` array (`--progress json`); the next update retries.
 - Unindexed linked worktrees seed from the base checkout first ([WORKTREES.md](../scale/WORKTREES.md)).
+- After updating a single repo, `update` runs [`repowise sources sync`](#repowise-sources-sync) for its configured
+  plugin sources. It prints one line for each source that fails and still exits 0.
 
 **Flag notes**
 
@@ -798,6 +800,7 @@ repowise risk --fail-above-percentile 95 --format github
   {"fail_above_percentile": P, "percentile": <unrounded>, "status": "pass" | "fail"}`. About (100 - P)% fail by design;
   answer with a split or second reviewer, not a fix (no baseline).
 - Unreadable revspec: exit `2` even ungated; JSON `{"error", "message"}`.
+- With an index holding runtime evidence, a change that edits a measured function lists it with the command to run before and after (`measured` in JSON); see [RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 - **Headline**: live percentile by size and spread among recent repo commits (size, not danger), then touched files'
   bug-fix record. Raw 0-10 score: secondary, corpus-anchored, high where commits run large. Drivers: versus the model's
   baseline commit.
@@ -1249,7 +1252,7 @@ repowise coverage add .coverage                  # per-test map
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--path` | Repo path. | `add`: cwd / workspace primary; `status`: cwd |
-| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`, `apex`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
+| `--format` | `add`: force a parser (`lcov`, `cobertura`, `clover`, `repowise-json`, `go-coverprofile`, `jacoco`, `apex`, `delphi-codecoverage`). `status`: `table` or `json`. | `add`: auto-detect; `status`: `table` |
 | `--strict` | `add`: also exit non-zero when some report files do not map. | off |
 | `--allow-partial` | `add`: store even when over half does not map; rows flagged partial. | off |
 | `--verbose` / `-v` | `add`: debug logs. | off |
@@ -1259,7 +1262,7 @@ repowise coverage add .coverage                  # per-test map
   `hooks.coverage_reingest`.
 - Over half unmapped: stores nothing, exits `1`, suggests a `coverage.strip_prefix` or `coverage.path_prefix`. `init` /
   `update` keep nothing from it, so their re-read clears an `--allow-partial` fragment.
-- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`), Salesforce Apex JSON. With no path, discovers
+- Formats: LCOV, Cobertura, Clover, JaCoCo XML, Go coverprofile (`go test -coverprofile`), DelphiCodeCoverage XML, Salesforce Apex JSON. With no path, discovers
   `coverage/lcov.info`, `.coverage`, `coverage.out`, `target/site/jacoco/jacoco.xml` and similar.
 - *Test-to-code map* (which test covers which lines: "which tests exercise this change"): from a context-recorded
   `.coverage` or per-test lcov; without contexts, per-file only. Separate from the per-file aggregate and `health`.
@@ -1405,11 +1408,11 @@ repowise coverage suggest-gates --format json
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
 [`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
-profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile`, collapsed
-stacks or Python cProfile/pstats](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark, hyperfine or Vitest benchmark JSON, or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
-or a test run's [JUnit XML](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
-converted first. Several profiles of one run (a parent process and its workers, or a directory
+profile in the profiler's own format ([Speedscope JSON, Go pprof, V8 `.cpuprofile`, `jfr print`
+text, collapsed stacks or Python cProfile/pstats](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
+runner's ([pytest-benchmark, Google Benchmark, hyperfine or Vitest benchmark JSON, Criterion estimates, or `go test -bench` output](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
+a test run's [JUnit XML or `go test -json`](../layers/RUNTIME_EVIDENCE.md#test-reports-as-the-runner-wrote-them),
+or a [`pg_stat_statements` CSV](../layers/RUNTIME_EVIDENCE.md#production-files), converted first. Several profiles of one run (a parent process and its workers, or a directory
 holding one file per process) merge into one run, and so do JUnit XML reports (a Maven or Gradle
 report directory, other files in it left out).
 
@@ -1448,7 +1451,7 @@ writes nothing.
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word of up to 32 characters. | the OS and whether this is a CI job: `linux-ci`, `macos-local`, `windows-local`; `production` for a production file |
-| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`, `junit`, `pg-stat-statements`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `pprof`, `cpuprofile`, `pstats`, `pytest-benchmark`, `google-benchmark`, `go-test-json`, `go-bench`, `hyperfine`, `vitest-bench`, `criterion`, `junit`, `pg-stat-statements`, `jfr`, `collapsed` or a format a plugin registers. | detected from the content |
 | `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own: pyinstrument and cProfile `wall`, pprof `cpu`, `.cpuprofile` `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--path` | Repo path. | cwd, or the workspace primary |
@@ -1486,11 +1489,15 @@ writes nothing.
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
   `unknown` when either commit is missing), where its time went (`repo_self_share`,
   `wait_share`, `library_share`; unknown for a run stored before they were recorded, or with no
-  total), and its counts.
-- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and lists
-  the slowest tests and the test time spent on each production file. Time per file is `measured` from the
-  per-test coverage map when one is stored, else `inferred` from each function's nearest tests on the call
-  graph. Timing orders work; it never gates. `--limit` sets how many tests and files to list (default 20,
+  total), and its counts. `--compare` adds what got slower: each workload's newest run against a band
+  of up to 5 earlier runs at other commits, and the commits in between that changed a function the
+  slower workload ran ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-status)).
+- `tests` reads the JUnit XML timings `evidence add` stored (the newest run of each test workload) and says
+  where to start: up to 3 groups of tests that run the same production files and take the most time over
+  the rest's pace, each with the fixture its tests share when they ask for one, then the slowest tests. A
+  suite under a minute, or with no group 5 s over the rest, gets one line. Groups need the per-test coverage
+  map; without it the output is how concentrated the time is
+  ([rules](../layers/RUNTIME_EVIDENCE.md#evidence-tests)). Timing orders work; it never gates. `--limit` sets how many tests to list (default 20,
   1 to 500). Takes `--path` and `--format`.
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
@@ -1528,6 +1535,31 @@ writes nothing.
   that reruns `setup` after each step stops. Before the repository is indexed, the steps are `repowise init --yes --no-prose` and
   `setup` again; no store is created. `coverage setup` prints the coverage part only. Takes
   `--path` and `--format`.
+
+### `repowise sources sync`
+
+Fetch and store evidence from the sources plugins register (an `evidence-source`), the way `evidence add` stores a
+file. A source is configured when every setting it declares without a default has a value. For each source the
+command reports what it stored, or why it did not, then the next command to run.
+
+```bash
+repowise sources sync                          # every configured source
+repowise sources sync --source postgres-statements --format json
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--source NAME` | Only this source. | every source |
+| `--path` | Repo path. | cwd |
+| `--format` | `table` or `json`. | `table` |
+
+- JSON: one row per source with `source`, `seam`, `state` (`stored`, `unavailable`, `refused`, `failed`,
+  `not_configured`), `batches`, `message`, `next_command` and `missing` (each unset setting with the command that
+  sets it).
+- Each source's cursor is saved under `source_sync` in `.repowise/state.json`. Credentials are never saved.
+- Exits non-zero only when `--source` names an unknown source or one that did not store.
+- `repowise update` runs the same sync for configured sources after its own work. A failing source prints one line
+  and never fails the update; with none configured, update does exactly what it did before.
 
 ### `repowise perf measure -- <command>`
 
@@ -1645,17 +1677,23 @@ Find third-party package imports; export or join package data. See [PACKAGE_USAG
 repowise packages where requests
 repowise packages export -o usage.cdx.json
 repowise packages import sbom.json
+repowise packages vulns --fail-on package_called
+repowise packages check pypi:requests@2.31.0
 ```
 
 | Flag | Subcommands | What it does | Default |
 |------|-------------|--------------|---------|
 | `--path` | all | Repo path. | cwd |
-| `--format` | all | `text` or `json`; `export`: `cyclonedx`. | `text`; `export`: `cyclonedx` |
+| `--format` | all | `text` or `json`; `export`: `cyclonedx`; `vulns`: also `sarif`. | `text`; `export`: `cyclonedx` |
 | `--output` / `-o` | `export` | Output file. | stdout |
+| `--tier` | `vulns` | `package_called` or `imported` (with `unknown`): list only advisories at this tier or stronger. | all |
+| `--fail-on` | `vulns` | `package_called`, `imported` (with `unknown`) or `never`: exit 1 when an advisory sits at this tier or stronger. | `package_called` |
 
 - **`where NAME`** (name or `ecosystem:name`): importing files with import line, component, owner teams and reachability, each with basis.
 - **`export`**: declared packages and import sites as CycloneDX 1.6 JSON (`evidence.occurrences`). Not an SBOM.
-- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name. Fetches nothing, matches no vulnerability.
+- **`import FILE`**: joins your Syft, SPDX, CycloneDX or OSV JSON to usage by package name and stores it as the repository's advisory data. Fetches nothing.
+- **`vulns`**: each stored advisory with its tier (`package_called`, `imported`, `unknown`; see [package advisories](PACKAGE_USAGE.md#advisories-and-tiers)) and the call or import sites behind it. Exits 2 when no document was imported.
+- **`check TARGET`** (`[ecosystem:]name[@version]`): whether the stored document lists an advisory for that package at that version (`ok`, `has_advisories`, `unknown_no_source`), and where the repository already declares and imports it. Exits 1 on `has_advisories`.
 
 ---
 
@@ -2494,6 +2532,10 @@ repowise doctor --workspace --repair
   with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
   the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
   `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
+- **wiki.db free space** (`wiki-db-free-space`, also under `--quick`) appears only when more than a quarter of
+  `.repowise/wiki.db` is free pages (left by deletes; SQLite reuses them but never shrinks the file). It warns with
+  the one-line `VACUUM` to run as its fix. Doctor never runs it: a VACUUM rewrites the whole file, needs free disk the
+  size of the file, and blocks every other writer, so close MCP sessions, `serve` and any update first.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.
@@ -2541,17 +2583,21 @@ repowise telemetry disable               # or: enable
 ### `repowise plugins`
 
 List plugins from `repowise.plugins` entry points and `REPOWISE_PLUGINS`: loaded or why not, seams registered,
-implementation per seam. Plugin commands load only for an unknown command name or a command listing.
+implementation per seam. Plugin commands load only for an unknown command name or a command listing. Each plugin
+also says whether it is configured and, for each required setting it declares that has no value, the command that
+sets it (`configured` and `missing` in JSON).
 
 ```bash
 repowise plugins --format json
+repowise plugins check [--format json]   # each plugin's implementations against their seam contracts
 ```
 
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--format` | `table` or `json`. | `table` |
 
-See the [plugin author guide](PLUGINS.md).
+`check` prints a status for each registration and, for a failure, the rule that broke and how to fix it. It
+exits 1 if a check fails or a plugin fails to load. See the [plugin author guide](PLUGINS.md#check-the-contracts).
 
 ### `repowise attribution`
 
@@ -2585,7 +2631,7 @@ repowise config reset mcp.tools           # back to the default
 
 | Subcommand | What it does |
 |------------|--------------|
-| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
+| `list` | Settings by area, with their values and where each came from. `--area` keeps one area (`account`, `attribution`, `decisions`, `distill`, `editor`, `events`, `evidence`, `generation`, `health`, `hooks`, `indexing`, `mcp`, `performance`, `providers`, `report`, `server`); `--changed` keeps settings not at their default; `--suggested` keeps settings worth changing in this repository, with why and the command; `--all` adds debug and test settings. |
 | `explain KEY` | What one setting does, what it accepts, and how to change it. |
 | `get KEY` | One setting's value and where it came from. |
 | `set KEY VALUE` | Change one setting; prints what changed, its effect, and the undo command. `VALUE` is read as the setting's type: `true` or `false` for a switch, a number, `a,b` or `[a, b]` for a list (`[a, b]` when an item holds a comma). |

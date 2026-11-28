@@ -846,6 +846,8 @@ def _status_line(run: dict[str, Any]) -> str:
         f"{run['commit_sha'][:12] if run['commit_sha'] else 'an unknown commit'}; "
         f"{stored}{explained}"
         + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
+        # A production run: over which window and which deploy.
+        + (f"; {run['window']['claim']}" if run.get("window") else "")
         + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
         + _low_signal_note(run.get("low_signal"))

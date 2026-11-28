@@ -36,7 +36,7 @@ resolution and health markers are all static.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (12) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C, Perl | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F#, Objective-C and Perl get the complexity-derived ones; the rest get none yet |
+| **Good** (12) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C, Perl | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F#, Objective-C and Perl get the complexity-derived ones; the rest get none yet. Elixir and legacy PHP sit lower: Elixir gets symbols, calls and `alias` / `import` / `require` / `use` edges but no heritage and no Phoenix, OTP or Oban edges, and PHP `include` / `require` resolves only an unparenthesized literal path |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
@@ -70,7 +70,9 @@ Every Full and Good language has a dedicated import resolver except
 Objective-C, which resolves through a generic header-stem match, and Apex,
 which has no imports and resolves names case-insensitively within each sfdx
 project's namespace. Object Pascal resolves `uses` through the project files
-that compile each unit and matches names case-insensitively.
+that compile each unit and matches names case-insensitively; its form files
+(`.dfm`, `.fmx`, `.lfm`) bind the event handlers they name to the unit's form
+class.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Accuracy and limits](#accuracy-and-limits).
 
@@ -123,7 +125,7 @@ by name. A third-party library in a static resource counts as vendored.
 
 Each Full and Good language claims its usual file extensions (C++ also claims
 headers such as `.hpp`, `.inl` and `.tpp`) and resolves imports through its own
-build files: tsconfig path aliases and workspaces, Maven and Gradle reactors,
+build files: tsconfig and Vite path aliases and workspaces, Maven and Gradle reactors,
 `go.mod`, `Cargo.toml`, `compile_commands.json`, `.csproj` / `.sln`, PSR-4,
 `pubspec.yaml`, `project.godot` and so on. The table per language is in
 [architecture/language-support.md](../architecture/language-support.md#extensions-and-import-resolution).
@@ -143,7 +145,7 @@ reported as unreachable.
 | Language | Frameworks |
 |----------|-----------|
 | Python | Django, FastAPI, Flask, Celery, pytest fixtures |
-| Ruby | Rails (routes to controller actions, Zeitwerk), RSpec mirror edges |
+| Ruby | Rails (Zeitwerk constant references, routes to controllers with `namespace`, `scope module:` and nested resources, `config/` and initializers, ActionCable, helpers, cron-scheduled jobs, Pundit policies, ActionMailbox routing, `prepend_mod_with` overlays), RSpec mirror edges |
 | Java / Kotlin | Spring, Jakarta / JPA, Quarkus, Micronaut, Android manifest |
 | C# | ASP.NET (attribute and minimal API), EF Core, gRPC-dotnet, host-builder extensions, CommunityToolkit MVVM |
 | Go | net/http, gin, echo, chi, fiber, gorilla/mux, gRPC server registration |
@@ -220,7 +222,7 @@ This table is why a language is Full and not Good.
 | Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
-| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | ✅ | ✅ |
+| Object Pascal | ✅ | ✅ | ✅ | n/a | n/a | ✅ | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
@@ -251,7 +253,8 @@ Coverage reports and profiles add measured runtime to the static graph.
 coverage and the commands that profile it; `coverage add` and `evidence add`
 read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
 Go cover profile format is read for any language, from any tool. A profile
-joins to code only for Python, Go, JavaScript, Java, Kotlin and C# frames.
+joins to code only for Python, Go, JavaScript, Java, Kotlin, Rust, Object
+Pascal and C# frames.
 
 | Language | Coverage command from setup | Profiles and benchmarks read |
 |----------|-----------------------------|------------------------------|
@@ -260,12 +263,12 @@ joins to code only for Python, Go, JavaScript, Java, Kotlin and C# frames.
 | TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
 | Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
 | Java / Kotlin | Maven or Gradle with JaCoCo | JDK Flight Recorder (`jfr print` text), async-profiler collapsed stacks |
-| Rust | `cargo llvm-cov` | no |
+| Rust | `cargo llvm-cov` | pprof (pprof-rs) |
 | C# | `dotnet test` with coverlet | Speedscope (`dotnet-trace collect --format speedscope`) |
 | Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
 | PHP | PHPUnit or Pest | no |
 | Apex | none; the Salesforce CLI test-run JSON is read | no |
-| Object Pascal | none | no |
+| Object Pascal | DelphiCodeCoverage on a built test program; the report is read | pprof with source lines (Free Pascal built with `-gw3`) |
 | Every other language | none | no |
 
 Formats, the join rules and the workload classes:
@@ -339,8 +342,22 @@ terminations and the edge types are in [GRAPH.md](GRAPH.md#reading-the-results).
 - Svelte and Vue binding forms (`{#each}`, `v-for`) are not resolved, and the
   unused-export pass is off for both.
 - Razor has no import edges.
-- Scala import resolution is partial, and the Elixir and F# import resolvers
-  have known gaps.
+- Scala import resolution is partial, and the F# import resolver has known
+  gaps.
+- Elixir reads module references from `alias`, `import`, `require` and `use`
+  only. A routed Phoenix controller or LiveView, an endpoint's `plug`, a
+  supervisor child, an Oban worker, a mix task and a bare module value
+  (`error_handler: App.ErrorHandler`) give no edge or entry point.
+- PHP `include` / `require` resolves an unparenthesized literal path. The
+  `require_once(...)` form and computed paths (`__DIR__ . '/x.php'`,
+  `"$dir/x.php"`, `$GLOBALS[...] . '/x.php'`) give no edge, so a legacy
+  include-based app has fewer edges than a PSR-4 one.
+- Dead code caps an unreachable file at `0.50`, whatever its git age, in
+  every language the registry does not mark as full import support (Scala,
+  Elixir, F#, Perl, Objective-C, Apex, Luau, Razor, and the Lightweight and Structural rungs)
+  and in PHP, Ruby and Swift, where computed
+  includes, autoloaded constants and same-module types reach a file with no
+  edge. See [DEAD_CODE.md](DEAD_CODE.md#confidence).
 - COBOL dynamic `CALL` targets and free-format source produce no edges.
 - Perl method calls are typed only from `$self`-style invocants, package names and constructor assignments (by variable name within the calling sub, so an inner `my $o` shadowing an outer one is not told apart); `use mro 'c3'` is read as the default depth-first order, and `use Foo;` as importing all of Foo's subs, since its `@EXPORT` list is not read. An imported sub is reached only by its bare name (not as `App::helper()` or as a method of the importing package), and a package's own sub wins over an import of the same name wherever the two sit in the file. Perl 5.38 `class` blocks own their methods, but a `:isa(Parent)` attribute is not read as inheritance.
 - C has no performance risk support.
@@ -358,7 +375,6 @@ The full list per language, with the mechanics behind each gap, is in
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
 | Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
-| Object Pascal | Form files (`.dfm`, `.fmx`) binding event handlers |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
 | F#, Objective-C, Perl | Health markers beyond complexity |

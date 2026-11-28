@@ -47,6 +47,13 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
+        ("tests-build/src/lib.rs", "test"),
+        ("tests-integration/src/lib.rs", "test"),
+        ("tests-integration/tests/macros.rs", "test"),
+        ("app/tests_results/service.py", "production"),
+        ("lab/tests_catalog/models.py", "production"),
+        ("src/tests-ui/app.ts", "production"),
+        ("internal/tests_api/handler.go", "production"),
         (
             "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
             "test",
@@ -95,6 +102,11 @@ _OWN_HEADER = (
         ("samples/hello/Program.cs", "docs_example"),
         ("tutorials/part1/app.js", "docs_example"),
         ("tutorial_01/app.py", "docs_example"),
+        ("sample-app/src/Main.kt", "docs_example"),
+        ("sample-apps/demo/App.tsx", "docs_example"),
+        ("test-app/src/Main.kt", "docs_example"),
+        ("playground/a.py", "docs_example"),
+        ("src/pkg/playground/a.py", "production"),
         ("scripts/release.py", "tooling"),
         (".github/scripts/label.js", "tooling"),
         # Browser scripts a served static tree ships are product code.
@@ -153,6 +165,14 @@ _OWN_HEADER = (
         ("db/migrate/20240101_add_users.rb", "tooling"),
         ("db/data_migrations/20240101_backfill.rb", "tooling"),
         ("src/django_test_migrations/logic.py", "production"),
+        # A singular migration/ directory counts when its entries are numbered.
+        ("packages/database/migration/20240101_add_x/migration.ts", "tooling"),
+        ("src/migration/1700000000000-Init.ts", "tooling"),
+        ("src/main/resources/db/migration/V2__backfill.java", "tooling"),
+        ("modules/migration/comment.go", "production"),
+        # Semgrep rule targets are written to break the rule they test.
+        (".semgrep/authz.py", "test"),
+        ("semgrep/authz.py", "production"),
         ("src/__generated__/schema.ts", "generated"),
         ("api/user_pb2.py", "generated"),
         ("api/user_grpc.pb.go", "generated"),
@@ -956,6 +976,17 @@ def test_migration_paths() -> None:
     assert is_migration_path("alembic/versions/abc.py")
     assert not is_migration_path("api/versions/v1.py")
     assert not is_migration_path("src/migrate.py")
+
+
+def test_singular_migration_dir_needs_numbered_entries() -> None:
+    assert is_migration_path("packages/database/migration/20240101_add_x/migration.ts")
+    assert is_migration_path("src/migration/1700000000000-Init.ts")
+    assert is_migration_path("db/migration/V1__init.java")
+    # An importer that migrates a user's data from another service ships.
+    assert not is_migration_path("modules/migration/comment.go")
+    assert not is_migration_path("src/migration/index.ts")
+    assert not is_migration_path("src/migration.ts")
+    assert not is_migration_path("src/migration/1password.ts")
 
 
 def test_prefixed_migration_dirs_under_db() -> None:

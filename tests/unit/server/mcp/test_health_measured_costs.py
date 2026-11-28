@@ -327,6 +327,23 @@ def test_a_run_names_its_newer_unranked_run_only_when_it_has_one() -> None:
     }
 
 
+def test_only_a_production_run_names_its_window_as_its_rows_claim() -> None:
+    from repowise.server.mcp_server.tool_health.pillars import _measured_run
+
+    run = {
+        "run_id": "r1", "workload_class": "load_test", "workload_name": "api", "commit": None,
+        "age_days": 1, "samples": 10, "repo_self_share": 0.1, "wait_share": 0.5,
+        "library_share": 0.0, "outside_production": 0, "value_kind": "wall",
+        "ordering_only": False, "newer_run": None,
+    }
+    assert "window" not in _measured_run(run)
+    claim = "in production over 2026-10-30 to 2026-11-26, deployed commit unknown"
+    window = {"start": None, "end": None, "base_commit": None, "claim": claim}
+    production = _measured_run({**run, "workload_class": "production", "window": window})
+    # One short string, not the REST object: the agent reads the claim.
+    assert production["window"] == claim
+
+
 async def test_benchmarks_list_compact_with_the_function_each_measures(monkeypatch) -> None:
     from types import SimpleNamespace
 
@@ -423,3 +440,157 @@ async def test_a_row_says_what_to_do_from_what_its_run_measured_inside_it(
     assert not {"why", "owner", "tests", "lines", "share_low", "verify"} & set(login)
     (run,) = block["runs"]
     assert run["verify"].startswith("repowise perf measure --save before -- w-r1")
+
+
+@pytest.mark.asyncio
+async def test_a_measured_cause_that_leads_with_a_next_step_is_on_the_agent_surface(
+    setup_mcp, session, materialized
+):
+    """A cause minted from a measurement whose run says what to do leads Fix
+    first, and get_health (Fix first, the perf page, the counts) and
+    get_overview's Do next carry it; the generated agent files do not."""
+    from repowise.core.persistence.crud import finalize_performance_opportunities
+    from repowise.core.persistence.crud.analysis.fix_first import clear_fix_first_cache
+    from repowise.core.persistence.crud.analysis.performance import measured_hotspot_ids
+    from repowise.core.persistence.models import EvidenceSymbolCost
+    from repowise.server.mcp_server import get_health, get_overview
+
+    before = await get_health(include=["performance"], limit=50)
+    hot = "src/app.py::decode"
+    await _seed(session, materialized, [_hot(hot, tier="lead_candidate")])
+    inside = [
+        {"name": "is_file", "kind": "library", "share": 0.6,
+         "leaf": {"name": "stat", "kind": "native", "share": 0.6}},
+        {"name": "rglob", "kind": "library", "share": 0.3},
+    ]
+    session.add(
+        EvidenceSymbolCost(
+            run_id="r1", symbol_id=hot, repository_id=materialized,
+            inside_json=json.dumps(inside),
+        )
+    )
+    await session.flush()
+    await finalize_performance_opportunities(session, materialized, analyzed_commit="c" * 40)
+    await session.commit()
+    clear_fix_first_cache()
+
+    (minted,) = await measured_hotspot_ids(session, materialized)
+    assert await measured_hotspot_ids(session, materialized, without_step=True) == frozenset()
+
+    after = await get_health(include=["performance"], limit=50)
+    lead = after["fix_first"]["lead"]
+    assert lead["next_call"]["arguments"]["opportunity_id"] == minted
+    assert "os.scandir" in lead["first_step"]["action"] and lead["verify"]["command"]
+    # The perf page and its counts carry it too: one more cause than before.
+    assert minted in json.dumps(after["performance_opportunities"])
+    assert (
+        after["performance_opportunities_total"] == before["performance_opportunities_total"] + 1
+    )
+    week = (await get_overview())["next_actions"]["week"]["actions"]
+    assert week[0]["title"] == "Speed up decode"
+
+
+async def _seed_statements(session, repo_id: str, rows: list[tuple]) -> None:
+    from repowise.core.persistence.models import EvidenceStatementStats
+
+    session.add(
+        EvidenceRun(
+            id="s1", repository_id=repo_id, run_key="s1", kind="statement_stats",
+            format="repowise-evidence-v1", source="plugin", workload_name="orders-db",
+            workload_class="production", value_kind="wall", unit="ms", environment="prod",
+            commit_sha="d" * 40, measured_at=MEASURED_AT,
+        )
+    )
+    await session.flush()
+    session.add_all(
+        EvidenceStatementStats(
+            run_id="s1", statement_fp=f"{i:016x}", repository_id=repo_id, symbol_id=sid,
+            issuer=issuer, calls=calls, total_ms=ms, mean_ms=ms / calls,
+        )
+        for i, (sid, issuer, calls, ms) in enumerate(rows)
+    )
+    await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_production_statements_list_compactly_beside_no_profile(setup_mcp, session, materialized):
+    """Only a production statement run: its functions are measured rows with
+    calls and mean, the next window is the run's verify, and the share on no
+    single function is named by what the join found."""
+    await _seed_statements(
+        session,
+        materialized,
+        [
+            (LOGIN, "function", 40, 600.0),
+            (SHARED, "function", 10, 200.0),
+            (None, "ambiguous", 3, 150.0),
+            (None, "database_schedule", 1, 50.0),
+        ],
+    )
+    block = await _measured()
+    assert block["basis"] == "measured" and "rows" not in block
+    login, shared = block["statements"]
+    assert login == {"symbol_id": LOGIN, "run_id": "s1", "share": 0.6, "calls": 40, "mean_ms": 15.0}
+    assert (shared["symbol_id"], shared["share"], shared["mean_ms"]) == (SHARED, 0.2, 20.0)
+    # A production static cause on the function is named, as on a profile row.
+    assert shared["on_static_findings"][0].startswith("perf")
+    assert block["statements_total"] == 2
+    (run,) = block["runs"]
+    assert run == {
+        "run_id": "s1", "workload_class": "production", "workload_name": "orders-db",
+        "commit": "d" * 12, "age_days": run["age_days"],
+        "verify": "compare this row in the next orders-db window",
+        "unattributed": {"ambiguous": 0.15, "database_schedule": 0.05},
+        "window": f"in production, window unknown, deployed {'d' * 12}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_statements_on_no_single_function_read_not_ranked(setup_mcp, session, materialized):
+    await _seed_statements(session, materialized, [(None, "ambiguous", 3, 150.0)])
+    block = await _measured()
+    # Nothing is ranked, and the window's run still says where its time went.
+    assert (block["basis"], block["status"]) == ("unknown", "not_ranked")
+    assert "statements" not in block and "statements_total" not in block
+    (run,) = block["runs"]
+    assert (run["run_id"], run["unattributed"]) == ("s1", {"ambiguous": 1.0})
+
+
+@pytest.mark.asyncio
+async def test_production_routes_list_compactly_beside_no_profile(setup_mcp, session, materialized):
+    """Only a production route run: its handlers are measured rows with the
+    route, requests, mean and p95; the next window is the run's verify."""
+    from repowise.core.persistence.models import EvidenceRouteLatency
+
+    session.add(
+        EvidenceRun(
+            id="q1", repository_id=materialized, run_key="q1", kind="route_latency",
+            format="repowise-evidence-v1", source="plugin", workload_name="api",
+            workload_class="production", value_kind="wall", unit="ms", environment="prod",
+            commit_sha="d" * 40, measured_at=MEASURED_AT,
+        )
+    )
+    await session.flush()
+    session.add_all(
+        EvidenceRouteLatency(
+            run_id="q1", method="GET", route=route, repository_id=materialized,
+            handler_symbol_id=sid, request_count=count, p50_ms=None, p95_ms=p95, total_ms=ms,
+            error_count=None,
+        )
+        for route, sid, count, p95, ms in [
+            ("/login", LOGIN, 40, 30.0, 600.0),
+            ("/other", None, 5, None, 400.0),
+        ]
+    )
+    await session.commit()
+    block = await _measured()
+    assert block["basis"] == "measured" and "rows" not in block and "statements" not in block
+    (login,) = block["routes"]
+    assert login == {
+        "symbol_id": LOGIN, "run_id": "q1", "share": 0.6, "route": "GET /login",
+        "requests": 40, "mean_ms": 15.0, "p95_ms": 30.0,
+    }
+    assert block["routes_total"] == 1
+    (run,) = block["runs"]
+    assert run["verify"] == "compare this row in the next api window"
+    assert run["unattributed"] == {"unjoined": 0.4}

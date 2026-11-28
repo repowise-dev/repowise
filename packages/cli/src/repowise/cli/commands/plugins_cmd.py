@@ -1,4 +1,4 @@
-"""``repowise plugins`` — list loaded plugins and the implementation chosen per seam."""
+"""``repowise plugins``: list loaded plugins and the implementation chosen per seam; ``check`` runs the seam contracts."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.changes.source",
     "repowise.core.events.sinks",
     "repowise.core.evidence.profile_formats",
+    "repowise.core.evidence.sources",
     "repowise.core.ingestion.document_extractors",
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",
@@ -106,10 +107,39 @@ def _plugin_rows(records: list) -> list[dict]:
     return rows
 
 
-@click.command("plugins")
+def _settings_state(rows: list[dict]) -> None:
+    """Add ``configured`` and ``missing`` (each unset required setting and its fix) to each row.
+
+    Read against the repository in the current directory; a plugin with no
+    settings is configured.
+    """
+    from pathlib import Path
+
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
+    from repowise.core.settings import get
+    from repowise.core.settings.plugins import fix_command, source_values
+
+    try:
+        config = load_repo_config(Path.cwd())
+    except RepoConfigError:
+        config = {}
+    for row in rows:
+        keys = [entry.split(":", 1)[1] for entry in row["seams"] if entry.startswith("setting:")]
+        _plain, _secrets, missing = source_values([get(k) for k in keys], config)
+        row["configured"] = not missing
+        row["missing"] = [{"key": s.key, "fix": fix_command(s)} for s in missing]
+
+
+@click.group("plugins", invoke_without_command=True)
 @format_option()
-def plugins_command(fmt: str) -> None:
+@click.pass_context
+def plugins_command(ctx: click.Context, fmt: str) -> None:
     """List loaded plugins and the implementation each seam uses."""
+    if ctx.invoked_subcommand is None:
+        _list_plugins(fmt)
+
+
+def _list_plugins(fmt: str) -> None:
     from rich.markup import escape
 
     from repowise.cli.helpers import console
@@ -123,6 +153,7 @@ def plugins_command(fmt: str) -> None:
 
     _import_builtin_seams()
     rows = _plugin_rows(load_plugins())
+    _settings_state(rows)
     from repowise.core.ingestion.document_extractors import document_extractor_claims
 
     seam_rows = {
@@ -147,21 +178,8 @@ def plugins_command(fmt: str) -> None:
             f"No plugins loaded. Install one that declares a [bold]{ENTRY_POINT_GROUP}[/bold] "
             f"entry point, or list modules in [bold]{ENV_VAR}[/bold]."
         )
-    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
     for r in rows:
-        color = colors.get(r["status"], "red")
-        status = f"[{color}]{r['status']}[/{color}]"
-        if r["error"]:
-            status += f": {escape(r['error'])}"
-        console.print(
-            f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}"
-        )
-        if r["seams"]:
-            console.print(f"  registered: {escape(', '.join(r['seams']))}")
-        if r["storage"]["applied"] or r["storage"]["pending"]:
-            applied = ", ".join(r["storage"]["applied"]) or "none"
-            pending = ", ".join(r["storage"]["pending"]) or "none"
-            console.print(escape(f"  storage: applied {applied}; pending {pending}"))
+        _print_plugin_row(r)
     for name, row in seam_rows.items():
         others = ", ".join(row["implementations"])
         console.print(f"seam [bold]{escape(name)}[/bold]: {escape(str(row['default']))}  ({escape(others)})")
@@ -169,3 +187,66 @@ def plugins_command(fmt: str) -> None:
         console.print(
             f"document extractor [bold]{escape(extension)}[/bold]: {escape(name)}"
         )
+
+
+def _print_plugin_row(r: dict) -> None:
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    colors = {"loaded": "green", "failed": "red", "skipped": "yellow", "pending": "yellow"}
+    color = colors.get(r["status"], "red")
+    status = f"[{color}]{r['status']}[/{color}]"
+    if r["error"]:
+        status += f": {escape(r['error'])}"
+    console.print(f"[bold]{escape(r['name'])}[/bold]  {r['source']}  {escape(r['target'])}  {status}")
+    if r["seams"]:
+        console.print(f"  registered: {escape(', '.join(r['seams']))}")
+    for m in r.get("missing", ()):
+        console.print(
+            f"  [yellow]not configured[/yellow]: {escape(m['key'])} is not set. "
+            f"Next: [cyan]{escape(m['fix'])}[/cyan]"
+        )
+    if r["storage"]["applied"] or r["storage"]["pending"]:
+        applied = ", ".join(r["storage"]["applied"]) or "none"
+        pending = ", ".join(r["storage"]["pending"]) or "none"
+        console.print(escape(f"  storage: applied {applied}; pending {pending}"))
+
+
+@plugins_command.command("check")
+@format_option()
+def check_command(fmt: str) -> None:
+    """Check every loaded plugin against the contract of each seam it registered.
+
+    Exits 1 when a plugin failed to load or an implementation breaks a contract.
+    """
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+    from repowise.core.plugin_testing import check_record
+    from repowise.core.registry.plugins import PLUGIN_API_VERSION, load_plugins
+
+    _import_builtin_seams()
+    checks = [c for record in load_plugins() for c in check_record(record)]
+    failed = any(c.status == "fail" for c in checks)
+    if fmt == "json":
+        emit_json(
+            {
+                "api_version": PLUGIN_API_VERSION,
+                "ok": not failed,
+                "checks": [asdict(c) for c in checks],
+            }
+        )
+    else:
+        if not checks:
+            console.print("No plugins loaded, nothing to check.")
+        colors = {"pass": "green", "fail": "red", "skipped": "dim"}
+        for c in checks:
+            color = colors[c.status]
+            console.print(
+                f"[{color}]{c.status}[/{color}]  {escape(c.plugin)}  {escape(c.kind)}:{escape(c.name)}"
+            )
+            for f in c.failures:
+                console.print(f"  {escape(f.rule)}. Fix: {escape(f.fix)}")
+    if failed:
+        raise SystemExit(1)

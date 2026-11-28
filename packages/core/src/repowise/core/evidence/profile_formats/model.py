@@ -80,9 +80,10 @@ def frame_language(path: str, function: str = "") -> FrameLanguage:
     profile names classes, not files. One that reads as a .NET
     ``Module!Namespace.Type.Method(args)``
     (:func:`~repowise.core.frame_resolver.parse_clr_frame`), as ``dotnet-trace``
-    writes it, is ``csharp``. Any language but the six
+    writes it, is ``csharp``. Any language but the eight
     :func:`~repowise.core.frame_resolver.resolve_frames` checks (Go, Python,
-    JavaScript, Java, Kotlin, C#) is skipped there as ``unsupported_language``.
+    JavaScript, Java, Kotlin, Rust, Pascal, C#) is skipped there as
+    ``unsupported_language``.
     """
     from repowise.core.frame_resolver import parse_clr_frame, parse_jvm_frame
 

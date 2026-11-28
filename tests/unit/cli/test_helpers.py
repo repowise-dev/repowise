@@ -1243,3 +1243,76 @@ class TestResolveProviderOrPrompt:
         cfg = load_config(tmp_path)
         assert cfg.get("provider") == "mock"
         assert cfg.get("model") == "mock-model-1"
+
+
+# ---------------------------------------------------------------------------
+# save_config records a provider only when the repo chose it (#5709)
+# ---------------------------------------------------------------------------
+
+
+class TestSaveConfigRecordsOnlyAChosenProvider:
+    @staticmethod
+    def _set_default(provider: str, model: str) -> None:
+        from repowise.core.providers.llm.resolve import update_global_config
+
+        update_global_config(
+            lambda config: config.update(active_provider=provider, active_model=model)
+        )
+
+    @pytest.fixture(autouse=True)
+    def _no_env_default(self, monkeypatch):
+        monkeypatch.delenv("REPOWISE_PROVIDER", raising=False)
+        monkeypatch.delenv("REPOWISE_MODEL", raising=False)
+
+    def test_a_run_on_the_default_writes_no_provider(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+
+        save_config(tmp_path, "openrouter", "or-model", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert "provider" not in cfg and "model" not in cfg
+        assert cfg["embedder"] == "mock"
+
+    def test_the_repo_then_follows_a_new_default(self, tmp_path):
+        """The reported bug: the default changes after the repo was indexed."""
+        from repowise.core.providers.llm.resolve import resolve_llm
+
+        self._set_default("openrouter", "or-model")
+        save_config(tmp_path, "openrouter", "or-model", "mock", save_key=False)
+
+        self._set_default("ollama", "qwen")
+
+        selection = resolve_llm(tmp_path)
+        assert (selection.provider, selection.model) == ("ollama", "qwen")
+        assert selection.provider_source == "global"
+
+    def test_a_run_on_another_provider_writes_it(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")
+
+    def test_a_run_with_no_default_writes_the_provider(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")
+
+    def test_a_re_init_keeps_the_provider_the_repo_already_names(self, tmp_path):
+        from repowise.cli.helpers import load_config
+
+        self._set_default("openrouter", "or-model")
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        save_config(tmp_path, "ollama", "qwen", "mock", save_key=False)
+
+        cfg = load_config(tmp_path)
+        assert (cfg["provider"], cfg["model"]) == ("ollama", "qwen")

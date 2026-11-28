@@ -94,14 +94,18 @@ async def test_a_helper_started_while_unwinding_is_ended_too() -> None:
 
 async def test_the_wait_is_bounded() -> None:
     unwound: list[str] = []
-    stuck = asyncio.create_task(_slow_unwind(unwound, "stuck", seconds=1))
+    unwind = 2.0
+    stuck = asyncio.create_task(_slow_unwind(unwound, "stuck", seconds=unwind))
     await asyncio.sleep(0)
     loop = asyncio.get_running_loop()
     began = loop.time()
 
     await cancel_and_wait([stuck], timeout=0.05)
 
-    assert loop.time() - began < 0.5
+    # Bounded by its timeout, not by the helper: the wait returned well inside
+    # the helper's unwind. Half the unwind is 20x the timeout, room enough for
+    # a slow runner while a wait that overstays its timeout still fails.
+    assert loop.time() - began < unwind / 2
     assert not stuck.done()
     await asyncio.wait({stuck})
 

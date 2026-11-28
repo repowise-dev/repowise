@@ -71,8 +71,8 @@
       "intervention_symbol": "src/app/jobs.py::drain",
       "may_lead": false,
       "observations_total": 3,
-      "opportunity_id": "perf4_d41b04897cfde2a9eed6",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_d41b04897cfde2a9eed6",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -182,8 +182,8 @@
       "intervention_symbol": "src/app/reindex.py::_write",
       "may_lead": false,
       "observations_total": 2,
-      "opportunity_id": "perf4_a123c4c38fdb1cabaa6a",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_a123c4c38fdb1cabaa6a",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -274,8 +274,8 @@
       "intervention_symbol": "src/app/owners.py::load_owners",
       "may_lead": true,
       "observations_total": 1,
-      "opportunity_id": "perf4_83d258547498bed60226",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_83d258547498bed60226",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
@@ -388,8 +388,8 @@
       "intervention_symbol": "src/app/ledger.py::apply",
       "may_lead": false,
       "observations_total": 3,
-      "opportunity_id": "perf4_2719b6813419ad35948b",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_2719b6813419ad35948b",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -493,8 +493,8 @@
       "intervention_symbol": "src/app/store.py::flush_all",
       "may_lead": false,
       "observations_total": 2,
-      "opportunity_id": "perf4_d3dace3672249fc9bd03",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_d3dace3672249fc9bd03",
+      "performance_model_version": 5,
       "prerequisites": [
         "single_lock_owner"
       ],
@@ -602,8 +602,8 @@
       "intervention_symbol": "src/app/entry.py::_hit",
       "may_lead": false,
       "observations_total": 2,
-      "opportunity_id": "perf4_6690af4c5e3f269c266e",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_6690af4c5e3f269c266e",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -712,8 +712,8 @@
       "intervention_symbol": "src/app/repo.py::fetch_page",
       "may_lead": false,
       "observations_total": 2,
-      "opportunity_id": "perf4_8456a319d03ac90c6041",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_8456a319d03ac90c6041",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -822,8 +822,8 @@
       "intervention_symbol": "src/app/sync.py::_load",
       "may_lead": false,
       "observations_total": 2,
-      "opportunity_id": "perf4_8845956c083937dad1ec",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_8845956c083937dad1ec",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -916,8 +916,8 @@
       "intervention_symbol": "src/app/cache.py::refresh",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_600194da489eff07f26a",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_600194da489eff07f26a",
+      "performance_model_version": 5,
       "prerequisites": [
         "shared_state_ordering"
       ],
@@ -1007,8 +1007,8 @@
       "intervention_symbol": "src/app/fetch.py::fetch_each",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_877f87ea6dac79fd92fc",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_877f87ea6dac79fd92fc",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
@@ -1091,8 +1091,8 @@
       "intervention_symbol": "src/app/commits.py::first_commit_each",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_2a6f52da25a5ede16116",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_2a6f52da25a5ede16116",
+      "performance_model_version": 5,
       "prerequisites": [
         "result_equivalence"
       ],
@@ -1176,8 +1176,8 @@
       "intervention_symbol": "src/app/fanout.py::gather_all",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_445b62193f1ff0db3cb4",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_445b62193f1ff0db3cb4",
+      "performance_model_version": 5,
       "prerequisites": [
         "bounded_concurrency"
       ],
@@ -1264,8 +1264,8 @@
       "intervention_symbol": "src/app/job.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_4e3feb071c73aa51a6a4",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_4e3feb071c73aa51a6a4",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -1357,8 +1357,8 @@
       "intervention_symbol": "src/app/lone.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_919d91fe15e89966b389",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_919d91fe15e89966b389",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -1447,8 +1447,8 @@
       "intervention_symbol": "app/incidents/service.py::notify_owners",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_93a53323a7db0544017f",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_93a53323a7db0544017f",
+      "performance_model_version": 5,
       "prerequisites": [
         "relationship_not_loaded_elsewhere"
       ],
@@ -1532,8 +1532,8 @@
       "intervention_symbol": "app/issues/views.py::issue_list",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_942cceadc50a644175e4",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_942cceadc50a644175e4",
+      "performance_model_version": 5,
       "prerequisites": [
         "relationship_not_loaded_elsewhere"
       ],
@@ -1620,8 +1620,8 @@
       "intervention_symbol": "src/app/orders.py::handle",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_95567b0824b33141361d",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_95567b0824b33141361d",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -1714,8 +1714,8 @@
       "intervention_symbol": "src/app/reports.py::handle",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_a0ebb8db3cb33a2c555f",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_a0ebb8db3cb33a2c555f",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -1808,8 +1808,8 @@
       "intervention_symbol": "src/app/billing.py::handle",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_debc1e358c095e5fd0d8",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_debc1e358c095e5fd0d8",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -1895,8 +1895,8 @@
       "intervention_symbol": "src/app/clients.py::each_varying",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_0bf2ff36ef95d9cf96f2",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_0bf2ff36ef95d9cf96f2",
+      "performance_model_version": 5,
       "prerequisites": [
         "loop_invariant_construction_proof"
       ],
@@ -1976,8 +1976,8 @@
       "intervention_symbol": "src/app/fanout.py::gather_seq",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_350ba04f50fc0faf0d81",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_350ba04f50fc0faf0d81",
+      "performance_model_version": 5,
       "prerequisites": [
         "loop_carried_dependence_proof"
       ],
@@ -2057,8 +2057,8 @@
       "intervention_symbol": "src/app/clients.py::each",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_c6604021414ce017f289",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_c6604021414ce017f289",
+      "performance_model_version": 5,
       "prerequisites": [
         "loop_invariant_construction_proof"
       ],
@@ -2187,8 +2187,8 @@
       "intervention_symbol": "src/app/parse.py::_get_query",
       "may_lead": false,
       "observations_total": 4,
-      "opportunity_id": "perf4_a20111da61b63349e305",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_a20111da61b63349e305",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "call-site",
       "rank_factors": {
@@ -2271,8 +2271,8 @@
       "intervention_symbol": "src/app/retry.py::post_with_retry",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_bd36a05060a6d02a1245",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_bd36a05060a6d02a1245",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
@@ -2357,8 +2357,8 @@
       "intervention_symbol": "scripts/backfill.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_d5225971c0220c77ee7b",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_d5225971c0220c77ee7b",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -2451,8 +2451,8 @@
       "intervention_symbol": "src/app/edge.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_dc2d9734ec9693504602",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_dc2d9734ec9693504602",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -2545,8 +2545,8 @@
       "intervention_symbol": "tests/test_job.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_91d25fc7b3e4e8ad00c1",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_91d25fc7b3e4e8ad00c1",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence"
@@ -2635,8 +2635,8 @@
       "intervention_symbol": "src/app/walker.py::index",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_9c136e77dd1c7e4e69bf",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_9c136e77dd1c7e4e69bf",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "call-site",
       "rank_factors": {
@@ -2722,8 +2722,8 @@
       "intervention_symbol": "src/app/walker.py::scan",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_9fea1c21a0c25dd7af23",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_9fea1c21a0c25dd7af23",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "call-site",
       "rank_factors": {
@@ -2813,8 +2813,8 @@
       "intervention_symbol": "src/app/guess.py::run",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_b4b1621506e7231c520b",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_b4b1621506e7231c520b",
+      "performance_model_version": 5,
       "prerequisites": [
         "batch_api_contract",
         "result_equivalence",
@@ -2901,8 +2901,8 @@
       "intervention_symbol": "bootstrap.py::main",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_b328704ea27ecd3de70a",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_b328704ea27ecd3de70a",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
@@ -2980,8 +2980,8 @@
       "intervention_symbol": "docs/snippets/walk.py::demo",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_b3b3f1bd1707d53f5d6e",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_b3b3f1bd1707d53f5d6e",
+      "performance_model_version": 5,
       "prerequisites": [],
       "provenance": "direct",
       "rank_factors": {
@@ -3063,8 +3063,8 @@
       "intervention_symbol": "src/app/filters.py::select",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_68f6614ac285d1e8cb4a",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_68f6614ac285d1e8cb4a",
+      "performance_model_version": 5,
       "prerequisites": [
         "element_hashability",
         "ordering_and_identity_use"
@@ -3149,8 +3149,8 @@
       "intervention_symbol": "src/app/render.py::to_csv",
       "may_lead": false,
       "observations_total": 1,
-      "opportunity_id": "perf4_ea095ac8d3d612777176",
-      "performance_model_version": 4,
+      "opportunity_id": "perf5_ea095ac8d3d612777176",
+      "performance_model_version": 5,
       "prerequisites": [
         "accumulator_not_observed"
       ],

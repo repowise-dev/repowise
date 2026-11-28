@@ -23,6 +23,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _NO_SYNTHESIS_NOTE,
     _RATIONALE_NOTE,
 )
+from repowise.server.mcp_server.tool_answer.origin import wants_origin
 from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
 from repowise.server.mcp_server.tool_answer.verify import answer_anchor, verify_line
@@ -663,7 +664,10 @@ def _serve_ranked_list(payload: dict[str, Any], question: str) -> None:
             {"path": _path(row), "lines": row.get("lines"), "comment": comment}
         ]
     # Every cited path is a guess or a rationale row, so citations would repeat them.
-    for key in ("citations", "note", "next_action_hint", "fallback_targets"):
+    # An origin question's hint names the git command for its history, which
+    # no ranked file repeats.
+    dropped = ("citations", "note", "fallback_targets")
+    for key in dropped if wants_origin(question) else (*dropped, "next_action_hint"):
         payload.pop(key, None)
     if isinstance(payload.get("_meta"), dict):
         payload["_meta"].pop("hint", None)

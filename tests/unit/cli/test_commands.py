@@ -481,7 +481,7 @@ class TestBuildRepoGraph:
         (tmp_path / "good.py").write_text("x = 1\n", encoding="utf-8")
 
         monkeypatch.setattr(
-            "repowise.core.generation.editor_files.tech_stack.detect_tech_stack",
+            "repowise.core.ingestion.tech_stack.detect_tech_stack",
             lambda _p: [],
         )
 

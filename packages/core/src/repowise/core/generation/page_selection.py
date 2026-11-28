@@ -53,6 +53,8 @@ class PageRecord:
     # regenerated every run regardless of the selection heuristic (issue
     # #812), so the doc keeps following the code.
     pinned: bool = False
+    # Built from code on every run, whatever its type (``is_model_free``).
+    model_free: bool = False
 
     @property
     def is_stale(self) -> bool:
