@@ -141,12 +141,23 @@ def _resolve_single(
     if candidate_rel in ctx.path_set:
         return candidate_rel
 
-    # 6. Stem fallback (5 was system-include filter above): only accept a
-    #    candidate whose *file name* matches the include, so ``<zlib.h>``
-    #    never links to e.g. ``tools/zlib.py``.
+    # 6. Stem fallback (5 was system-include filter above): last resort,
+    #    only a same-named file in the importer's own directory. A bare or
+    #    pathed include must not invent a deep link into an unrelated
+    #    directory: ``<zlib.h>`` never links to ``tools/zlib.py``, and a
+    #    header only included as a bare ``<rw_mingw.hpp>`` stays
+    #    unresolved so the unreachable-file ceiling still applies to it.
     name = Path(module_path).name.lower()
     candidates = ctx.stem_map.get(Path(module_path).stem.lower(), ())
-    return next((c for c in candidates if Path(c).name.lower() == name), None)
+    return next(
+        (
+            c
+            for c in candidates
+            if Path(c).name.lower() == name
+            and posixpath.dirname(c) == importer_dir
+        ),
+        None,
+    )
 
 
 def resolve_cpp_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:

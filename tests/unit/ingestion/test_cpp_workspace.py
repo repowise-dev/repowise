@@ -86,14 +86,20 @@ def test_stdlib_includes_are_dropped(tmp_path):
 
 def test_stem_fallback_requires_matching_file_name(tmp_path):
     # Headers outside the stdlib list reach the stem fallback, but the
-    # fallback must only accept a candidate with the *same file name*:
-    # <zlib.h> must not link to tools/zlib.py, <sqlite3.h> not to
-    # db/sqlite3.ts, and <curl.h> not to net/curl.cpp.
-    paths = ["tools/zlib.py", "db/sqlite3.ts", "net/curl.cpp", "src/main.cc"]
+    # fallback must only accept a candidate with the *same file name* in
+    # the importer's own directory: <zlib.h> must not link to
+    # tools/zlib.py, <sqlite3.h> not to db/sqlite3.ts, <curl.h> not to
+    # net/curl.cpp, and a bare <rw_mingw.hpp> not to a same-named header
+    # nested in an unrelated directory (it must stay unresolved so the
+    # unreachable-file ceiling still applies).
+    paths = [
+        "tools/zlib.py", "db/sqlite3.ts", "net/curl.cpp", "src/main.cc",
+        "rwengine/compat/rw_mingw.hpp",
+    ]
     for rel in paths:
         _write(tmp_path, rel, "")
     ctx = _make_ctx(tmp_path, paths)
-    for include in ("zlib.h", "sqlite3.h", "curl.h"):
+    for include in ("zlib.h", "sqlite3.h", "curl.h", "rw_mingw.hpp"):
         assert resolve_cpp_import(include, "src/main.cc", ctx) is None
 
 
